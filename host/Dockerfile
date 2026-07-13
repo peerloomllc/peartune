@@ -1,5 +1,8 @@
 # PearTune host as a container, for Umbrel (and any Docker host).
 #
+# Port 8741, NOT 8731: the PearCircle seeder already publishes 8731 on Umbrel,
+# and two PeerLoom apps on one box cannot share a port.
+#
 # Build from the REPO ROOT:
 #   docker build -f host/Dockerfile -t ghcr.io/peerloomllc/peartune-host:0.1.0 .
 #
@@ -41,7 +44,7 @@ COPY host/ ./host/
 # (same posture as the PearCircle seeder). Outside a proxy, do NOT expose this
 # port to a LAN: it is a revoke button and a pairing QR.
 ENV PEARTUNE_HTTP_HOST=0.0.0.0 \
-    PEARTUNE_HTTP_PORT=8731 \
+    PEARTUNE_HTTP_PORT=8741 \
     PEARTUNE_DATA=/data \
     PEARTUNE_MUSIC=/music \
     PEARTUNE_NAME="My Library"
@@ -51,6 +54,6 @@ ENV PEARTUNE_HTTP_HOST=0.0.0.0 \
 # library. /music is mounted read-only by the compose file.
 VOLUME /data
 VOLUME /music
-EXPOSE 8731
+EXPOSE 8741
 
 CMD ["node", "/app/host/index.js"]

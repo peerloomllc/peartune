@@ -37,7 +37,7 @@ async function readBody (req) {
   }
 }
 
-async function startDashboard ({ host, bind = '127.0.0.1', port = 8731 }) {
+async function startDashboard ({ host, bind = '127.0.0.1', port = 8741 }) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost')
 

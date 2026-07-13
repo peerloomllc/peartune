@@ -25,7 +25,7 @@ function parseArgs (argv) {
     data: process.env.PEARTUNE_DATA || '/data',
     name: process.env.PEARTUNE_NAME || 'My Library',
     host: process.env.PEARTUNE_HTTP_HOST || '127.0.0.1',
-    port: Number(process.env.PEARTUNE_HTTP_PORT || 8731),
+    port: Number(process.env.PEARTUNE_HTTP_PORT || 8741),
     quiet: false
   }
 
@@ -45,7 +45,7 @@ PearTune host - serve a self-hosted music library over P2P.
   --data,  -d <dir>   identity + grants          (default: /data)
   --name,  -n <name>  library name shown on pair (default: My Library)
   --http-host <addr>  dashboard bind address     (default: 127.0.0.1)
-  --port,  -p <port>  dashboard port             (default: 8731)
+  --port,  -p <port>  dashboard port             (default: 8741)
   --quiet, -q         suppress the event log
 `)
       process.exit(0)
