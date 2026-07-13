@@ -1,0 +1,9 @@
+node_modules/
+.git/
+test/
+scripts/
+android/
+src/
+worklet/
+*.md
+host-data/

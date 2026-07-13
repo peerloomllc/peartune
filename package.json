@@ -18,10 +18,11 @@
     "compact-encoding": "^2.16.0",
     "corestore": "^7.4.4",
     "hyperbee": "^2.24.2",
+    "hypercore-crypto": "^3.6.1",
     "hyperdht": "^6.20.3",
     "hyperswarm": "^4.8.4",
-    "hypercore-crypto": "^3.6.1",
     "protomux": "^3.10.1",
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "z32": "^1.1.0"
   }
