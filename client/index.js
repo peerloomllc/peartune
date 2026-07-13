@@ -120,8 +120,8 @@ class PearTuneClient {
 
       onchunk: (m) => {
         const p = this._pending.get(m.id)
-        if (!p || !p.chunks) return
-        p.chunks.push(m.data)
+        if (!p) return
+        if (p.chunks) p.chunks.push(m.data)
         if (p.onchunk) p.onchunk(m.data)
       },
 
@@ -129,6 +129,11 @@ class PearTuneClient {
         const p = this._pending.get(m.id)
         if (!p) return
         this._pending.delete(m.id)
+
+        // Unbuffered (the audio shim): nothing was accumulated, so just report
+        // how much flowed.
+        if (!p.buffered) return p.resolve({ total: m.total })
+
         const body = b4a.concat(p.chunks || [])
         // `total` is not decoration: it is what makes a resumed pinned download
         // safe to trust. A short read here means a truncated file on disk.
@@ -166,14 +171,19 @@ class PearTuneClient {
     this._pending.clear()
   }
 
-  _request (method, params, { stream = false, onchunk = null } = {}) {
+  _request (method, params, { stream = false, onchunk = null, buffer = true } = {}) {
     if (!this.send) return Promise.reject(new Error('not connected'))
     const id = this._nextId++
     return new Promise((resolve, reject) => {
       this._pending.set(id, {
         resolve,
         reject,
-        chunks: stream ? [] : null,
+        // `buffer: false` streams straight through to onchunk and accumulates
+        // nothing. The audio shim MUST use it: buffering a 100 MB FLAC in a
+        // phone's worklet to hand it to a player that only wanted the next
+        // second of audio is how you get an OOM kill.
+        chunks: stream && buffer ? [] : null,
+        buffered: stream && buffer,
         onchunk
       })
       this.send.req.send({ id, method, params: params ?? null })
@@ -188,11 +198,17 @@ class PearTuneClient {
 
   art (params) { return this._request('art.get', params, { stream: true }) }
 
-  // Resolves to the whole buffer. `onchunk` lets a real player start decoding
-  // before the last byte lands, which is the difference between "streaming" and
-  // "downloading then playing".
+  // Resolves to the whole buffer. `onchunk` lets a caller start work before the
+  // last byte lands.
   stream (params, onchunk) {
     return this._request('media.stream', params, { stream: true, onchunk })
+  }
+
+  // Streams straight through to `onchunk`, accumulating NOTHING, and resolves to
+  // { total } when the last byte lands. This is what the audio shim uses: it is
+  // feeding a player that wants the next second of audio, not a 100 MB buffer.
+  streamTo (params, onchunk) {
+    return this._request('media.stream', params, { stream: true, onchunk, buffer: false })
   }
 
   async close () {
