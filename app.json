@@ -50,7 +50,8 @@
       "./plugins/with-android-abis",
       "./plugins/with-android-queries",
       "./plugins/with-android-debug-app-id",
-      "./plugins/with-localhost-cleartext"
+      "./plugins/with-localhost-cleartext",
+      "./plugins/with-standalone-debug"
     ],
     "assets": [
       "./assets/bare-universal.bundle"

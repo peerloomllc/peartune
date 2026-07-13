@@ -1,11 +1,15 @@
-// Build the WebView UI bundle, and also emit a single self-contained
-// assets/index.html (JS inlined) so the design preview opens from anywhere over
-// file:// with no separate-file or MIME pitfalls. The shell uses
-// src/ui/index.html + assets/app-ui.bundle separately; this index.html is the
-// browser preview.
+// Build the WebView UI into ONE self-contained assets/index.html, with both the
+// JS and the CSS inlined.
+//
+// Inlining the CSS is not cosmetic housekeeping. esbuild emits an imported
+// stylesheet as a SEPARATE file (assets/app-ui.css), and the shell loads the UI
+// by reading index.html into a string and handing it to the WebView - so there is
+// no origin for a <link href> to resolve against, and the stylesheet silently
+// never loads. The app then renders correctly-structured, completely unreadable
+// black-on-black text. (Ask me how I know.)
 
 import { build } from 'esbuild'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 
 await build({
   entryPoints: ['src/ui/main.jsx'],
@@ -14,18 +18,25 @@ await build({
   jsx: 'automatic',
   define: { 'process.env.NODE_ENV': '"production"' },
   outfile: 'assets/app-ui.bundle',
-  legalComments: 'none',
+  legalComments: 'none'
 })
 
 const js = readFileSync('assets/app-ui.bundle', 'utf8').replace(/<\/script>/g, '<\\/script>')
+
+// esbuild names the stylesheet after the outfile.
+const cssPath = 'assets/app-ui.css'
+const css = existsSync(cssPath) ? readFileSync(cssPath, 'utf8') : ''
+if (!css) console.warn('WARNING: no CSS emitted - is styles.css still imported from main.jsx?')
+
 const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <meta name="theme-color" content="#0d0d0d">
-  <title>PearList preview</title>
-  <style>html,body,#root{height:100%;margin:0;background:#0d0d0d}</style>
+  <meta name="theme-color" content="#14130f">
+  <title>PearTune</title>
+  <style>html,body,#root{height:100%;margin:0;background:#14130f}</style>
+  <style>${css}</style>
 </head>
 <body>
   <div id="root"></div>
@@ -33,5 +44,6 @@ const html = `<!DOCTYPE html>
 </body>
 </html>
 `
+
 writeFileSync('assets/index.html', html)
-console.log('built assets/app-ui.bundle + self-contained assets/index.html')
+console.log(`built assets/index.html (self-contained: ${(js.length / 1024).toFixed(0)}kb js + ${(css.length / 1024).toFixed(1)}kb css)`)

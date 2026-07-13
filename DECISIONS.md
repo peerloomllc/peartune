@@ -2,6 +2,41 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-13 - NOT WebRTC. HyperDHT for transport, loopback HTTP for the player
+Tier: T3 (transport)
+Context: WebRTC comes up a lot in the Pear/Holepunch space around streaming
+media, so: should PearTune use it instead of "HTTP"?
+First, a category error worth naming: **the HTTP in PearTune never touches the
+network.** The shim runs on 127.0.0.1 between our Bare worklet and Android's
+media player - both on the same phone. The phone-to-host transport is already
+P2P (HyperDHT + UDX + Noise). So WebRTC would not replace the HTTP; it would
+replace HyperDHT.
+Choice: keep HyperDHT for transport and the loopback HTTP shim for the player.
+Why WebRTC is a downgrade HERE (it is a fine technology, wrong fit):
+1. **It reintroduces servers.** WebRTC needs signaling to exchange offers/ICE
+   candidates, plus STUN, plus TURN when holepunching fails. TURN is a relay -
+   a server you run and pay for, carrying user traffic. "No servers" is the
+   whole pitch. Holepunch's DHT does discovery + holepunching with zero infra.
+2. **Its media path is the wrong shape.** WebRTC media channels are RTP: built
+   for realtime conversation, and they DROP PACKETS to protect latency. Correct
+   for a video call, wrong for a FLAC, where we want exact bytes. You would end
+   up on DataChannels instead - a reliable ordered byte stream, i.e. exactly
+   what UDX already gives us, with more overhead and a signaling dependency.
+3. **It would destroy the auth model.** Everything here rests on Noise
+   authenticating the far end AS A PUBLIC KEY, which is what lets the host
+   allow-list device pubkeys with no bearer token anywhere. WebRTC identity is
+   DTLS fingerprints exchanged over whatever signaling you built, so pairing,
+   grants and revocation would have to be rebuilt on a weaker foundation.
+When WebRTC WOULD be right, and we should revisit then: (a) a BROWSER client -
+browsers cannot open raw UDP sockets, so WebRTC is the only P2P transport
+available there; (b) genuinely realtime audio (listen-together, broadcast,
+calls), which is what RTP is actually for. Neither is v1.
+Alternatives to the loopback shim (the real competitor, not WebRTC): a custom
+ExoPlayer DataSource in Kotlin reading straight from the worklet - no socket, no
+cleartext exemption, less copying. Rejected for now: real native code per
+platform plus a Kotlin-to-Bare bridge, to replace a shim that is already proven.
+Revisit if on-device profiling shows the HTTP hop actually costs battery or CPU.
+
 ## 2026-07-13 - Protomux message order lives in ONE shared file
 Tier: T3 (wire format)
 Context: Protomux assigns each message a type id by REGISTRATION ORDER - first

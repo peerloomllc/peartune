@@ -15,7 +15,8 @@
     "android": "expo run:android",
     "prebuild": "expo prebuild",
     "build:bare": "bare-pack --linked --defer fs --defer path src/bare.js -o assets/bare-universal.bundle",
-    "build:ui": "node scripts/build-ui.mjs"
+    "build:ui": "node scripts/build-ui.mjs",
+    "ios": "expo run:ios"
   },
   "dependencies": {
     "b4a": "^1.6.7",
