@@ -51,18 +51,23 @@ The primitive we actually need is already in HyperDHT and is MIT: `dht.createSer
 
 ### 2. Pairing (`peartune/pair/1`)
 
-Modeled directly on PearCircle's seeder QR pairing (`pearcircle/proposals/2026-06-22-seeder-qr-pairing.md`), which solved the same problem: a phone pairing with a headless daemon on an Umbrel.
+> **AMENDED 2026-07-13 during implementation.** The original design here copied PearCircle's seeder rendezvous topic. It did not survive contact with the code, and the replacement is strictly stronger. See DECISIONS "Pairing dials the host by key". The text below is the AS-BUILT protocol.
 
-1. The owner opens the host dashboard and clicks **Add device**. The host mints a one-time rendezvous secret `rv` (32 random bytes), joins the Hyperswarm topic `pairTopic = blake2b('peartune/pair/1' ‖ rv)`, and starts a session with a **5 minute TTL**.
+The seeder needed a rendezvous topic because *the phone* held the secrets and the seeder was anonymous. PearTune is the other way round: the host has the stable public identity, and it is already printed in the QR. So the phone just dials it.
+
+1. The owner opens the host dashboard and clicks **Add device**. The host mints a one-time pairing token `rv` (32 random bytes) and opens a session with a **5 minute TTL**.
 2. The dashboard renders a QR encoding `pear://peartune/pair?v=1&rv={z32}&host={z32 hostKey}&name={libraryName}`.
-3. The phone scans it, joins `pairTopic`, and connects.
-4. **The phone MUST verify `conn.remotePublicKey === hostKey` from the QR before sending anything.** Topic knowledge alone must leak nothing. This is guard (1) from the seeder review: it stops an impostor who merely photographed the QR.
-5. Over a Protomux channel with protocol `peartune/pair/1`, the phone sends `deviceHello { deviceKey, label, platform }`.
-6. **The host MUST verify `deviceHello.deviceKey === conn.remotePublicKey`** and reject otherwise. Noise already proves the remote key; this stops a device claiming to be another.
-7. The host writes a grant (§3), and replies `paired { hostName, libraryId, libraryName, source, ledgerKey }`.
-8. The session one-shot closes on success, and expires at TTL otherwise.
+3. The phone scans it and **dials the host directly**: `dht.connect(hostKey)`.
+4. The firewall (§3) admits an ungranted device **only while a pairing window is open**, and such a connection is offered the pair channel and *nothing else* - never the media API.
+5. Over a Protomux channel with protocol `peartune/pair/1`, the phone sends `deviceHello { rv, deviceKey, label, platform }`.
+6. **The host MUST verify `rv`** (constant-time) against the open session's token. The host key is an *address*, not a secret, so dialing it proves nothing; the token proves the device is standing in front of the operator's screen.
+7. **The host MUST verify `deviceHello.deviceKey === conn.remotePublicKey`** and reject otherwise. Noise already proves the remote key; the hello merely *claims* one. If they disagree, a device is trying to pair as somebody else, which would let it inherit a victim's grant or mint one for a key whose owner never consented.
+8. The host writes a grant (§3) and replies `paired { hostKey, libraryId, libraryName }`.
+9. The session one-shot closes on success, and expires at TTL otherwise.
 
-Trust for a first pairing is "a session is open on a minted topic, opened by the operator, bounded by 5 minutes" - the same model the seeder ships. The QR carries **no secret material**: `ledgerKey` is handed over only after the connection is authenticated, which keeps the QR small and makes a photographed QR useless after the window closes.
+**Impersonating the host is now impossible rather than merely checked.** Dialing a HyperDHT key means Noise authenticates the far end *as that key*, so an attacker who photographed the QR cannot answer the call. The seeder's "phone verifies the remote pubkey against the QR" guard is no longer a check we must remember to write; it is a property of the transport.
+
+Trust for a *first* pair is still "the operator opened a window just now, and this device holds that window's token" - there is nothing yet to check a newcomer against, so it cannot be cryptographic all the way down. Worst case inside the window is that the operator pairs a device they did not mean to, which is visible in the dashboard and revocable in one click.
 
 ### 3. Authorization
 
@@ -82,14 +87,21 @@ grant:{deviceKey}   -> { deviceKey, personId, label, platform,
 The gate, in the firewall hook (returns `true` to **deny**):
 
 ```js
-firewall (remotePublicKey) {
-  const g = grants.get(z32.encode(remotePublicKey))
-  if (!g || g.revokedAt) return true
-  if (g.expiresAt && now() > g.expiresAt) return true
-  if (persons.get(g.personId)?.revokedAt) return true
-  return false
+async firewall (remotePublicKey) {          // TRUE denies
+  const { grant, person } = await grants.lookup(remotePublicKey)
+  if (decide({ grant, person }).allow) return false
+
+  // Chicken-and-egg: a device that has never paired HAS no grant, so the gate
+  // must let it in far enough to pair. Admitted ONLY while the operator has a
+  // window open, and _onconnection then offers it the pair channel only, never
+  // the media API. It still has to present the QR token to get a grant.
+  if (this.pairing) return false
+
+  return true
 }
 ```
+
+HyperDHT `await`s this hook, so hitting the Hyperbee here is fine. It also initialises `firewalled: true` and swallows a throw, so **any error in this path fails closed**. There is a test pinning that, because a future hyperdht bump that flipped it to fail-open would silently expose every library in the wild.
 
 **Revocation must cut off live connections.** The firewall only runs at connect time, so revoking a device that is mid-song would otherwise do nothing until it reconnected. The host keeps `deviceKey -> Set<connection>` and, on revoke, destroys every connection for that device (and for every device of a revoked person). "Revoke stops the music within a second" is a first-class acceptance test, not a nicety.
 
@@ -157,18 +169,23 @@ PearTune has no deployed peers, so nothing can break today. That is precisely wh
 
 Per Constitution §5. `npm run verify` = tests + worklet bundle + UI bundle.
 
-Unit:
+Unit (**38 passing as of 2026-07-13**):
 - Pairing link encode / parse round-trip, and cross-rejection against the other apps' links.
-- Rendezvous topic derivation is domain-separated (same `rv` bytes give a different topic than any other app's topic).
-- Firewall decisions: unknown key denied, revoked device denied, device of a revoked person denied, expired grant denied, good grant admitted.
-- `deviceHello.deviceKey !== conn.remotePublicKey` is rejected.
-- `trackId` determinism and source-scoping.
-- Ledger apply: a peer cannot write a `count:` row under another peer's key.
+- Firewall decisions: unknown key denied, revoked device denied, device of a revoked person denied, expired grant denied, good grant admitted, revocation beating every other flag.
+- `Connections`: kill destroys live connections, killing one device leaves a bystander untouched, a hung-up peer deregisters itself.
+- `trackId` determinism, source-scoping and library-scoping. `libraryId` stability across a restart.
+- Ledger apply: a peer cannot write a `count:` row under another peer's key. *(milestone 3)*
 
-Integration, over `hyperdht` testnet, host and client in-process:
-- Pair, then `media.stream` a track and compare bytes to the source file.
-- Range request: `offset` mid-file returns the correct suffix.
-- **Revoke mid-stream and assert the live stream dies, and that reconnect is then denied.** This is the headline acceptance test.
+Integration, over `hyperdht` testnet, host and client in-process (**9 passing**):
+- Pair by QR link, then reach the library (grant is keyed to the phone's real Noise-proven pubkey).
+- `media.stream` a whole track; bytes identical to the file on disk.
+- Range request: `offset` mid-file returns the correct window; a tail read runs to EOF.
+- An unpaired device is refused by the firewall even though it knows the host key.
+- **HEADLINE: revoke mid-stream kills the in-flight transfer and denies reconnect.** The stream must *fail*, not hang and not quietly complete.
+- Revoking one device does not disturb another.
+- ATTACK: pairing with a forged `deviceKey` writes no grant.
+- ATTACK: pairing without the QR token writes no grant.
+- A closed pairing window admits nobody.
 
 On device (the real gate):
 - Android phone + the Umbrel on the LAN, Navidrome installed from the Umbrel store.

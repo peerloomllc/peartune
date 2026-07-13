@@ -1,0 +1,28 @@
+{
+  "name": "peartune",
+  "version": "0.1.0",
+  "description": "Your self-hosted music, playable anywhere. P2P music player with no port forwarding, no VPN and no account.",
+  "license": "MIT",
+  "private": true,
+  "main": "host/index.js",
+  "bin": {
+    "peartune-host": "./host/index.js"
+  },
+  "scripts": {
+    "host": "node host/index.js",
+    "test": "node --test test/*.test.js",
+    "verify": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "b4a": "^1.6.7",
+    "compact-encoding": "^2.16.0",
+    "corestore": "^7.4.4",
+    "hyperbee": "^2.24.2",
+    "hyperdht": "^6.20.3",
+    "hyperswarm": "^4.8.4",
+    "hypercore-crypto": "^3.6.1",
+    "protomux": "^3.10.1",
+    "qrcode-terminal": "^0.12.0",
+    "z32": "^1.1.0"
+  }
+}

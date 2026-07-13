@@ -2,6 +2,50 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-13 - Protomux message order lives in ONE shared file
+Tier: T3 (wire format)
+Context: Protomux assigns each message a type id by REGISTRATION ORDER - first
+`addMessage()` is type 0, next is type 1. Host and client each registered their
+own, in different orders (host: `paired` then `deviceHello`; client the reverse).
+Both ends decoded every frame as the wrong type. It fails SILENTLY: the frames
+arrive, decode into garbage, and the handler you expected simply never fires, so
+pairing hung with no error on either side. The media channel had the same latent
+mismatch.
+Choice: `protocol/channels.js` owns the registration order and both sides build
+channels through its factories. Hand-rolling `mux.createChannel` + `addMessage`
+for a PearTune channel is now a bug by definition. New message types append to
+the END of the list; inserting in the middle silently renumbers the wire.
+Consequences: the ordering can no longer drift between host and app, which are
+in different runtimes (Node and Bare) and will be updated on different schedules.
+
+## 2026-07-13 - Pairing dials the host by key; there is no rendezvous topic
+Tier: T3 (pairing flow - SUPERSEDES §2 of proposal 2026-07-13-wire-protocol)
+Context: the proposal copied PearCircle's seeder QR pairing, where phone and host
+meet on a Hyperswarm rendezvous topic derived from a one-time `rv`. That did not
+survive contact with the code: Hyperswarm creates its OWN HyperDHT server and
+listens on its keypair, so a host running both a Hyperswarm (for pairing) and its
+own `dht.createServer` (for media) under one identity had two servers fighting
+over the same keypair, and deadlocked.
+Choice: drop the rendezvous entirely. The QR already carries the host's public
+key, so the phone DIALS THE HOST DIRECTLY by key. `rv` survives as a one-time
+pairing TOKEN, presented in the hello to prove the device actually saw the QR.
+The firewall gains a narrow exemption: while a pairing window is open it admits
+an ungranted device, and `_onconnection` then offers it the pair channel ONLY,
+never the media API.
+Alternatives: give the pairing swarm a separate keypair (then the phone cannot
+verify the host against the QR); keep Hyperswarm and drop our own server (loses
+the `firewall` hook, which is the entire auth design).
+Consequences: STRICTLY STRONGER than what it replaces. Dialing a HyperDHT key
+means Noise authenticates the far end AS that key, so an impostor who
+photographed the QR cannot answer the call at all. The seeder's "verify the
+remote pubkey matches the QR" guard stops being a check we must remember to
+write and becomes a property of the transport. Also simpler: no Hyperswarm in
+the host at all until the ledger needs one in milestone 3.
+Why the seeder differs: there the PHONE held the secrets and the seeder was
+anonymous, so a rendezvous was the only way to meet. Here the host has the
+stable public identity. Do not cargo-cult the seeder's flow into a third app
+without checking which side is anonymous.
+
 ## 2026-07-13 - Bitrate adapts to the network, with a user override
 Tier: T1 (client policy; the wire already carries the params)
 Context: a FLAC library over cellular is roughly 300MB an album and will stutter,
