@@ -1,0 +1,23 @@
+node_modules/
+.expo/
+dist/
+web-build/
+
+# Build artifacts
+assets/bare-universal.bundle
+assets/bare-ios.bundle
+assets/app-ui.bundle
+assets/index.html
+host/ui/build/
+*.apk
+*.aab
+*.ipa
+*.sha256
+release_notes.md
+
+# Host runtime data (identity seed, grant store) - NEVER commit
+host-data/
+*.seed
+
+# Local-only docs (per CLAUDE.md)
+TODO.md
