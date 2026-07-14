@@ -33,7 +33,11 @@
             "DEFAULT"
           ]
         }
-      ]
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#181419"
+      }
     },
     "plugins": [
       [
@@ -55,6 +59,7 @@
     ],
     "assets": [
       "./assets/bare-universal.bundle"
-    ]
+    ],
+    "icon": "./assets/icon.png"
   }
 }
