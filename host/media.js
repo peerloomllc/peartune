@@ -15,7 +15,7 @@ const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 // so a new mutating method cannot accidentally ship without a scope check.
 const MUTATING = new Set(['identity.set'])
 
-function serveMedia ({ conn, libraryId, adapter, grant, grants = null, log = () => {} }) {
+function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Registration order is fixed in protocol/channels.js and MUST match the
@@ -109,16 +109,16 @@ function serveMedia ({ conn, libraryId, adapter, grant, grants = null, log = () 
         return send.res.send({ id, body: { protocol: 1, libraryId } })
 
       case 'library.stats':
-        return send.res.send({ id, body: await adapter.stats() })
+        return send.res.send({ id, body: await getAdapter().stats() })
 
       case 'library.list':
-        return send.res.send({ id, body: await adapter.list(params || {}) })
+        return send.res.send({ id, body: await getAdapter().list(params || {}) })
 
       case 'library.get':
-        return send.res.send({ id, body: await adapter.get(params || {}) })
+        return send.res.send({ id, body: await getAdapter().get(params || {}) })
 
       case 'library.search':
-        return send.res.send({ id, body: await adapter.search(params || {}) })
+        return send.res.send({ id, body: await getAdapter().search(params || {}) })
 
       // --- identity (proposal 2026-07-14) ------------------------------------
       //
@@ -148,14 +148,14 @@ function serveMedia ({ conn, libraryId, adapter, grant, grants = null, log = () 
       }
 
       case 'art.get': {
-        const stream = await adapter.art(params || {})
+        const stream = await getAdapter().art(params || {})
         if (!stream) return safeErr(id, ERR.NOT_FOUND, 'no artwork')
         return pipeStream(id, stream)
       }
 
       case 'media.stream': {
         if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
-        const stream = await adapter.stream(params)
+        const stream = await getAdapter().stream(params)
         if (!stream) return safeErr(id, ERR.NOT_FOUND, 'no such track')
         return pipeStream(id, stream)
       }

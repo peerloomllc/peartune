@@ -42,6 +42,22 @@ module.exports = `<!doctype html>
   button:hover { border-color: var(--muted); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+
+  /* --- music source --------------------------------------------------- */
+  .seg { display: inline-flex; gap: .25rem; padding: 3px; margin-bottom: .8rem;
+         border: 1px solid var(--line); border-radius: 9999px; background: var(--bg); }
+  .seg button { border: none; border-radius: 9999px; padding: .35rem 1rem; background: transparent; }
+  .seg button.on { background: var(--accent); color: #fff; }
+  #source label { display: block; margin: .6rem 0 .2rem; color: var(--muted); font-size: .8rem; }
+  #source input {
+    width: 100%; max-width: 28rem; padding: .5rem .6rem; font: inherit;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--fg);
+  }
+  #source .row { display: flex; align-items: center; gap: .5rem; margin-top: .9rem; }
+  .ok { color: var(--accent); }
+  .hint { color: var(--muted); font-size: .8rem; line-height: 1.5; margin: .8rem 0 0; }
+  .hint.warn { color: var(--warn, #ffb74d); }
   button.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
   #qr { margin: 1rem 0; }
   #qr svg { width: 220px; height: 220px; background: #fff; padding: 10px; border-radius: 8px; }
@@ -101,6 +117,20 @@ module.exports = `<!doctype html>
   <div class="card">
     <h2>Devices</h2>
     <div id="devices"><p class="empty">No devices paired yet.</p></div>
+  </div>
+
+  <div class="card">
+    <h2>Music source</h2>
+    <div id="source"></div>
+    <p class="hint">
+      Point PearTune at the Navidrome you already run and you get its tags, artwork
+      and transcoding. A plain folder works too, but it has no tag reading yet - you
+      will see filenames, not albums.
+    </p>
+    <p class="hint warn" id="sourcewarn" style="display:none">
+      Changing the source changes every track's identity, so play counts and resume
+      positions from the old source will not follow. Nothing is deleted.
+    </p>
   </div>
 </main>
 
@@ -247,6 +277,107 @@ async function confirmClaim (key) {
   refresh()
 }
 
+// The dashboard polls every 3 seconds and re-renders. That MUST NOT touch a form the
+// operator is in the middle of editing: click Folder, and two seconds later the poll
+// would re-render the card from the server's truth (still Navidrome) and throw your
+// choice away. A half-typed URL or password went the same way.
+//
+// So: once you touch this card, it belongs to you until you Save or Cancel. The poll
+// keeps updating everything else on the page.
+let SOURCE_DIRTY = false
+
+function markSourceDirty () {
+  SOURCE_DIRTY = true
+  document.getElementById('sourcewarn').style.display = 'block'
+  document.getElementById('srccancel').style.display = ''
+}
+
+function renderSource (src, force) {
+  if (SOURCE_DIRTY && !force) return
+
+  const el = document.getElementById('source')
+  const nav = (src && src.kind === 'navidrome')
+
+  el.innerHTML =
+    '<div class="seg">' +
+      '<button id="s_nav" class="' + (nav ? 'on' : '') + '" onclick="pickSource(true)">Navidrome</button>' +
+      '<button id="s_fold" class="' + (nav ? '' : 'on') + '" onclick="pickSource(false)">Folder</button>' +
+    '</div>' +
+    '<div id="navfields" style="display:' + (nav ? 'block' : 'none') + '">' +
+      '<label>Navidrome URL</label>' +
+      '<input id="n_url" oninput="markSourceDirty()" placeholder="http://localhost:4533" value="' + esc(src && src.url) + '">' +
+      '<label>Username</label>' +
+      '<input id="n_user" oninput="markSourceDirty()" placeholder="umbrel" value="' + esc(src && src.username) + '">' +
+      '<label>Password</label>' +
+      // The password is never sent BACK to the browser (host/source.js publicView).
+      // An empty box on an already-configured source means "leave it as it is".
+      '<input id="n_pass" type="password" oninput="markSourceDirty()" placeholder="' +
+        ((src && src.hasPassword) ? 'unchanged' : 'password') + '">' +
+    '</div>' +
+    '<div id="foldfields" style="display:' + (nav ? 'none' : 'block') + '">' +
+      '<label>Folder</label>' +
+      '<input id="f_root" oninput="markSourceDirty()" placeholder="/music" value="' + esc((src && src.root) || '/music') + '">' +
+    '</div>' +
+    '<div class="row">' +
+      '<button onclick="testSource()">Test</button>' +
+      '<button class="primary" onclick="saveSource()">Save</button>' +
+      '<button id="srccancel" style="display:none" onclick="cancelSource()">Cancel</button>' +
+      '<span id="srcmsg" class="meta"></span>' +
+    '</div>'
+}
+
+// Hand the card back to the server: whatever is actually running wins again.
+function cancelSource () {
+  SOURCE_DIRTY = false
+  document.getElementById('sourcewarn').style.display = 'none'
+  refresh()
+}
+
+function pickSource (nav) {
+  document.getElementById('s_nav').className = nav ? 'on' : ''
+  document.getElementById('s_fold').className = nav ? '' : 'on'
+  document.getElementById('navfields').style.display = nav ? 'block' : 'none'
+  document.getElementById('foldfields').style.display = nav ? 'none' : 'block'
+  markSourceDirty()
+}
+
+function sourceForm () {
+  const nav = document.getElementById('s_nav').className === 'on'
+  if (!nav) return { kind: 'folder', root: document.getElementById('f_root').value.trim() }
+  const cfg = {
+    kind: 'navidrome',
+    url: document.getElementById('n_url').value.trim(),
+    username: document.getElementById('n_user').value.trim()
+  }
+  // Blank means "keep the password you already have"; the host fills it in.
+  const pw = document.getElementById('n_pass').value
+  if (pw) cfg.password = pw
+  return cfg
+}
+
+async function testSource () {
+  const msg = document.getElementById('srcmsg')
+  msg.textContent = 'testing...'
+  const r = await api('/api/source/test', sourceForm())
+  msg.innerHTML = r.ok
+    ? '<span class="ok">works - ' + r.tracks + ' tracks</span>'
+    : '<span class="revoked">' + esc(r.error) + '</span>'
+}
+
+async function saveSource () {
+  const msg = document.getElementById('srcmsg')
+  msg.textContent = 'saving...'
+  const r = await api('/api/source', sourceForm())
+  if (!r.ok) {
+    msg.innerHTML = '<span class="revoked">' + esc(r.error) + '</span>'
+    return
+  }
+  msg.innerHTML = '<span class="ok">saved - ' + r.tracks + ' tracks</span>'
+  SOURCE_DIRTY = false
+  document.getElementById('sourcewarn').style.display = 'none'
+  refresh()
+}
+
 function renderDevices (devices) {
   const el = document.getElementById('devices')
   if (!devices.length) {
@@ -306,6 +437,7 @@ async function refresh () {
   const s = await api('/api/state')
   PEOPLE = s.persons || []
   DEVICES = s.devices || []
+  renderSource(s.source)
   document.getElementById('lib').textContent = s.libraryName
   document.getElementById('sub').textContent =
     s.stats.tracks + ' tracks · ' + s.stats.source + ' · ' +

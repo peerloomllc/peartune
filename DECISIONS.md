@@ -2,6 +2,68 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - The music source is DATA, not deployment
+Tier: T2 (new persisted config + new dashboard API)
+Context: preparing the community-store listing. A store install has no env vars, so
+it would land on the folder adapter - which has no tag reading - and the user would
+get a library of FILENAMES. Nobody installing an app from a store is going to
+hand-edit a docker-compose file to point it at their Navidrome.
+Choice: the source lives in the host's own data dir (source.json, 0600 - it holds a
+password), chosen in the dashboard. Precedence: source.json > env/CLI > folder. The
+operator's choice therefore SURVIVES a restart with different env vars, which is the
+whole point.
+Details that matter:
+- The adapter is swapped ATOMICALLY and only after the new one scans. Wrong
+  credentials throw and the OLD source keeps serving: a library going dark is not an
+  acceptable way to learn you mistyped a password. The dashboard has a Test button
+  for the same reason.
+- media.js takes a getAdapter() GETTER, not an adapter. A connection outlives a
+  source change, and a phone still streaming from the source you just switched away
+  from is a bug you would not find for weeks.
+- A BAD saved source does not stop the host from starting. If it did, the operator
+  would be locked out of the very dashboard they need to fix it.
+- The password is never sent to the browser (publicView). A blank password field on
+  an already-configured source means "leave it alone", not "set it to empty".
+Verified on the Umbrel with a container that had NO Navidrome env vars: 0 tracks
+(folder) -> configured from the dashboard -> 1358 tracks, and it survived a restart.
+
+## 2026-07-14 - The dashboard gets a LOCK, because the host must own the network
+Tier: T3 (auth gate). Proposal: proposals/2026-07-14-dashboard-auth.md
+The chain of facts, each one measured rather than assumed:
+1. **The host needs `network_mode: host`.** Re-tested today on the Umbrel with the
+   real image: under Docker's default bridge the firewall ADMITS the client
+   (gate:allow-for-pairing) and the connection dies before the pair channel opens.
+   Bridge NAT is a second layer of NAT; holepunching does not survive it.
+2. **Host networking means Umbrel's app_proxy cannot front us.** The proxy is a
+   container on a bridge network and cannot reach a service bound to the host's
+   loopback. Umbrel's own host-networked apps (Plex, Home Assistant) skip the proxy
+   and serve their UI straight onto the LAN, protected by their own login.
+3. **The proxy was the only thing standing in for our missing auth.** The dashboard
+   had none BY DESIGN (DONE 2026-07-13), which was fine while it was loopback-only.
+So the dashboard now has its own lock: PEARTUNE_PASSWORD (umbrelOS passes
+${APP_PASSWORD}), a session cookie, a constant-time compare, and a 5-strike
+rate limit.
+THE RULE THAT MATTERS: **the host REFUSES TO START** if told to bind a non-loopback
+address with no password. Not a warning - an exit, before it joins the DHT. A
+warning in a log nobody reads is not a control, and every "expose it just for a
+minute" is how a revoke button ends up on an open port forever.
+Not in scope: TLS. On a home LAN the password crosses in the clear, which is what
+every other Umbrel app does; a self-signed cert would only train people to click
+through warnings. Say it in the README instead of pretending.
+
+## 2026-07-14 - The host image gets its OWN package.json
+Tier: T1 (build)
+The image would not build at all: the repo root is the PHONE APP (React Native,
+Expo), it runs `postinstall: patch-package` for the app's expo-audio patch, and
+patch-package is a devDependency - so `npm ci --omit=dev` installed no patch-package
+and then ran it anyway. Exit 127, every time.
+`--ignore-scripts` is NOT the fix: it also skips the native postinstalls the
+hypercore stack needs, and you get a runtime that half-works and then aborts.
+Choice: host/package.json with the ELEVEN packages host/, client/ and protocol/
+actually require. The image stops dragging React Native and Expo into a server that
+has no use for either. Keep the versions in step with the root by hand: same wire,
+and a skew between phone and host is a protocol bug waiting to happen.
+
 ## 2026-07-14 - Device and user naming: a device names ITSELF, an operator confirms
 Tier: T2. Proposal: proposals/2026-07-14-device-and-user-naming.md
 Context: two phones paired, and the dashboard showed two rows called "Android

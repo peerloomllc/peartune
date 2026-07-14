@@ -26,12 +26,20 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Deps first, so a code change does not re-resolve the whole tree.
+# THE HOST'S OWN MANIFEST, not the repo root's. The root package.json is the
+# PHONE APP (React Native, Expo, expo-audio), and building from it:
+#   1. FAILED OUTRIGHT - the root runs `postinstall: patch-package` for the app's
+#      expo-audio patch, patch-package is a devDependency, and `--omit=dev` then
+#      installs no patch-package and tries to run it anyway. Exit 127.
+#   2. dragged React Native and Expo into a server image with no use for either.
 #
-# NEVER add --ignore-scripts here. It skips the native postinstall for the
-# hypercore stack and you get a runtime that half-works and then aborts. This
-# cost a long debug detour on PearCal; see the suite-wide note in memory.
-COPY package.json package-lock.json ./
+# NEVER "fix" that with --ignore-scripts. It also skips the native postinstalls
+# the hypercore stack needs, and you get a runtime that half-works and then
+# aborts - the long PearCal debug detour, in a container this time.
+#
+# Deps first, so a code change does not re-resolve the tree. package.json lands
+# at /app so host/, client/ and protocol/ all resolve up into /app/node_modules.
+COPY host/package.json host/package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY protocol/ ./protocol/

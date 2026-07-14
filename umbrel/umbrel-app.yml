@@ -1,0 +1,46 @@
+manifestVersion: 1
+id: peerloom-peartune
+name: PearTune
+tagline: Your self-hosted music, playable anywhere
+category: media
+version: "0.1.0"
+port: 8741
+description: >-
+  Play the music on your Umbrel from anywhere, without exposing your server to the
+  internet.
+
+
+  PearTune connects your phone straight to this machine over an encrypted
+  peer-to-peer connection (the Hypercore Protocol). No port forwarding, no VPN, no
+  dynamic DNS, no account, and no copy of your library in anyone's cloud. The music
+  never leaves your hardware: it streams through the live connection while it plays.
+
+
+  It reads your existing library. Point it at the Navidrome you already run and it
+  uses that - your tags, your artwork, your album art, and Navidrome's transcoding.
+  Or point it at a plain folder of files.
+
+
+  YOU decide who gets in. Every phone that pairs is a device on this dashboard, with
+  a name it chose and a person it belongs to. Revoke a device and the music stops
+  within a second, mid-song - not "on next login". Revoke a person and every device
+  they hold dies at once. There are no shared passwords or bearer tokens anywhere in
+  the design: every connection is authenticated by the phone's own key.
+
+
+  Pair a phone by scanning the QR code on this dashboard with the PearTune app.
+developer: PeerLoom
+website: https://peerloomllc.com
+dependencies: []
+repo: https://github.com/peerloomllc/peartune
+support: https://github.com/peerloomllc/peartune/issues
+gallery: []
+releaseNotes: >-
+  First release of the PearTune host for Umbrel. Serves your Navidrome library (or a
+  plain folder) to the PearTune phone app over a peer-to-peer connection, with a
+  dashboard for pairing devices, naming who holds them, and revoking access mid-song.
+path: ""
+defaultUsername: ""
+defaultPassword: $APP_PASSWORD
+submitter: PeerLoom
+submission: https://github.com/peerloomllc/peartune

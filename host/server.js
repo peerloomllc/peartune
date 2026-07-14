@@ -24,6 +24,7 @@ const { serveMedia } = require('./media')
 const { PairSession } = require('./pair')
 const { FolderAdapter } = require('./adapters/folder')
 const { NavidromeAdapter } = require('./adapters/navidrome')
+const { resolveSource, saveSource, buildAdapter, publicView } = require('./source')
 const { PAIR_PROTOCOL, MEDIA_PROTOCOL } = require('../protocol/constants')
 
 class PearTuneHost {
@@ -47,12 +48,19 @@ class PearTuneHost {
     this.grants = new Grants(this.bee)
     this.connections = new Connections()
 
-    // One interface, two implementations. The app never learns which is behind
-    // the media API, which is what keeps the raw-folder path a first-class
-    // citizen instead of a fallback nobody tests.
-    this.adapter = navidrome
-      ? new NavidromeAdapter({ ...navidrome, libraryId: this.libraryId })
-      : new FolderAdapter({ root: musicDir, libraryId: this.libraryId })
+    // One interface, two implementations. The app never learns which is behind the
+    // media API, which is what keeps the raw-folder path a first-class citizen
+    // instead of a fallback nobody tests.
+    //
+    // WHICH one is now the OPERATOR's choice (source.json), not the container's
+    // (env vars) - see host/source.js. Somebody installing this from an app store is
+    // never going to hand-edit a compose file, and without Navidrome they would get a
+    // library of filenames.
+    this.source = resolveSource({ dataDir: this.dataDir, navidrome, musicDir })
+    this.adapter = buildAdapter(this.source, {
+      libraryId: this.libraryId,
+      musicDir: this.musicDir
+    })
     this.server = null
     this.pairSession = null
   }
@@ -61,14 +69,70 @@ class PearTuneHost {
     return this.identity.publicKey
   }
 
+  // Change where the music comes from, live, without a restart.
+  //
+  // The adapter is swapped ATOMICALLY and only after the new one has scanned: if the
+  // Navidrome credentials are wrong, this throws and the old source is still serving.
+  // A library that goes dark because someone mistyped a password is not an acceptable
+  // way to find out you mistyped a password.
+  async setSource (cfg) {
+    cfg = this._withKeptPassword(cfg)
+    const next = buildAdapter(cfg, { libraryId: this.libraryId, musicDir: this.musicDir })
+    const tracks = await next.scan() // throws on a bad URL or bad credentials
+
+    this.adapter = next
+    this.source = { ...cfg, from: 'dashboard' }
+    this.sourceError = null
+    saveSource(this.dataDir, cfg)
+
+    this.log('host:source-changed', { source: cfg.kind, tracks })
+    return { kind: cfg.kind, tracks }
+  }
+
+  // Does this config actually work? Used by the dashboard's "Test" button, so an
+  // operator finds out BEFORE committing to it - and it never touches the live
+  // adapter.
+  async testSource (cfg) {
+    cfg = this._withKeptPassword(cfg)
+    const probe = buildAdapter(cfg, { libraryId: this.libraryId, musicDir: this.musicDir })
+    const tracks = await probe.scan()
+    return { ok: true, kind: cfg.kind, tracks }
+  }
+
+  get sourceView () {
+    return publicView(this.source)
+  }
+
+  // The password is never sent to the browser, so the browser cannot send it back.
+  // An empty password field on an already-configured Navidrome means "leave it
+  // alone" - not "set the password to empty string", which would silently break the
+  // library the next time the operator edited the URL.
+  _withKeptPassword (cfg) {
+    if (cfg.kind !== 'navidrome' || cfg.password) return cfg
+    const same = this.source?.kind === 'navidrome'
+    return same ? { ...cfg, password: this.source.password } : cfg
+  }
+
   get pairing () {
     return !!(this.pairSession && !this.pairSession.closed)
   }
 
   async ready () {
     await this.bee.ready()
-    const n = await this.adapter.scan()
-    this.log('host:scanned', { source: this.adapter.kind, tracks: n })
+
+    // A BAD SOURCE MUST NOT STOP THE HOST FROM STARTING.
+    //
+    // If the saved Navidrome credentials are wrong (someone rotated the password,
+    // the container moved), scan() throws - and if that killed the process, the
+    // operator would be locked out of the very dashboard they need in order to fix
+    // it. So: come up, serve the dashboard, and say what is wrong.
+    try {
+      const n = await this.adapter.scan()
+      this.log('host:scanned', { source: this.adapter.kind, tracks: n })
+    } catch (e) {
+      this.sourceError = e.message
+      this.log('host:source-failed', { source: this.adapter.kind, err: e.message })
+    }
 
     this.server = this.dht.createServer({
       firewall: (remotePublicKey) => this._firewall(remotePublicKey)
@@ -172,7 +236,10 @@ class PearTuneHost {
       serveMedia({
         conn,
         libraryId: this.libraryId,
-        adapter: this.adapter,
+        // A GETTER, not the adapter itself. A connection outlives a source change,
+        // and a phone that keeps streaming from the source you just switched away
+        // from is a bug you would not find for weeks.
+        getAdapter: () => this.adapter,
         grant: lookup.grant,
         // Passed so a device can name ITSELF (identity.set). The row it may write
         // is fixed by `grant`, which came from the Noise-authenticated key of this

@@ -1,0 +1,47 @@
+{
+  "name": "peartune-host",
+  "version": "0.1.0",
+  "description": "The PearTune host: an always-on daemon that serves a self-hosted music library over HyperDHT.",
+  "license": "MIT",
+  "private": true,
+  "main": "index.js",
+  "bin": {
+    "peartune-host": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "//": [
+    "THE HOST HAS ITS OWN MANIFEST, and this is not tidiness.",
+    "",
+    "The repo root's package.json is the PHONE APP: React Native, Expo, expo-audio,",
+    "jsQR, Phosphor. The host is a Node server that shares only protocol/ and",
+    "client/ with it. Building the image from the root manifest meant:",
+    "",
+    "1. It DID NOT BUILD AT ALL. The root has `postinstall: patch-package` (for the",
+    "   app's expo-audio patch), and patch-package is a devDependency - so",
+    "   `npm ci --omit=dev` installed no patch-package and then tried to run it.",
+    "   Exit 127, every time. `--ignore-scripts` is NOT the way out: it also skips",
+    "   the native postinstalls the hypercore stack needs, and you get a runtime",
+    "   that half-works and then aborts (see the suite-wide note about bare deps).",
+    "2. It dragged React Native and Expo into a server image that has no use for",
+    "   either.",
+    "",
+    "These eleven are what host/, client/ and protocol/ actually require. Keep them",
+    "in step with the root manifest by hand: they are the SAME wire, and a version",
+    "skew between the phone and the host is a protocol bug waiting to happen."
+  ],
+  "dependencies": {
+    "b4a": "^1.6.7",
+    "compact-encoding": "^2.16.0",
+    "corestore": "^7.4.4",
+    "hyperbee": "^2.24.2",
+    "hypercore-crypto": "^3.6.1",
+    "hyperdht": "^6.20.3",
+    "protomux": "^3.10.1",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "sodium-universal": "^5.0.1",
+    "z32": "^1.1.0"
+  }
+}
