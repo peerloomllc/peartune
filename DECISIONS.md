@@ -2,6 +2,26 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - Shuffle and repeat are INDEPENDENT, and both may be on
+Tier: T1 (UI)
+Context: Tim noticed both can be enabled at once on an album and asked whether
+that is expected. It is - this is a NOTE, not a bug, and it is written down so
+nobody "fixes" it later.
+Choice: they stay orthogonal. Confirmed with Tim 2026-07-14.
+Why: they answer different questions. Shuffle decides the ORDER; repeat decides
+what happens at the END. Every mainstream player (Spotify, Apple Music, YouTube
+Music) allows the combination, and shuffle + repeat-all - shuffle the album and
+loop it forever - is one of the most common ways people actually listen. Making
+them exclusive would also mean fighting the platform: ExoPlayer exposes
+`shuffleModeEnabled` and `repeatMode` as two independent properties, so we would
+be writing code to take a feature away.
+The four states, all coherent:
+  shuffle off + repeat off -> album in order, stops at the end
+  shuffle on  + repeat off -> album shuffled, stops at the end
+  shuffle on  + repeat all -> shuffled, loops forever
+  shuffle on  + repeat one -> loops this track; shuffle picks what comes next
+                              whenever the listener does skip
+
 ## 2026-07-14 - The theme preference lives in the WORKLET, not localStorage
 Tier: T1 (local state)
 Context: every sibling app (PearPetal, PearList, PearCircle) keeps the theme
