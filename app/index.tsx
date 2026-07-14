@@ -474,19 +474,29 @@ export default function App () {
       {uiHtml && (
         <WebView
           ref={webRef}
-          source={{ html: uiHtml }}
+          // THE baseUrl IS NOT DECORATION - the QR scanner does not work without
+          // it. getUserMedia only exists in a SECURE CONTEXT. Loaded as a bare
+          // HTML string the document's origin is about:blank, which is not one, so
+          // navigator.mediaDevices is UNDEFINED: the scanner threw on the property
+          // access, React unmounted the tree, and pairing showed a black screen
+          // with no error. https://localhost is a trustworthy origin, and it is
+          // what PearList's scanner has always used.
+          source={{ html: uiHtml, baseUrl: 'https://localhost/' }}
           originWhitelist={['*']}
           onMessage={onMessage}
-          // The UI boots before it can know the OS scheme, so tell it as soon as
-          // there is something to tell. Any later change comes from the Appearance
-          // listener above.
-          onLoadEnd={() => toWeb('sys:theme', { scheme: Appearance.getColorScheme() ?? 'dark' })}
           javaScriptEnabled
           domStorageEnabled
           allowsInlineMediaPlayback
           mediaPlaybackRequiresUserAction={false}
+          // ...and the consequence of that https origin: the artwork is served by
+          // the worklet over http://127.0.0.1, so every cover is now MIXED CONTENT
+          // and the WebView would block it. Allow it. This is not the blanket
+          // cleartext hole - the network security config still restricts cleartext
+          // to 127.0.0.1 (plugins/with-localhost-cleartext.js).
+          mixedContentMode='always'
           // The QR scanner runs in the WebView (getUserMedia), same as PearList.
-          onPermissionRequest={(req: any) => req.grant?.()}
+          mediaCapturePermissionGrantType='grant'
+          onPermissionRequest={(ev: any) => { try { ev?.grant?.(ev.resources) } catch {} }}
           style={{ flex: 1, backgroundColor: bg }}
         />
       )}

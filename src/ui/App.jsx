@@ -905,15 +905,26 @@ function Scanner ({ onScan, onCancel, error }) {
     let raf = null
     let done = false
 
-    navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: 'environment' } })
-      .then((s) => {
+    // navigator.mediaDevices is UNDEFINED outside a secure context, so this must
+    // be a guard and not a `.catch`: reading .getUserMedia off undefined throws
+    // synchronously, right here in an effect, which unmounts the whole tree and
+    // paints a black screen with nothing in the log. (It did. See the shell's
+    // baseUrl.) Fail with a sentence a human can act on instead.
+    ;(async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error('This device will not give the app a camera.')
+        }
+        const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+        if (done) return s.getTracks().forEach(t => t.stop())
         stream = s
         video.current.srcObject = s
         video.current.play()
         tick()
-      })
-      .catch(() => setMsg('Camera unavailable. Paste the link instead.'))
+      } catch (e) {
+        setMsg(`Camera unavailable (${e.message}). Paste the link instead.`)
+      }
+    })()
 
     function tick () {
       if (done) return
