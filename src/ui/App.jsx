@@ -14,11 +14,11 @@ import { useEffect, useState, useRef } from 'react'
 import jsQR from 'jsqr'
 import {
   MusicNotes, MusicNotesSimple, UsersThree, Gear, Info, CaretRight, CaretLeft,
-  Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, RepeatOnce, X,
+  CaretDown, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, RepeatOnce, X,
   ArrowCounterClockwise, ArrowClockwise, Heart, CurrencyBtc, ShareNetwork,
-  EnvelopeSimple, Code, Copy
+  EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise
 } from '@phosphor-icons/react'
-import { call, on } from './bridge'
+import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
 
 // --- About + donation (suite config, shared across PeerLoom apps) ------------
@@ -52,6 +52,11 @@ export default function App () {
   const [error, setError] = useState(null)
   const [scanning, setScanning] = useState(false)
   const [donate, setDonate] = useState(false)
+  const [confirming, setConfirming] = useState(null)
+  const [viewing, setViewing] = useState(null) // artwork, full screen
+  const [expanded, setExpanded] = useState(false) // the player: mini vs full
+  const [albumsLoaded, setAlbumsLoaded] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
   const [shuffle, setShuffle] = useState(false)
   const [repeat, setRepeat] = useState(0) // 0 off, 1 one, 2 all
   const [themePref, setThemePref] = useState(() => loadThemePref())
@@ -69,19 +74,35 @@ export default function App () {
       on('play:status', setStatus),
       on('play:stopped', () => { setNow(null); setStatus(null) }),
       on('play:error', (d) => setError(d.error)),
+      // The link died. Usually this is just Android suspending us in the
+      // background, so do NOT accuse the server of revoking anyone - we cannot
+      // tell the difference from here, and "your access may have been revoked" is
+      // an alarming thing to say when the real answer is "you locked your phone".
+      // Mark it and move on; the next thing that needs the wire will reconnect.
       on('host:disconnected', () => {
         setNow(null)
         setStatus(null)
-        setError('The host disconnected. Your access may have been revoked, or the server is offline.')
         setState(s => ({ ...s, connected: false }))
       }),
       on('host:connected', (d) => {
         setState(s => ({ ...s, connected: true, host: { ...s.host, ...d } }))
         setError(null)
+      }),
+
+      // Back from the background, where the link almost certainly died. Reconnect
+      // BEFORE the user asks: they came back to a music app, not to a status page.
+      // A ref, not state, because this listener registers once.
+      on('app:active', () => {
+        const s = liveRef.current
+        if (s.host && !s.connected && !s.reconnecting) reconnect()
       })
     ]
     return () => offs.forEach(f => f())
   }, [])
+
+  // What the once-registered listeners above need to see, always current.
+  const liveRef = useRef({})
+  liveRef.current = { host: state.host, connected: state.connected, reconnecting }
 
   // --- theme -----------------------------------------------------------------
   //
@@ -105,24 +126,32 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, stack, tab }
+  navRef.current = { scanning, donate, confirming, viewing, expanded, stack, tab }
 
-  const canBack = !!(scanning || donate || stack.length || tab !== 'library')
+  const canBack = !!(
+    scanning || donate || confirming || viewing || expanded || stack.length || tab !== 'library'
+  )
   useEffect(() => { call('shell:navState', { canBack }).catch(() => {}) }, [canBack])
 
+  // Deepest layer first: artwork, then a sheet, then the expanded player, then the
+  // screen stack, then back to the Library tab. Only when all of that is empty does
+  // the shell stop swallowing the press and Android closes the app.
   useEffect(() => on('back', () => {
     const n = navRef.current
+    if (n.viewing) return setViewing(null)
     if (n.donate) return setDonate(false)
+    if (n.confirming) return setConfirming(null)
     if (n.scanning) return setScanning(false)
+    if (n.expanded) return setExpanded(false)
     if (n.stack.length) return setStack(s => s.slice(0, -1))
     if (n.tab !== 'library') return setTab('library')
   }), [])
 
-  const push = (screen) => setStack(s => [...s, screen])
+  const push = (screen) => { haptic('light'); setStack(s => [...s, screen]) }
   const pop = () => setStack(s => s.slice(0, -1))
 
   // A tab is a fresh start, so it drops any drill-down under it.
-  const goTab = (k) => { setStack([]); setTab(k) }
+  const goTab = (k) => { haptic('light'); setStack([]); setTab(k) }
 
   // The dock (player + navbar) is fixed, so the content underneath has to know how
   // tall it is or its last row hides behind it. It changes height when the player
@@ -150,22 +179,59 @@ export default function App () {
       const page = await call('albums', { cursor: from, limit: 60 })
       setAlbums(a => (from ? [...a, ...page.items] : page.items))
       setCursor(page.nextCursor)
+      setAlbumsLoaded(true)
     } catch (e) {
       setError(e.message)
+      // Loaded means "we have an answer", including a bad one. Leaving it false
+      // would spin skeletons forever behind the error.
+      setAlbumsLoaded(true)
+    }
+  }
+
+  // The host went away (revoked, rebooted, or the Umbrel is simply off). Paired
+  // but unreachable is a NORMAL state for this app, not an error state, so it gets
+  // a real screen with a button rather than a red banner and a shrug.
+  async function reconnect () {
+    setReconnecting(true)
+    setError(null)
+    try {
+      await call('reconnect')
+      setAlbums([])
+      setArtists(null)
+      setAlbumsLoaded(false)
+      await loadAlbums(0)
+      haptic('success')
+    } catch (e) {
+      setError(e.message)
+      haptic('warn')
+    } finally {
+      setReconnecting(false)
     }
   }
 
   // Artists load once, on the first visit: getArtists returns the whole index in
   // a single call, so unlike albums there is nothing to page.
-  async function showArtists () {
+  async function showArtists (force) {
     setBrowse('artists')
-    if (artists) return
+    if (artists && !force) return
     try {
       const page = await call('artists')
       setArtists(page.items)
     } catch (e) {
       setError(e.message)
     }
+  }
+
+  // Pull to refresh. The host does not push us anything when its library changes -
+  // someone drops an album on the NAS and Navidrome rescans, and we would go on
+  // showing yesterday's shelf until the app restarted. This is the gesture people
+  // already reach for.
+  async function refresh () {
+    setError(null)
+    if (browse === 'artists') return showArtists(true)
+    setAlbumsLoaded(false)
+    setAlbums([])
+    await loadAlbums(0)
   }
 
   async function runSearch (q) {
@@ -178,8 +244,18 @@ export default function App () {
     }
   }
 
-  async function unpair () {
-    if (!confirm('Unpair from this library?\n\nYou will need a new pairing code from the server to reconnect. Nothing on the server is deleted.')) return
+  // window.confirm() renders as an Android system dialog TITLED "JavaScript",
+  // which is both ugly and slightly alarming on a screen about revoking access.
+  // Ours is a themed sheet, and Android back dismisses it like any other layer.
+  const unpair = () => setConfirming({
+    title: 'Unpair from this library?',
+    body: 'You will need a new pairing code from the server to reconnect. Nothing on the server is deleted, and this device keeps its identity - re-pairing to the same server reuses the same row on its dashboard.',
+    yes: 'Unpair',
+    danger: true,
+    onYes: doUnpair
+  })
+
+  async function doUnpair () {
     try {
       await call('forget')
       setState(s => ({
@@ -187,11 +263,13 @@ export default function App () {
       }))
       setAlbums([])
       setArtists(null)
+      setAlbumsLoaded(false)
       setStack([])
       setTab('library')
       setResults(null)
       setQuery('')
       setError(null)
+      setExpanded(false)
     } catch (e) {
       setError(e.message)
     }
@@ -199,6 +277,7 @@ export default function App () {
 
   function toggleShuffle () {
     const on = !shuffle
+    haptic('light')
     setShuffle(on)
     call('shuffle', { on })
   }
@@ -207,6 +286,7 @@ export default function App () {
   // people want least often, so it should be the hardest to land on by accident.
   function cycleRepeat () {
     const next = repeat === 0 ? 2 : repeat === 2 ? 1 : 0
+    haptic('light')
     setRepeat(next)
     call('repeat', { mode: next })
   }
@@ -217,17 +297,28 @@ export default function App () {
     try {
       const host = await call('pair', { link })
       setState(s => ({ ...s, host, connected: true }))
+      haptic('success')
       loadAlbums(0)
     } catch (e) {
       setError(e.message)
+      haptic('warn')
     }
   }
 
   // Tapping a track queues the whole list behind it - which is what people mean
   // when they tap a track in an album.
   const playFrom = (list, t) => {
+    haptic('light')
     const queue = list.map(x => ({
-      id: x.id, title: x.title, artist: x.artist, album: x.album, art: x.art ?? null, durationMs: x.durationMs
+      id: x.id,
+      title: x.title,
+      artist: x.artist,
+      album: x.album,
+      art: x.art ?? null,
+      // Carried so the player's own art viewer opens the big image rather than a
+      // stretched thumbnail. The lock screen still gets the small one.
+      artFull: x.artFull ?? null,
+      durationMs: x.durationMs
     }))
     const index = Math.max(0, list.findIndex(x => x.id === t.id))
     return call('play', { queue, index })
@@ -245,13 +336,19 @@ export default function App () {
 
   const top = stack[stack.length - 1] || null
 
+  const viewArt = (url, title) => { if (url) { haptic('light'); setViewing({ url, title }) } }
+
   let screen
   if (top?.type === 'album') {
-    screen = <AlbumScreen id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom} />
+    screen = (
+      <AlbumScreen
+        id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom} onViewArt={viewArt}
+      />
+    )
   } else if (top?.type === 'artist') {
     screen = (
       <ArtistScreen
-        id={top.id} name={top.name} onBack={pop}
+        id={top.id} name={top.name} onBack={pop} onViewArt={viewArt}
         onOpenAlbum={(id) => push({ type: 'album', id })}
       />
     )
@@ -264,8 +361,11 @@ export default function App () {
       <Library
         state={state} albums={albums} artists={artists} cursor={cursor}
         browse={browse} query={query} results={results} now={now} error={error}
-        onBrowse={(b) => (b === 'artists' ? showArtists() : setBrowse('albums'))}
+        albumsLoaded={albumsLoaded} reconnecting={reconnecting}
+        onBrowse={(b) => { haptic('light'); return b === 'artists' ? showArtists() : setBrowse('albums') }}
         onSearch={runSearch}
+        onReconnect={reconnect}
+        onRefresh={refresh}
         onMore={() => loadAlbums(cursor)}
         onOpenAlbum={(id) => push({ type: 'album', id })}
         onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
@@ -279,13 +379,22 @@ export default function App () {
       {screen}
 
       <div className='dock' ref={dockRef}>
-        {now && (
-          <NowPlaying
-            now={now} status={status}
-            shuffle={shuffle} repeat={repeat}
-            onShuffle={toggleShuffle} onRepeat={cycleRepeat}
-          />
-        )}
+        {now && (expanded
+          ? (
+            <NowPlaying
+              now={now} status={status}
+              shuffle={shuffle} repeat={repeat}
+              onShuffle={toggleShuffle} onRepeat={cycleRepeat}
+              onCollapse={() => { haptic('light'); setExpanded(false) }}
+              onViewArt={() => viewArt(now.artFull || now.art, now.album || now.title)}
+            />
+            )
+          : (
+            <MiniPlayer
+              now={now} status={status}
+              onExpand={() => { haptic('light'); setExpanded(true) }}
+            />
+            ))}
         {/* The navbar stays put during a drill-down, unlike PearList's (which
             hides it inside a list). A music app's dock is fixed furniture: the
             player sits on top of it, and dropping the navbar under an album would
@@ -293,7 +402,15 @@ export default function App () {
         <NavBar active={tab} onTab={goTab} />
       </div>
 
+      {viewing && <ArtViewer {...viewing} onClose={() => setViewing(null)} />}
       {donate && <DonationSheet onClose={() => setDonate(false)} />}
+      {confirming && (
+        <Confirm
+          {...confirming}
+          onClose={() => setConfirming(null)}
+          onConfirm={() => { setConfirming(null); confirming.onYes() }}
+        />
+      )}
     </>
   )
 }
@@ -327,9 +444,43 @@ function NavBar ({ active, onTab }) {
 
 function Back ({ onClick }) {
   return (
-    <button className='back' onClick={onClick}>
+    <button className='back' onClick={() => { haptic('light'); onClick() }}>
       <CaretLeft size={14} weight='bold' /> Back
     </button>
+  )
+}
+
+// The cover, as big as the screen will take it. The image is a SEPARATE, larger
+// request over P2P (?s=1200) rather than the 300px grid thumbnail stretched out -
+// album art is the one picture in this app people actually want to look at, and an
+// upscaled thumbnail looks like a mistake on a modern phone.
+function ArtViewer ({ url, title, onClose }) {
+  return (
+    <div className='artviewer' onClick={onClose}>
+      <img src={url} alt={title || 'Album art'} />
+      {title && <div className='muted sm cap'>{title}</div>}
+    </div>
+  )
+}
+
+// A themed sheet instead of window.confirm(), whose Android dialog is titled
+// "JavaScript" - not what you want on the screen where someone gives up access to
+// their library.
+function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) {
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>{title}</h1>
+        {body && <p className='muted sm'>{body}</p>}
+        <div className='btnrow'>
+          <button onClick={onClose}>Cancel</button>
+          <button
+            className={danger ? 'danger' : 'primary'}
+            onClick={() => { haptic(danger ? 'warn' : 'light'); onConfirm() }}
+          >{yes}</button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -337,20 +488,106 @@ function Back ({ onClick }) {
 
 function Library ({
   state, albums, artists, cursor, browse, query, results, now, error,
-  onBrowse, onSearch, onMore, onOpenAlbum, onOpenArtist, onPlay
+  albumsLoaded, reconnecting,
+  onBrowse, onSearch, onReconnect, onRefresh, onMore, onOpenAlbum, onOpenArtist, onPlay
 }) {
   const searching = results && query.trim()
 
+  // Pull to refresh, by hand: this is a WebView, so there is no RefreshControl to
+  // borrow. Only arms when the document is ALREADY at the top, or the gesture would
+  // fight every upward scroll in a long grid. Damped by half, because a 1:1 pull
+  // feels like the page has come unstuck.
+  const [pull, setPull] = useState(0)
+  const [refreshing, setRefreshing] = useState(false)
+  const startY = useRef(null)
+  const TRIGGER = 60
+
+  const onTouchStart = (e) => {
+    startY.current = window.scrollY <= 0 && !refreshing ? e.touches[0].clientY : null
+  }
+  const onTouchMove = (e) => {
+    if (startY.current == null) return
+    const dy = e.touches[0].clientY - startY.current
+    if (dy > 0) setPull(Math.min(90, dy * 0.5))
+  }
+  const onTouchEnd = async () => {
+    if (startY.current == null) return
+    const reached = pull >= TRIGGER
+    startY.current = null
+    setPull(0)
+    if (!reached) return
+    haptic('light')
+    setRefreshing(true)
+    try {
+      await onRefresh()
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  const ptr = refreshing ? 44 : pull
+
+  // Paired but unreachable. The server is a machine in someone's house: it gets
+  // turned off, rebooted, moved - and Android drops the link every time this app
+  // sits idle in the background. That is not an error, it is Tuesday.
+  //
+  // So the reconnect happens FIRST and silently (the shell fires app:active on
+  // resume, and any call that needs the wire revives it anyway). What is left here
+  // is the screen you see when a reconnect has actually FAILED - which is the only
+  // moment "the server may be off, or your access was revoked" is a true thing to
+  // say to someone.
+  if (!state.connected) {
+    return (
+      <div className='app'>
+        <header><h1>{state.host.libraryName || 'Library'}</h1></header>
+        {reconnecting
+          ? (
+            <div className='blank'>
+              <ArrowsClockwise size={40} weight='thin' className='spin' />
+              <h2>Reconnecting…</h2>
+            </div>
+            )
+          : (
+            <div className='blank'>
+              <PlugsConnected size={40} weight='thin' />
+              <h2>Not connected</h2>
+              <p className='muted sm'>
+                {error || 'PearTune cannot reach this library. The server may be off, or its access for this device may have been revoked.'}
+              </p>
+              <button className='primary' onClick={onReconnect}>
+                <ArrowsClockwise size={16} weight='bold' />
+                Try again
+              </button>
+            </div>
+            )}
+      </div>
+    )
+  }
+
   return (
-    <div className='app'>
+    <div
+      className='app'
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+    >
+      <div className='ptr' style={{ height: ptr }}>
+        {ptr > 0 && (
+          <ArrowsClockwise
+            size={18}
+            className={refreshing ? 'spin' : ''}
+            style={{ opacity: Math.min(1, ptr / TRIGGER), transform: `rotate(${ptr * 3}deg)` }}
+          />
+        )}
+      </div>
+
       <header>
         <h1>{state.host.libraryName || 'Library'}</h1>
         <p className='muted sm'>
-          {state.connected
-            ? (browse === 'artists'
-                ? `${artists ? artists.length : 0} artists`
-                : `${albums.length} albums`)
-            : 'Not connected'}
+          {browse === 'artists'
+            ? `${artists ? artists.length : 0} artists`
+            : `${albums.length} albums`}
         </p>
         <input
           className='search'
@@ -389,13 +626,43 @@ function Library ({
         : browse === 'artists'
           ? (artists
               ? <ArtistGrid artists={artists} onOpen={onOpenArtist} />
-              : <p className='muted center-p'>Loading artists…</p>)
-          : (
-            <>
-              <Grid albums={albums} onOpen={onOpenAlbum} />
-              {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
-            </>
-            )}
+              : <SkeletonGrid round />)
+          : !albumsLoaded
+              ? <SkeletonGrid />
+              : albums.length
+                ? (
+                  <>
+                    <Grid albums={albums} onOpen={onOpenAlbum} />
+                    {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
+                  </>
+                  )
+                : (
+                  <div className='blank'>
+                    <MusicNotesSimple size={40} weight='thin' />
+                    <h2>Nothing here yet</h2>
+                    <p className='muted sm'>
+                      This library has no albums. Add music on the server and let it
+                      rescan.
+                    </p>
+                  </div>
+                  )}
+    </div>
+  )
+}
+
+// A grid of the right SHAPE, greyed and breathing, rather than the word
+// "Loading…" in the middle of an empty screen. The tiles are exactly the size the
+// covers will be, so nothing jumps when they arrive.
+function SkeletonGrid ({ round, n = 6 }) {
+  return (
+    <div className='grid'>
+      {Array.from({ length: n }, (_, i) => (
+        <div key={i} className={'album' + (round ? ' artist' : '')}>
+          <div className={'cover skel' + (round ? ' artistpic' : '')} />
+          <div className='skel line' />
+          <div className='skel line short' />
+        </div>
+      ))}
     </div>
   )
 }
@@ -452,7 +719,7 @@ function Cover ({ src, big, sm, artist }) {
 
 // Each drill-down fetches its own data from its id, so the nav stack holds nothing
 // but ids and popping back never has to restore anything.
-function AlbumScreen ({ id, now, error, onBack, onPlay }) {
+function AlbumScreen ({ id, now, error, onBack, onPlay, onViewArt }) {
   const [album, setAlbum] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -485,7 +752,9 @@ function AlbumScreen ({ id, now, error, onBack, onPlay }) {
 
   // The album's cover is the queue's cover: Navidrome gives per-album art, so a
   // track row inherits it.
-  const tracks = (album.tracks || []).map(t => ({ ...t, art: t.art ?? album.art }))
+  const tracks = (album.tracks || []).map(t => ({
+    ...t, art: t.art ?? album.art, artFull: album.artFull
+  }))
 
   return (
     <div className='app'>
@@ -493,7 +762,9 @@ function AlbumScreen ({ id, now, error, onBack, onPlay }) {
       {problem && <div className='error'>{problem}</div>}
 
       <div className='albumhead'>
-        <Cover src={album.art} big />
+        <div className='tapart' onClick={() => onViewArt(album.artFull || album.art, album.name)}>
+          <Cover src={album.art} big />
+        </div>
         <div>
           <h1>{album.name}</h1>
           <p className='muted sm'>{[album.artist, album.year].filter(Boolean).join(' · ')}</p>
@@ -511,7 +782,7 @@ function AlbumScreen ({ id, now, error, onBack, onPlay }) {
 
 // An artist IS its albums (one getArtist call on the host), so this is the album
 // grid again rather than a new kind of screen.
-function ArtistScreen ({ id, name, onBack, onOpenAlbum }) {
+function ArtistScreen ({ id, name, onBack, onOpenAlbum, onViewArt }) {
   const [artist, setArtist] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -535,7 +806,9 @@ function ArtistScreen ({ id, name, onBack, onOpenAlbum }) {
       <Back onClick={onBack} />
 
       <div className='albumhead'>
-        <Cover src={artist?.art} big artist />
+        <div className='tapart' onClick={() => onViewArt(artist?.artFull || artist?.art, artist?.name)}>
+          <Cover src={artist?.art} big artist />
+        </div>
         <div>
           <h1>{artist?.name || name}</h1>
           {artist && (
@@ -574,7 +847,43 @@ function Row ({ t, on, onPlay, showTrackNo }) {
 
 // --- now playing -------------------------------------------------------------
 
-function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat }) {
+// The dock's resting state. The full transport is ~200px of a phone screen, which
+// is a lot of furniture to keep in view while browsing a library - so by default
+// the player is one row (art, title, play/pause) with a hairline of progress, and
+// tapping it opens the real thing.
+function MiniPlayer ({ now, status, onExpand }) {
+  const dur = status?.durationMs || now.durationMs || 0
+  const pos = status?.positionMs || 0
+  const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
+
+  return (
+    <div className='player mini' onClick={onExpand}>
+      <div className='row1'>
+        <Cover src={now.art} sm />
+        <div className='meta'>
+          <div className='t'>{now.title}</div>
+          <div className='muted sm sub'>
+            {status?.buffering
+              ? 'buffering…'
+              : [now.artist, now.album].filter(Boolean).join(' · ') || ' '}
+          </div>
+        </div>
+        {/* stopPropagation, or play/pause would also expand the player - the one
+            control people hit without looking should not move the screen. */}
+        <button
+          className='icon big'
+          onClick={(e) => { e.stopPropagation(); haptic('light'); call('toggle') }}
+          aria-label='Play/pause'
+        >
+          {status?.playing ? <Pause size={22} weight='fill' /> : <Play size={22} weight='fill' />}
+        </button>
+      </div>
+      <div className='hairline'><div className='fill' style={{ width: pct + '%' }} /></div>
+    </div>
+  )
+}
+
+function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat, onCollapse, onViewArt }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
@@ -590,8 +899,14 @@ function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat }) {
 
   return (
     <div className='player'>
+      <button className='grip' onClick={onCollapse} aria-label='Collapse player'>
+        <CaretDown size={16} weight='bold' />
+      </button>
+
       <div className='row1'>
-        <Cover src={now.art} sm />
+        <div className='tapart' onClick={onViewArt}>
+          <Cover src={now.art} sm />
+        </div>
         <div className='meta'>
           <div className='t'>{now.title}</div>
           <div className='muted sm sub'>
@@ -600,7 +915,11 @@ function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat }) {
               : [now.artist, now.album].filter(Boolean).join(' · ') || ' '}
           </div>
         </div>
-        <button className='icon close' onClick={() => call('stop')} aria-label='Stop'>
+        <button
+          className='icon close'
+          onClick={() => { haptic('light'); call('stop') }}
+          aria-label='Stop'
+        >
           <X size={18} weight='bold' />
         </button>
       </div>
@@ -618,13 +937,13 @@ function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat }) {
         <button className={'icon mode' + (shuffle ? ' on' : '')} onClick={onShuffle} aria-label='Shuffle'>
           <Shuffle size={19} weight={shuffle ? 'fill' : 'regular'} />
         </button>
-        <button className='icon' onClick={() => call('prev')} aria-label='Previous'>
+        <button className='icon' onClick={() => { haptic('light'); call('prev') }} aria-label='Previous'>
           <SkipBack size={22} weight='fill' />
         </button>
-        <button className='icon big' onClick={() => call('toggle')} aria-label='Play/pause'>
+        <button className='icon big' onClick={() => { haptic('light'); call('toggle') }} aria-label='Play/pause'>
           {status?.playing ? <Pause size={26} weight='fill' /> : <Play size={26} weight='fill' />}
         </button>
-        <button className='icon' onClick={() => call('next')} aria-label='Next'>
+        <button className='icon' onClick={() => { haptic('light'); call('next') }} aria-label='Next'>
           <SkipForward size={22} weight='fill' />
         </button>
         <button className={'icon mode' + (repeat ? ' on' : '')} onClick={onRepeat} aria-label='Repeat'>
@@ -659,6 +978,7 @@ function Settings ({ state, themePref, onTheme, onUnpair }) {
 
   const copyKey = () => {
     copyText(state.deviceKeyZ32 || state.deviceKey)
+    haptic('success')
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -673,7 +993,8 @@ function Settings ({ state, themePref, onTheme, onUnpair }) {
           {[['dark', 'Dark'], ['light', 'Light'], ['system', 'System']].map(([k, l]) => (
             <button
               key={k} className={themePref === k ? 'on' : ''}
-              aria-pressed={themePref === k} onClick={() => onTheme(k)}
+              aria-pressed={themePref === k}
+              onClick={() => { haptic('light'); onTheme(k) }}
             >{l}</button>
           ))}
         </div>
@@ -803,7 +1124,7 @@ function About ({ onDonate }) {
 function Section ({ id, title, Icon, open, onToggle, children }) {
   return (
     <div className='card tight acc'>
-      <button onClick={() => onToggle(id)} aria-expanded={open}>
+      <button onClick={() => { haptic('light'); onToggle(id) }} aria-expanded={open}>
         <span className='accleft'>
           <Icon size={17} weight='regular' />
           {title}
@@ -905,15 +1226,26 @@ function Scanner ({ onScan, onCancel, error }) {
     let raf = null
     let done = false
 
-    navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: 'environment' } })
-      .then((s) => {
+    // navigator.mediaDevices is UNDEFINED outside a secure context, so this must
+    // be a guard and not a `.catch`: reading .getUserMedia off undefined throws
+    // synchronously, right here in an effect, which unmounts the whole tree and
+    // paints a black screen with nothing in the log. (It did. See the shell's
+    // baseUrl.) Fail with a sentence a human can act on instead.
+    ;(async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error('This device will not give the app a camera.')
+        }
+        const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+        if (done) return s.getTracks().forEach(t => t.stop())
         stream = s
         video.current.srcObject = s
         video.current.play()
         tick()
-      })
-      .catch(() => setMsg('Camera unavailable. Paste the link instead.'))
+      } catch (e) {
+        setMsg(`Camera unavailable (${e.message}). Paste the link instead.`)
+      }
+    })()
 
     function tick () {
       if (done) return

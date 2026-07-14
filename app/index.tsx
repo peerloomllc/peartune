@@ -13,10 +13,11 @@
 // dies, the loopback stream breaks, and the music stops. That is the product.
 
 import { useEffect, useRef, useState } from 'react'
-import { View, StatusBar, BackHandler, Appearance, Platform, Share } from 'react-native'
+import { View, StatusBar, BackHandler, Appearance, AppState, Platform, Share } from 'react-native'
 import { WebView } from 'react-native-webview'
 import * as Linking from 'expo-linking'
 import * as Clipboard from 'expo-clipboard'
+import * as Haptics from 'expo-haptics'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Worklet } from 'react-native-bare-kit'
 // expo-audio, not expo-av: av is deprecated as of SDK 54.
@@ -162,6 +163,9 @@ export default function App () {
       artist: t.artist ?? null,
       album: t.album ?? null,
       art: t.art ?? null,
+      // The big cover, for the UI's full-screen art viewer. The lock screen above
+      // deliberately keeps the small one - it is a notification, not a gallery.
+      artFull: t.artFull ?? null,
       index: i,
       queueLength: queueRef.current.length
     })
@@ -372,10 +376,20 @@ export default function App () {
       )
     })
 
+    // COMING BACK. Android suspends a backgrounded app that is not holding a
+    // foreground service, so an idle PearTune loses its link to the host within
+    // about twenty seconds. That is normal, and not worth a permanent notification
+    // to prevent - but the app must not still be sitting on a dead connection when
+    // the user returns to it. Tell the UI, and it reconnects before they notice.
+    const appState = AppState.addEventListener('change', (s) => {
+      if (s === 'active') toWeb('app:active', {})
+    })
+
     return () => {
       cancelled = true
       back.remove()
       appearance.remove()
+      appState.remove()
       stopPlayer()
       workletRef.current?.terminate?.()
     }
@@ -450,6 +464,16 @@ export default function App () {
         await Clipboard.setStringAsync(text)
         return reply({ result: { ok: true } })
       }
+      if (msg.method === 'shell:haptic') {
+        const k = msg.args?.kind
+        try {
+          if (k === 'medium') await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+          else if (k === 'success') await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+          else if (k === 'warn') await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
+          else await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+        } catch {}
+        return reply({ result: { ok: true } })
+      }
     } catch (err: any) {
       return reply({ error: err?.message ?? String(err) })
     }
@@ -474,19 +498,29 @@ export default function App () {
       {uiHtml && (
         <WebView
           ref={webRef}
-          source={{ html: uiHtml }}
+          // THE baseUrl IS NOT DECORATION - the QR scanner does not work without
+          // it. getUserMedia only exists in a SECURE CONTEXT. Loaded as a bare
+          // HTML string the document's origin is about:blank, which is not one, so
+          // navigator.mediaDevices is UNDEFINED: the scanner threw on the property
+          // access, React unmounted the tree, and pairing showed a black screen
+          // with no error. https://localhost is a trustworthy origin, and it is
+          // what PearList's scanner has always used.
+          source={{ html: uiHtml, baseUrl: 'https://localhost/' }}
           originWhitelist={['*']}
           onMessage={onMessage}
-          // The UI boots before it can know the OS scheme, so tell it as soon as
-          // there is something to tell. Any later change comes from the Appearance
-          // listener above.
-          onLoadEnd={() => toWeb('sys:theme', { scheme: Appearance.getColorScheme() ?? 'dark' })}
           javaScriptEnabled
           domStorageEnabled
           allowsInlineMediaPlayback
           mediaPlaybackRequiresUserAction={false}
+          // ...and the consequence of that https origin: the artwork is served by
+          // the worklet over http://127.0.0.1, so every cover is now MIXED CONTENT
+          // and the WebView would block it. Allow it. This is not the blanket
+          // cleartext hole - the network security config still restricts cleartext
+          // to 127.0.0.1 (plugins/with-localhost-cleartext.js).
+          mixedContentMode='always'
           // The QR scanner runs in the WebView (getUserMedia), same as PearList.
-          onPermissionRequest={(req: any) => req.grant?.()}
+          mediaCapturePermissionGrantType='grant'
+          onPermissionRequest={(ev: any) => { try { ev?.grant?.(ev.resources) } catch {} }}
           style={{ flex: 1, backgroundColor: bg }}
         />
       )}

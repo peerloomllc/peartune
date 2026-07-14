@@ -375,8 +375,101 @@ button.more {
 .navbar button.on span {
   font-weight: 600;
 }
+.blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: .6rem;
+  padding: 3rem 1rem;
+  color: var(--color-text-muted);
+}
+.blank h2 {
+  margin: 0;
+  color: var(--color-text-primary);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 1.05rem;
+}
+.blank p {
+  margin: 0;
+  max-width: 26rem;
+}
+.blank button {
+  margin-top: .8rem;
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+}
+@keyframes peartune-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: peartune-spin 1.1s linear infinite;
+}
+@keyframes peartune-pulse {
+  0%, 100% {
+    opacity: .45;
+  }
+  50% {
+    opacity: .8;
+  }
+}
+.skel {
+  background: var(--color-surface-elevated);
+  border-radius: 8px;
+  animation: peartune-pulse 1.4s ease-in-out infinite;
+}
+.skel.line {
+  height: .72rem;
+  margin-top: .5rem;
+}
+.skel.line.short {
+  width: 60%;
+}
+.artist .skel.line {
+  margin-left: auto;
+  margin-right: auto;
+}
+.artist .skel.line.short {
+  width: 45%;
+}
 .player {
   padding: .7rem 1rem .5rem;
+}
+.player.mini {
+  padding: .6rem 1rem .45rem;
+  cursor: pointer;
+}
+.player.mini .icon.big {
+  flex: none;
+  padding: .45rem .7rem;
+}
+.hairline {
+  position: relative;
+  height: 2px;
+  margin-top: .5rem;
+  border-radius: 2px;
+  background: var(--color-track);
+}
+.hairline .fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--color-primary);
+  max-width: 100%;
+}
+button.grip {
+  display: flex;
+  margin: -.3rem auto .1rem;
+  padding: .2rem 1.6rem;
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-muted);
 }
 .player .row1 {
   display: flex;
@@ -622,6 +715,40 @@ button.wide {
   margin-top: .5rem;
   -webkit-user-select: text;
   user-select: text;
+}
+.artviewer {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1.5rem;
+  background: rgba(0, 0, 0, .92);
+}
+.artviewer img {
+  max-width: 100%;
+  max-height: 78vh;
+  border-radius: 10px;
+  object-fit: contain;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .5);
+}
+.artviewer .cap {
+  color: #b6afa4;
+  text-align: center;
+}
+.tapart {
+  cursor: pointer;
+  flex: none;
+}
+.ptr {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--color-text-muted);
 }
 .sheetwrap {
   position: fixed;

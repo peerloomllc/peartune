@@ -36,6 +36,8 @@ let shim = null
 let shimPort = null
 let identity = null
 let currentHost = null
+let connected = false
+let reconnecting = null // the in-flight reconnect, so N callers share ONE attempt
 
 // --- IPC --------------------------------------------------------------------
 
@@ -122,18 +124,32 @@ async function connectTo (host) {
   await ensureClient()
   await client.connect({ hostKey: host.hostKey, libraryId: host.libraryId })
   currentHost = host
+  connected = true
 
-  // The shim only exists while we are connected; playback flows THROUGH the
-  // connection, which is what makes a revoke actually stop the music.
+  // The shim outlives any single connection, and is only pointed at the new
+  // client. It must KEEP ITS PORT: the player is holding
+  // http://127.0.0.1:<port>/t/<id> URLs for the whole queue, and a fresh shim gets
+  // a fresh port (it listens on 0), so a paused queue would resume into a dead
+  // socket. Playback still flows THROUGH the live connection, which is what makes
+  // a revoke stop the music.
   if (!shim) {
-    shim = createAudioShim({ client, log })
+    // `ensure` is how the shim reaches back for a live connection. It matters for
+    // the one path the UI cannot help with: the phone is asleep, the queue is
+    // paused, the link has died, and the user presses play on their LOCK SCREEN.
+    // Nothing on our side is awake to notice - the request simply arrives on the
+    // loopback server, and it has to be able to fix the connection itself.
+    shim = createAudioShim({ client, log, ensure: ensureConnected })
     shimPort = await shim.listen()
+  } else {
+    shim.setClient(client)
   }
 
-  // If the host revokes us, our connection is destroyed. Tell the shell so it can
-  // stop the player and say why, instead of leaving a silent dead player on
-  // screen.
+  // The connection is gone: revoked, or the host went away, or - by far the most
+  // common - Android suspended this app in the background and the link timed out.
+  // Those are indistinguishable from here, so do NOT guess at the reason. Say what
+  // happened and let whoever asks next reconnect.
   client.conn.once('close', () => {
+    connected = false
     log('host:disconnected')
     emit('host:disconnected', { hostKey: host.hostKey })
   })
@@ -147,6 +163,43 @@ async function connectTo (host) {
   return { ...host, shimPort }
 }
 
+// Reconnect ON DEMAND, and only once.
+//
+// Android suspends a backgrounded app that is not holding a foreground service, so
+// an idle PearTune loses its link within about twenty seconds - the host logs the
+// channel closing. This is normal and unavoidable, and it is NOT worth burning
+// battery on a permanent foreground service to prevent (when music is playing or
+// paused with a queue, the media session already keeps the process alive and the
+// link survives - measured).
+//
+// So: the link is allowed to die, and ANY caller that needs it silently brings it
+// back. The single-flight promise matters more than it looks - a screen coming
+// back to life fires `albums`, `artists` and a fistful of `art` requests in the
+// same tick, and without it each one would dial the host separately.
+async function ensureConnected () {
+  if (connected && client) return
+
+  const host = loadHost()
+  if (!host) throw new Error('Not paired with a library.')
+
+  if (!reconnecting) {
+    reconnecting = (async () => {
+      // The old client is dead once its connection closed, and a half-dead client
+      // is worse than none: it fails on the first stream instead of here, where we
+      // can still do something about it. The SHIM survives (see connectTo).
+      if (client) {
+        try {
+          await client.close()
+        } catch {}
+        client = null
+      }
+      await connectTo(host)
+    })().finally(() => { reconnecting = null })
+  }
+
+  await reconnecting
+}
+
 // --- methods ----------------------------------------------------------------
 
 // Artwork arrives over P2P through the shim's loopback server, so anything the UI
@@ -154,6 +207,14 @@ async function connectTo (host) {
 const withArt = (x) => ({
   ...x,
   art: x.coverId && shim ? shim.artUrlFor(x.coverId) : null
+})
+
+// The same cover, big, for the full-screen viewer. Only handed out on the detail
+// screens: putting a 1200px URL on all 60 tiles of a grid would invite the WebView
+// to fetch 60 of them over P2P for a picture nobody has asked to see yet.
+const withBigArt = (x) => ({
+  ...withArt(x),
+  artFull: x.coverId && shim ? shim.artUrlFor(x.coverId, 1200) : null
 })
 
 const methods = {
@@ -207,11 +268,18 @@ const methods = {
     return { ...host, shimPort }
   },
 
+  async reconnect () {
+    await ensureConnected()
+    return { ok: true, connected, shimPort }
+  },
+
   async stats () {
+    await ensureConnected()
     return client.stats()
   },
 
   async tracks ({ cursor = 0, limit = 200 } = {}) {
+    await ensureConnected()
     return client.list({ type: 'tracks', cursor, limit })
   },
 
@@ -219,30 +287,35 @@ const methods = {
   // music app, and Subsonic has no "all songs" call anyway - so the flat list
   // could only ever show the first page. Albums page properly.
   async albums ({ cursor = 0, limit = 60 } = {}) {
+    await ensureConnected()
     const page = await client.list({ type: 'albums', cursor, limit })
     return { ...page, items: page.items.map(withArt) }
   },
 
   async album ({ id }) {
+    await ensureConnected()
     const a = await client.get({ id, type: 'album' })
-    return a ? withArt(a) : null
+    return a ? withBigArt(a) : null
   },
 
   // Artists are the second way in. The host has always been able to list them
   // (`library.list({type:'artists'})`); nothing was asking.
   async artists () {
+    await ensureConnected()
     const page = await client.list({ type: 'artists' })
     return { ...page, items: page.items.map(withArt) }
   },
 
   // An artist page is a grid of that artist's albums, so its albums need art too.
   async artist ({ id }) {
+    await ensureConnected()
     const a = await client.get({ id, type: 'artist' })
     if (!a) return null
-    return { ...withArt(a), albums: (a.albums || []).map(withArt) }
+    return { ...withBigArt(a), albums: (a.albums || []).map(withArt) }
   },
 
   async search ({ q }) {
+    await ensureConnected()
     const r = await client.search({ q })
     return {
       ...r,
@@ -261,8 +334,8 @@ const methods = {
 
   // The URL the RN player hands to ExoPlayer. The audio never touches RN: the
   // player pulls it from the worklet's loopback server, which pulls it over P2P.
-  urlFor ({ trackId }) {
-    if (!shim) throw new Error('not connected')
+  async urlFor ({ trackId }) {
+    await ensureConnected()
     return { url: shim.urlFor(trackId), port: shimPort }
   },
 

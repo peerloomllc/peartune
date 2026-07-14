@@ -2,6 +2,82 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - Predictive back is OFF. It breaks the back button
+Tier: T1 (Android)
+Context: Android 14+ predictive back (`android:enableOnBackInvokedCallback="true"`)
+animates a peek of what is behind the app during a back gesture. Expo scaffolds it
+as "false"; I turned it on and tested it on the TCL.
+Result: **it broke the back button.** With the flag on, the first back press from
+the About tab CLOSED THE APP instead of popping back to Library. React Native
+0.81's BackHandler is not routed to the platform's new OnBackInvokedCallback here,
+so the system takes the press and finishes the Activity - and our entire nav
+contract (shell:navState + a 'back' event, with the shell only swallowing the
+press when the UI has something to pop) is bypassed.
+Choice: reverted. The flag stays "false" until React Native routes the new callback
+to BackHandler.
+Worth being clear about what we are NOT missing: predictive back could never have
+animated OUR screens anyway. PearTune is one Activity hosting a WebView, and the
+nav stack (album, artist, sheets) is React state the system knows nothing about.
+Animating those needs OnBackAnimationCallback, which RN does not expose. The only
+thing the flag buys is a nicer animation when back CLOSES the app - and it charged
+a broken back button for it.
+
+## 2026-07-14 - The background disconnect is EXPECTED. Reconnect on demand
+Tier: T1 (client behavior)
+Context: Tim noticed the app loses its connection to the host about a minute after
+going to the background while idle. Measured on the TCL: the host logs
+`media:channel-closed` roughly 20 seconds after the app is backgrounded.
+Why it happens: Android suspends a backgrounded app that is not holding a
+foreground service. It stops sending keepalives, and the link times out. This is
+not a PearTune bug and cannot be "fixed" at our layer.
+What is NOT broken, and this is the important measurement: **while a queue is
+loaded - playing OR PAUSED - the link survives.** The media session keeps the
+process alive. Verified: paused with a queue, backgrounded 75 seconds, pressed
+PLAY on the media keys, audio resumed over the still-live connection. The case
+that actually matters for a music player already works.
+Choice: let the idle link die, and reconnect ON DEMAND rather than holding it open.
+1. A permanent foreground service WOULD keep the socket alive, and we are not doing
+   that: a permanent notification and a battery cost, so an idle app can hold a
+   connection nobody is using.
+2. `ensureConnected()` in the worklet revives the link for ANY caller that needs
+   it, behind a single-flight promise (a screen coming back fires albums + artists
+   + a dozen art requests in one tick; they must share one dial, not race).
+3. The shell fires `app:active` on resume, so the reconnect starts before the user
+   asks. In practice they never see it.
+4. The shim's request handler ALSO calls it. That is the path nothing else can
+   cover: phone asleep, queue paused, link dead, user presses play on the LOCK
+   SCREEN. No UI is awake to help; the loopback request itself has to heal the
+   connection.
+The trap this exposed: **the shim must survive a reconnect and KEEP ITS PORT.** It
+listens on port 0, and the player is holding `http://127.0.0.1:<port>/t/<id>` URLs
+for the whole queue. The first version of `reconnect` tore the shim down and built
+a new one - a new port - so a paused queue would have resumed into a dead socket.
+The shim now takes a replaceable client (`setClient`) instead.
+Also: we no longer tell the user their access "may have been revoked" when the
+link drops. From the phone, a revoke and an Android suspend look identical, and
+that sentence is alarming when the true answer is "you locked your phone". It is
+now only said after a reconnect has actually failed.
+
+## 2026-07-14 - Shuffle and repeat are INDEPENDENT, and both may be on
+Tier: T1 (UI)
+Context: Tim noticed both can be enabled at once on an album and asked whether
+that is expected. It is - this is a NOTE, not a bug, and it is written down so
+nobody "fixes" it later.
+Choice: they stay orthogonal. Confirmed with Tim 2026-07-14.
+Why: they answer different questions. Shuffle decides the ORDER; repeat decides
+what happens at the END. Every mainstream player (Spotify, Apple Music, YouTube
+Music) allows the combination, and shuffle + repeat-all - shuffle the album and
+loop it forever - is one of the most common ways people actually listen. Making
+them exclusive would also mean fighting the platform: ExoPlayer exposes
+`shuffleModeEnabled` and `repeatMode` as two independent properties, so we would
+be writing code to take a feature away.
+The four states, all coherent:
+  shuffle off + repeat off -> album in order, stops at the end
+  shuffle on  + repeat off -> album shuffled, stops at the end
+  shuffle on  + repeat all -> shuffled, loops forever
+  shuffle on  + repeat one -> loops this track; shuffle picks what comes next
+                              whenever the listener does skip
+
 ## 2026-07-14 - The theme preference lives in the WORKLET, not localStorage
 Tier: T1 (local state)
 Context: every sibling app (PearPetal, PearList, PearCircle) keeps the theme
