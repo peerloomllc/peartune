@@ -38,7 +38,10 @@ ul.tracks li {
   padding: .85rem .25rem; border-bottom: 1px solid var(--line);
 }
 ul.tracks li.on { color: var(--accent); }
+ul.tracks li .meta { min-width: 0; flex: 1; }
 ul.tracks li .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ul.tracks li .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: .15rem; }
+ul.tracks li .dur { flex: none; font-variant-numeric: tabular-nums; }
 footer {
   position: fixed; left: 0; right: 0; bottom: 0;
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;

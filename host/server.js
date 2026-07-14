@@ -23,10 +23,11 @@ const { decide, Connections } = require('./gate')
 const { serveMedia } = require('./media')
 const { PairSession } = require('./pair')
 const { FolderAdapter } = require('./adapters/folder')
+const { NavidromeAdapter } = require('./adapters/navidrome')
 const { PAIR_PROTOCOL, MEDIA_PROTOCOL } = require('../protocol/constants')
 
 class PearTuneHost {
-  constructor ({ dataDir, musicDir, libraryName = 'My Library', dht = null, bootstrap = null, log = () => {} }) {
+  constructor ({ dataDir, musicDir, libraryName = 'My Library', navidrome = null, dht = null, bootstrap = null, log = () => {} }) {
     this.dataDir = path.resolve(dataDir)
     this.musicDir = musicDir
     this.libraryName = libraryName
@@ -46,7 +47,12 @@ class PearTuneHost {
     this.grants = new Grants(this.bee)
     this.connections = new Connections()
 
-    this.adapter = new FolderAdapter({ root: musicDir, libraryId: this.libraryId })
+    // One interface, two implementations. The app never learns which is behind
+    // the media API, which is what keeps the raw-folder path a first-class
+    // citizen instead of a fallback nobody tests.
+    this.adapter = navidrome
+      ? new NavidromeAdapter({ ...navidrome, libraryId: this.libraryId })
+      : new FolderAdapter({ root: musicDir, libraryId: this.libraryId })
     this.server = null
     this.pairSession = null
   }
@@ -62,7 +68,7 @@ class PearTuneHost {
   async ready () {
     await this.bee.ready()
     const n = await this.adapter.scan()
-    this.log('host:scanned', { tracks: n, root: this.musicDir })
+    this.log('host:scanned', { source: this.adapter.kind, tracks: n })
 
     this.server = this.dht.createServer({
       firewall: (remotePublicKey) => this._firewall(remotePublicKey)

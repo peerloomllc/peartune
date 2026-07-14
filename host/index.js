@@ -26,7 +26,12 @@ function parseArgs (argv) {
     name: process.env.PEARTUNE_NAME || 'My Library',
     host: process.env.PEARTUNE_HTTP_HOST || '127.0.0.1',
     port: Number(process.env.PEARTUNE_HTTP_PORT || 8741),
-    quiet: false
+    quiet: false,
+    // Point at an existing Navidrome (or any Subsonic server) instead of a raw
+    // folder. When set, it brings its own scan, tags, artwork and transcoding.
+    navidromeUrl: process.env.PEARTUNE_NAVIDROME_URL || null,
+    navidromeUser: process.env.PEARTUNE_NAVIDROME_USER || null,
+    navidromePass: process.env.PEARTUNE_NAVIDROME_PASS || null
   }
 
   for (let i = 2; i < argv.length; i++) {
@@ -37,6 +42,9 @@ function parseArgs (argv) {
     else if (a === '--http-host') args.host = argv[++i]
     else if (a === '--port' || a === '-p') args.port = Number(argv[++i])
     else if (a === '--quiet' || a === '-q') args.quiet = true
+    else if (a === '--navidrome') args.navidromeUrl = argv[++i]
+    else if (a === '--navidrome-user') args.navidromeUser = argv[++i]
+    else if (a === '--navidrome-pass') args.navidromePass = argv[++i]
     else if (a === '--help' || a === '-h') {
       console.log(`
 PearTune host - serve a self-hosted music library over P2P.
@@ -61,10 +69,20 @@ async function main () {
     ? () => {}
     : (msg, data) => console.log(`[${new Date().toISOString()}] ${msg}`, data ? JSON.stringify(data) : '')
 
+  const navidrome = args.navidromeUrl
+    ? { url: args.navidromeUrl, username: args.navidromeUser, password: args.navidromePass }
+    : null
+
+  if (navidrome && (!navidrome.username || !navidrome.password)) {
+    console.error('fatal: --navidrome needs --navidrome-user and --navidrome-pass')
+    process.exit(1)
+  }
+
   const host = new PearTuneHost({
     dataDir: path.resolve(args.data),
     musicDir: path.resolve(args.music),
     libraryName: args.name,
+    navidrome,
     log
   })
 
@@ -77,7 +95,7 @@ async function main () {
   PearTune host
 
   library    ${args.name}
-  music      ${args.music}  (${stats.tracks} tracks)
+  source     ${stats.source}${navidrome ? ' @ ' + args.navidromeUrl : ' @ ' + args.music}  (${stats.tracks} tracks)
   host key   ${z32.encode(host.publicKey)}
   dashboard  http://${args.host === '0.0.0.0' ? 'localhost' : args.host}:${args.port}
 

@@ -94,8 +94,18 @@ export default function App () {
             className={now?.trackId === t.id ? 'on' : ''}
             onClick={() => call('play', { trackId: t.id, title: t.title })}
           >
-            <span className="t">{t.title}</span>
-            <span className="muted sm">{(t.size / 1048576).toFixed(1)} MB</span>
+            <div className="meta">
+              <div className="t">{t.title}</div>
+              {/* Navidrome gives us artist/album; the raw-folder adapter does not
+                  yet (no tag reading), so fall back to the file size rather than
+                  rendering an empty second line. */}
+              <div className="muted sm sub">
+                {t.artist
+                  ? [t.artist, t.album].filter(Boolean).join(' · ')
+                  : `${(t.size / 1048576).toFixed(1)} MB`}
+              </div>
+            </div>
+            <span className="muted sm dur">{t.durationMs ? fmt(t.durationMs) : ''}</span>
           </li>
         ))}
       </ul>
