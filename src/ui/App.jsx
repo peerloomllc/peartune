@@ -117,6 +117,7 @@ export default function App () {
         album={open}
         tracks={tracks}
         now={now}
+        error={error}
         onBack={() => setOpen(null)}
         onPlay={(t) => playFrom(tracks, t)}
         footer={now && <NowPlaying now={now} status={status} />}
@@ -198,12 +199,14 @@ function Cover ({ src, big, sm }) {
   return <img className={cls} src={src} loading="lazy" onError={() => setFailed(true)} />
 }
 
-function Album ({ album, tracks, now, onBack, onPlay, footer }) {
+function Album ({ album, tracks, now, error, onBack, onPlay, footer }) {
   if (album.loading) return <div className="center"><p className="muted">Loading…</p></div>
 
   return (
     <div className="app">
       <button className="back" onClick={onBack}>‹ Back</button>
+
+      {error && <div className="error">{error}</div>}
 
       <div className="albumhead">
         <Cover src={album.art} big />

@@ -16,7 +16,8 @@
     "prebuild": "expo prebuild",
     "build:bare": "bare-pack --linked --defer fs --defer path src/bare.js -o assets/bare-universal.bundle",
     "build:ui": "node scripts/build-ui.mjs",
-    "ios": "expo run:ios"
+    "ios": "expo run:ios",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "b4a": "^1.6.7",
@@ -58,6 +59,7 @@
     "bare-http1": "^4.5.7",
     "bare-pack": "^2.0.0",
     "esbuild": "^0.25.0",
+    "patch-package": "^8.0.1",
     "typescript": "~5.9.2"
   }
 }

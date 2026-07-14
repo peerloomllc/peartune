@@ -67,7 +67,22 @@ export default function App () {
 
   const SEEK_STEP = 15 // seconds, matching the lock-screen rewind/FF buttons
 
-  async function ensurePlayer (url: string) {
+  // GAPLESS. The queue lives inside ExoPlayer, not here.
+  //
+  // The obvious design - keep the queue in JS and swap the source on
+  // didJustFinish - CANNOT be gapless: by the time that event fires, playback has
+  // already stopped, and only then do we fetch a URL, prepare and buffer.
+  //
+  // So we hand ExoPlayer the whole playlist up front (setQueueSources, added by
+  // patches/expo-audio+1.1.1.patch). It then decodes ahead across the boundary
+  // and honours MP3 encoder delay/padding, which is what gapless actually means.
+  // It also pre-fetches the NEXT track's bytes over P2P before the current one
+  // ends, which is what makes the seam silent rather than merely short.
+  //
+  // The same patch stops expo-audio stripping the next/previous commands from the
+  // MediaSession, so the lock screen now gets real track buttons too.
+
+  async function ensurePlayer (urls: string[], startIndex: number) {
     // shouldPlayInBackground + FOREGROUND_SERVICE_MEDIA_PLAYBACK keep audio alive
     // once the screen goes off. interruptionMode 'doNotMix' is what makes Android
     // associate the lock-screen controls with US: without it the OS may not hand
@@ -78,79 +93,90 @@ export default function App () {
       interruptionMode: 'doNotMix'
     })
 
-    if (player.current) {
-      player.current.replace({ uri: url })
-      return player.current
+    let p: any = player.current
+    if (!p) {
+      p = createAudioPlayer({ uri: urls[startIndex] })
+      player.current = p
+
+      p.addListener('playbackStatusUpdate', (s: any) => {
+        // ExoPlayer owns the queue now, so IT decides when we crossed into the
+        // next track. Trust its index rather than counting didJustFinish events.
+        const i = p.currentQueueIndex ?? indexRef.current
+        if (i !== indexRef.current) {
+          indexRef.current = i
+          announce(i)
+        }
+
+        // The playlist ran out.
+        if (s.didJustFinish && indexRef.current >= queueRef.current.length - 1) stop()
+
+        toWeb('play:status', {
+          playing: !!s.playing,
+          positionMs: Math.round((s.currentTime ?? 0) * 1000),
+          durationMs: s.duration ? Math.round(s.duration * 1000) : null,
+          buffering: !!s.isBuffering,
+          index: indexRef.current,
+          queueLength: queueRef.current.length
+        })
+      })
     }
 
-    const p = createAudioPlayer({ uri: url })
-    player.current = p
-
-    p.addListener('playbackStatusUpdate', (s: any) => {
-      // End of track -> advance. This is the whole reason a queue exists.
-      if (s.didJustFinish) {
-        next()
-        return
-      }
-      toWeb('play:status', {
-        playing: !!s.playing,
-        positionMs: Math.round((s.currentTime ?? 0) * 1000),
-        durationMs: s.duration ? Math.round(s.duration * 1000) : null,
-        buffering: !!s.isBuffering,
-        index: indexRef.current,
-        queueLength: queueRef.current.length
-      })
-    })
-
+    p.setQueueSources(urls.map((uri: string) => ({ uri })))
+    p.seekToQueueIndex(startIndex)
     return p
   }
 
-  async function playAt (i: number) {
-    const q = queueRef.current
-    if (i < 0 || i >= q.length) return stop()
+  // Tell the UI and the lock screen which track is playing. Called on every
+  // playlist transition, including ExoPlayer's own gapless advance.
+  function announce (i: number) {
+    const t = queueRef.current[i]
+    if (!t) return
 
-    const t = q[i]
-    indexRef.current = i
+    player.current?.setActiveForLockScreen(
+      true,
+      {
+        title: t.title,
+        artist: t.artist ?? undefined,
+        albumTitle: t.album ?? undefined,
+        artworkUrl: t.art ?? undefined
+      },
+      { showSeekForward: true, showSeekBackward: true }
+    )
+
+    toWeb('play:started', {
+      trackId: t.id,
+      title: t.title,
+      artist: t.artist ?? null,
+      album: t.album ?? null,
+      art: t.art ?? null,
+      index: i,
+      queueLength: queueRef.current.length
+    })
+  }
+
+  async function play ({ queue, index = 0 }: any) {
+    const q = Array.isArray(queue) ? queue : []
+    queueRef.current = q
+    indexRef.current = index
+    if (!q.length) return stop()
 
     try {
-      // The loopback URL the worklet serves. ExoPlayer range-requests it, and
-      // every one of those ranges is fetched over the live P2P connection.
-      const { url }: any = await call('urlFor', { trackId: t.id })
-      const p = await ensurePlayer(url)
+      // Resolve every track's loopback URL up front. ExoPlayer needs the whole
+      // playlist to be able to decode ahead across a track boundary.
+      const urls: string[] = []
+      for (const t of q) {
+        const { url }: any = await call('urlFor', { trackId: t.id })
+        urls.push(url)
+      }
 
-      // Lock screen + notification. The artwork URL is our OWN loopback server,
-      // so the cover on the lock screen also came over P2P.
-      p.setActiveForLockScreen(
-        true,
-        {
-          title: t.title,
-          artist: t.artist ?? undefined,
-          albumTitle: t.album ?? undefined,
-          artworkUrl: t.art ?? undefined
-        },
-        { showSeekForward: true, showSeekBackward: true }
-      )
-
+      const p = await ensurePlayer(urls, index)
+      announce(index)
       p.play()
-      toWeb('play:started', {
-        trackId: t.id,
-        title: t.title,
-        artist: t.artist ?? null,
-        album: t.album ?? null,
-        art: t.art ?? null,
-        index: i,
-        queueLength: q.length
-      })
     } catch (e: any) {
       // A revoked device lands here: the loopback stream broke because the P2P
       // connection under it was destroyed.
       toWeb('play:error', { error: e?.message ?? String(e) })
     }
-  }
-
-  function play ({ queue, index = 0 }: any) {
-    queueRef.current = Array.isArray(queue) ? queue : []
-    return playAt(index)
   }
 
   function toggle () {
@@ -160,19 +186,23 @@ export default function App () {
     else p.play()
   }
 
+  // setQueueSources / skipToNext / skipToPrevious / currentQueueIndex come from
+  // patches/expo-audio+1.1.1.patch. We patched the Kotlin, NOT the .d.ts, so
+  // TypeScript does not know about them - reach them through a cast rather than
+  // patching type files we would then also have to maintain.
+  const px = () => player.current as any
+
+  // Delegated to ExoPlayer, so the lock-screen buttons and the in-app buttons go
+  // down exactly the same path.
   function next () {
-    if (indexRef.current + 1 >= queueRef.current.length) return stop()
-    playAt(indexRef.current + 1)
+    px()?.skipToNext()
   }
 
-  // The convention every music player uses: PREVIOUS restarts the current track
-  // if you are more than a few seconds in, and only steps back a track if you
-  // press it near the beginning. Jumping straight back is a common annoyance.
+  // ExoPlayer's seekToPrevious already implements the convention every player
+  // uses: restart the current track unless you are near its start, in which case
+  // step back one.
   function prev () {
-    const p = player.current
-    if (p && p.currentTime > 3) return p.seekTo(0)
-    if (indexRef.current - 1 < 0) return p?.seekTo(0)
-    playAt(indexRef.current - 1)
+    px()?.skipToPrevious()
   }
 
   function seekBy (seconds: number) {
