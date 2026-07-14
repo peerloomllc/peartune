@@ -196,6 +196,35 @@ export default function App () {
     }
   }
 
+  // Add to queue: append to what is ALREADY playing, without touching it.
+  //
+  // The native side is addMediaSources, not setMediaSources (see the expo-audio
+  // patch). Re-handing ExoPlayer the whole playlist would reset the current item
+  // and restart buffering - the user asked to queue a record for later, not to
+  // interrupt the song they are in the middle of.
+  async function enqueue ({ queue }: any) {
+    const q = Array.isArray(queue) ? queue : []
+    if (!q.length) return
+
+    // Nothing is playing, so there is no queue to add to. "Add to queue" and
+    // "play" are the same request in that case, and pretending otherwise leaves
+    // the user tapping a button that appears to do nothing.
+    if (!player.current) return play({ queue: q, index: 0 })
+
+    try {
+      const urls: string[] = []
+      for (const t of q) {
+        const { url }: any = await call('urlFor', { trackId: t.id })
+        urls.push(url)
+      }
+      queueRef.current = [...queueRef.current, ...q]
+      px()?.addQueueSources(urls.map((uri) => ({ uri })))
+      toWeb('play:queued', { count: q.length, queueLength: queueRef.current.length })
+    } catch (e: any) {
+      toWeb('play:error', { error: e?.message ?? String(e) })
+    }
+  }
+
   function toggle () {
     const p = player.current
     if (!p) return
@@ -415,8 +444,36 @@ export default function App () {
     // stack (or its own chrome). Every one of them still gets a reply: the UI's
     // call() parks a promise per id, so a silently unanswered method leaks one
     // forever - and `seekTo` fires on every frame of a scrub.
-    const local: Record<string, () => void> = {
+    const local: Record<string, () => any> = {
       play: () => play(msg.args),
+      enqueue: () => enqueue(msg.args),
+
+      // The queue lives HERE (the shell hands it to ExoPlayer, and ExoPlayer owns
+      // the shuffled order), so the UI has to ask for it rather than keep its own
+      // copy that would drift the moment shuffle is on or a track auto-advances.
+      queue: () => ({
+        items: queueRef.current,
+        index: indexRef.current
+      }),
+
+      // Jump straight to a track in the queue. seekToQueueIndex is ExoPlayer's own
+      // (via the patch), so this respects the shuffled order rather than fighting
+      // it.
+      //
+      // Do NOT announce() here, however tempting. setActiveForLockScreen tears the
+      // MediaSession down and builds a new one, and doing that in the same breath
+      // as a seek loses the audio focus with it - the jump worked, and landed
+      // PAUSED. The status listener already announces when it sees the index move
+      // (that is how gapless advance updates the lock screen), so the only correct
+      // thing to do here is seek, play, and let it notice.
+      playIndex: () => {
+        const i = Number(msg.args?.index) || 0
+        const p = px()
+        if (!p) return
+        p.seekToQueueIndex(i)
+        p.play()
+      },
+
       toggle,
       next,
       prev,
@@ -436,8 +493,8 @@ export default function App () {
     }
 
     if (local[msg.method]) {
-      local[msg.method]()
-      return reply({ result: { ok: true } })
+      const result = local[msg.method]()
+      return reply({ result: result ?? { ok: true } })
     }
 
     // Shell services the WebView cannot do for itself: the OS share sheet, opening

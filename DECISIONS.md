@@ -2,6 +2,103 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - An artist with NO ALBUMS is not empty, and search groups collapse
+Tier: T1 (host adapter + UI)
+Context: Tim searched "krutch", got artist results, and long-pressing one to add it
+to the queue failed with "nothing to play there". Opening it showed no albums and
+no songs.
+Root cause, and it is a Navidrome data fact, not a bug in our code:
+**Navidrome mints an artist row for every COMPOSITE TAG string it meets** -
+"Thousand Foot Krutch/COFER", ".../Karmageddon", ".../Red". A search for "krutch"
+returns ONE real artist (18 albums) and NINETEEN participant rows with
+`albumCount: 0`. They have songs; they have no albums of their own. Our artist page
+is built on "an artist IS its albums" (one getArtist call), so those rows were a
+dead end.
+Choices:
+1. An album-less artist falls back to its SONGS. There is no getSongsByArtist in
+   Subsonic and getTopSongs answers empty for these (tried it) - `search3` on the
+   exact name works, filtered to an EXACT artist match, because a substring search
+   for "Thousand Foot Krutch" would drag in the primary artist's whole catalogue.
+2. **Search ranks artists with albums FIRST.** The server's own order buried the
+   one artist you were obviously looking for underneath nineteen featured-on rows.
+3. The participant rows carry no coverArt (Navidrome answers them with its default
+   white-star image; a wall of those looks worse than our own placeholder), and no
+   "0 albums" label - a true thing to say, and a useless one.
+Search results are now COLLAPSIBLE GROUPS with counts (Artists 20 / Albums 18 /
+Songs 50). Each opens independently - this is deliberately NOT an accordion, since
+you often want the artists AND the songs, and closing one to see the other is the
+same tedium in a different shape. A group with <= 5 hits opens itself: making
+someone tap to reveal two results is a worse tax than the scrolling was.
+Also: a transient failure ("nothing to play in X") is now a TOAST, not a red banner
+nailed to the top of the screen until something else clears it.
+
+## 2026-07-14 - The queue is a TAB, and playIndex must not announce
+Tier: T2 (native patch + player)
+Context: Tim asked for a way to play or queue an album/artist without drilling into
+its track list, and then asked whether the queue indicator belonged somewhere more
+persistent than the player.
+Choice: a fourth navbar tab (Library / Queue / Settings / About) carrying a COUNT
+BADGE, plus Play / Shuffle / Add-to-queue on the album and artist screens and on a
+long-press of any tile. The mini-player's own queue pill was REMOVED once the tab
+existed - two copies of the same number, inches apart, is noise.
+Honest caveat, and it is the interesting one: **stopping playback still throws the
+queue away.** The queue IS the playlist inside ExoPlayer; there is no persisted
+queue that outlives it. So the Queue tab is empty whenever nothing is playing. If
+that becomes annoying, the fix is queue PERSISTENCE in the worklet (restore on
+launch), not a different place to put the button.
+
+ADD TO QUEUE required a new native method: `addQueueSources` in the expo-audio
+patch. It is addMediaSources, NOT setMediaSources - re-handing ExoPlayer the whole
+playlist would reset the current item and restart buffering, i.e. interrupt the
+song the user is listening to, which is the exact opposite of what "queue this for
+later" means. No prepare() either, unless the player is IDLE (the "nothing is
+playing, queue an album" case), because prepare() on a live player stutters.
+Verified in the dex (`strings | grep QueueSources`) and on the phone: queued an
+album mid-song, the track kept playing, the counter went 1 -> 2.
+
+THE BUG THAT COST THE MOST, and it is worth writing down because it looks like it
+should work: **playIndex (tap a queued track to jump to it) must NOT call
+announce().** setActiveForLockScreen tears the MediaSession down and builds a new
+one, and doing that in the same breath as a seek loses the AUDIO FOCUS with it. The
+jump appeared to work - the right track loaded, the UI updated - and it landed
+PAUSED, silently. The status listener already announces when it sees the index move
+(that is how gapless advance updates the lock screen), so the correct code is: seek,
+play, and let it notice.
+
+## 2026-07-14 - Navidrome DOES have an all-songs endpoint. The Songs view is back
+Tier: T1 (host adapter)
+Context: this repo has said since milestone 2 that "Subsonic has no all-songs
+endpoint", which is why the flat track list was abandoned (it could only ever show
+the first page of albums walked) and albums became the way in. Tim asked for a
+Songs view anyway, so I went and asked the actual server.
+Finding: **Navidrome (OpenSubsonic) answers `search3` with an EMPTY query as
+"everything", and it pages by `songOffset`.** Measured against the real library:
+all 1358 songs, and songOffset=1000 returns the expected rows. So a Songs view is
+a paged list, not a 60-call album walk. The old claim was true of strict Subsonic
+and false of the server we actually target.
+Choice: `list({type:'tracks'})` uses the empty-query search3, and FALLS BACK to the
+album walk if the server refuses. The fallback matters: an empty first page is
+indistinguishable from "not supported", so an empty first page is treated as
+unsupported rather than as "this library has no music". Past the first page, empty
+means the end - do not re-walk.
+What we still do NOT get: sorting. The order is the server's (roughly artist /
+album / track). Sort-by-title would mean pulling all 1358 rows into the phone
+first, and we are not doing that for a scroll.
+
+## 2026-07-14 - Grid density is ONE control, and 4-up is not on it
+Tier: T1 (UI)
+Context: Tim proposed a grid/list toggle AND a 2/3/4-per-row picker.
+Choice: one control, cycling List -> 2-up -> 3-up. No 4-up.
+Why: "grid or list" and "how many per row" are the same axis - density - and
+splitting them gives four states to explain and test for one decision. 4-up on a
+phone is an ~85px cover, too small to recognise the art, which is the only reason
+a grid exists at all; a list serves that density better and shows the full title.
+Consequence worth having: the ART SIZE now follows the density (list 120px, 2-up
+500px, 3-up 350px). Covers were being fetched at a flat 300px into a ~500px 2-up
+tile, so they were already slightly soft, and a 500px cover behind a 52px list row
+is bytes crossing a P2P link for nobody. The UI composes the art URL itself (the
+worklet hands it a base URL) so changing density does not re-list the library.
+
 ## 2026-07-14 - Predictive back is OFF. It breaks the back button
 Tier: T1 (Android)
 Context: Android 14+ predictive back (`android:enableOnBackInvokedCallback="true"`)

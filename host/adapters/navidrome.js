@@ -144,8 +144,44 @@ class NavidromeAdapter {
     }
 
     if (type === 'tracks') {
-      // Subsonic has no flat "all songs" call, so a flat track list means walking
-      // albums. Fine for the milestone-1 UI; the real UI browses albums.
+      // Subsonic proper has no "all songs" call - which is why this used to walk
+      // albums, and why a flat list could only ever show the first page of them.
+      //
+      // Navidrome (OpenSubsonic) does answer `search3` with an EMPTY query as
+      // "everything", and it pages by songOffset. Measured against the real
+      // library: all 1358 songs, and songOffset=1000 returns the expected rows. So
+      // the Songs view is a paged list, not a 60-call album walk.
+      //
+      // The order is the SERVER's (roughly artist / album / track). We do not get
+      // to sort by title without pulling the whole library into memory first, and
+      // we are not doing that for a phone.
+      try {
+        const sr = await this._call('search3', {
+          query: '',
+          songCount: limit,
+          songOffset: offset,
+          albumCount: 0,
+          artistCount: 0
+        })
+        const songs = sr.searchResult3?.song || []
+        // A server that refuses an empty query answers with nothing. Only trust
+        // "no songs" as an answer once we are past the first page - otherwise an
+        // empty first page is indistinguishable from "not supported", and we fall
+        // through to the walk below.
+        if (songs.length || offset > 0) {
+          return {
+            type,
+            items: songs.map(s => this._track(s)),
+            nextCursor: songs.length === limit ? offset + limit : null
+          }
+        }
+      } catch {
+        // Not an error worth surfacing: it just means this server is stricter than
+        // Navidrome. Walk the albums instead.
+      }
+
+      // Fallback for a strict Subsonic server: walk albums. Slow, and it cannot
+      // page songs properly (the cursor counts ALBUMS), but it is honest.
       const sr = await this._call('getAlbumList2', {
         type: 'alphabeticalByName',
         size: Math.min(limit, 50),
@@ -184,19 +220,43 @@ class NavidromeAdapter {
       const sr = await this._call('getArtist', { id })
       const a = sr.artist
       if (!a) return null
-      return {
-        id: a.id,
-        name: a.name,
-        coverId: a.coverArt || null,
-        albums: (a.album || []).map(al => ({
-          id: al.id,
-          name: al.name,
-          artist: al.artist || a.name,
-          year: al.year ?? null,
-          songCount: al.songCount ?? null,
-          coverId: al.coverArt || al.id
-        }))
-      }
+
+      const albums = (a.album || []).map(al => ({
+        id: al.id,
+        name: al.name,
+        artist: al.artist || a.name,
+        year: al.year ?? null,
+        songCount: al.songCount ?? null,
+        coverId: al.coverArt || al.id
+      }))
+
+      const out = { id: a.id, name: a.name, coverId: a.coverArt || null, albums, tracks: [] }
+      if (albums.length) return out
+
+      // AN ARTIST WITH NO ALBUMS IS NOT A BUG, AND IT IS NOT EMPTY.
+      //
+      // Navidrome mints an artist row for every composite tag string it meets -
+      // "Thousand Foot Krutch/COFER", "Artist/Remixer" - and those rows have zero
+      // albums of their own (the album belongs to the primary artist). They DO have
+      // songs. Search happily returns them, so without this the artist page is a
+      // dead end that says nothing, and "Add to queue" fails with "nothing to play".
+      //
+      // There is no getSongsByArtist in Subsonic, and getTopSongs answers empty for
+      // these (tried it). search3 on the exact name is what works - filtered to an
+      // EXACT artist match, because a substring search for "Thousand Foot Krutch"
+      // would drag in the other artist's entire catalogue.
+      const s = await this._call('search3', {
+        query: a.name,
+        songCount: 200,
+        albumCount: 0,
+        artistCount: 0
+      }).catch(() => null)
+
+      out.tracks = (s?.searchResult3?.song || [])
+        .filter(song => song.artist === a.name)
+        .map(song => this._track(song))
+
+      return out
     }
 
     if (type === 'album') {
@@ -255,7 +315,26 @@ class NavidromeAdapter {
     })
     const r = sr.searchResult3 || {}
     return {
-      artists: (r.artist || []).map(a => ({ id: a.id, name: a.name })),
+      // REAL ARTISTS FIRST.
+      //
+      // Navidrome mints an artist row for every composite tag it meets, so a search
+      // for "krutch" returns ONE artist with 18 albums and NINETEEN participant
+      // rows ("Thousand Foot Krutch/COFER", ".../Red", ...) - and the server's order
+      // buries the real one among them. Sorting by album count puts the artist you
+      // were obviously looking for at the top and the featured-on entries below,
+      // where they are still reachable.
+      //
+      // coverArt is only carried for artists that HAVE albums: Navidrome answers
+      // the participant rows with its default white-star image, and a wall of those
+      // looks worse than our own placeholder.
+      artists: (r.artist || [])
+        .map(a => ({
+          id: a.id,
+          name: a.name,
+          albumCount: a.albumCount ?? 0,
+          coverId: (a.albumCount ?? 0) > 0 ? (a.coverArt || null) : null
+        }))
+        .sort((x, y) => y.albumCount - x.albumCount),
       albums: (r.album || []).map(a => ({
         id: a.id, name: a.name, artist: a.artist || null, coverId: a.coverArt || a.id
       })),
