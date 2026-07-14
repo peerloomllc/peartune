@@ -219,14 +219,34 @@ const methods = {
     return { url: shim.urlFor(trackId), port: shimPort }
   },
 
+  // Unpair. Forgets the host and drops the connection.
+  //
+  // Note what this does NOT do: it does not touch the device identity. The
+  // keypair stays, so re-pairing to the same host reuses the same grant row
+  // rather than littering the operator's dashboard with a new device every time
+  // someone unpairs and pairs again. The host still holds the old grant; it can
+  // revoke it if it wants the row gone.
   async forget () {
     try {
       fs.unlinkSync(HOSTS_FILE)
     } catch {}
+
+    // Close the shim's HTTP server, not just the reference. Dropping the
+    // reference alone would leave the loopback port bound for the life of the
+    // process, and the next pair would open a second one.
+    if (shim) {
+      try {
+        await shim.close()
+      } catch {}
+    }
+    shim = null
+    shimPort = null
+
     if (client) await client.close()
     client = null
-    shim = null
     currentHost = null
+
+    log('host:forgotten')
     return { ok: true }
   }
 }

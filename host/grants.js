@@ -113,6 +113,27 @@ class Grants {
     return revoked
   }
 
+  // Attach a device to a person (or detach, with personId = null). This is what
+  // makes "revoke that friend, not my tablet" possible: revocation then has a
+  // subject a human recognises instead of a 52-character key.
+  async assign (deviceKey, personId) {
+    const key = Grants.keyOf(deviceKey)
+    const row = await this.get(key)
+    if (!row) return null
+
+    if (personId) {
+      const person = await this.getPerson(personId)
+      if (!person) throw new Error('no such person')
+      // Assigning a device to a REVOKED person would silently lock it out, which
+      // looks like a bug to whoever just did it. Refuse instead.
+      if (person.revokedAt) throw new Error('that person is revoked')
+    }
+
+    row.personId = personId || null
+    await this.bee.put('grant:' + key, row, { valueEncoding: 'json' })
+    return row
+  }
+
   async touch (deviceKey) {
     const row = await this.get(deviceKey)
     if (!row) return

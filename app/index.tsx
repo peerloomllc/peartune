@@ -205,6 +205,20 @@ export default function App () {
     px()?.skipToPrevious()
   }
 
+  // ExoPlayer owns the shuffle order, so `next` and the LOCK-SCREEN next button
+  // both respect it. Shuffling our own array instead would mean re-handing the
+  // playlist to the player, which restarts buffering and breaks gapless.
+  function setShuffle (on: boolean) {
+    px()?.setShuffle(on)
+    toWeb('play:mode', { shuffle: on })
+  }
+
+  // 0 = off, 1 = repeat one, 2 = repeat all.
+  function setRepeat (mode: number) {
+    px()?.setRepeatMode(mode)
+    toWeb('play:mode', { repeat: mode })
+  }
+
   function seekBy (seconds: number) {
     const p = player.current
     if (!p) return
@@ -325,7 +339,14 @@ export default function App () {
     if (msg.method === 'prev') return prev()
     if (msg.method === 'seekBy') return seekBy(msg.args.seconds ?? SEEK_STEP)
     if (msg.method === 'seekTo') return seekTo(msg.args.ms ?? 0)
+    if (msg.method === 'shuffle') return setShuffle(!!msg.args.on)
+    if (msg.method === 'repeat') return setRepeat(Number(msg.args.mode) || 0)
     if (msg.method === 'stop') return stop()
+
+    // Unpairing tears down the player first: the worklet is about to close the
+    // connection the audio is streaming over, and a player left pointing at a
+    // dead loopback socket just stalls.
+    if (msg.method === 'forget') stop()
 
     try {
       const result = await call(msg.method, msg.args)

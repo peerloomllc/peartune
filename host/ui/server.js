@@ -53,7 +53,9 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741 }) {
       if (req.method === 'GET' && url.pathname === '/api/state') {
         const stats = await host.adapter.stats()
         const devices = await host.listDevices()
+        const persons = await host.grants.listPersons()
         return json(res, 200, {
+          persons,
           libraryName: host.libraryName,
           libraryId: host.libraryId,
           hostKey: z32.encode(host.publicKey),
@@ -62,6 +64,7 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741 }) {
           devices: devices.map(d => ({
             deviceKey: d.deviceKey,
             label: d.label,
+            personId: d.personId,
             platform: d.platform,
             scope: d.scope,
             grantedAt: d.grantedAt,
@@ -82,6 +85,33 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741 }) {
       if (req.method === 'POST' && url.pathname === '/api/pair/stop') {
         host.stopPairing()
         return json(res, 200, { ok: true })
+      }
+
+      // --- people ---
+      if (req.method === 'POST' && url.pathname === '/api/person') {
+        const { name } = await readBody(req)
+        if (!name || !String(name).trim()) return json(res, 400, { error: 'name required' })
+        return json(res, 200, await host.grants.addPerson(String(name).trim()))
+      }
+
+      // Attach a device to a person, so revocation has a subject a human
+      // recognises instead of a 52-character key.
+      if (req.method === 'POST' && url.pathname === '/api/assign') {
+        const { deviceKey, personId } = await readBody(req)
+        if (!deviceKey) return json(res, 400, { error: 'deviceKey required' })
+        const row = await host.grants.assign(deviceKey, personId || null)
+        if (!row) return json(res, 404, { error: 'no such device' })
+        return json(res, 200, row)
+      }
+
+      // Revoke a PERSON: every device they hold, in one action, with every live
+      // connection destroyed. This is the case holesail structurally cannot
+      // serve, and the reason we built the host ourselves.
+      if (req.method === 'POST' && url.pathname === '/api/person/revoke') {
+        const { personId } = await readBody(req)
+        if (!personId) return json(res, 400, { error: 'personId required' })
+        const { revoked, killed } = await host.revokePerson(personId)
+        return json(res, 200, { ok: true, devices: revoked.length, killed })
       }
 
       // --- the teeth ---

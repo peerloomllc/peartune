@@ -57,6 +57,11 @@ module.exports = `<!doctype html>
   .dot.off { background: var(--line); }
   .revoked { color: var(--danger); font-size: .8rem; }
   .empty { color: var(--muted); font-size: .9rem; }
+  .addrow { display: flex; gap: .5rem; margin-top: 1rem; }
+  .addrow input { flex: 1; font: inherit; padding: .5rem .7rem; border-radius: 8px;
+                  border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  select { font: inherit; font-size: .85rem; padding: .35rem .5rem; border-radius: 8px;
+           border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
   .flash { padding: .7rem 1rem; border-radius: 8px; margin-bottom: 1rem;
            background: color-mix(in srgb, var(--accent) 12%, transparent);
            border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
@@ -78,6 +83,19 @@ module.exports = `<!doctype html>
         Opens a 5 minute window. Scan the code in PearTune on your phone.
       </p>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>People</h2>
+    <div id="people"><p class="empty">No people yet.</p></div>
+    <div class="addrow">
+      <input id="pname" placeholder="Name (e.g. Ben)" />
+      <button onclick="addPerson()">Add person</button>
+    </div>
+    <p class="meta" style="margin:.75rem 0 0">
+      Assign a device to a person, then you can revoke that person's access in one
+      click without touching anyone else's devices.
+    </p>
   </div>
 
   <div class="card">
@@ -128,6 +146,57 @@ async function stopPair () {
     '<p class="meta" style="margin:.75rem 0 0">Opens a 5 minute window. Scan the code in PearTune on your phone.</p>'
 }
 
+let PEOPLE = []
+
+async function addPerson () {
+  const el = document.getElementById('pname')
+  const name = el.value.trim()
+  if (!name) return
+  const r = await api('/api/person', { name })
+  if (r.error) return flash('Failed: ' + r.error)
+  el.value = ''
+  flash('Added <b>' + name + '</b>.')
+  refresh()
+}
+
+async function assign (deviceKey, personId) {
+  const r = await api('/api/assign', { deviceKey, personId: personId || null })
+  if (r.error) return flash('Failed: ' + r.error)
+  refresh()
+}
+
+async function revokePerson (id, name) {
+  if (!confirm('Revoke ALL of ' + name + '\\'s devices?\\n\\nThey lose access immediately, even mid-song. Nobody else is affected. Their play counts stay in your history.')) return
+  const r = await api('/api/person/revoke', { personId: id })
+  if (r.error) return flash('Failed: ' + r.error)
+  flash('Revoked <b>' + name + '</b>: ' + r.devices + ' device(s), ' +
+        r.killed + ' live connection(s) cut off.')
+  refresh()
+}
+
+function renderPeople (people, devices) {
+  const el = document.getElementById('people')
+  const live = people.filter(p => !p.revokedAt)
+  if (!live.length) {
+    el.innerHTML = '<p class="empty">No people yet. Add one below.</p>'
+    return
+  }
+  el.innerHTML = '<table>' + live.map(p => {
+    const theirs = devices.filter(d => d.personId === p.id && !d.revokedAt)
+    const online = theirs.filter(d => d.online).length
+    return '<tr>' +
+      '<td><div class="name">' + p.name + '</div>' +
+        '<span class="meta">' + theirs.length + ' device' + (theirs.length === 1 ? '' : 's') +
+        (online ? ' · <span class="dot"></span>' + online + ' online' : '') + '</span></td>' +
+      '<td style="text-align:right">' +
+        (theirs.length
+          ? '<button class="danger" onclick="revokePerson(\\'' + p.id + '\\', \\'' +
+            p.name.replace(/'/g, '') + '\\')">Revoke all</button>'
+          : '<span class="meta">no devices</span>') +
+      '</td></tr>'
+  }).join('') + '</table>'
+}
+
 async function revoke (key, label) {
   if (!confirm('Revoke "' + label + '"?\\n\\nIt loses access immediately, even mid-song. Its play counts stay in your history.')) return
   const r = await api('/api/revoke', { deviceKey: key })
@@ -146,17 +215,32 @@ function renderDevices (devices) {
     el.innerHTML = '<p class="empty">No devices paired yet.</p>'
     return
   }
+  const live = PEOPLE.filter(p => !p.revokedAt)
+
   el.innerHTML = '<table>' + devices.map(d => {
     const status = d.revokedAt
       ? '<span class="revoked">revoked ' + ago(d.revokedAt) + '</span>'
       : '<span class="meta"><span class="dot ' + (d.online ? '' : 'off') + '"></span>' +
         (d.online ? 'connected' : 'last seen ' + ago(d.lastSeenAt)) + '</span>'
+
+    // Who holds this device? Picking a person here is what turns a key into
+    // somebody you can revoke by name.
+    const owner = d.revokedAt
+      ? ''
+      : '<select onchange="assign(\\'' + d.deviceKey + '\\', this.value)">' +
+          '<option value=""' + (d.personId ? '' : ' selected') + '>— unassigned —</option>' +
+          live.map(p => '<option value="' + p.id + '"' +
+            (d.personId === p.id ? ' selected' : '') + '>' + p.name + '</option>').join('') +
+        '</select>'
+
     const action = d.revokedAt
       ? ''
       : '<button class="danger" onclick="revoke(\\'' + d.deviceKey + '\\', \\'' +
         d.label.replace(/'/g, "") + '\\')">Revoke</button>'
+
     return '<tr>' +
       '<td><div class="name">' + d.label + '</div>' + status + '</td>' +
+      '<td>' + owner + '</td>' +
       '<td style="text-align:right">' + action + '</td>' +
     '</tr>'
   }).join('') + '</table>'
@@ -164,9 +248,12 @@ function renderDevices (devices) {
 
 async function refresh () {
   const s = await api('/api/state')
+  PEOPLE = s.persons || []
   document.getElementById('lib').textContent = s.libraryName
   document.getElementById('sub').textContent =
-    s.stats.tracks + ' tracks · ' + s.stats.source + ' · ' + s.devices.filter(d => !d.revokedAt).length + ' device(s)'
+    s.stats.tracks + ' tracks · ' + s.stats.source + ' · ' +
+    s.devices.filter(d => !d.revokedAt).length + ' device(s)'
+  renderPeople(PEOPLE, s.devices)
   renderDevices(s.devices)
 }
 

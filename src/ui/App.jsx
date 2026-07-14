@@ -20,6 +20,8 @@ export default function App () {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
   const [scanning, setScanning] = useState(false)
+  const [shuffle, setShuffle] = useState(false)
+  const [repeat, setRepeat] = useState(0) // 0 off, 1 one, 2 all
 
   useEffect(() => {
     call('init')
@@ -78,6 +80,35 @@ export default function App () {
     }
   }
 
+  async function unpair () {
+    if (!confirm('Unpair from this library?\n\nYou will need a new pairing code from the server to reconnect. Nothing on the server is deleted.')) return
+    try {
+      await call('forget')
+      setState({ loading: false, host: null, connected: false })
+      setAlbums([])
+      setOpen(null)
+      setResults(null)
+      setQuery('')
+      setError(null)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  function toggleShuffle () {
+    const on = !shuffle
+    setShuffle(on)
+    call('shuffle', { on })
+  }
+
+  // off -> all -> one -> off. Repeat-one at the END of the cycle: it is the mode
+  // people want least often, so it should be the hardest to land on by accident.
+  function cycleRepeat () {
+    const next = repeat === 0 ? 2 : repeat === 2 ? 1 : 0
+    setRepeat(next)
+    call('repeat', { mode: next })
+  }
+
   async function onPaired (link) {
     setScanning(false)
     setError(null)
@@ -120,7 +151,13 @@ export default function App () {
         error={error}
         onBack={() => setOpen(null)}
         onPlay={(t) => playFrom(tracks, t)}
-        footer={now && <NowPlaying now={now} status={status} />}
+        footer={now && (
+          <NowPlaying
+            now={now} status={status}
+            shuffle={shuffle} repeat={repeat}
+            onShuffle={toggleShuffle} onRepeat={cycleRepeat}
+          />
+        )}
       />
     )
   }
@@ -130,7 +167,10 @@ export default function App () {
   return (
     <div className="app">
       <header>
-        <h1>{state.host.libraryName || 'Library'}</h1>
+        <div className="titlerow">
+          <h1>{state.host.libraryName || 'Library'}</h1>
+          <button className="unpair" onClick={unpair}>Unpair</button>
+        </div>
         <p className="muted sm">
           {state.connected ? `${albums.length} albums` : 'Not connected'}
         </p>
@@ -169,7 +209,13 @@ export default function App () {
           </>
           )}
 
-      {now && <NowPlaying now={now} status={status} />}
+      {now && (
+        <NowPlaying
+          now={now} status={status}
+          shuffle={shuffle} repeat={repeat}
+          onShuffle={toggleShuffle} onRepeat={cycleRepeat}
+        />
+      )}
     </div>
   )
 }
@@ -246,7 +292,7 @@ function Row ({ t, on, onPlay, showTrackNo }) {
   )
 }
 
-function NowPlaying ({ now, status }) {
+function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
@@ -285,13 +331,26 @@ function NowPlaying ({ now, status }) {
       </div>
 
       <div className="transport">
+        <button
+          className={'icon mode' + (shuffle ? ' on' : '')}
+          onClick={onShuffle}
+          aria-label="Shuffle"
+        >⤮</button>
         <button className="icon" onClick={() => call('prev')} aria-label="Previous">⏮</button>
-        <button className="icon" onClick={() => call('seekBy', { seconds: -15 })} aria-label="Back 15s">↺15</button>
         <button className="icon big" onClick={() => call('toggle')} aria-label="Play/pause">
           {status?.playing ? '⏸' : '▶'}
         </button>
-        <button className="icon" onClick={() => call('seekBy', { seconds: 15 })} aria-label="Forward 15s">15↻</button>
         <button className="icon" onClick={() => call('next')} aria-label="Next">⏭</button>
+        <button
+          className={'icon mode' + (repeat ? ' on' : '')}
+          onClick={onRepeat}
+          aria-label="Repeat"
+        >{repeat === 1 ? '🔂' : '🔁'}</button>
+      </div>
+
+      <div className="transport sub-transport">
+        <button className="icon" onClick={() => call('seekBy', { seconds: -15 })} aria-label="Back 15s">↺ 15</button>
+        <button className="icon" onClick={() => call('seekBy', { seconds: 15 })} aria-label="Forward 15s">15 ↻</button>
       </div>
     </footer>
   )
