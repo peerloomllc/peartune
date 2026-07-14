@@ -277,7 +277,24 @@ async function confirmClaim (key) {
   refresh()
 }
 
-function renderSource (src) {
+// The dashboard polls every 3 seconds and re-renders. That MUST NOT touch a form the
+// operator is in the middle of editing: click Folder, and two seconds later the poll
+// would re-render the card from the server's truth (still Navidrome) and throw your
+// choice away. A half-typed URL or password went the same way.
+//
+// So: once you touch this card, it belongs to you until you Save or Cancel. The poll
+// keeps updating everything else on the page.
+let SOURCE_DIRTY = false
+
+function markSourceDirty () {
+  SOURCE_DIRTY = true
+  document.getElementById('sourcewarn').style.display = 'block'
+  document.getElementById('srccancel').style.display = ''
+}
+
+function renderSource (src, force) {
+  if (SOURCE_DIRTY && !force) return
+
   const el = document.getElementById('source')
   const nav = (src && src.kind === 'navidrome')
 
@@ -288,24 +305,32 @@ function renderSource (src) {
     '</div>' +
     '<div id="navfields" style="display:' + (nav ? 'block' : 'none') + '">' +
       '<label>Navidrome URL</label>' +
-      '<input id="n_url" placeholder="http://localhost:4533" value="' + esc(src && src.url) + '">' +
+      '<input id="n_url" oninput="markSourceDirty()" placeholder="http://localhost:4533" value="' + esc(src && src.url) + '">' +
       '<label>Username</label>' +
-      '<input id="n_user" placeholder="umbrel" value="' + esc(src && src.username) + '">' +
+      '<input id="n_user" oninput="markSourceDirty()" placeholder="umbrel" value="' + esc(src && src.username) + '">' +
       '<label>Password</label>' +
       // The password is never sent BACK to the browser (host/source.js publicView).
       // An empty box on an already-configured source means "leave it as it is".
-      '<input id="n_pass" type="password" placeholder="' +
+      '<input id="n_pass" type="password" oninput="markSourceDirty()" placeholder="' +
         ((src && src.hasPassword) ? 'unchanged' : 'password') + '">' +
     '</div>' +
     '<div id="foldfields" style="display:' + (nav ? 'none' : 'block') + '">' +
       '<label>Folder</label>' +
-      '<input id="f_root" placeholder="/music" value="' + esc((src && src.root) || '/music') + '">' +
+      '<input id="f_root" oninput="markSourceDirty()" placeholder="/music" value="' + esc((src && src.root) || '/music') + '">' +
     '</div>' +
     '<div class="row">' +
       '<button onclick="testSource()">Test</button>' +
       '<button class="primary" onclick="saveSource()">Save</button>' +
+      '<button id="srccancel" style="display:none" onclick="cancelSource()">Cancel</button>' +
       '<span id="srcmsg" class="meta"></span>' +
     '</div>'
+}
+
+// Hand the card back to the server: whatever is actually running wins again.
+function cancelSource () {
+  SOURCE_DIRTY = false
+  document.getElementById('sourcewarn').style.display = 'none'
+  refresh()
 }
 
 function pickSource (nav) {
@@ -313,7 +338,7 @@ function pickSource (nav) {
   document.getElementById('s_fold').className = nav ? '' : 'on'
   document.getElementById('navfields').style.display = nav ? 'block' : 'none'
   document.getElementById('foldfields').style.display = nav ? 'none' : 'block'
-  document.getElementById('sourcewarn').style.display = 'block'
+  markSourceDirty()
 }
 
 function sourceForm () {
@@ -348,6 +373,8 @@ async function saveSource () {
     return
   }
   msg.innerHTML = '<span class="ok">saved - ' + r.tracks + ' tracks</span>'
+  SOURCE_DIRTY = false
+  document.getElementById('sourcewarn').style.display = 'none'
   refresh()
 }
 
