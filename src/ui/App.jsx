@@ -73,19 +73,35 @@ export default function App () {
       on('play:status', setStatus),
       on('play:stopped', () => { setNow(null); setStatus(null) }),
       on('play:error', (d) => setError(d.error)),
+      // The link died. Usually this is just Android suspending us in the
+      // background, so do NOT accuse the server of revoking anyone - we cannot
+      // tell the difference from here, and "your access may have been revoked" is
+      // an alarming thing to say when the real answer is "you locked your phone".
+      // Mark it and move on; the next thing that needs the wire will reconnect.
       on('host:disconnected', () => {
         setNow(null)
         setStatus(null)
-        setError('The host disconnected. Your access may have been revoked, or the server is offline.')
         setState(s => ({ ...s, connected: false }))
       }),
       on('host:connected', (d) => {
         setState(s => ({ ...s, connected: true, host: { ...s.host, ...d } }))
         setError(null)
+      }),
+
+      // Back from the background, where the link almost certainly died. Reconnect
+      // BEFORE the user asks: they came back to a music app, not to a status page.
+      // A ref, not state, because this listener registers once.
+      on('app:active', () => {
+        const s = liveRef.current
+        if (s.host && !s.connected && !s.reconnecting) reconnect()
       })
     ]
     return () => offs.forEach(f => f())
   }, [])
+
+  // What the once-registered listeners above need to see, always current.
+  const liveRef = useRef({})
+  liveRef.current = { host: state.host, connected: state.connected, reconnecting }
 
   // --- theme -----------------------------------------------------------------
   //
@@ -432,23 +448,38 @@ function Library ({
   const searching = results && query.trim()
 
   // Paired but unreachable. The server is a machine in someone's house: it gets
-  // turned off, rebooted, moved. That is not an error, it is Tuesday - so it gets
-  // a screen that explains itself and a button, not a red banner.
+  // turned off, rebooted, moved - and Android drops the link every time this app
+  // sits idle in the background. That is not an error, it is Tuesday.
+  //
+  // So the reconnect happens FIRST and silently (the shell fires app:active on
+  // resume, and any call that needs the wire revives it anyway). What is left here
+  // is the screen you see when a reconnect has actually FAILED - which is the only
+  // moment "the server may be off, or your access was revoked" is a true thing to
+  // say to someone.
   if (!state.connected) {
     return (
       <div className='app'>
         <header><h1>{state.host.libraryName || 'Library'}</h1></header>
-        <div className='blank'>
-          <PlugsConnected size={40} weight='thin' />
-          <h2>Not connected</h2>
-          <p className='muted sm'>
-            {error || 'PearTune cannot reach this library right now. The server may be off, or its access for this device may have been revoked.'}
-          </p>
-          <button className='primary' onClick={onReconnect} disabled={reconnecting}>
-            <ArrowsClockwise size={16} weight='bold' />
-            {reconnecting ? 'Reconnecting…' : 'Try again'}
-          </button>
-        </div>
+        {reconnecting
+          ? (
+            <div className='blank'>
+              <ArrowsClockwise size={40} weight='thin' className='spin' />
+              <h2>Reconnecting…</h2>
+            </div>
+            )
+          : (
+            <div className='blank'>
+              <PlugsConnected size={40} weight='thin' />
+              <h2>Not connected</h2>
+              <p className='muted sm'>
+                {error || 'PearTune cannot reach this library. The server may be off, or its access for this device may have been revoked.'}
+              </p>
+              <button className='primary' onClick={onReconnect}>
+                <ArrowsClockwise size={16} weight='bold' />
+                Try again
+              </button>
+            </div>
+            )}
       </div>
     )
   }

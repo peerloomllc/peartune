@@ -196,6 +196,8 @@ button.more { width: 100%; margin: 1.2rem 0 0; }
 
 /* A skeleton is the same SHAPE as the thing it stands in for, so nothing jumps
    when the real covers land. */
+@keyframes peartune-spin { to { transform: rotate(360deg); } }
+.spin { animation: peartune-spin 1.1s linear infinite; }
 @keyframes peartune-pulse { 0%, 100% { opacity: .45; } 50% { opacity: .8; } }
 .skel {
   background: var(--color-surface-elevated); border-radius: 8px;

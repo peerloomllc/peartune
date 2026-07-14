@@ -401,6 +401,14 @@ button.more {
   align-items: center;
   gap: .4rem;
 }
+@keyframes peartune-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: peartune-spin 1.1s linear infinite;
+}
 @keyframes peartune-pulse {
   0%, 100% {
     opacity: .45;

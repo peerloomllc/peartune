@@ -47,12 +47,19 @@ function mimeFor (name = '') {
   return MIME[ext] || 'application/octet-stream'
 }
 
-function createAudioShim ({ client, log = () => {} }) {
+function createAudioShim ({ client, log = () => {}, ensure = async () => {} }) {
   const meta = new Map() // trackId -> { size, mime }
+
+  // The client is REPLACEABLE, and the indirection is the point. On a reconnect
+  // the PearTuneClient is a new object, but this server must keep its port: the
+  // player was handed http://127.0.0.1:<port>/track/<id> URLs for the whole queue,
+  // and they are only still valid if the port is. Tear the shim down with the
+  // client and a paused queue silently plays into a dead socket on resume.
+  let current = client
 
   async function metaFor (trackId) {
     if (meta.has(trackId)) return meta.get(trackId)
-    const t = await client.get({ id: trackId })
+    const t = await current.get({ id: trackId })
     if (!t) return null
     const m = { size: t.size, mime: mimeFor(t.path || t.title) }
     meta.set(trackId, m)
@@ -72,6 +79,11 @@ function createAudioShim ({ client, log = () => {} }) {
     const trackId = match[1]
 
     try {
+      // The link may have died while the app sat in the background. This request
+      // is often the FIRST thing that knows the user is back (they pressed play on
+      // the lock screen), so it revives the connection rather than failing.
+      await ensure()
+
       const m = await metaFor(trackId)
       if (!m) {
         res.writeHead(404)
@@ -111,7 +123,7 @@ function createAudioShim ({ client, log = () => {} }) {
 
       // streamTo, NOT stream: accumulate nothing. The player asked for a window
       // of audio, not the whole album in RAM.
-      await client.streamTo({ trackId, offset: start, length }, (chunk) => {
+      await current.streamTo({ trackId, offset: start, length }, (chunk) => {
         res.write(chunk)
       })
 
@@ -139,7 +151,8 @@ function createAudioShim ({ client, log = () => {} }) {
       let buf = artCache.get(coverId)
 
       if (!buf) {
-        buf = await client.art({ coverId, size: 300 })
+        await ensure()
+        buf = await current.art({ coverId, size: 300 })
         if (!buf || !buf.length) {
           res.writeHead(404)
           return res.end()
@@ -169,6 +182,12 @@ function createAudioShim ({ client, log = () => {} }) {
 
   return {
     server,
+
+    // Point the shim at a fresh client after a reconnect, keeping the port (and
+    // therefore every URL already handed to the player) valid.
+    setClient (c) {
+      current = c
+    },
 
     artUrlFor (coverId) {
       const { port } = server.address()

@@ -13,7 +13,7 @@
 // dies, the loopback stream breaks, and the music stops. That is the product.
 
 import { useEffect, useRef, useState } from 'react'
-import { View, StatusBar, BackHandler, Appearance, Platform, Share } from 'react-native'
+import { View, StatusBar, BackHandler, Appearance, AppState, Platform, Share } from 'react-native'
 import { WebView } from 'react-native-webview'
 import * as Linking from 'expo-linking'
 import * as Clipboard from 'expo-clipboard'
@@ -373,10 +373,20 @@ export default function App () {
       )
     })
 
+    // COMING BACK. Android suspends a backgrounded app that is not holding a
+    // foreground service, so an idle PearTune loses its link to the host within
+    // about twenty seconds. That is normal, and not worth a permanent notification
+    // to prevent - but the app must not still be sitting on a dead connection when
+    // the user returns to it. Tell the UI, and it reconnects before they notice.
+    const appState = AppState.addEventListener('change', (s) => {
+      if (s === 'active') toWeb('app:active', {})
+    })
+
     return () => {
       cancelled = true
       back.remove()
       appearance.remove()
+      appState.remove()
       stopPlayer()
       workletRef.current?.terminate?.()
     }
