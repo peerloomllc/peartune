@@ -29,7 +29,7 @@ const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
 const HOSTS_FILE = path.join(DATA_DIR, 'hosts.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
 
-const DEFAULT_SETTINGS = { theme: 'system' }
+const DEFAULT_SETTINGS = { theme: 'system', deviceName: '', userName: '' }
 
 let client = null
 let shim = null
@@ -248,14 +248,21 @@ const methods = {
     return state
   },
 
-  async pair ({ link, label }) {
+  async pair ({ link, label, userName }) {
     if (!isPairLink(link)) throw new Error('That is not a PearTune pairing code.')
     await ensureClient()
 
+    // The name goes out in deviceHello's EXISTING label field, so this half needs
+    // no wire change at all - we were simply hardcoding "Android phone" and giving
+    // the operator two identical rows to choose between.
+    const name = (label || '').trim() || 'Android phone'
+
     const paired = await client.pair(link, {
-      label: label || 'Android phone',
+      label: name,
       platform: 'android'
     })
+
+    saveSettings({ deviceName: name, userName: (userName || '').trim() })
 
     const host = {
       hostKey: paired.hostKey && paired.hostKey.length === 32
@@ -364,6 +371,42 @@ const methods = {
 
   async settings () {
     return loadSettings()
+  },
+
+  // --- identity ---------------------------------------------------------------
+  //
+  // Kept in the worklet's settings (so Settings can show it before the host answers)
+  // AND pushed to the host, which is the authority on what its dashboard shows.
+  async identity () {
+    const local = loadSettings()
+    let remote = null
+    try {
+      await ensureConnected()
+      remote = await client.getIdentity()
+    } catch {
+      // Offline, or an old host. The local names are still the truth about what we
+      // last asked for.
+    }
+    return {
+      deviceName: remote?.deviceName || local.deviceName || '',
+      userName: remote?.user?.name || local.userName || '',
+      confirmed: !!remote?.user?.confirmed,
+      supported: remote !== null
+    }
+  },
+
+  async setIdentity ({ deviceName, userName }) {
+    await ensureConnected()
+    const r = await client.setIdentity({ deviceName, userName })
+    saveSettings({
+      deviceName: r?.deviceName || deviceName || '',
+      userName: r?.user?.name || userName || ''
+    })
+    return {
+      deviceName: r?.deviceName || '',
+      userName: r?.user?.name || '',
+      confirmed: !!r?.user?.confirmed
+    }
   },
 
   async setSettings (patch) {

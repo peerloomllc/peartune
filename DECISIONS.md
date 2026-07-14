@@ -2,6 +2,48 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - Device and user naming: a device names ITSELF, an operator confirms
+Tier: T2. Proposal: proposals/2026-07-14-device-and-user-naming.md
+Context: two phones paired, and the dashboard showed two rows called "Android
+phone". Per-person grants existed and worked; the operator had nothing human to
+look at, so the feature was complete and unusable.
+Findings that made this smaller than it looked:
+- `deviceHello` ALREADY carries a label, the host already stores it, the dashboard
+  already renders it. We were hardcoding "Android phone". Naming a device at pair
+  time is a T1 with no wire change.
+- The host ALREADY has a people model (person rows, assign, revoke-person). What
+  was missing was any way for the phone to SAY who it belongs to.
+Choice: no framing change (adding a field to deviceHello would break old peers -
+that is the T2/T3 line). Two new METHODS on the media channel instead, which
+carries {method, params} JSON already, so an old host answers ENOMETHOD and a new
+app degrades to "renaming needs a server update".
+The rules that let a client write into the host's authority store at all:
+1. The caller is the NOISE-AUTHENTICATED connection. identity.set takes no device
+   key - there is nothing to forge, and a device can only write its own row.
+2. A device may NOT set personId. It CLAIMS a name; the operator confirms it.
+   Today personId only drives revoke-by-person, so self-assignment would be
+   harmless - but the moment per-person scopes, playlists or history exist, a
+   device that can attach itself to any person by name is an escalation.
+   Self-declared identity must not become authority.
+3. A claim grants nothing. It is cosmetic until confirmed.
+4. Names are sanitized at the HOST (trim, cap 64, strip control chars) and escaped
+   at the render.
+Re-pairing an already-granted device now UPDATES its label (it can rename itself
+over the media channel anyway, so refusing here would protect nothing and only
+surprise people) but never touches personId or the claim.
+
+## 2026-07-14 - STORED XSS ON THE DASHBOARD (found while building naming; fixed)
+Tier: T3-adjacent (the dashboard is the control plane)
+The device label arrives in deviceHello from ANY device that reaches the pairing
+window, and host/ui/page.js interpolated it RAW into innerHTML - and into a
+revoke() onclick attribute. That is a stored XSS on the page that holds the revoke
+buttons and the pairing QR.
+It predates this work: with the label hardcoded to "Android phone" nobody would
+have noticed, and the naming feature is what made it obvious (people type names).
+Fixed: every device- or operator-supplied string is escaped at render; the revoke
+button now carries the device KEY only and looks the label up from data. A test
+asserts the escaper is used, because this is the kind of fix that quietly rots.
+
 ## 2026-07-14 - An artist with NO ALBUMS is not empty, and search groups collapse
 Tier: T1 (host adapter + UI)
 Context: Tim searched "krutch", got artist results, and long-pressing one to add it

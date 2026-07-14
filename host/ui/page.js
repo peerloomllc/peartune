@@ -147,6 +147,7 @@ async function stopPair () {
 }
 
 let PEOPLE = []
+let DEVICES = []
 
 async function addPerson () {
   const el = document.getElementById('pname')
@@ -168,10 +169,30 @@ async function assign (deviceKey, personId) {
 async function revokePerson (id, name) {
   if (!confirm('Revoke ALL of ' + name + '\\'s devices?\\n\\nThey lose access immediately, even mid-song. Nobody else is affected. Their play counts stay in your history.')) return
   const r = await api('/api/person/revoke', { personId: id })
-  if (r.error) return flash('Failed: ' + r.error)
-  flash('Revoked <b>' + name + '</b>: ' + r.devices + ' device(s), ' +
+  if (r.error) return flash('Failed: ' + esc(r.error))
+  flash('Revoked <b>' + esc(name) + '</b>: ' + r.devices + ' device(s), ' +
         r.killed + ' live connection(s) cut off.')
   refresh()
+}
+
+// EVERY string that came from a device or an operator goes through this before it
+// reaches innerHTML.
+//
+// This is not hygiene, it is a fix: the device LABEL arrives in deviceHello from any
+// device that reaches the pairing window, and it was interpolated raw into this page
+// - the page with the revoke buttons and the pairing QR on it. That is a stored XSS
+// on the control plane. (Proposal 2026-07-14. The host also sanitizes names at the
+// store; this is the second layer, at the render.)
+//
+// NOTE: this whole file is ONE TEMPLATE LITERAL. A backtick in a comment closes the
+// string and the dashboard stops parsing. Do not use them here.
+function esc (s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 function renderPeople (people, devices) {
@@ -185,27 +206,44 @@ function renderPeople (people, devices) {
     const theirs = devices.filter(d => d.personId === p.id && !d.revokedAt)
     const online = theirs.filter(d => d.online).length
     return '<tr>' +
-      '<td><div class="name">' + p.name + '</div>' +
+      '<td><div class="name">' + esc(p.name) + '</div>' +
         '<span class="meta">' + theirs.length + ' device' + (theirs.length === 1 ? '' : 's') +
         (online ? ' · <span class="dot"></span>' + online + ' online' : '') + '</span></td>' +
       '<td style="text-align:right">' +
         (theirs.length
           ? '<button class="danger" onclick="revokePerson(\\'' + p.id + '\\', \\'' +
-            p.name.replace(/'/g, '') + '\\')">Revoke all</button>'
+            esc(p.name) + '\\')">Revoke all</button>'
           : '<span class="meta">no devices</span>') +
       '</td></tr>'
   }).join('') + '</table>'
 }
 
-async function revoke (key, label) {
+// The label is LOOKED UP, not passed in. It used to be interpolated into the
+// button's onclick attribute, which is precisely the injection this page must not
+// have (the label comes from the device, over the wire).
+async function revoke (key) {
+  const d = DEVICES.find(x => x.deviceKey === key)
+  const label = d ? d.label : 'this device'
   if (!confirm('Revoke "' + label + '"?\\n\\nIt loses access immediately, even mid-song. Its play counts stay in your history.')) return
   const r = await api('/api/revoke', { deviceKey: key })
-  if (r.error) return flash('Failed: ' + r.error)
+  if (r.error) return flash('Failed: ' + esc(r.error))
   // Say which actually happened. "Revoked" and "revoked AND the music stopped"
   // are different claims.
   flash(r.killed > 0
-    ? 'Revoked <b>' + label + '</b> and cut off ' + r.killed + ' live connection' + (r.killed === 1 ? '' : 's') + '.'
-    : 'Revoked <b>' + label + '</b>. It was not connected.')
+    ? 'Revoked <b>' + esc(label) + '</b> and cut off ' + r.killed + ' live connection' + (r.killed === 1 ? '' : 's') + '.'
+    : 'Revoked <b>' + esc(label) + '</b>. It was not connected.')
+  refresh()
+}
+
+// The operator turning a device's CLAIM into a real assignment. This is the only
+// path from "says it is Tim" to "is Tim": the device cannot do it itself.
+async function confirmClaim (key) {
+  const d = DEVICES.find(x => x.deviceKey === key)
+  if (!d || !d.claimedUser) return
+  if (!confirm('Confirm that "' + d.label + '" belongs to ' + d.claimedUser + '?\\n\\nThey will be created if they are new, and you can then revoke all of their devices in one click.')) return
+  const r = await api('/api/person/confirm', { deviceKey: key })
+  if (r.error) return flash('Failed: ' + esc(r.error))
+  flash('<b>' + esc(d.label) + '</b> now belongs to <b>' + esc(r.person.name) + '</b>.')
   refresh()
 }
 
@@ -230,16 +268,24 @@ function renderDevices (devices) {
       : '<select onchange="assign(\\'' + d.deviceKey + '\\', this.value)">' +
           '<option value=""' + (d.personId ? '' : ' selected') + '>— unassigned —</option>' +
           live.map(p => '<option value="' + p.id + '"' +
-            (d.personId === p.id ? ' selected' : '') + '>' + p.name + '</option>').join('') +
+            (d.personId === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('') +
         '</select>'
 
+    // The key ONLY. A device-supplied label was being interpolated into this
+    // onclick, which is exactly the injection this page must not have.
     const action = d.revokedAt
       ? ''
-      : '<button class="danger" onclick="revoke(\\'' + d.deviceKey + '\\', \\'' +
-        d.label.replace(/'/g, "") + '\\')">Revoke</button>'
+      : '<button class="danger" onclick="revoke(\\'' + d.deviceKey + '\\')">Revoke</button>'
+
+    // A device says who it belongs to; the OPERATOR decides. Until confirmed the
+    // claim is cosmetic and grants nothing (proposal 2026-07-14).
+    const claim = (!d.revokedAt && d.claimedUser && !d.personId)
+      ? '<div class="claim">claims to be <b>' + esc(d.claimedUser) + '</b> ' +
+        '<button onclick="confirmClaim(\\'' + d.deviceKey + '\\')">Confirm</button></div>'
+      : ''
 
     return '<tr>' +
-      '<td><div class="name">' + d.label + '</div>' + status + '</td>' +
+      '<td><div class="name">' + esc(d.label) + '</div>' + status + claim + '</td>' +
       '<td>' + owner + '</td>' +
       '<td style="text-align:right">' + action + '</td>' +
     '</tr>'
@@ -249,6 +295,7 @@ function renderDevices (devices) {
 async function refresh () {
   const s = await api('/api/state')
   PEOPLE = s.persons || []
+  DEVICES = s.devices || []
   document.getElementById('lib').textContent = s.libraryName
   document.getElementById('sub').textContent =
     s.stats.tracks + ' tracks · ' + s.stats.source + ' · ' +

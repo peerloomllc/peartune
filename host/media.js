@@ -11,12 +11,11 @@ const b4a = require('b4a')
 const { mediaChannel } = require('../protocol/channels')
 const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 
-// Methods that mutate. Reserved for the v2 scope work; a readonly grant is
-// refused here rather than at the adapter, so a new mutating method cannot
-// accidentally ship without a scope check.
-const MUTATING = new Set([])
+// Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
+// so a new mutating method cannot accidentally ship without a scope check.
+const MUTATING = new Set(['identity.set'])
 
-function serveMedia ({ conn, libraryId, adapter, grant, log = () => {} }) {
+function serveMedia ({ conn, libraryId, adapter, grant, grants = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Registration order is fixed in protocol/channels.js and MUST match the
@@ -98,6 +97,49 @@ function serveMedia ({ conn, libraryId, adapter, grant, log = () => {} }) {
 
       case 'library.search':
         return send.res.send({ id, body: await adapter.search(params || {}) })
+
+      // --- identity (proposal 2026-07-14) ------------------------------------
+      //
+      // THE CALLER IS THE CONNECTION. `grant` here is the row the firewall already
+      // looked up from the Noise-authenticated remote public key, so a device can
+      // only ever read and write ITS OWN identity - there is no deviceKey parameter
+      // to forge, and adding one would be the whole vulnerability.
+      case 'identity.get':
+        return send.res.send({
+          id,
+          body: {
+            deviceName: grant?.label || null,
+            user: grant?.claimedUser
+              ? { name: grant.claimedUser, confirmed: !!grant.personId }
+              : null
+          }
+        })
+
+      case 'identity.set': {
+        if (!grants || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+
+        // params.deviceKey and params.personId are IGNORED, not merely unused: a
+        // device names ITSELF, and only the operator decides who it belongs to.
+        // A claim is cosmetic until confirmed on the dashboard.
+        const row = await grants.setIdentity(grant.deviceKey, {
+          deviceName: params?.deviceName,
+          userName: params?.userName
+        })
+        if (!row) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+
+        log('identity:set', { label: row.label, claims: row.claimedUser || null })
+
+        return send.res.send({
+          id,
+          body: {
+            ok: true,
+            deviceName: row.label || null,
+            user: row.claimedUser
+              ? { name: row.claimedUser, confirmed: !!row.personId }
+              : null
+          }
+        })
+      }
 
       case 'art.get': {
         const stream = await adapter.art(params || {})

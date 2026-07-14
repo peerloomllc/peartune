@@ -196,6 +196,12 @@ class PearTuneClient {
   get (params) { return this._request('library.get', params) }
   search (params) { return this._request('library.search', params) }
 
+  // Identity. The host takes the caller from the Noise-authenticated connection, so
+  // there is deliberately no device key to pass: a device names ITSELF, and only
+  // the operator decides who it belongs to (proposal 2026-07-14).
+  getIdentity () { return this._request('identity.get') }
+  setIdentity (params) { return this._request('identity.set', params) }
+
   art (params) { return this._request('art.get', params, { stream: true }) }
 
   // Resolves to the whole buffer. `onchunk` lets a caller start work before the

@@ -1020,3 +1020,19 @@ button.shead .caret.open {
 .sheet h2 {
   margin: 1.2rem 0 0;
 }
+.namebox {
+  width: 100%;
+  max-width: 22rem;
+  text-align: left;
+  background: var(--color-surface-card);
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  padding: 1rem;
+}
+.namebox .hint {
+  margin: .4rem 0 0;
+}
+label.flabel {
+  display: block;
+  margin-top: .6rem;
+}

@@ -64,6 +64,7 @@ export default function App () {
   const [songs, setSongs] = useState(null)
   const [songCursor, setSongCursor] = useState(0)
   const [density, setDensity] = useState('2')
+  const [ident, setIdent] = useState(null) // device name + user claim
   const [query, setQuery] = useState('')
   const [results, setResults] = useState(null)
   const [now, setNow] = useState(null)
@@ -110,6 +111,7 @@ export default function App () {
       on('host:connected', (d) => {
         setState(s => ({ ...s, connected: true, host: { ...s.host, ...d } }))
         setError(null)
+        loadIdentity()
       }),
 
       // Back from the background, where the link almost certainly died. Reconnect
@@ -126,6 +128,24 @@ export default function App () {
   // What the once-registered listeners above need to see, always current.
   const liveRef = useRef({})
   liveRef.current = { host: state.host, connected: state.connected, reconnecting }
+
+  // Who this device says it is. The HOST is the authority on what its dashboard
+  // shows, so this is read back from it rather than trusted from local settings.
+  async function loadIdentity () {
+    try {
+      setIdent(await call('identity'))
+    } catch {
+      // Offline, or an old host with no identity API. Settings shows what we know.
+    }
+  }
+
+  async function saveIdentity ({ deviceName, userName }) {
+    const r = await call('setIdentity', { deviceName, userName })
+    setIdent(i => ({ ...i, ...r, supported: true }))
+    haptic('success')
+    toast('Sent to your server')
+    return r
+  }
 
   // "Added 12 tracks to the queue." Queueing is otherwise INVISIBLE - the music
   // does not change, which is the whole point of it - so without a word on screen
@@ -358,11 +378,11 @@ export default function App () {
     call('repeat', { mode: next })
   }
 
-  async function onPaired (link) {
+  async function onPaired (link, names = {}) {
     setScanning(false)
     setError(null)
     try {
-      const host = await call('pair', { link })
+      const host = await call('pair', { link, label: names.deviceName, userName: names.userName })
       setState(s => ({ ...s, host, connected: true }))
       haptic('success')
       loadAlbums(0)
@@ -483,8 +503,20 @@ export default function App () {
   // no navbar until there is.
   if (!state.host) {
     return scanning
-      ? <Scanner onScan={onPaired} onCancel={() => setScanning(false)} error={error} />
-      : <Welcome onScan={() => setScanning(true)} onPaste={onPaired} error={error} />
+      ? (
+        <Scanner
+          onScan={(link) => onPaired(link, scanning)}
+          onCancel={() => setScanning(false)}
+          error={error}
+        />
+        )
+      : (
+        <Welcome
+          onScan={(names) => setScanning(names || {})}
+          onPaste={onPaired}
+          error={error}
+        />
+        )
   }
 
   const top = stack[stack.length - 1] || null
@@ -518,7 +550,12 @@ export default function App () {
       />
     )
   } else if (tab === 'settings') {
-    screen = <Settings state={state} themePref={themePref} onTheme={changeTheme} onUnpair={unpair} />
+    screen = (
+      <Settings
+        state={state} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
+        ident={ident} onSaveIdentity={saveIdentity}
+      />
+    )
   } else if (tab === 'about') {
     screen = <About onDonate={() => setDonate(true)} />
   } else {
@@ -1519,8 +1556,33 @@ function fmt (ms) {
 
 // --- settings ----------------------------------------------------------------
 
-function Settings ({ state, themePref, onTheme, onUnpair }) {
+function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity }) {
   const [copied, setCopied] = useState(false)
+  const [dev, setDev] = useState(null)
+  const [usr, setUsr] = useState(null)
+  const [saving, setSaving] = useState(false)
+
+  // null means "not edited yet" - fall back to what the host told us. Using '' as
+  // the initial value instead would silently clear a name the moment identity
+  // loaded a beat later than the first render.
+  const deviceName = dev ?? ident?.deviceName ?? ''
+  const userName = usr ?? ident?.userName ?? ''
+  const dirty =
+    (dev !== null && dev !== (ident?.deviceName ?? '')) ||
+    (usr !== null && usr !== (ident?.userName ?? ''))
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await onSaveIdentity({ deviceName: deviceName.trim(), userName: userName.trim() })
+      setDev(null)
+      setUsr(null)
+    } catch (e) {
+      // The worklet already toasts; nothing to add here.
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const copyKey = () => {
     copyText(state.deviceKeyZ32 || state.deviceKey)
@@ -1544,6 +1606,59 @@ function Settings ({ state, themePref, onTheme, onUnpair }) {
             >{l}</button>
           ))}
         </div>
+      </div>
+
+      <div className='card'>
+        <h3>You and this device</h3>
+        <div className='desc'>
+          This is what the person running the server sees on their dashboard - it is
+          how they tell your phone apart from everyone else's.
+        </div>
+
+        <label className='flabel muted sm'>Device name</label>
+        <input
+          value={deviceName}
+          onChange={e => setDev(e.target.value)}
+          placeholder="Tim's Pixel"
+          maxLength={64}
+          disabled={!state.connected}
+        />
+
+        <label className='flabel muted sm'>Your name</label>
+        <input
+          value={userName}
+          onChange={e => setUsr(e.target.value)}
+          placeholder='Tim'
+          maxLength={64}
+          disabled={!state.connected}
+        />
+
+        {/* A claim grants nothing until the operator confirms it. Saying so is more
+            honest than a green tick that means "we told them". */}
+        {ident?.userName && (
+          <div className='desc'>
+            {ident.confirmed
+              ? `Your server has confirmed this device belongs to ${ident.userName}.`
+              : `Waiting for your server to confirm you are ${ident.userName}. Until then this is only a label.`}
+          </div>
+        )}
+
+        <div className='btnrow'>
+          <button
+            className='primary'
+            onClick={save}
+            disabled={!dirty || saving || !state.connected}
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+
+        {ident && ident.supported === false && (
+          <div className='desc'>
+            Your server is running an older PearTune and cannot be told about names
+            yet. Update it, or re-pair to set the device name.
+          </div>
+        )}
       </div>
 
       <div className='card'>
@@ -1742,8 +1857,18 @@ function DonationSheet ({ onClose }) {
 
 // --- pairing -----------------------------------------------------------------
 
+// The names are asked for BEFORE pairing, because the device name rides in the
+// pairing handshake itself (deviceHello already carries it) - and because the
+// alternative is what we shipped until now: every device on the operator's
+// dashboard called "Android phone", telling them nothing about which phone to
+// revoke.
 function Welcome ({ onScan, onPaste, error }) {
   const [link, setLink] = useState('')
+  const [deviceName, setDeviceName] = useState('')
+  const [userName, setUserName] = useState('')
+
+  const names = { deviceName: deviceName.trim(), userName: userName.trim() }
+
   return (
     <div className='center'>
       <h1>PearTune</h1>
@@ -1752,11 +1877,33 @@ function Welcome ({ onScan, onPaste, error }) {
         server and show the pairing code.
       </p>
       {error && <div className='error'>{error}</div>}
-      <button className='primary' onClick={onScan}>Scan pairing code</button>
+
+      <div className='namebox'>
+        <label className='muted sm'>This device</label>
+        <input
+          value={deviceName}
+          onChange={e => setDeviceName(e.target.value)}
+          placeholder="Tim's Pixel"
+          maxLength={64}
+        />
+        <label className='muted sm'>Your name (optional)</label>
+        <input
+          value={userName}
+          onChange={e => setUserName(e.target.value)}
+          placeholder='Tim'
+          maxLength={64}
+        />
+        <p className='muted sm hint'>
+          The person running the server sees these, so they know whose device this
+          is. They confirm your name before it means anything.
+        </p>
+      </div>
+
+      <button className='primary' onClick={() => onScan(names)}>Scan pairing code</button>
       <details>
         <summary className='muted sm'>Paste a link instead</summary>
         <input value={link} onChange={e => setLink(e.target.value)} placeholder='pear://peartune/pair?…' />
-        <button onClick={() => onPaste(link.trim())} disabled={!link.trim()}>Pair</button>
+        <button onClick={() => onPaste(link.trim(), names)} disabled={!link.trim()}>Pair</button>
       </details>
     </div>
   )
