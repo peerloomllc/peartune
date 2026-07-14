@@ -178,6 +178,27 @@ class NavidromeAdapter {
   }
 
   async get ({ id, type = 'track' }) {
+    // An artist IS its albums. getArtist returns them in one call, so browsing by
+    // artist costs the same round trip as browsing by album - no walking.
+    if (type === 'artist') {
+      const sr = await this._call('getArtist', { id })
+      const a = sr.artist
+      if (!a) return null
+      return {
+        id: a.id,
+        name: a.name,
+        coverId: a.coverArt || null,
+        albums: (a.album || []).map(al => ({
+          id: al.id,
+          name: al.name,
+          artist: al.artist || a.name,
+          year: al.year ?? null,
+          songCount: al.songCount ?? null,
+          coverId: al.coverArt || al.id
+        }))
+      }
+    }
+
     if (type === 'album') {
       const sr = await this._call('getAlbum', { id })
       const a = sr.album

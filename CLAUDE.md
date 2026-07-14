@@ -23,7 +23,15 @@ The host is a sibling of PearCircle's `seeder-launcher/`, which is already a Bar
 
 ## Status
 
-Wire protocol v1 proposed 2026-07-13. See `proposals/2026-07-13-wire-protocol.md` (T3). **Not yet implemented.** Work tracked in `TODO.md`.
+Wire protocol v1: `proposals/2026-07-13-wire-protocol.md` (T3). **Implemented.**
+
+Milestones 1 and 2 (pair, stream, revoke; Navidrome adapter) are done and
+validated on real hardware - TCL + Umbrel + Navidrome, 1358 tracks. Gapless
+playback, shuffle/repeat, per-person grants, the app shell (bottom navbar, nav
+stack, Android back, Settings, About) and artist browsing all shipped.
+
+Next up is milestone 3 (offline + Autobase ledger) and milestone 4 (ship it).
+Work tracked in `TODO.md`, newest decisions in `DECISIONS.md`.
 
 ## Architecture
 

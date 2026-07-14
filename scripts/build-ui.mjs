@@ -35,7 +35,11 @@ const html = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#14130f">
   <title>PearTune</title>
-  <style>html,body,#root{height:100%;margin:0;background:#14130f}</style>
+  <!-- The pre-paint background follows the theme, not a hardcoded dark: the shell
+       stamps data-theme on <html> before this document's bundle runs (it read the
+       preference out of the worklet), so a light-theme user never gets a frame of
+       dark. The fallback is the dark surface, which is also the default theme. -->
+  <style>html,body,#root{height:100%;margin:0;background:var(--color-surface-base,#14130f)}</style>
   <style>${css}</style>
 </head>
 <body>

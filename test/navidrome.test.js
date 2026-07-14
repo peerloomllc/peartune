@@ -94,6 +94,56 @@ test('duration is converted from Subsonic seconds to our milliseconds', () => {
   assert.equal(a._track({ id: 's', duration: 171 }).durationMs, 171000)
 })
 
+// --- artist detail ----------------------------------------------------------
+//
+// An artist is its albums. getArtist returns them in ONE call, so artist browsing
+// costs the same round trip as album browsing rather than walking the library.
+
+test('get({type:"artist"}) returns the artist and its albums', async () => {
+  const a = make()
+  a._call = async (method, params) => {
+    assert.equal(method, 'getArtist')
+    assert.equal(params.id, 'ar-1')
+    return {
+      artist: {
+        id: 'ar-1',
+        name: 'Portishead',
+        coverArt: 'ar-1',
+        album: [
+          { id: 'al-1', name: 'Dummy', year: 1994, songCount: 11, coverArt: 'al-1' },
+          // No coverArt and no artist: both must fall back rather than go null.
+          { id: 'al-2', name: 'Third' }
+        ]
+      }
+    }
+  }
+
+  const r = await a.get({ id: 'ar-1', type: 'artist' })
+  assert.equal(r.name, 'Portishead')
+  assert.equal(r.albums.length, 2)
+  assert.equal(r.albums[0].coverId, 'al-1')
+  assert.equal(r.albums[0].year, 1994)
+
+  // The album id doubles as the cover id in Subsonic, and an album under an
+  // artist inherits that artist's name - otherwise the artist page renders a
+  // grid of albums with a blank byline.
+  assert.equal(r.albums[1].coverId, 'al-2')
+  assert.equal(r.albums[1].artist, 'Portishead')
+})
+
+test('an unknown artist is null, not a throw', async () => {
+  const a = make()
+  a._call = async () => ({})
+  assert.equal(await a.get({ id: 'nope', type: 'artist' }), null)
+})
+
+test('an artist with no albums is an empty grid, not a crash', async () => {
+  const a = make()
+  a._call = async () => ({ artist: { id: 'ar-9', name: 'Nobody' } })
+  const r = await a.get({ id: 'ar-9', type: 'artist' })
+  assert.deepEqual(r.albums, [])
+})
+
 test('default playback asks for RAW (original bytes), not a transcode', () => {
   const a = make()
   // No format/bitrate requested -> format=raw, so the default path is exact

@@ -17,6 +17,7 @@
 const fs = require('bare-fs')
 const path = require('bare-path')
 const b4a = require('b4a')
+const z32 = require('z32')
 const hcrypto = require('hypercore-crypto')
 
 const { PearTuneClient } = require('../client')
@@ -26,6 +27,9 @@ const { isPairLink } = require('../protocol/link')
 const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
 const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
 const HOSTS_FILE = path.join(DATA_DIR, 'hosts.json')
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
+
+const DEFAULT_SETTINGS = { theme: 'system' }
 
 let client = null
 let shim = null
@@ -84,6 +88,28 @@ function saveHost (h) {
   fs.writeFileSync(HOSTS_FILE, JSON.stringify(h))
 }
 
+// --- settings ---------------------------------------------------------------
+//
+// Settings live in the worklet, next to the identity and the host, rather than in
+// the WebView's localStorage: the WebView's storage is the one thing in this app
+// that a routine `pm clear`-style wipe or a WebView data reset can take out from
+// under us, and losing the theme is not the point - keeping ONE place where "what
+// this device knows" lives is.
+function loadSettings () {
+  try {
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) }
+  } catch {
+    return { ...DEFAULT_SETTINGS }
+  }
+}
+
+function saveSettings (patch) {
+  const next = { ...loadSettings(), ...patch }
+  fs.mkdirSync(DATA_DIR, { recursive: true })
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(next))
+  return next
+}
+
 // --- connection -------------------------------------------------------------
 
 async function ensureClient () {
@@ -123,13 +149,25 @@ async function connectTo (host) {
 
 // --- methods ----------------------------------------------------------------
 
+// Artwork arrives over P2P through the shim's loopback server, so anything the UI
+// will <img src> has to be resolved to a loopback URL here, where the shim is.
+const withArt = (x) => ({
+  ...x,
+  art: x.coverId && shim ? shim.artUrlFor(x.coverId) : null
+})
+
 const methods = {
   async init () {
     identity = loadIdentity()
     const host = loadHost()
     const state = {
       deviceKey: b4a.toString(identity.publicKey, 'hex'),
+      // The SAME encoding the host's dashboard prints in its device rows (grants
+      // are keyed by z32). Settings shows this so an operator deciding which row
+      // to revoke can match the phone in their hand to a line on the screen.
+      deviceKeyZ32: z32.encode(identity.publicKey),
       host: host || null,
+      settings: loadSettings(),
       connected: false
     }
     if (host) {
@@ -182,34 +220,43 @@ const methods = {
   // could only ever show the first page. Albums page properly.
   async albums ({ cursor = 0, limit = 60 } = {}) {
     const page = await client.list({ type: 'albums', cursor, limit })
-    return {
-      ...page,
-      items: page.items.map(a => ({
-        ...a,
-        // Pre-resolve the loopback URL so the WebView can <img src> it directly.
-        art: a.coverId && shim ? shim.artUrlFor(a.coverId) : null
-      }))
-    }
+    return { ...page, items: page.items.map(withArt) }
   },
 
   async album ({ id }) {
     const a = await client.get({ id, type: 'album' })
+    return a ? withArt(a) : null
+  },
+
+  // Artists are the second way in. The host has always been able to list them
+  // (`library.list({type:'artists'})`); nothing was asking.
+  async artists () {
+    const page = await client.list({ type: 'artists' })
+    return { ...page, items: page.items.map(withArt) }
+  },
+
+  // An artist page is a grid of that artist's albums, so its albums need art too.
+  async artist ({ id }) {
+    const a = await client.get({ id, type: 'artist' })
     if (!a) return null
-    return {
-      ...a,
-      art: a.coverId && shim ? shim.artUrlFor(a.coverId) : null
-    }
+    return { ...withArt(a), albums: (a.albums || []).map(withArt) }
   },
 
   async search ({ q }) {
     const r = await client.search({ q })
     return {
       ...r,
-      albums: (r.albums || []).map(a => ({
-        ...a,
-        art: a.coverId && shim ? shim.artUrlFor(a.coverId) : null
-      }))
+      albums: (r.albums || []).map(withArt),
+      artists: (r.artists || []).map(withArt)
     }
+  },
+
+  async settings () {
+    return loadSettings()
+  },
+
+  async setSettings (patch) {
+    return saveSettings(patch || {})
   },
 
   // The URL the RN player hands to ExoPlayer. The audio never touches RN: the

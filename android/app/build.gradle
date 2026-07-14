@@ -183,3 +183,18 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+// NEVER let the JS bundle task go UP-TO-DATE.
+//
+// PearTune's entire WebView UI is an ASSET (assets/index.html, built by
+// `npm run build:ui`), not a JS source file, and so is the Bare worklet bundle
+// (assets/bare-universal.bundle). Gradle's up-to-date check for
+// createBundle{Debug,Release}JsAndAssets does not notice when only those change:
+// it skips the task, repackages the PREVIOUS bundle, and the APK silently ships a
+// STALE UI. You rebuild, you install, you screenshot, and you are looking at your
+// old code with no error anywhere. Cost an hour of "why is my CSS not applying".
+//
+// Re-running the bundle costs ~30s. Shipping the wrong bundle costs a lot more.
+tasks.matching { it.name ==~ /createBundle.*JsAndAssets/ }.configureEach {
+    outputs.upToDateWhen { false }
+}

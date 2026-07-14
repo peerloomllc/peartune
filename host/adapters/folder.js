@@ -88,7 +88,12 @@ class FolderAdapter {
     return { type, items, nextCursor: next < all.length ? next : null }
   }
 
-  async get ({ id }) {
+  async get ({ id, type = 'track' }) {
+    // No tag reading yet, so this adapter knows nothing about artists or albums -
+    // only files. Say so explicitly rather than falling through to the track
+    // lookup and returning a null that looks like "no such artist".
+    if (type !== 'track') return null
+
     const t = this.byId.get(id)
     if (!t) return null
     return { id: t.id, title: t.title, path: t.relPath, size: t.size }

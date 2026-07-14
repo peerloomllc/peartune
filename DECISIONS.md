@@ -2,6 +2,47 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - The theme preference lives in the WORKLET, not localStorage
+Tier: T1 (local state)
+Context: every sibling app (PearPetal, PearList, PearCircle) keeps the theme
+preference in the WebView's localStorage and reads it synchronously in main.jsx
+before the first paint.
+Choice: PearTune keeps it in the worklet, in `settings.json`, next to the device
+identity and the paired host. A deliberate deviation from the suite.
+Why: it is the only way to get a FLASH-FREE cold start here. The shell boots the
+worklet BEFORE it loads the WebView, so it can read the preference, resolve
+'system' against `Appearance`, paint its own chrome (status bar + the strip under
+the WebView) correctly, and hand the WebView a document that already carries the
+right `data-theme`. With localStorage the shell cannot see the preference at all
+(it is inside the WebView it has not created yet), which is exactly why PearPetal
+needs a separate AsyncStorage cache of the resolved theme to avoid the flash - two
+stores for one fact. One store, read once, at the only moment that matters.
+Cost: settings are gone if the app's data is cleared - the same wipe that already
+takes the device identity and forces a re-pair, so nothing new is at risk.
+Verified on the TCL: preference Light, force-stop, relaunch - the FIRST painted
+frame (the "Starting…" screen, before the library loads) is already light.
+
+## 2026-07-14 - The navbar stays visible during a drill-down
+Tier: T1 (UI)
+Context: PearList hides its tab bar when a list is open, treating a drill-down as
+a full-screen takeover.
+Choice: PearTune keeps the navbar visible inside an album or an artist.
+Why: the dock is one fixed object - the player sits ON the navbar. Hiding the
+navbar under an album would drop the player ~64px down the screen mid-song, and
+raise it again on the way back. A music app's transport does not move.
+
+## 2026-07-14 - Gradle must never cache the JS bundle task
+Tier: T1 (build)
+Context: PearTune's whole UI is an ASSET (`assets/index.html`, built by esbuild),
+not a JS source file - and so is the Bare worklet bundle.
+Choice: `outputs.upToDateWhen { false }` on `createBundle*JsAndAssets` in
+`android/app/build.gradle`.
+Why: gradle's up-to-date check does not notice when only those assets change. It
+skips the bundle task, repackages the PREVIOUS bundle, and the APK silently ships
+a STALE UI - you rebuild, install, screenshot, and are looking at old code with no
+error anywhere. Found the honest way: a CSS fix that would not apply, twice.
+Cost: ~30s per debug build. Cheaper than shipping the wrong bundle.
+
 ## 2026-07-13 - NOT WebRTC. HyperDHT for transport, loopback HTTP for the player
 Tier: T3 (transport)
 Context: WebRTC comes up a lot in the Pear/Holepunch space around streaming
