@@ -25,6 +25,12 @@ export function call (method, args = {}) {
   })
 }
 
+// A tap you can feel. Fire-and-forget by design: a dropped buzz is not worth a
+// rejected promise anywhere up the call stack.
+export function haptic (kind = 'light') {
+  call('shell:haptic', { kind }).catch(() => {})
+}
+
 export function on (name, fn) {
   if (!listeners.has(name)) listeners.set(name, [])
   listeners.get(name).push(fn)

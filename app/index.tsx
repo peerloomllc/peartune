@@ -17,6 +17,7 @@ import { View, StatusBar, BackHandler, Appearance, Platform, Share } from 'react
 import { WebView } from 'react-native-webview'
 import * as Linking from 'expo-linking'
 import * as Clipboard from 'expo-clipboard'
+import * as Haptics from 'expo-haptics'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Worklet } from 'react-native-bare-kit'
 // expo-audio, not expo-av: av is deprecated as of SDK 54.
@@ -448,6 +449,16 @@ export default function App () {
         const text = msg.args?.text
         if (typeof text !== 'string' || !text) return reply({ error: 'text required' })
         await Clipboard.setStringAsync(text)
+        return reply({ result: { ok: true } })
+      }
+      if (msg.method === 'shell:haptic') {
+        const k = msg.args?.kind
+        try {
+          if (k === 'medium') await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+          else if (k === 'success') await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+          else if (k === 'warn') await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
+          else await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+        } catch {}
         return reply({ result: { ok: true } })
       }
     } catch (err: any) {

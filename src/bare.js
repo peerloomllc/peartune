@@ -207,6 +207,32 @@ const methods = {
     return { ...host, shimPort }
   },
 
+  // The host was unreachable at boot (it is a machine in someone's house - it gets
+  // turned off), or it dropped later. Rebuild the connection from scratch rather
+  // than reusing the client: after a `close` the old one is dead, and a half-dead
+  // one is worse than none, because it fails on the first stream instead of here.
+  async reconnect () {
+    const host = loadHost()
+    if (!host) throw new Error('Not paired with a library.')
+
+    if (client) {
+      try {
+        await client.close()
+      } catch {}
+      client = null
+    }
+    if (shim) {
+      try {
+        await shim.close()
+      } catch {}
+      shim = null
+      shimPort = null
+    }
+
+    await connectTo(host)
+    return { ok: true, shimPort }
+  },
+
   async stats () {
     return client.stats()
   },
