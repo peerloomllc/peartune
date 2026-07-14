@@ -17,7 +17,7 @@ import {
   CaretDown, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, RepeatOnce, X,
   ArrowCounterClockwise, ArrowClockwise, Heart, CurrencyBtc, ShareNetwork,
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
-  GridFour
+  GridFour, ListPlus, Queue as QueueIcon, Trash
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -72,6 +72,9 @@ export default function App () {
   const [scanning, setScanning] = useState(false)
   const [donate, setDonate] = useState(false)
   const [confirming, setConfirming] = useState(null)
+  const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
+  const [queue, setQueue] = useState(null) // the up-next list, when opened
+  const [note, setNote] = useState(null) // a transient confirmation
   const [viewing, setViewing] = useState(null) // artwork, full screen
   const [expanded, setExpanded] = useState(false) // the player: mini vs full
   const [albumsLoaded, setAlbumsLoaded] = useState(false)
@@ -124,6 +127,16 @@ export default function App () {
   const liveRef = useRef({})
   liveRef.current = { host: state.host, connected: state.connected, reconnecting }
 
+  // "Added 12 tracks to the queue." Queueing is otherwise INVISIBLE - the music
+  // does not change, which is the whole point of it - so without a word on screen
+  // the button looks broken.
+  const noteTimer = useRef(null)
+  function toast (msg) {
+    setNote(msg)
+    clearTimeout(noteTimer.current)
+    noteTimer.current = setTimeout(() => setNote(null), 2400)
+  }
+
   // --- theme -----------------------------------------------------------------
   //
   // The preference is already painted: the shell read it out of the worklet and
@@ -146,10 +159,11 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, confirming, viewing, expanded, stack, tab }
+  navRef.current = { scanning, donate, confirming, menu, viewing, expanded, stack, tab }
 
   const canBack = !!(
-    scanning || donate || confirming || viewing || expanded || stack.length || tab !== 'library'
+    scanning || donate || confirming || menu || viewing || expanded ||
+    stack.length || tab !== 'library'
   )
   useEffect(() => { call('shell:navState', { canBack }).catch(() => {}) }, [canBack])
 
@@ -159,6 +173,7 @@ export default function App () {
   useEffect(() => on('back', () => {
     const n = navRef.current
     if (n.viewing) return setViewing(null)
+    if (n.menu) return setMenu(null)
     if (n.donate) return setDonate(false)
     if (n.confirming) return setConfirming(null)
     if (n.scanning) return setScanning(false)
@@ -357,23 +372,102 @@ export default function App () {
     }
   }
 
+  const toQueue = (list) => list.map(x => ({
+    id: x.id,
+    title: x.title,
+    artist: x.artist,
+    album: x.album,
+    art: x.art ?? null,
+    // Carried so the player's own art viewer opens the big image rather than a
+    // stretched thumbnail. The lock screen still gets the small one.
+    artFull: x.artFull ?? null,
+    durationMs: x.durationMs
+  }))
+
   // Tapping a track queues the whole list behind it - which is what people mean
   // when they tap a track in an album.
   const playFrom = (list, t) => {
     haptic('light')
-    const queue = list.map(x => ({
-      id: x.id,
-      title: x.title,
-      artist: x.artist,
-      album: x.album,
-      art: x.art ?? null,
-      // Carried so the player's own art viewer opens the big image rather than a
-      // stretched thumbnail. The lock screen still gets the small one.
-      artFull: x.artFull ?? null,
-      durationMs: x.durationMs
-    }))
     const index = Math.max(0, list.findIndex(x => x.id === t.id))
-    return call('play', { queue, index })
+    return call('play', { queue: toQueue(list), index })
+  }
+
+  // Play a whole album or artist without drilling into it for a track to tap.
+  //
+  // Shuffle starts on a RANDOM track, not on track 1 with shuffle merely enabled.
+  // ExoPlayer owns the shuffled order (DECISIONS), but it still begins where we
+  // point it, and "shuffle" that opens every album on its first song is not
+  // shuffle.
+  const playAll = (list, { shuffled = false } = {}) => {
+    if (!list?.length) return
+    haptic('light')
+    const index = shuffled ? Math.floor(Math.random() * list.length) : 0
+    setShuffle(shuffled)
+    call('shuffle', { on: shuffled })
+    return call('play', { queue: toQueue(list), index })
+  }
+
+  const enqueue = (list) => {
+    if (!list?.length) return
+    haptic('success')
+    call('enqueue', { queue: toQueue(list) })
+    toast(`Added ${list.length} ${list.length === 1 ? 'track' : 'tracks'} to the queue`)
+  }
+
+  // The queue is asked for, not cached. It lives in the shell (ExoPlayer owns the
+  // shuffled order), so a copy kept here would drift the moment shuffle is on or a
+  // track auto-advances - it is re-fetched whenever the screen is open and the
+  // track changes underneath it.
+  async function loadQueue () {
+    try {
+      setQueue(await call('queue'))
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  useEffect(() => {
+    if (tab !== 'queue') return
+    loadQueue()
+  }, [tab, now?.trackId, status?.queueLength])
+
+  function jumpTo (index) {
+    haptic('light')
+    call('playIndex', { index })
+  }
+
+  function clearQueue () {
+    haptic('warn')
+    call('stop')
+    setQueue({ items: [], index: 0 })
+  }
+
+  // The long-press menu holds an ID, not tracks: a grid of 60 albums has not
+  // fetched anybody's track list, and it should not, just in case someone might
+  // long-press one. The tracks are fetched when an action is actually chosen.
+  async function tracksFor (item) {
+    if (item.type === 'track') return [item.track]
+    if (item.type === 'album') {
+      const a = await call('album', { id: item.id })
+      return (a?.tracks || []).map(t => ({ ...t, art: t.art ?? a.art, artFull: a.artFull }))
+    }
+    if (item.type === 'artist') {
+      const r = await call('artistTracks', { id: item.id })
+      return r.items || []
+    }
+    return []
+  }
+
+  async function menuAction (item, action) {
+    setMenu(null)
+    try {
+      const list = await tracksFor(item)
+      if (!list.length) return setError('Nothing to play there.')
+      if (action === 'queue') return enqueue(list)
+      return playAll(list, { shuffled: action === 'shuffle' })
+    } catch (e) {
+      setError(e.message)
+    }
   }
 
   if (state.loading) return <div className='center'><p className='muted'>Starting…</p></div>
@@ -394,14 +488,25 @@ export default function App () {
   if (top?.type === 'album') {
     screen = (
       <AlbumScreen
-        id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom} onViewArt={viewArt}
+        id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom}
+        onPlayAll={playAll} onQueue={enqueue} onViewArt={viewArt}
       />
     )
   } else if (top?.type === 'artist') {
     screen = (
       <ArtistScreen
-        id={top.id} name={top.name} onBack={pop} onViewArt={viewArt}
+        id={top.id} name={top.name} onBack={pop} onViewArt={viewArt} onLong={setMenu}
+        onArtistAction={(artistId, action) => menuAction({ type: 'artist', id: artistId }, action)}
         onOpenAlbum={(id) => push({ type: 'album', id })}
+      />
+    )
+  } else if (tab === 'queue') {
+    screen = (
+      <QueueScreen
+        items={queue?.items || []}
+        index={queue?.index ?? 0}
+        onJump={jumpTo}
+        onClear={clearQueue}
       />
     )
   } else if (tab === 'settings') {
@@ -430,6 +535,7 @@ export default function App () {
         onOpenAlbum={(id) => push({ type: 'album', id })}
         onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
         onPlay={playFrom}
+        onLong={setMenu}
       />
     )
   }
@@ -439,29 +545,31 @@ export default function App () {
       {screen}
 
       <div className='dock' ref={dockRef}>
-        {now && (expanded
-          ? (
-            <NowPlaying
-              now={now} status={status}
-              shuffle={shuffle} repeat={repeat}
-              onShuffle={toggleShuffle} onRepeat={cycleRepeat}
-              onCollapse={() => { haptic('light'); setExpanded(false) }}
-              onViewArt={() => viewArt(now.artFull || now.art, now.album || now.title)}
-            />
-            )
-          : (
-            <MiniPlayer
-              now={now} status={status}
-              onExpand={() => { haptic('light'); setExpanded(true) }}
-            />
-            ))}
+        {now && (
+          <Player
+            now={now} status={status} expanded={expanded}
+            shuffle={shuffle} repeat={repeat} onQueue={() => goTab('queue')}
+            onShuffle={toggleShuffle} onRepeat={cycleRepeat}
+            onExpand={() => { haptic('light'); setExpanded(true) }}
+            onCollapse={() => { haptic('light'); setExpanded(false) }}
+            onViewArt={() => viewArt(now.artFull || now.art, now.album || now.title)}
+          />
+        )}
         {/* The navbar stays put during a drill-down, unlike PearList's (which
             hides it inside a list). A music app's dock is fixed furniture: the
             player sits on top of it, and dropping the navbar under an album would
             make the player jump down the screen mid-song. */}
-        <NavBar active={tab} onTab={goTab} />
+        <NavBar active={tab} onTab={goTab} queued={status?.queueLength ?? 0} />
       </div>
 
+      {note && <div className='toast'>{note}</div>}
+      {menu && (
+        <ActionSheet
+          item={menu}
+          onClose={() => setMenu(null)}
+          onAction={(a) => menuAction(menu, a)}
+        />
+      )}
       {viewing && <ArtViewer {...viewing} onClose={() => setViewing(null)} />}
       {donate && <DonationSheet onClose={() => setDonate(false)} />}
       {confirming && (
@@ -479,21 +587,30 @@ export default function App () {
 
 const TABS = [
   { key: 'library', label: 'Library', Icon: MusicNotes },
+  { key: 'queue', label: 'Queue', Icon: QueueIcon },
   { key: 'settings', label: 'Settings', Icon: Gear },
   { key: 'about', label: 'About', Icon: Info }
 ]
 
-function NavBar ({ active, onTab }) {
+// The queue count rides on the TAB, which is the one thing on screen that is always
+// there - dock or no dock, playing or not. That is the persistent indicator; the
+// player's own counter is just a shortcut to the same screen.
+function NavBar ({ active, onTab, queued }) {
   return (
     <nav className='navbar'>
       {TABS.map(({ key, label, Icon }) => {
         const on = active === key
+        const badge = key === 'queue' && queued > 0 ? queued : null
         return (
           <button
             key={key} className={on ? 'on' : ''} onClick={() => onTab(key)}
-            aria-current={on ? 'page' : undefined} aria-label={label}
+            aria-current={on ? 'page' : undefined}
+            aria-label={badge ? `${label}, ${badge} tracks` : label}
           >
-            <Icon size={22} weight={on ? 'fill' : 'regular'} />
+            <span className='ic'>
+              <Icon size={22} weight={on ? 'fill' : 'regular'} />
+              {badge && <span className='badge'>{badge > 99 ? '99+' : badge}</span>}
+            </span>
             <span>{label}</span>
           </button>
         )
@@ -507,6 +624,134 @@ function Back ({ onClick }) {
     <button className='back' onClick={() => { haptic('light'); onClick() }}>
       <CaretLeft size={14} weight='bold' /> Back
     </button>
+  )
+}
+
+// Long-press. There is no such gesture in a WebView, so: start a timer on touch,
+// kill it if the finger moves or lifts early. The `fired` ref is the important
+// part - without it the press ALSO opens the album on the way out, and you get a
+// menu on top of a screen you did not ask for.
+function usePress (onPress, onLongPress) {
+  const timer = useRef(null)
+  const fired = useRef(false)
+
+  const clear = () => {
+    clearTimeout(timer.current)
+    timer.current = null
+  }
+
+  return {
+    onTouchStart: () => {
+      fired.current = false
+      if (!onLongPress) return
+      timer.current = setTimeout(() => {
+        fired.current = true
+        haptic('medium') // the press has "landed" - say so before the sheet appears
+        onLongPress()
+      }, 450)
+    },
+    onTouchMove: clear,
+    onTouchEnd: clear,
+    onTouchCancel: clear,
+    onClick: () => {
+      if (fired.current) {
+        fired.current = false
+        return
+      }
+      onPress?.()
+    }
+  }
+}
+
+// What is actually up next.
+//
+// The list comes from the SHELL, because that is where the queue lives (ExoPlayer
+// owns the shuffled order). A copy kept in the UI would drift the moment shuffle is
+// on or a track auto-advances - so this screen ASKS, every time it is opened and
+// every time the track changes.
+function QueueScreen ({ items, index, onJump, onClear }) {
+  if (!items.length) {
+    return (
+      <div className='app'>
+        <header><h1>Queue</h1></header>
+        <div className='blank'>
+          <QueueIcon size={40} weight='thin' />
+          <h2>Nothing queued</h2>
+          <p className='muted sm'>
+            Play an album, or long-press one and choose Add to queue. What is coming
+            up next will appear here.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  const left = items.length - index - 1
+
+  return (
+    <div className='app'>
+      <header>
+        <h1>Queue</h1>
+        <p className='muted sm'>
+          {items.length} {items.length === 1 ? 'track' : 'tracks'}
+          {left > 0 ? ` · ${left} still to play` : ' · last track'}
+        </p>
+      </header>
+
+      <ul className='tracks queuelist'>
+        {items.map((t, i) => (
+          <li
+            key={`${t.id}:${i}`}
+            className={i === index ? 'on' : (i < index ? 'played' : '')}
+            onClick={() => onJump(i)}
+          >
+            <Cover src={t.art} sm />
+            <div className='meta'>
+              <div className='t'>{t.title}</div>
+              <div className='muted sm sub'>
+                {[t.artist, t.album].filter(Boolean).join(' · ')}
+              </div>
+            </div>
+            {i === index
+              ? <Play size={14} weight='fill' className='cur' />
+              : <span className='muted sm dur'>{t.durationMs ? fmt(t.durationMs) : ''}</span>}
+          </li>
+        ))}
+      </ul>
+
+      {/* Honest label. There is no way to empty the queue without stopping the
+          music: the queue IS what is playing. */}
+      <button className='more danger' onClick={onClear}>
+        <Trash size={15} weight='bold' /> Clear queue and stop
+      </button>
+    </div>
+  )
+}
+
+// Play / Shuffle / Add to queue, without drilling into the thing first.
+function ActionSheet ({ item, onClose, onAction }) {
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>{item.name}</h1>
+        <div className='acts'>
+          <button className='primary wide' onClick={() => onAction('play')}>
+            <Play size={17} weight='fill' /> Play
+          </button>
+          {/* One track cannot be shuffled. Offering it would be a button that
+              visibly does nothing. */}
+          {item.type !== 'track' && (
+            <button className='wide' onClick={() => onAction('shuffle')}>
+              <Shuffle size={17} weight='bold' /> Shuffle
+            </button>
+          )}
+          <button className='wide' onClick={() => onAction('queue')}>
+            <ListPlus size={17} weight='bold' /> Add to queue
+          </button>
+          <button className='wide' onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -550,7 +795,7 @@ function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
   onBrowse, onDensity, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
-  onOpenAlbum, onOpenArtist, onPlay
+  onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
   const searching = results && query.trim()
   const D = densityOf(density)
@@ -694,13 +939,16 @@ function Library ({
         ? (
           <>
             {!!results.artists?.length && <h2>Artists</h2>}
-            <ArtistGrid artists={results.artists || []} onOpen={onOpenArtist} d={D} empty={null} />
+            <ArtistGrid artists={results.artists || []} onOpen={onOpenArtist} onLong={onLong} d={D} empty={null} />
             {!!results.albums.length && <h2>Albums</h2>}
-            <Grid albums={results.albums} onOpen={onOpenAlbum} d={D} artBase={artBase} />
+            <Grid albums={results.albums} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} />
             {!!results.tracks.length && <h2>Tracks</h2>}
             <ul className='tracks'>
               {results.tracks.map(t => (
-                <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(results.tracks, t)} />
+                <Row
+                  key={t.id} t={t} on={now?.trackId === t.id}
+                  onPlay={() => onPlay(results.tracks, t)} onLong={onLong}
+                />
               ))}
             </ul>
             {!results.albums.length && !results.tracks.length && !results.artists?.length && (
@@ -717,7 +965,7 @@ function Library ({
                         {songs.map(t => (
                           <Row
                             key={t.id} t={t} on={now?.trackId === t.id}
-                            onPlay={() => onPlay(songs, t)} art
+                            onPlay={() => onPlay(songs, t)} onLong={onLong} art
                           />
                         ))}
                       </ul>
@@ -730,14 +978,14 @@ function Library ({
               : <SkeletonRows />)
           : browse === 'artists'
             ? (artists
-                ? <ArtistGrid artists={artists} onOpen={onOpenArtist} d={D} />
+                ? <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={D} />
                 : <SkeletonGrid round d={D} />)
             : !albumsLoaded
                 ? <SkeletonGrid d={D} />
                 : albums.length
                   ? (
                     <>
-                      <Grid albums={albums} onOpen={onOpenAlbum} d={D} artBase={artBase} />
+                      <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} />
                       {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
                     </>
                     )
@@ -805,22 +1053,32 @@ function SkeletonRows ({ n = 8 }) {
 
 // One component for all three densities. A "list" is just a one-column grid whose
 // rows are laid out sideways - not a separate screen with its own bugs.
-function Grid ({ albums, onOpen, d = DENSITY[2], artBase }) {
+function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase }) {
   if (!albums.length) return null
   const list = d.cols === 1
   return (
     <div className={'grid' + (list ? ' aslist' : '')} style={{ '--cols': d.cols }}>
       {albums.map(a => (
-        <div key={a.id} className='album' onClick={() => onOpen(a.id)}>
+        <Tile
+          key={a.id} className='album'
+          onPress={() => onOpen(a.id)}
+          onLongPress={onLong && (() => onLong({ type: 'album', id: a.id, name: a.name }))}
+        >
           <Cover src={artFor(a, d, artBase)} />
           <div className='meta'>
             <div className='t sm'>{a.name}</div>
             <div className='muted sm sub'>{a.artist}</div>
           </div>
-        </div>
+        </Tile>
       ))}
     </div>
   )
+}
+
+// One element, two gestures: tap opens it, a long press offers to play it.
+function Tile ({ className, onPress, onLongPress, children }) {
+  const press = usePress(onPress, onLongPress)
+  return <div className={className} {...press}>{children}</div>
 }
 
 // The art URL is built HERE because the size depends on the density, and asking
@@ -831,13 +1089,17 @@ function artFor (x, d, artBase) {
   return `${artBase}${encodeURIComponent(x.coverId)}?s=${d.art}`
 }
 
-function ArtistGrid ({ artists, onOpen, d = DENSITY[2], empty = <p className='muted center-p'>No artists.</p> }) {
+function ArtistGrid ({ artists, onOpen, onLong, d = DENSITY[2], empty = <p className='muted center-p'>No artists.</p> }) {
   if (!artists.length) return empty
   const list = d.cols === 1
   return (
     <div className={'grid' + (list ? ' aslist' : '')} style={{ '--cols': d.cols }}>
       {artists.map(a => (
-        <div key={a.id} className='album artist' onClick={() => onOpen(a)}>
+        <Tile
+          key={a.id} className='album artist'
+          onPress={() => onOpen(a)}
+          onLongPress={onLong && (() => onLong({ type: 'artist', id: a.id, name: a.name }))}
+        >
           <Cover src={a.art} artist />
           <div className='meta'>
             <div className='t sm'>{a.name}</div>
@@ -845,7 +1107,7 @@ function ArtistGrid ({ artists, onOpen, d = DENSITY[2], empty = <p className='mu
               <div className='muted sm sub'>{a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'}</div>
             )}
           </div>
-        </div>
+        </Tile>
       ))}
     </div>
   )
@@ -871,7 +1133,7 @@ function Cover ({ src, big, sm, artist }) {
 
 // Each drill-down fetches its own data from its id, so the nav stack holds nothing
 // but ids and popping back never has to restore anything.
-function AlbumScreen ({ id, now, error, onBack, onPlay, onViewArt }) {
+function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt }) {
   const [album, setAlbum] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -923,6 +1185,12 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onViewArt }) {
         </div>
       </div>
 
+      <Actions
+        onPlay={() => onPlayAll(tracks)}
+        onShuffle={() => onPlayAll(tracks, { shuffled: true })}
+        onQueue={() => onQueue(tracks)}
+      />
+
       <ul className='tracks'>
         {tracks.map(t => (
           <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo />
@@ -932,9 +1200,27 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onViewArt }) {
   )
 }
 
+// The obvious way to play a record: a button that says Play. Long-press on a tile
+// is the shortcut for people who know it is there; this is for everyone else.
+function Actions ({ onPlay, onShuffle, onQueue }) {
+  return (
+    <div className='actions'>
+      <button className='primary' onClick={onPlay}>
+        <Play size={16} weight='fill' /> Play
+      </button>
+      <button onClick={onShuffle}>
+        <Shuffle size={16} weight='bold' /> Shuffle
+      </button>
+      <button className='icon sq' onClick={onQueue} aria-label='Add to queue'>
+        <ListPlus size={18} weight='bold' />
+      </button>
+    </div>
+  )
+}
+
 // An artist IS its albums (one getArtist call on the host), so this is the album
 // grid again rather than a new kind of screen.
-function ArtistScreen ({ id, name, onBack, onOpenAlbum, onViewArt }) {
+function ArtistScreen ({ id, name, onBack, onOpenAlbum, onViewArt, onLong, onArtistAction }) {
   const [artist, setArtist] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -971,18 +1257,30 @@ function ArtistScreen ({ id, name, onBack, onOpenAlbum, onViewArt }) {
         </div>
       </div>
 
+      {artist && !!artist.albums.length && (
+        <Actions
+          onPlay={() => onArtistAction(id, 'play')}
+          onShuffle={() => onArtistAction(id, 'shuffle')}
+          onQueue={() => onArtistAction(id, 'queue')}
+        />
+      )}
+
       {err && <div className='error'>{err}</div>}
       {!artist && !err && <p className='muted center-p'>Loading…</p>}
       {artist && (artist.albums.length
-        ? <Grid albums={artist.albums} onOpen={onOpenAlbum} />
+        ? <Grid albums={artist.albums} onOpen={onOpenAlbum} onLong={onLong} />
         : <p className='muted center-p'>No albums.</p>)}
     </div>
   )
 }
 
-function Row ({ t, on, onPlay, showTrackNo, art }) {
+function Row ({ t, on, onPlay, onLong, showTrackNo, art }) {
+  const press = usePress(
+    () => onPlay(t),
+    onLong && (() => onLong({ type: 'track', track: t, name: t.title }))
+  )
   return (
-    <li className={on ? 'on' : ''} onClick={() => onPlay(t)}>
+    <li className={on ? 'on' : ''} {...press}>
       {showTrackNo && <span className='muted sm no'>{t.track ?? ''}</span>}
       {art && <Cover src={t.art} sm />}
       <div className='meta'>
@@ -1000,46 +1298,21 @@ function Row ({ t, on, onPlay, showTrackNo, art }) {
 
 // --- now playing -------------------------------------------------------------
 
-// The dock's resting state. The full transport is ~200px of a phone screen, which
-// is a lot of furniture to keep in view while browsing a library - so by default
-// the player is one row (art, title, play/pause) with a hairline of progress, and
-// tapping it opens the real thing.
-function MiniPlayer ({ now, status, onExpand }) {
+// ONE player, two shapes.
+//
+// Mini and full used to be separate components, swapped on a flag - which is why
+// the change SNAPPED: React tore one subtree down and built another, so there was
+// nothing for the browser to animate between. Now it is a single element whose
+// extra half grows and fades, and the dock (which measures itself) carries the
+// content padding along with it.
+function Player ({
+  now, status, expanded, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
+  onViewArt, onQueue
+}) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
-
-  return (
-    <div className='player mini' onClick={onExpand}>
-      <div className='row1'>
-        <Cover src={now.art} sm />
-        <div className='meta'>
-          <div className='t'>{now.title}</div>
-          <div className='muted sm sub'>
-            {status?.buffering
-              ? 'buffering…'
-              : [now.artist, now.album].filter(Boolean).join(' · ') || ' '}
-          </div>
-        </div>
-        {/* stopPropagation, or play/pause would also expand the player - the one
-            control people hit without looking should not move the screen. */}
-        <button
-          className='icon big'
-          onClick={(e) => { e.stopPropagation(); haptic('light'); call('toggle') }}
-          aria-label='Play/pause'
-        >
-          {status?.playing ? <Pause size={22} weight='fill' /> : <Play size={22} weight='fill' />}
-        </button>
-      </div>
-      <div className='hairline'><div className='fill' style={{ width: pct + '%' }} /></div>
-    </div>
-  )
-}
-
-function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat, onCollapse, onViewArt }) {
-  const dur = status?.durationMs || now.durationMs || 0
-  const pos = status?.positionMs || 0
-  const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
+  const qlen = status?.queueLength ?? now.queueLength ?? 0
 
   // Tap anywhere on the bar to seek. The seek goes out over P2P as a byte-range
   // request, which is why range support had to be right from day one.
@@ -1051,13 +1324,16 @@ function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat, onColl
   }
 
   return (
-    <div className='player'>
-      <button className='grip' onClick={onCollapse} aria-label='Collapse player'>
+    <div
+      className={'player' + (expanded ? ' open' : ' mini')}
+      onClick={expanded ? undefined : onExpand}
+    >
+      <button className='grip' onClick={onCollapse} aria-label='Collapse player' tabIndex={expanded ? 0 : -1}>
         <CaretDown size={16} weight='bold' />
       </button>
 
       <div className='row1'>
-        <div className='tapart' onClick={onViewArt}>
+        <div className='tapart' onClick={expanded ? onViewArt : undefined}>
           <Cover src={now.art} sm />
         </div>
         <div className='meta'>
@@ -1068,51 +1344,85 @@ function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat, onColl
               : [now.artist, now.album].filter(Boolean).join(' · ') || ' '}
           </div>
         </div>
-        <button
-          className='icon close'
-          onClick={() => { haptic('light'); call('stop') }}
-          aria-label='Stop'
-        >
-          <X size={18} weight='bold' />
-        </button>
+
+        {expanded
+          ? (
+            <button
+              className='icon close'
+              onClick={() => { haptic('light'); call('stop') }}
+              aria-label='Stop'
+            >
+              <X size={18} weight='bold' />
+            </button>
+            )
+          : (
+            // No queue pill here. The count lives on the Queue TAB, two centimetres
+            // below this row - a second copy of the same number, inches away, is
+            // noise, and it stole space from the one control people hit without
+            // looking. stopPropagation, or play/pause would also expand the player.
+            <button
+              className='icon big'
+              onClick={(e) => { e.stopPropagation(); haptic('light'); call('toggle') }}
+              aria-label='Play/pause'
+            >
+              {status?.playing ? <Pause size={22} weight='fill' /> : <Play size={22} weight='fill' />}
+            </button>
+            )}
       </div>
 
-      <div className='bar' onClick={scrub}>
-        <div className='fill' style={{ width: pct + '%' }} />
-      </div>
-      <div className='times muted sm'>
-        <span>{fmt(pos)}</span>
-        <span>{now.queueLength > 1 ? `${(status?.index ?? now.index) + 1} / ${now.queueLength}` : ''}</span>
-        <span>{dur ? fmt(dur) : '--:--'}</span>
-      </div>
+      {/* Collapsed, this is the whole progress display: a hairline. */}
+      <div className='hairline'><div className='fill' style={{ width: pct + '%' }} /></div>
 
-      <div className='transport'>
-        <button className={'icon mode' + (shuffle ? ' on' : '')} onClick={onShuffle} aria-label='Shuffle'>
-          <Shuffle size={19} weight={shuffle ? 'fill' : 'regular'} />
-        </button>
-        <button className='icon' onClick={() => { haptic('light'); call('prev') }} aria-label='Previous'>
-          <SkipBack size={22} weight='fill' />
-        </button>
-        <button className='icon big' onClick={() => { haptic('light'); call('toggle') }} aria-label='Play/pause'>
-          {status?.playing ? <Pause size={26} weight='fill' /> : <Play size={26} weight='fill' />}
-        </button>
-        <button className='icon' onClick={() => { haptic('light'); call('next') }} aria-label='Next'>
-          <SkipForward size={22} weight='fill' />
-        </button>
-        <button className={'icon mode' + (repeat ? ' on' : '')} onClick={onRepeat} aria-label='Repeat'>
-          {repeat === 1
-            ? <RepeatOnce size={19} weight='fill' />
-            : <Repeat size={19} weight={repeat === 2 ? 'fill' : 'regular'} />}
-        </button>
-      </div>
+      {/* ...and this is the half that grows. max-height rather than height, so it
+          does not need a magic number that rots the first time a row is added. */}
+      <div className='expando'>
+        <div className='bar' onClick={scrub}>
+          <div className='fill' style={{ width: pct + '%' }} />
+        </div>
+        <div className='times muted sm'>
+          <span>{fmt(pos)}</span>
+          {/* The LIVE queue length, from status - not the one captured when this
+              track started. Add an album to the queue and the count has to move,
+              or the only feedback that anything happened is a toast that has
+              already faded. */}
+          {qlen > 1
+            ? (
+              <button className='qbtn' onClick={onQueue}>
+                {(status?.index ?? now.index) + 1} / {qlen} <ListPlus size={14} weight='bold' />
+              </button>
+              )
+            : <span />}
+          <span>{dur ? fmt(dur) : '--:--'}</span>
+        </div>
 
-      <div className='transport sub-transport'>
-        <button className='icon' onClick={() => call('seekBy', { seconds: -15 })} aria-label='Back 15 seconds'>
-          <ArrowCounterClockwise size={15} /> 15
-        </button>
-        <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds'>
-          15 <ArrowClockwise size={15} />
-        </button>
+        <div className='transport'>
+          <button className={'icon mode' + (shuffle ? ' on' : '')} onClick={onShuffle} aria-label='Shuffle'>
+            <Shuffle size={19} weight={shuffle ? 'fill' : 'regular'} />
+          </button>
+          <button className='icon' onClick={() => { haptic('light'); call('prev') }} aria-label='Previous'>
+            <SkipBack size={22} weight='fill' />
+          </button>
+          <button className='icon big' onClick={() => { haptic('light'); call('toggle') }} aria-label='Play/pause'>
+            {status?.playing ? <Pause size={26} weight='fill' /> : <Play size={26} weight='fill' />}
+          </button>
+          <button className='icon' onClick={() => { haptic('light'); call('next') }} aria-label='Next'>
+            <SkipForward size={22} weight='fill' />
+          </button>
+          <button className={'icon mode' + (repeat ? ' on' : '')} onClick={onRepeat} aria-label='Repeat'>
+            {repeat === 1
+              ? <RepeatOnce size={19} weight='fill' />
+              : <Repeat size={19} weight={repeat === 2 ? 'fill' : 'regular'} />}
+          </button>
+        </div>
+
+        <div className='transport sub-transport'>
+          <button className='icon' onClick={() => call('seekBy', { seconds: -15 })} aria-label='Back 15 seconds'>
+            <ArrowCounterClockwise size={15} /> 15
+          </button>
+          <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds'>
+            15 <ArrowClockwise size={15} />
+          </button>
+        </div>
       </div>
     </div>
   )

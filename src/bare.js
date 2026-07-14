@@ -319,6 +319,28 @@ const methods = {
     return { ...withBigArt(a), albums: (a.albums || []).map(withArt) }
   },
 
+  // Every track an artist has, in album order - what "Play" on an artist means.
+  //
+  // It costs one round trip per album, because an album's track list only exists
+  // inside getAlbum. That is fine for the handful of albums an artist actually has,
+  // and it is the same call the album screen makes anyway. Tracks inherit their
+  // album's artwork, so the queue and the lock screen have a picture.
+  async artistTracks ({ id }) {
+    await ensureConnected()
+    const a = await client.get({ id, type: 'artist' })
+    if (!a) return { items: [] }
+
+    const items = []
+    for (const al of a.albums || []) {
+      const full = await client.get({ id: al.id, type: 'album' })
+      if (!full) continue
+      const art = full.coverId && shim ? shim.artUrlFor(full.coverId) : null
+      const artFull = full.coverId && shim ? shim.artUrlFor(full.coverId, 1200) : null
+      for (const t of full.tracks || []) items.push({ ...t, art, artFull })
+    }
+    return { items }
+  },
+
   async search ({ q }) {
     await ensureConnected()
     const r = await client.search({ q })

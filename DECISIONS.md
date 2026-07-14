@@ -2,6 +2,39 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - The queue is a TAB, and playIndex must not announce
+Tier: T2 (native patch + player)
+Context: Tim asked for a way to play or queue an album/artist without drilling into
+its track list, and then asked whether the queue indicator belonged somewhere more
+persistent than the player.
+Choice: a fourth navbar tab (Library / Queue / Settings / About) carrying a COUNT
+BADGE, plus Play / Shuffle / Add-to-queue on the album and artist screens and on a
+long-press of any tile. The mini-player's own queue pill was REMOVED once the tab
+existed - two copies of the same number, inches apart, is noise.
+Honest caveat, and it is the interesting one: **stopping playback still throws the
+queue away.** The queue IS the playlist inside ExoPlayer; there is no persisted
+queue that outlives it. So the Queue tab is empty whenever nothing is playing. If
+that becomes annoying, the fix is queue PERSISTENCE in the worklet (restore on
+launch), not a different place to put the button.
+
+ADD TO QUEUE required a new native method: `addQueueSources` in the expo-audio
+patch. It is addMediaSources, NOT setMediaSources - re-handing ExoPlayer the whole
+playlist would reset the current item and restart buffering, i.e. interrupt the
+song the user is listening to, which is the exact opposite of what "queue this for
+later" means. No prepare() either, unless the player is IDLE (the "nothing is
+playing, queue an album" case), because prepare() on a live player stutters.
+Verified in the dex (`strings | grep QueueSources`) and on the phone: queued an
+album mid-song, the track kept playing, the counter went 1 -> 2.
+
+THE BUG THAT COST THE MOST, and it is worth writing down because it looks like it
+should work: **playIndex (tap a queued track to jump to it) must NOT call
+announce().** setActiveForLockScreen tears the MediaSession down and builds a new
+one, and doing that in the same breath as a seek loses the AUDIO FOCUS with it. The
+jump appeared to work - the right track loaded, the UI updated - and it landed
+PAUSED, silently. The status listener already announces when it sees the index move
+(that is how gapless advance updates the lock screen), so the correct code is: seek,
+play, and let it notice.
+
 ## 2026-07-14 - Navidrome DOES have an all-songs endpoint. The Songs view is back
 Tier: T1 (host adapter)
 Context: this repo has said since milestone 2 that "Subsonic has no all-songs

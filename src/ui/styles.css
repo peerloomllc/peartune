@@ -211,6 +211,19 @@ button.icon.dens {
 .navbar button.on { color: var(--color-primary); }
 .navbar button span { font-size: 11px; font-weight: 400; }
 .navbar button.on span { font-weight: 600; }
+/* The queue count, on the one surface that is always on screen. */
+.navbar .ic { position: relative; display: flex; }
+.navbar .badge {
+  position: absolute; top: -5px; left: 12px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--color-primary); color: var(--color-text-on-primary);
+  border-radius: 9999px; font-size: 10px; font-weight: 700; line-height: 1;
+}
+button.more.danger {
+  color: var(--color-error); display: inline-flex; align-items: center;
+  justify-content: center; gap: .4rem;
+}
 
 /* --- empty / offline / skeleton states ----------------------------------- */
 .blank {
@@ -242,20 +255,42 @@ button.icon.dens {
 /* The resting state: one row, and a hairline of progress. */
 .player.mini { padding: .6rem 1rem .45rem; cursor: pointer; }
 .player.mini .icon.big { flex: none; padding: .45rem .7rem; }
+
+/* THE ANIMATION. One element in two shapes, not two elements swapped - a swap has
+   nothing to tween between, which is why this used to snap. Everything that
+   differs between the shapes is a transition here.
+   max-height, not height: no magic number to rot the first time the transport
+   gains a row. It is generous on purpose (the real content is ~170px); an
+   over-large max-height only makes the LAST few ms of the open ease slightly fast,
+   whereas one that is too small silently clips the buttons. */
+.player .expando {
+  max-height: 0; opacity: 0; overflow: hidden;
+  transition: max-height .3s cubic-bezier(.4, 0, .2, 1), opacity .18s ease-out;
+}
+.player.open .expando { max-height: 260px; opacity: 1; }
+
 .hairline {
   position: relative; height: 2px; margin-top: .5rem; border-radius: 2px;
   background: var(--color-track);
+  transition: opacity .18s ease-out, margin .3s cubic-bezier(.4, 0, .2, 1);
 }
 .hairline .fill {
   position: absolute; left: 0; top: 0; height: 2px; border-radius: 2px;
   background: var(--color-primary); max-width: 100%;
 }
-/* The handle you pull the player back down by. */
+/* Expanded, the fat scrub bar takes over - so the hairline gets out of the way
+   rather than sitting above it as a second, thinner progress bar. */
+.player.open .hairline { opacity: 0; height: 0; margin: 0; }
+
+/* The handle you pull the player back down by. Collapsed, it takes no space. */
 button.grip {
   display: flex; margin: -.3rem auto .1rem; padding: .2rem 1.6rem;
   background: transparent; border-color: transparent;
   color: var(--color-text-muted);
+  transition: opacity .18s ease-out, max-height .3s cubic-bezier(.4, 0, .2, 1);
+  max-height: 2rem; overflow: hidden;
 }
+.player.mini button.grip { opacity: 0; max-height: 0; padding: 0; margin: 0; }
 .player .row1 { display: flex; align-items: center; gap: .75rem; }
 .player .meta { flex: 1; min-width: 0; }
 .player .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -360,6 +395,56 @@ button.wide { width: 100%; }
   /* An address is for reading and copying, so let it be selected. Everything else
      in the app disables selection (it is a touch UI, not a document). */
   -webkit-user-select: text; user-select: text;
+}
+
+/* --- play / shuffle / queue ----------------------------------------------- */
+.actions { display: flex; gap: .5rem; margin: 0 0 1rem; }
+.actions button {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center;
+  gap: .4rem; font-size: .9rem; padding: .65rem .8rem;
+}
+.actions button.icon.sq {
+  flex: none; width: 3rem; border: 1px solid var(--color-border);
+  background: var(--color-surface-card); color: var(--color-text-primary);
+}
+.sheet .acts { display: flex; flex-direction: column; gap: .5rem; margin-top: .5rem; }
+.sheet .acts button {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+}
+
+/* The queue, made visible. Collapsed, a pill with the count; expanded, the
+   position counter itself is the way in. Both open the same list. */
+button.icon.qpill {
+  flex: none; gap: .25rem; padding: .4rem .6rem; font-size: .78rem; font-weight: 600;
+  border: 1px solid var(--color-border); border-radius: 9999px;
+  background: var(--color-surface-input); color: var(--color-text-secondary);
+}
+button.qbtn {
+  display: inline-flex; align-items: center; gap: .3rem;
+  padding: .1rem .5rem; font-size: .8rem; font-variant-numeric: tabular-nums;
+  background: transparent; border: 1px solid var(--color-border);
+  border-radius: 9999px; color: var(--color-text-muted);
+}
+.queuelist { max-height: 46vh; overflow-y: auto; margin-top: .5rem; }
+.queuelist li { padding: .6rem .25rem; }
+/* Already played, still in the list (you can go back to it) - just quieter. */
+.queuelist li.played { opacity: .45; }
+.queuelist li .cur { color: var(--color-primary); flex: none; }
+
+/* A queued album changes nothing you can see or hear - that is the point of it -
+   so it has to say so, or the button reads as broken. */
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--dock-h) + 1rem); z-index: 65;
+  background: var(--color-surface-elevated); color: var(--color-text-primary);
+  border: 1px solid var(--color-border); border-radius: 9999px;
+  padding: .6rem 1.1rem; font-size: .85rem; white-space: nowrap;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .4);
+  animation: peartune-rise .22s cubic-bezier(.2, .8, .2, 1);
+}
+@keyframes peartune-rise {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 
 /* --- artwork, full screen ------------------------------------------------- */
