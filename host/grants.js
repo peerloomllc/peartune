@@ -21,6 +21,22 @@ const hcrypto = require('hypercore-crypto')
 const b4a = require('b4a')
 const { SCOPE } = require('../protocol/constants')
 
+const NAME_MAX = 64
+
+// The host does not trust the phone to be polite. A name arrives over the wire from
+// a device we have merely admitted, so it is trimmed, capped, and stripped of
+// control characters HERE - at the authority - and not wherever it happens to be
+// rendered. (It is escaped at render too. Belt and braces, on the page that holds
+// the revoke buttons.)
+function cleanName (s) {
+  if (typeof s !== 'string') return ''
+  // Control characters out first (a newline in a dashboard row, a NUL in a log
+  // line), then trim, then cap - cap LAST, so a name padded with 200 spaces does
+  // not survive as 64 spaces.
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, NAME_MAX)
+}
+
 class Grants {
   constructor (bee) {
     this.bee = bee
@@ -32,9 +48,18 @@ class Grants {
 
   async addPerson (name) {
     const id = z32.encode(hcrypto.randomBytes(16))
-    const person = { id, name, createdAt: Date.now(), revokedAt: null }
+    const person = { id, name: cleanName(name), createdAt: Date.now(), revokedAt: null }
     await this.bee.put('person:' + id, person, { valueEncoding: 'json' })
     return person
+  }
+
+  // The person of this name, or a new one. What "confirm this device's claim" runs:
+  // two phones both claiming "Tim" must land on ONE Tim, not two.
+  async personByName (name) {
+    const clean = cleanName(name)
+    if (!clean) return null
+    const all = await this.listPersons()
+    return all.find(p => !p.revokedAt && p.name.toLowerCase() === clean.toLowerCase()) || null
   }
 
   async getPerson (personId) {
@@ -132,6 +157,57 @@ class Grants {
     row.personId = personId || null
     await this.bee.put('grant:' + key, row, { valueEncoding: 'json' })
     return row
+  }
+
+  // --- the only two things a DEVICE may write about itself --------------------
+  //
+  // The grant store is the host's authority. These are the first methods a client
+  // can reach, so the rules are narrow on purpose (proposal 2026-07-14):
+  //
+  //   1. The caller is identified by the NOISE-AUTHENTICATED public key of its
+  //      connection. There is no deviceKey parameter, so there is nothing to forge:
+  //      a device can only ever write its own row.
+  //   2. A device may NOT set personId. It may CLAIM a name; only the operator can
+  //      turn a claim into an assignment.
+  //   3. A claim grants nothing. It is cosmetic until confirmed.
+  //
+  // Today personId only affects revoke-by-person, so self-assignment would be
+  // harmless. The moment per-person scopes, playlists or history exist, a device
+  // that can attach itself to any person by name is a privilege escalation.
+  // Self-declared identity must not become authority.
+  async setIdentity (deviceKey, { deviceName, userName } = {}) {
+    const key = Grants.keyOf(deviceKey)
+    const row = await this.get(key)
+    if (!row || row.revokedAt) return null
+
+    if (deviceName !== undefined) {
+      const clean = cleanName(deviceName)
+      if (clean) row.label = clean
+    }
+
+    if (userName !== undefined) {
+      const clean = cleanName(userName)
+      row.claimedUser = clean || null
+      row.claimedAt = clean ? Date.now() : null
+      // NOT row.personId. See above.
+    }
+
+    await this.bee.put('grant:' + key, row, { valueEncoding: 'json' })
+    return row
+  }
+
+  // The operator turning a device's CLAIM into a real assignment. Joins an existing
+  // person of that name rather than minting a second one, so two phones both
+  // claiming "Tim" end up under one Tim.
+  async confirmClaim (deviceKey) {
+    const key = Grants.keyOf(deviceKey)
+    const row = await this.get(key)
+    if (!row || !row.claimedUser) return null
+
+    const person = (await this.personByName(row.claimedUser)) ||
+      (await this.addPerson(row.claimedUser))
+
+    return this.assign(key, person.id)
   }
 
   async touch (deviceKey) {

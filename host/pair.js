@@ -116,8 +116,20 @@ class PairSession {
       const existing = await this.grants.get(remoteKey)
       if (existing && !existing.revokedAt) {
         // Idempotent: re-scanning the QR on an already-paired phone is a no-op,
-        // not a duplicate row.
-        this.log('pair:already-granted', { device: z32.encode(remoteKey).slice(0, 8) })
+        // not a duplicate row. The GRANT is untouched - that is the point.
+        //
+        // The NAME, however, is honoured. A device that unpairs, gives itself a new
+        // name and pairs again would otherwise keep the old label forever, silently
+        // - and it can rename itself over the media channel anyway (identity.set),
+        // so refusing the name here would protect nothing and only surprise people.
+        // personId and any claim are deliberately left alone: naming yourself is not
+        // the same as saying who you belong to.
+        if (hello.label) await this.grants.setIdentity(remoteKey, { deviceName: hello.label })
+
+        this.log('pair:already-granted', {
+          device: z32.encode(remoteKey).slice(0, 8),
+          label: hello.label || existing.label
+        })
       } else {
         await this.grants.grant({
           deviceKey: remoteKey,

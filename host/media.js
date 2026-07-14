@@ -11,12 +11,11 @@ const b4a = require('b4a')
 const { mediaChannel } = require('../protocol/channels')
 const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 
-// Methods that mutate. Reserved for the v2 scope work; a readonly grant is
-// refused here rather than at the adapter, so a new mutating method cannot
-// accidentally ship without a scope check.
-const MUTATING = new Set([])
+// Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
+// so a new mutating method cannot accidentally ship without a scope check.
+const MUTATING = new Set(['identity.set'])
 
-function serveMedia ({ conn, libraryId, adapter, grant, log = () => {} }) {
+function serveMedia ({ conn, libraryId, adapter, grant, grants = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Registration order is fixed in protocol/channels.js and MUST match the
@@ -76,6 +75,28 @@ function serveMedia ({ conn, libraryId, adapter, grant, log = () => {} }) {
     }
   }
 
+  // CONFIRMED means the claim matches the person this device is actually assigned
+  // to - not merely that SOME person is assigned.
+  //
+  // Otherwise, changing your name after being confirmed leaves the app saying
+  // "confirmed as Tim" while the row claims something else entirely. A rename is a
+  // NEW claim, and it is pending until the operator says otherwise. (The device
+  // still cannot move itself: only the operator confirms. That part is the point.)
+  async function identityOf (row) {
+    const person = row?.personId && grants ? await grants.getPerson(row.personId) : null
+    const claim = row?.claimedUser || null
+    return {
+      deviceName: row?.label || null,
+      belongsTo: person ? person.name : null,
+      user: claim
+        ? {
+            name: claim,
+            confirmed: !!person && person.name.toLowerCase() === claim.toLowerCase()
+          }
+        : null
+    }
+  }
+
   async function dispatch (m) {
     const { id, method, params } = m
 
@@ -98,6 +119,33 @@ function serveMedia ({ conn, libraryId, adapter, grant, log = () => {} }) {
 
       case 'library.search':
         return send.res.send({ id, body: await adapter.search(params || {}) })
+
+      // --- identity (proposal 2026-07-14) ------------------------------------
+      //
+      // THE CALLER IS THE CONNECTION. `grant` here is the row the firewall already
+      // looked up from the Noise-authenticated remote public key, so a device can
+      // only ever read and write ITS OWN identity - there is no deviceKey parameter
+      // to forge, and adding one would be the whole vulnerability.
+      case 'identity.get': {
+        return send.res.send({ id, body: await identityOf(grant) })
+      }
+
+      case 'identity.set': {
+        if (!grants || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+
+        // params.deviceKey and params.personId are IGNORED, not merely unused: a
+        // device names ITSELF, and only the operator decides who it belongs to.
+        // A claim is cosmetic until confirmed on the dashboard.
+        const row = await grants.setIdentity(grant.deviceKey, {
+          deviceName: params?.deviceName,
+          userName: params?.userName
+        })
+        if (!row) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+
+        log('identity:set', { label: row.label, claims: row.claimedUser || null })
+
+        return send.res.send({ id, body: { ok: true, ...(await identityOf(row)) } })
+      }
 
       case 'art.get': {
         const stream = await adapter.art(params || {})

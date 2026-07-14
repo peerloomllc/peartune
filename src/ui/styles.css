@@ -505,3 +505,12 @@ button.shead .caret.open { transform: rotate(90deg); }
 .sheet h1 { font-size: 1.05rem; text-align: center; }
 .sheet > p { text-align: center; margin: .25rem 0 1rem; }
 .sheet h2 { margin: 1.2rem 0 0; }
+
+/* --- identity (naming a device, claiming a user) -------------------------- */
+.namebox {
+  width: 100%; max-width: 22rem; text-align: left;
+  background: var(--color-surface-card); border: 1px solid var(--color-border);
+  border-radius: 14px; padding: 1rem;
+}
+.namebox .hint { margin: .4rem 0 0; }
+label.flabel { display: block; margin-top: .6rem; }

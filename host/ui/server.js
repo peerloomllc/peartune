@@ -65,6 +65,10 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741 }) {
             deviceKey: d.deviceKey,
             label: d.label,
             personId: d.personId,
+            // What the DEVICE says it is. Cosmetic until the operator confirms it
+            // (proposal 2026-07-14) - the dashboard shows it with a Confirm button.
+            claimedUser: d.claimedUser || null,
+            claimedAt: d.claimedAt || null,
             platform: d.platform,
             scope: d.scope,
             grantedAt: d.grantedAt,
@@ -96,6 +100,17 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741 }) {
 
       // Attach a device to a person, so revocation has a subject a human
       // recognises instead of a 52-character key.
+      // The operator confirming a device's self-declared user. The ONLY path from
+      // "claims to be Tim" to "is Tim" - see proposal 2026-07-14.
+      if (req.method === 'POST' && url.pathname === '/api/person/confirm') {
+        const { deviceKey } = await readBody(req)
+        if (!deviceKey) return json(res, 400, { error: 'deviceKey required' })
+        const row = await host.grants.confirmClaim(deviceKey)
+        if (!row) return json(res, 400, { error: 'no claim to confirm' })
+        const person = await host.grants.getPerson(row.personId)
+        return json(res, 200, { ok: true, person })
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/assign') {
         const { deviceKey, personId } = await readBody(req)
         if (!deviceKey) return json(res, 400, { error: 'deviceKey required' })

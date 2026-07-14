@@ -174,6 +174,10 @@ class PearTuneHost {
         libraryId: this.libraryId,
         adapter: this.adapter,
         grant: lookup.grant,
+        // Passed so a device can name ITSELF (identity.set). The row it may write
+        // is fixed by `grant`, which came from the Noise-authenticated key of this
+        // very connection - see host/grants.js setIdentity.
+        grants: this.grants,
         log: (msg, data) => this.log(msg, { device: short, ...data })
       })
     })
