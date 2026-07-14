@@ -4,17 +4,25 @@
 // and no framework. Its whole job in milestone 1 is to show a pairing QR and put
 // a revoke button next to every device.
 //
-// NO AUTH HERE, on purpose. On Umbrel this sits behind app_proxy, which already
-// gates it behind the Umbrel login - the same posture as the PearCircle seeder.
-// It therefore binds to 127.0.0.1 by DEFAULT, and only binds 0.0.0.0 when the
-// container tells it to. Exposing this port straight to a LAN would hand anyone
-// on it a revoke button and a pairing QR.
+// AUTH: off by default, REQUIRED the moment this is not on loopback.
+//
+// It used to have none at all, on the theory that Umbrel's app_proxy gated it. That
+// theory died when we measured (twice) that the host needs network_mode: host to
+// holepunch at all - and a host-networked service cannot be fronted by the proxy.
+// So the dashboard now owns its own lock, and the server REFUSES TO START if it
+// would serve this page on anything but loopback without one. See
+// proposals/2026-07-14-dashboard-auth.md.
+//
+// What is behind the lock: revoke any device instantly, mid-song; open a pairing
+// window that grants a stranger the whole library; rename people.
 
 const http = require('http')
 const QRCode = require('qrcode')
 const z32 = require('z32')
 
 const PAGE = require('./page')
+const LOGIN_PAGE = require('./login')
+const { createAuth, requireSafeBind } = require('./auth')
 
 function json (res, code, body) {
   const buf = Buffer.from(JSON.stringify(body))
@@ -37,14 +45,26 @@ async function readBody (req) {
   }
 }
 
-async function startDashboard ({ host, bind = '127.0.0.1', port = 8741 }) {
+async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '' }) {
+  // Before anything listens. A control plane on a LAN with no password is not a
+  // configuration we are willing to run, so this throws rather than warns.
+  requireSafeBind(bind, password)
+
+  const auth = createAuth(password)
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost')
 
     try {
+      // Login, logout, and the 401 for everything else. Returns true if it dealt
+      // with the request itself.
+      if (auth.enabled && auth.handle(req, res, url)) return
+
       // --- page ---
       if (req.method === 'GET' && url.pathname === '/') {
-        const body = Buffer.from(PAGE)
+        // Logged out (or no session yet): the login form, not the control plane.
+        const html = auth.enabled && !auth.guard(req) ? LOGIN_PAGE : PAGE
+        const body = Buffer.from(html)
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': body.length })
         return res.end(body)
       }

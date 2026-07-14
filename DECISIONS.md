@@ -2,6 +2,43 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - The dashboard gets a LOCK, because the host must own the network
+Tier: T3 (auth gate). Proposal: proposals/2026-07-14-dashboard-auth.md
+The chain of facts, each one measured rather than assumed:
+1. **The host needs `network_mode: host`.** Re-tested today on the Umbrel with the
+   real image: under Docker's default bridge the firewall ADMITS the client
+   (gate:allow-for-pairing) and the connection dies before the pair channel opens.
+   Bridge NAT is a second layer of NAT; holepunching does not survive it.
+2. **Host networking means Umbrel's app_proxy cannot front us.** The proxy is a
+   container on a bridge network and cannot reach a service bound to the host's
+   loopback. Umbrel's own host-networked apps (Plex, Home Assistant) skip the proxy
+   and serve their UI straight onto the LAN, protected by their own login.
+3. **The proxy was the only thing standing in for our missing auth.** The dashboard
+   had none BY DESIGN (DONE 2026-07-13), which was fine while it was loopback-only.
+So the dashboard now has its own lock: PEARTUNE_PASSWORD (umbrelOS passes
+${APP_PASSWORD}), a session cookie, a constant-time compare, and a 5-strike
+rate limit.
+THE RULE THAT MATTERS: **the host REFUSES TO START** if told to bind a non-loopback
+address with no password. Not a warning - an exit, before it joins the DHT. A
+warning in a log nobody reads is not a control, and every "expose it just for a
+minute" is how a revoke button ends up on an open port forever.
+Not in scope: TLS. On a home LAN the password crosses in the clear, which is what
+every other Umbrel app does; a self-signed cert would only train people to click
+through warnings. Say it in the README instead of pretending.
+
+## 2026-07-14 - The host image gets its OWN package.json
+Tier: T1 (build)
+The image would not build at all: the repo root is the PHONE APP (React Native,
+Expo), it runs `postinstall: patch-package` for the app's expo-audio patch, and
+patch-package is a devDependency - so `npm ci --omit=dev` installed no patch-package
+and then ran it anyway. Exit 127, every time.
+`--ignore-scripts` is NOT the fix: it also skips the native postinstalls the
+hypercore stack needs, and you get a runtime that half-works and then aborts.
+Choice: host/package.json with the ELEVEN packages host/, client/ and protocol/
+actually require. The image stops dragging React Native and Expo into a server that
+has no use for either. Keep the versions in step with the root by hand: same wire,
+and a skew between phone and host is a protocol bug waiting to happen.
+
 ## 2026-07-14 - Device and user naming: a device names ITSELF, an operator confirms
 Tier: T2. Proposal: proposals/2026-07-14-device-and-user-naming.md
 Context: two phones paired, and the dashboard showed two rows called "Android
