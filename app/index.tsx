@@ -163,6 +163,9 @@ export default function App () {
       artist: t.artist ?? null,
       album: t.album ?? null,
       art: t.art ?? null,
+      // The big cover, for the UI's full-screen art viewer. The lock screen above
+      // deliberately keeps the small one - it is a notification, not a gallery.
+      artFull: t.artFull ?? null,
       index: i,
       queueLength: queueRef.current.length
     })

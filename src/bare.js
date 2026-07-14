@@ -209,6 +209,14 @@ const withArt = (x) => ({
   art: x.coverId && shim ? shim.artUrlFor(x.coverId) : null
 })
 
+// The same cover, big, for the full-screen viewer. Only handed out on the detail
+// screens: putting a 1200px URL on all 60 tiles of a grid would invite the WebView
+// to fetch 60 of them over P2P for a picture nobody has asked to see yet.
+const withBigArt = (x) => ({
+  ...withArt(x),
+  artFull: x.coverId && shim ? shim.artUrlFor(x.coverId, 1200) : null
+})
+
 const methods = {
   async init () {
     identity = loadIdentity()
@@ -287,7 +295,7 @@ const methods = {
   async album ({ id }) {
     await ensureConnected()
     const a = await client.get({ id, type: 'album' })
-    return a ? withArt(a) : null
+    return a ? withBigArt(a) : null
   },
 
   // Artists are the second way in. The host has always been able to list them
@@ -303,7 +311,7 @@ const methods = {
     await ensureConnected()
     const a = await client.get({ id, type: 'artist' })
     if (!a) return null
-    return { ...withArt(a), albums: (a.albums || []).map(withArt) }
+    return { ...withBigArt(a), albums: (a.albums || []).map(withArt) }
   },
 
   async search ({ q }) {

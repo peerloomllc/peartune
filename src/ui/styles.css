@@ -334,6 +334,25 @@ button.wide { width: 100%; }
   -webkit-user-select: text; user-select: text;
 }
 
+/* --- artwork, full screen ------------------------------------------------- */
+.artviewer {
+  position: fixed; inset: 0; z-index: 70; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 1rem; padding: 1.5rem;
+  background: rgba(0, 0, 0, .92);
+}
+.artviewer img {
+  max-width: 100%; max-height: 78vh; border-radius: 10px; object-fit: contain;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .5);
+}
+.artviewer .cap { color: #b6afa4; text-align: center; }
+.tapart { cursor: pointer; flex: none; }
+
+/* --- pull to refresh ------------------------------------------------------ */
+.ptr {
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  color: var(--color-text-muted);
+}
+
 /* --- bottom sheet (donation) --------------------------------------------- */
 .sheetwrap {
   position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-end;

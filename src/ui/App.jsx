@@ -53,6 +53,7 @@ export default function App () {
   const [scanning, setScanning] = useState(false)
   const [donate, setDonate] = useState(false)
   const [confirming, setConfirming] = useState(null)
+  const [viewing, setViewing] = useState(null) // artwork, full screen
   const [expanded, setExpanded] = useState(false) // the player: mini vs full
   const [albumsLoaded, setAlbumsLoaded] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
@@ -125,16 +126,19 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, confirming, expanded, stack, tab }
+  navRef.current = { scanning, donate, confirming, viewing, expanded, stack, tab }
 
-  const canBack = !!(scanning || donate || confirming || expanded || stack.length || tab !== 'library')
+  const canBack = !!(
+    scanning || donate || confirming || viewing || expanded || stack.length || tab !== 'library'
+  )
   useEffect(() => { call('shell:navState', { canBack }).catch(() => {}) }, [canBack])
 
-  // Deepest layer first: a sheet, then the expanded player, then the screen stack,
-  // then back to the Library tab. Only when all of that is empty does the shell
-  // stop swallowing the press and Android closes the app.
+  // Deepest layer first: artwork, then a sheet, then the expanded player, then the
+  // screen stack, then back to the Library tab. Only when all of that is empty does
+  // the shell stop swallowing the press and Android closes the app.
   useEffect(() => on('back', () => {
     const n = navRef.current
+    if (n.viewing) return setViewing(null)
     if (n.donate) return setDonate(false)
     if (n.confirming) return setConfirming(null)
     if (n.scanning) return setScanning(false)
@@ -207,15 +211,27 @@ export default function App () {
 
   // Artists load once, on the first visit: getArtists returns the whole index in
   // a single call, so unlike albums there is nothing to page.
-  async function showArtists () {
+  async function showArtists (force) {
     setBrowse('artists')
-    if (artists) return
+    if (artists && !force) return
     try {
       const page = await call('artists')
       setArtists(page.items)
     } catch (e) {
       setError(e.message)
     }
+  }
+
+  // Pull to refresh. The host does not push us anything when its library changes -
+  // someone drops an album on the NAS and Navidrome rescans, and we would go on
+  // showing yesterday's shelf until the app restarted. This is the gesture people
+  // already reach for.
+  async function refresh () {
+    setError(null)
+    if (browse === 'artists') return showArtists(true)
+    setAlbumsLoaded(false)
+    setAlbums([])
+    await loadAlbums(0)
   }
 
   async function runSearch (q) {
@@ -294,7 +310,15 @@ export default function App () {
   const playFrom = (list, t) => {
     haptic('light')
     const queue = list.map(x => ({
-      id: x.id, title: x.title, artist: x.artist, album: x.album, art: x.art ?? null, durationMs: x.durationMs
+      id: x.id,
+      title: x.title,
+      artist: x.artist,
+      album: x.album,
+      art: x.art ?? null,
+      // Carried so the player's own art viewer opens the big image rather than a
+      // stretched thumbnail. The lock screen still gets the small one.
+      artFull: x.artFull ?? null,
+      durationMs: x.durationMs
     }))
     const index = Math.max(0, list.findIndex(x => x.id === t.id))
     return call('play', { queue, index })
@@ -312,13 +336,19 @@ export default function App () {
 
   const top = stack[stack.length - 1] || null
 
+  const viewArt = (url, title) => { if (url) { haptic('light'); setViewing({ url, title }) } }
+
   let screen
   if (top?.type === 'album') {
-    screen = <AlbumScreen id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom} />
+    screen = (
+      <AlbumScreen
+        id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom} onViewArt={viewArt}
+      />
+    )
   } else if (top?.type === 'artist') {
     screen = (
       <ArtistScreen
-        id={top.id} name={top.name} onBack={pop}
+        id={top.id} name={top.name} onBack={pop} onViewArt={viewArt}
         onOpenAlbum={(id) => push({ type: 'album', id })}
       />
     )
@@ -335,6 +365,7 @@ export default function App () {
         onBrowse={(b) => { haptic('light'); return b === 'artists' ? showArtists() : setBrowse('albums') }}
         onSearch={runSearch}
         onReconnect={reconnect}
+        onRefresh={refresh}
         onMore={() => loadAlbums(cursor)}
         onOpenAlbum={(id) => push({ type: 'album', id })}
         onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
@@ -355,6 +386,7 @@ export default function App () {
               shuffle={shuffle} repeat={repeat}
               onShuffle={toggleShuffle} onRepeat={cycleRepeat}
               onCollapse={() => { haptic('light'); setExpanded(false) }}
+              onViewArt={() => viewArt(now.artFull || now.art, now.album || now.title)}
             />
             )
           : (
@@ -370,6 +402,7 @@ export default function App () {
         <NavBar active={tab} onTab={goTab} />
       </div>
 
+      {viewing && <ArtViewer {...viewing} onClose={() => setViewing(null)} />}
       {donate && <DonationSheet onClose={() => setDonate(false)} />}
       {confirming && (
         <Confirm
@@ -417,6 +450,19 @@ function Back ({ onClick }) {
   )
 }
 
+// The cover, as big as the screen will take it. The image is a SEPARATE, larger
+// request over P2P (?s=1200) rather than the 300px grid thumbnail stretched out -
+// album art is the one picture in this app people actually want to look at, and an
+// upscaled thumbnail looks like a mistake on a modern phone.
+function ArtViewer ({ url, title, onClose }) {
+  return (
+    <div className='artviewer' onClick={onClose}>
+      <img src={url} alt={title || 'Album art'} />
+      {title && <div className='muted sm cap'>{title}</div>}
+    </div>
+  )
+}
+
 // A themed sheet instead of window.confirm(), whose Android dialog is titled
 // "JavaScript" - not what you want on the screen where someone gives up access to
 // their library.
@@ -443,9 +489,43 @@ function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) 
 function Library ({
   state, albums, artists, cursor, browse, query, results, now, error,
   albumsLoaded, reconnecting,
-  onBrowse, onSearch, onReconnect, onMore, onOpenAlbum, onOpenArtist, onPlay
+  onBrowse, onSearch, onReconnect, onRefresh, onMore, onOpenAlbum, onOpenArtist, onPlay
 }) {
   const searching = results && query.trim()
+
+  // Pull to refresh, by hand: this is a WebView, so there is no RefreshControl to
+  // borrow. Only arms when the document is ALREADY at the top, or the gesture would
+  // fight every upward scroll in a long grid. Damped by half, because a 1:1 pull
+  // feels like the page has come unstuck.
+  const [pull, setPull] = useState(0)
+  const [refreshing, setRefreshing] = useState(false)
+  const startY = useRef(null)
+  const TRIGGER = 60
+
+  const onTouchStart = (e) => {
+    startY.current = window.scrollY <= 0 && !refreshing ? e.touches[0].clientY : null
+  }
+  const onTouchMove = (e) => {
+    if (startY.current == null) return
+    const dy = e.touches[0].clientY - startY.current
+    if (dy > 0) setPull(Math.min(90, dy * 0.5))
+  }
+  const onTouchEnd = async () => {
+    if (startY.current == null) return
+    const reached = pull >= TRIGGER
+    startY.current = null
+    setPull(0)
+    if (!reached) return
+    haptic('light')
+    setRefreshing(true)
+    try {
+      await onRefresh()
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  const ptr = refreshing ? 44 : pull
 
   // Paired but unreachable. The server is a machine in someone's house: it gets
   // turned off, rebooted, moved - and Android drops the link every time this app
@@ -485,7 +565,23 @@ function Library ({
   }
 
   return (
-    <div className='app'>
+    <div
+      className='app'
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+    >
+      <div className='ptr' style={{ height: ptr }}>
+        {ptr > 0 && (
+          <ArrowsClockwise
+            size={18}
+            className={refreshing ? 'spin' : ''}
+            style={{ opacity: Math.min(1, ptr / TRIGGER), transform: `rotate(${ptr * 3}deg)` }}
+          />
+        )}
+      </div>
+
       <header>
         <h1>{state.host.libraryName || 'Library'}</h1>
         <p className='muted sm'>
@@ -623,7 +719,7 @@ function Cover ({ src, big, sm, artist }) {
 
 // Each drill-down fetches its own data from its id, so the nav stack holds nothing
 // but ids and popping back never has to restore anything.
-function AlbumScreen ({ id, now, error, onBack, onPlay }) {
+function AlbumScreen ({ id, now, error, onBack, onPlay, onViewArt }) {
   const [album, setAlbum] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -656,7 +752,9 @@ function AlbumScreen ({ id, now, error, onBack, onPlay }) {
 
   // The album's cover is the queue's cover: Navidrome gives per-album art, so a
   // track row inherits it.
-  const tracks = (album.tracks || []).map(t => ({ ...t, art: t.art ?? album.art }))
+  const tracks = (album.tracks || []).map(t => ({
+    ...t, art: t.art ?? album.art, artFull: album.artFull
+  }))
 
   return (
     <div className='app'>
@@ -664,7 +762,9 @@ function AlbumScreen ({ id, now, error, onBack, onPlay }) {
       {problem && <div className='error'>{problem}</div>}
 
       <div className='albumhead'>
-        <Cover src={album.art} big />
+        <div className='tapart' onClick={() => onViewArt(album.artFull || album.art, album.name)}>
+          <Cover src={album.art} big />
+        </div>
         <div>
           <h1>{album.name}</h1>
           <p className='muted sm'>{[album.artist, album.year].filter(Boolean).join(' · ')}</p>
@@ -682,7 +782,7 @@ function AlbumScreen ({ id, now, error, onBack, onPlay }) {
 
 // An artist IS its albums (one getArtist call on the host), so this is the album
 // grid again rather than a new kind of screen.
-function ArtistScreen ({ id, name, onBack, onOpenAlbum }) {
+function ArtistScreen ({ id, name, onBack, onOpenAlbum, onViewArt }) {
   const [artist, setArtist] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -706,7 +806,9 @@ function ArtistScreen ({ id, name, onBack, onOpenAlbum }) {
       <Back onClick={onBack} />
 
       <div className='albumhead'>
-        <Cover src={artist?.art} big artist />
+        <div className='tapart' onClick={() => onViewArt(artist?.artFull || artist?.art, artist?.name)}>
+          <Cover src={artist?.art} big artist />
+        </div>
         <div>
           <h1>{artist?.name || name}</h1>
           {artist && (
@@ -781,7 +883,7 @@ function MiniPlayer ({ now, status, onExpand }) {
   )
 }
 
-function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat, onCollapse }) {
+function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat, onCollapse, onViewArt }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
@@ -802,7 +904,9 @@ function NowPlaying ({ now, status, shuffle, repeat, onShuffle, onRepeat, onColl
       </button>
 
       <div className='row1'>
-        <Cover src={now.art} sm />
+        <div className='tapart' onClick={onViewArt}>
+          <Cover src={now.art} sm />
+        </div>
         <div className='meta'>
           <div className='t'>{now.title}</div>
           <div className='muted sm sub'>

@@ -2,6 +2,26 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - Predictive back is OFF. It breaks the back button
+Tier: T1 (Android)
+Context: Android 14+ predictive back (`android:enableOnBackInvokedCallback="true"`)
+animates a peek of what is behind the app during a back gesture. Expo scaffolds it
+as "false"; I turned it on and tested it on the TCL.
+Result: **it broke the back button.** With the flag on, the first back press from
+the About tab CLOSED THE APP instead of popping back to Library. React Native
+0.81's BackHandler is not routed to the platform's new OnBackInvokedCallback here,
+so the system takes the press and finishes the Activity - and our entire nav
+contract (shell:navState + a 'back' event, with the shell only swallowing the
+press when the UI has something to pop) is bypassed.
+Choice: reverted. The flag stays "false" until React Native routes the new callback
+to BackHandler.
+Worth being clear about what we are NOT missing: predictive back could never have
+animated OUR screens anyway. PearTune is one Activity hosting a WebView, and the
+nav stack (album, artist, sheets) is React state the system knows nothing about.
+Animating those needs OnBackAnimationCallback, which RN does not expose. The only
+thing the flag buys is a nicer animation when back CLOSES the app - and it charged
+a broken back button for it.
+
 ## 2026-07-14 - The background disconnect is EXPECTED. Reconnect on demand
 Tier: T1 (client behavior)
 Context: Tim noticed the app loses its connection to the host about a minute after

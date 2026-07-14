@@ -29,6 +29,12 @@ const TRACK_PATH = /^\/t\/([a-z0-9]+)/i
 // browser never knows. The alternative (pipe every cover through IPC as base64)
 // would be slower, fatter, and would make a grid of 50 covers miserable.
 const ART_PATH = /^\/art\/([^/?#]+)/
+// ?s=<px>. A grid of 50 covers wants small ones; the full-screen viewer wants a
+// big one. Same cover id, two very different requests, so the size is part of the
+// URL - and therefore part of the cache key.
+const ART_SIZE = /[?&]s=(\d+)/
+const DEFAULT_ART_SIZE = 300
+const MAX_ART_SIZE = 1200
 
 // ExoPlayer sniffs the container anyway, but a correct type saves it a probe and
 // avoids it refusing an unknown stream outright.
@@ -68,7 +74,11 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {} }) {
 
   const server = http.createServer(async (req, res) => {
     const art = ART_PATH.exec(req.url || '')
-    if (art) return serveArt(decodeURIComponent(art[1]), req, res)
+    if (art) {
+      const s = ART_SIZE.exec(req.url || '')
+      const size = Math.min(MAX_ART_SIZE, Number(s?.[1]) || DEFAULT_ART_SIZE)
+      return serveArt(decodeURIComponent(art[1]), size, req, res)
+    }
 
     const match = TRACK_PATH.exec(req.url || '')
     if (!match) {
@@ -146,13 +156,17 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {} }) {
   const artCache = new Map()
   const ART_CACHE_MAX = 120
 
-  async function serveArt (coverId, req, res) {
+  async function serveArt (coverId, size, req, res) {
+    // Keyed by size as well as id, or the first request for a cover would decide
+    // the resolution of every later one - a thumbnail blown up across a phone
+    // screen, or a 1200px image behind every tile in the grid.
+    const key = coverId + ':' + size
     try {
-      let buf = artCache.get(coverId)
+      let buf = artCache.get(key)
 
       if (!buf) {
         await ensure()
-        buf = await current.art({ coverId, size: 300 })
+        buf = await current.art({ coverId, size })
         if (!buf || !buf.length) {
           res.writeHead(404)
           return res.end()
@@ -160,7 +174,7 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {} }) {
         if (artCache.size >= ART_CACHE_MAX) {
           artCache.delete(artCache.keys().next().value) // oldest out
         }
-        artCache.set(coverId, buf)
+        artCache.set(key, buf)
       }
 
       res.writeHead(200, {
@@ -189,9 +203,10 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {} }) {
       current = c
     },
 
-    artUrlFor (coverId) {
+    artUrlFor (coverId, size) {
       const { port } = server.address()
-      return `http://127.0.0.1:${port}/art/${encodeURIComponent(coverId)}`
+      const q = size ? `?s=${Math.min(MAX_ART_SIZE, Number(size) || DEFAULT_ART_SIZE)}` : ''
+      return `http://127.0.0.1:${port}/art/${encodeURIComponent(coverId)}${q}`
     },
 
     async listen () {
