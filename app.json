@@ -1,0 +1,60 @@
+{
+  "expo": {
+    "name": "PearTune",
+    "slug": "peartune",
+    "version": "0.1.0",
+    "newArchEnabled": true,
+    "orientation": "portrait",
+    "scheme": "pear",
+    "userInterfaceStyle": "automatic",
+    "android": {
+      "package": "com.peartune",
+      "versionCode": 1,
+      "permissions": [
+        "CAMERA",
+        "INTERNET",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "WAKE_LOCK"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": false,
+          "data": [
+            {
+              "scheme": "pear",
+              "host": "peartune",
+              "pathPrefix": "/pair"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "plugins": [
+      [
+        "expo-router"
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 29
+          }
+        }
+      ],
+      "./plugins/with-android-abis",
+      "./plugins/with-android-queries",
+      "./plugins/with-android-debug-app-id",
+      "./plugins/with-localhost-cleartext",
+      "./plugins/with-standalone-debug"
+    ],
+    "assets": [
+      "./assets/bare-universal.bundle"
+    ]
+  }
+}
