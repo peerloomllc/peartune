@@ -671,11 +671,19 @@ function Library ({
               <button className={browse === 'artists' ? 'on' : ''} onClick={() => onBrowse('artists')}>Artists</button>
               <button className={browse === 'songs' ? 'on' : ''} onClick={() => onBrowse('songs')}>Songs</button>
             </div>
-            {browse !== 'songs' && (
-              <button className='icon dens' onClick={onDensity} aria-label='Change layout'>
-                <D.Icon size={20} weight='regular' />
-              </button>
-            )}
+            {/* Stays PUT in the Songs view, disabled, rather than disappearing.
+                A control that vanishes reflows the row it was in, and the picker
+                you just tapped jumps sideways under your thumb - which reads as a
+                glitch, not as "this does not apply here". Songs is a list; there is
+                no density to choose. */}
+            <button
+              className='icon dens'
+              onClick={onDensity}
+              disabled={browse === 'songs'}
+              aria-label={browse === 'songs' ? 'Layout (not available for songs)' : 'Change layout'}
+            >
+              <D.Icon size={20} weight='regular' />
+            </button>
           </div>
         )}
       </div>
