@@ -36,6 +36,8 @@ export default function App () {
   const pending = useRef<Map<number, Pending>>(new Map())
   const nextId = useRef(1)
   const player = useRef<AudioPlayer | null>(null)
+  const queueRef = useRef<any[]>([])
+  const indexRef = useRef(0)
   const [uiHtml, setUiHtml] = useState<string | null>(null)
 
   // --- worklet IPC ---------------------------------------------------------
@@ -55,48 +57,139 @@ export default function App () {
 
   // --- audio ---------------------------------------------------------------
 
-  async function play (trackId: string, title: string) {
+  // --- the queue ------------------------------------------------------------
+  //
+  // Tapping a track plays THAT track and queues the rest of the album behind it,
+  // which is what people mean when they tap a track. One AudioPlayer is reused
+  // across tracks via replace(): tearing it down and rebuilding it per track
+  // would drop the MediaSession, and the lock-screen controls would flicker away
+  // between songs.
+
+  const SEEK_STEP = 15 // seconds, matching the lock-screen rewind/FF buttons
+
+  async function ensurePlayer (url: string) {
+    // shouldPlayInBackground + FOREGROUND_SERVICE_MEDIA_PLAYBACK keep audio alive
+    // once the screen goes off. interruptionMode 'doNotMix' is what makes Android
+    // associate the lock-screen controls with US: without it the OS may not hand
+    // this player the session at all.
+    await setAudioModeAsync({
+      shouldPlayInBackground: true,
+      playsInSilentMode: true,
+      interruptionMode: 'doNotMix'
+    })
+
+    if (player.current) {
+      player.current.replace({ uri: url })
+      return player.current
+    }
+
+    const p = createAudioPlayer({ uri: url })
+    player.current = p
+
+    p.addListener('playbackStatusUpdate', (s: any) => {
+      // End of track -> advance. This is the whole reason a queue exists.
+      if (s.didJustFinish) {
+        next()
+        return
+      }
+      toWeb('play:status', {
+        playing: !!s.playing,
+        positionMs: Math.round((s.currentTime ?? 0) * 1000),
+        durationMs: s.duration ? Math.round(s.duration * 1000) : null,
+        buffering: !!s.isBuffering,
+        index: indexRef.current,
+        queueLength: queueRef.current.length
+      })
+    })
+
+    return p
+  }
+
+  async function playAt (i: number) {
+    const q = queueRef.current
+    if (i < 0 || i >= q.length) return stop()
+
+    const t = q[i]
+    indexRef.current = i
+
     try {
       // The loopback URL the worklet serves. ExoPlayer range-requests it, and
       // every one of those ranges is fetched over the live P2P connection.
-      const { url }: any = await call('urlFor', { trackId })
+      const { url }: any = await call('urlFor', { trackId: t.id })
+      const p = await ensurePlayer(url)
 
-      stopPlayer()
-
-      // shouldPlayInBackground + FOREGROUND_SERVICE_MEDIA_PLAYBACK are what keep
-      // audio alive once the screen goes off. Without them Android suspends us
-      // and the music dies the moment the phone is pocketed, which is most of the
-      // time a music app is actually used.
-      await setAudioModeAsync({
-        shouldPlayInBackground: true,
-        playsInSilentMode: true,
-        shouldRouteThroughEarpiece: false
-      })
-
-      const p = createAudioPlayer({ uri: url })
-      player.current = p
-
-      p.addListener('playbackStatusUpdate', (s: any) => {
-        toWeb('play:status', {
-          playing: !!s.playing,
-          positionMs: Math.round((s.currentTime ?? 0) * 1000),
-          durationMs: s.duration ? Math.round(s.duration * 1000) : null,
-          buffering: !!s.isBuffering
-        })
-      })
+      // Lock screen + notification. The artwork URL is our OWN loopback server,
+      // so the cover on the lock screen also came over P2P.
+      p.setActiveForLockScreen(
+        true,
+        {
+          title: t.title,
+          artist: t.artist ?? undefined,
+          albumTitle: t.album ?? undefined,
+          artworkUrl: t.art ?? undefined
+        },
+        { showSeekForward: true, showSeekBackward: true }
+      )
 
       p.play()
-      toWeb('play:started', { trackId, title })
+      toWeb('play:started', {
+        trackId: t.id,
+        title: t.title,
+        artist: t.artist ?? null,
+        album: t.album ?? null,
+        art: t.art ?? null,
+        index: i,
+        queueLength: q.length
+      })
     } catch (e: any) {
-      // A revoked device lands here, or on the status listener going quiet: the
-      // loopback stream broke because the P2P connection under it was destroyed.
+      // A revoked device lands here: the loopback stream broke because the P2P
+      // connection under it was destroyed.
       toWeb('play:error', { error: e?.message ?? String(e) })
     }
+  }
+
+  function play ({ queue, index = 0 }: any) {
+    queueRef.current = Array.isArray(queue) ? queue : []
+    return playAt(index)
+  }
+
+  function toggle () {
+    const p = player.current
+    if (!p) return
+    if (p.playing) p.pause()
+    else p.play()
+  }
+
+  function next () {
+    if (indexRef.current + 1 >= queueRef.current.length) return stop()
+    playAt(indexRef.current + 1)
+  }
+
+  // The convention every music player uses: PREVIOUS restarts the current track
+  // if you are more than a few seconds in, and only steps back a track if you
+  // press it near the beginning. Jumping straight back is a common annoyance.
+  function prev () {
+    const p = player.current
+    if (p && p.currentTime > 3) return p.seekTo(0)
+    if (indexRef.current - 1 < 0) return p?.seekTo(0)
+    playAt(indexRef.current - 1)
+  }
+
+  function seekBy (seconds: number) {
+    const p = player.current
+    if (!p) return
+    const target = Math.max(0, Math.min((p.duration || 0), (p.currentTime || 0) + seconds))
+    p.seekTo(target)
+  }
+
+  function seekTo (ms: number) {
+    player.current?.seekTo(Math.max(0, ms / 1000))
   }
 
   function stopPlayer () {
     if (!player.current) return
     try {
+      player.current.clearLockScreenControls()
       player.current.pause()
       player.current.remove()
     } catch {}
@@ -105,6 +198,8 @@ export default function App () {
 
   function stop () {
     stopPlayer()
+    queueRef.current = []
+    indexRef.current = 0
     toWeb('play:stopped', {})
   }
 
@@ -194,7 +289,12 @@ export default function App () {
 
     // Playback is the shell's job, not the worklet's: only the shell can talk to
     // the native media stack.
-    if (msg.method === 'play') return play(msg.args.trackId, msg.args.title)
+    if (msg.method === 'play') return play(msg.args)
+    if (msg.method === 'toggle') return toggle()
+    if (msg.method === 'next') return next()
+    if (msg.method === 'prev') return prev()
+    if (msg.method === 'seekBy') return seekBy(msg.args.seconds ?? SEEK_STEP)
+    if (msg.method === 'seekTo') return seekTo(msg.args.ms ?? 0)
     if (msg.method === 'stop') return stop()
 
     try {

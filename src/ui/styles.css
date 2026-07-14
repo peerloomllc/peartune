@@ -94,3 +94,32 @@ button.more { width: 100%; margin: 1.2rem 0 0; }
 ul.tracks li .no { flex: none; width: 1.6rem; text-align: right;
                    font-variant-numeric: tabular-nums; }
 .center-p { text-align: center; padding: 2rem 0; }
+
+/* --- transport / now playing -------------------------------------------- */
+footer.player { display: block; padding: .7rem 1rem calc(.7rem + env(safe-area-inset-bottom)); }
+footer.player .row1 { display: flex; align-items: center; gap: .75rem; }
+footer.player .meta { flex: 1; min-width: 0; }
+.cover.sm-cover { width: 42px; height: 42px; aspect-ratio: 1; flex: none; border-radius: 6px; }
+/* 18px tall so it is actually tappable, with a 3px line drawn inside it. The
+   scrub handler measures THIS element, so its box is the seek geometry. */
+.bar { position: relative; height: 18px; margin: .55rem 0 0; cursor: pointer; }
+.bar::before {
+  content: ''; position: absolute; top: 50%; left: 0; right: 0; height: 3px;
+  transform: translateY(-50%); background: var(--line); border-radius: 2px;
+}
+.bar .fill {
+  position: absolute; top: 50%; left: 0; height: 3px; transform: translateY(-50%);
+  background: var(--accent); border-radius: 2px; max-width: 100%;
+}
+.times { display: flex; justify-content: space-between; margin-top: -.15rem;
+         font-variant-numeric: tabular-nums; }
+.transport {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: .4rem; margin-top: .5rem;
+}
+button.icon {
+  flex: 1; padding: .55rem .3rem; font-size: .95rem; background: transparent;
+  border-color: transparent;
+}
+button.icon.big { font-size: 1.35rem; flex: 1.3; background: var(--card); border-color: var(--line); }
+button.icon.close { flex: none; padding: .4rem .6rem; }

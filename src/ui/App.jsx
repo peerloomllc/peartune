@@ -90,7 +90,15 @@ export default function App () {
     }
   }
 
-  const play = (t) => call('play', { trackId: t.id, title: t.title })
+  // Tapping a track queues the whole list behind it - which is what people mean
+  // when they tap a track in an album.
+  const playFrom = (list, t) => {
+    const queue = list.map(x => ({
+      id: x.id, title: x.title, artist: x.artist, album: x.album, art: x.art ?? null, durationMs: x.durationMs
+    }))
+    const index = Math.max(0, list.findIndex(x => x.id === t.id))
+    return call('play', { queue, index })
+  }
 
   if (state.loading) return <div className="center"><p className="muted">Starting…</p></div>
 
@@ -101,12 +109,16 @@ export default function App () {
   }
 
   if (open) {
+    // The album's cover is the queue's cover: Navidrome gives per-album art, so
+    // a track row inherits it.
+    const tracks = (open.tracks || []).map(t => ({ ...t, art: t.art ?? open.art }))
     return (
       <Album
         album={open}
+        tracks={tracks}
         now={now}
         onBack={() => setOpen(null)}
-        onPlay={play}
+        onPlay={(t) => playFrom(tracks, t)}
         footer={now && <NowPlaying now={now} status={status} />}
       />
     )
@@ -139,7 +151,7 @@ export default function App () {
             {!!results.tracks.length && <h2>Tracks</h2>}
             <ul className="tracks">
               {results.tracks.map(t => (
-                <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={play} />
+                <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => playFrom(results.tracks, t)} />
               ))}
             </ul>
             {!results.albums.length && !results.tracks.length && (
@@ -179,20 +191,14 @@ function Grid ({ albums, onOpen }) {
 // The cover comes over P2P via the worklet's loopback server. A library often
 // has albums with no art at all, so a missing cover must look intentional rather
 // than broken.
-function Cover ({ src, big }) {
+function Cover ({ src, big, sm }) {
   const [failed, setFailed] = useState(false)
-  if (!src || failed) return <div className={'cover ph' + (big ? ' big' : '')} />
-  return (
-    <img
-      className={'cover' + (big ? ' big' : '')}
-      src={src}
-      loading="lazy"
-      onError={() => setFailed(true)}
-    />
-  )
+  const cls = 'cover' + (big ? ' big' : '') + (sm ? ' sm-cover' : '')
+  if (!src || failed) return <div className={cls + ' ph'} />
+  return <img className={cls} src={src} loading="lazy" onError={() => setFailed(true)} />
 }
 
-function Album ({ album, now, onBack, onPlay, footer }) {
+function Album ({ album, tracks, now, onBack, onPlay, footer }) {
   if (album.loading) return <div className="center"><p className="muted">Loading…</p></div>
 
   return (
@@ -210,7 +216,7 @@ function Album ({ album, now, onBack, onPlay, footer }) {
       </div>
 
       <ul className="tracks">
-        {(album.tracks || []).map(t => (
+        {tracks.map(t => (
           <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={onPlay} showTrackNo />
         ))}
       </ul>
@@ -238,16 +244,52 @@ function Row ({ t, on, onPlay, showTrackNo }) {
 }
 
 function NowPlaying ({ now, status }) {
+  const dur = status?.durationMs || now.durationMs || 0
+  const pos = status?.positionMs || 0
+  const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
+
+  // Tap anywhere on the bar to seek. The seek goes out over P2P as a byte-range
+  // request, which is why range support had to be right from day one.
+  const scrub = (e) => {
+    if (!dur) return
+    const r = e.currentTarget.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+    call('seekTo', { ms: Math.round(ratio * dur) })
+  }
+
   return (
-    <footer>
-      <div className="meta">
-        <div className="t">{now.title}</div>
-        <div className="muted sm">
-          {status?.buffering ? 'buffering…' : status?.playing ? 'playing' : 'paused'}
-          {status?.durationMs ? ` · ${fmt(status.positionMs)} / ${fmt(status.durationMs)}` : ''}
+    <footer className="player">
+      <div className="row1">
+        <Cover src={now.art} sm />
+        <div className="meta">
+          <div className="t">{now.title}</div>
+          <div className="muted sm sub">
+            {status?.buffering
+              ? 'buffering…'
+              : [now.artist, now.album].filter(Boolean).join(' · ') || ' '}
+          </div>
         </div>
+        <button className="icon close" onClick={() => call('stop')} aria-label="Stop">✕</button>
       </div>
-      <button onClick={() => call('stop')}>Stop</button>
+
+      <div className="bar" onClick={scrub}>
+        <div className="fill" style={{ width: pct + '%' }} />
+      </div>
+      <div className="times muted sm">
+        <span>{fmt(pos)}</span>
+        <span>{now.queueLength > 1 ? `${(status?.index ?? now.index) + 1} / ${now.queueLength}` : ''}</span>
+        <span>{dur ? fmt(dur) : '--:--'}</span>
+      </div>
+
+      <div className="transport">
+        <button className="icon" onClick={() => call('prev')} aria-label="Previous">⏮</button>
+        <button className="icon" onClick={() => call('seekBy', { seconds: -15 })} aria-label="Back 15s">↺15</button>
+        <button className="icon big" onClick={() => call('toggle')} aria-label="Play/pause">
+          {status?.playing ? '⏸' : '▶'}
+        </button>
+        <button className="icon" onClick={() => call('seekBy', { seconds: 15 })} aria-label="Forward 15s">15↻</button>
+        <button className="icon" onClick={() => call('next')} aria-label="Next">⏭</button>
+      </div>
     </footer>
   )
 }
