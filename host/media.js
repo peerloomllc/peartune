@@ -75,6 +75,28 @@ function serveMedia ({ conn, libraryId, adapter, grant, grants = null, log = () 
     }
   }
 
+  // CONFIRMED means the claim matches the person this device is actually assigned
+  // to - not merely that SOME person is assigned.
+  //
+  // Otherwise, changing your name after being confirmed leaves the app saying
+  // "confirmed as Tim" while the row claims something else entirely. A rename is a
+  // NEW claim, and it is pending until the operator says otherwise. (The device
+  // still cannot move itself: only the operator confirms. That part is the point.)
+  async function identityOf (row) {
+    const person = row?.personId && grants ? await grants.getPerson(row.personId) : null
+    const claim = row?.claimedUser || null
+    return {
+      deviceName: row?.label || null,
+      belongsTo: person ? person.name : null,
+      user: claim
+        ? {
+            name: claim,
+            confirmed: !!person && person.name.toLowerCase() === claim.toLowerCase()
+          }
+        : null
+    }
+  }
+
   async function dispatch (m) {
     const { id, method, params } = m
 
@@ -104,16 +126,9 @@ function serveMedia ({ conn, libraryId, adapter, grant, grants = null, log = () 
       // looked up from the Noise-authenticated remote public key, so a device can
       // only ever read and write ITS OWN identity - there is no deviceKey parameter
       // to forge, and adding one would be the whole vulnerability.
-      case 'identity.get':
-        return send.res.send({
-          id,
-          body: {
-            deviceName: grant?.label || null,
-            user: grant?.claimedUser
-              ? { name: grant.claimedUser, confirmed: !!grant.personId }
-              : null
-          }
-        })
+      case 'identity.get': {
+        return send.res.send({ id, body: await identityOf(grant) })
+      }
 
       case 'identity.set': {
         if (!grants || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
@@ -129,16 +144,7 @@ function serveMedia ({ conn, libraryId, adapter, grant, grants = null, log = () 
 
         log('identity:set', { label: row.label, claims: row.claimedUser || null })
 
-        return send.res.send({
-          id,
-          body: {
-            ok: true,
-            deviceName: row.label || null,
-            user: row.claimedUser
-              ? { name: row.claimedUser, confirmed: !!row.personId }
-              : null
-          }
-        })
+        return send.res.send({ id, body: { ok: true, ...(await identityOf(row)) } })
       }
 
       case 'art.get': {

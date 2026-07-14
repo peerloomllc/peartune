@@ -391,6 +391,7 @@ const methods = {
       deviceName: remote?.deviceName || local.deviceName || '',
       userName: remote?.user?.name || local.userName || '',
       confirmed: !!remote?.user?.confirmed,
+      belongsTo: remote?.belongsTo || null,
       supported: remote !== null
     }
   },
@@ -405,7 +406,8 @@ const methods = {
     return {
       deviceName: r?.deviceName || '',
       userName: r?.user?.name || '',
-      confirmed: !!r?.user?.confirmed
+      confirmed: !!r?.user?.confirmed,
+      belongsTo: r?.belongsTo || null
     }
   },
 

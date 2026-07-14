@@ -279,8 +279,18 @@ function renderDevices (devices) {
 
     // A device says who it belongs to; the OPERATOR decides. Until confirmed the
     // claim is cosmetic and grants nothing (proposal 2026-07-14).
-    const claim = (!d.revokedAt && d.claimedUser && !d.personId)
-      ? '<div class="claim">claims to be <b>' + esc(d.claimedUser) + '</b> ' +
+    //
+    // Shown whenever the claim does not MATCH the person it is assigned to - not
+    // only when it is unassigned. Somebody who renames themselves after being
+    // confirmed is making a new claim, and hiding it left the operator looking at a
+    // name nobody uses any more. The device still cannot move itself: this button
+    // is the operator's.
+    const holder = PEOPLE.find(p => p.id === d.personId)
+    const matches = holder && d.claimedUser &&
+      holder.name.toLowerCase() === d.claimedUser.toLowerCase()
+    const claim = (!d.revokedAt && d.claimedUser && !matches)
+      ? '<div class="claim">' + (holder ? 'now claims to be ' : 'claims to be ') +
+        '<b>' + esc(d.claimedUser) + '</b> ' +
         '<button onclick="confirmClaim(\\'' + d.deviceKey + '\\')">Confirm</button></div>'
       : ''
 

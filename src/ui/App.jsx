@@ -1639,7 +1639,9 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity 
           <div className='desc'>
             {ident.confirmed
               ? `Your server has confirmed this device belongs to ${ident.userName}.`
-              : `Waiting for your server to confirm you are ${ident.userName}. Until then this is only a label.`}
+              : ident.belongsTo
+                ? `Your server still has this device down as ${ident.belongsTo}. It is waiting to confirm you are ${ident.userName} - only the person running it can move a device to someone else.`
+                : `Waiting for your server to confirm you are ${ident.userName}. Until then this is only a label.`}
           </div>
         )}
 
