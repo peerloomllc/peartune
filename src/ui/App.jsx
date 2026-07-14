@@ -1,9 +1,9 @@
-// PearTune UI. Milestone 1: pair, browse, play, and show plainly when the host
-// cuts us off.
+// PearTune UI.
 //
-// It is deliberately plain. The design pass comes once the transport is proven on
-// real hardware; shipping a beautiful UI on top of an unproven connection would
-// be building the roof first.
+// Albums are the way in, not a flat track list. Two reasons, and the second is
+// the hard one: a 1358-track flat list is not a music app, AND Subsonic has no
+// "all songs" endpoint - a flat list can only ever show the first page of albums
+// walked. Browsing by album is both the better UX and the only correct one.
 
 import { useEffect, useState, useRef } from 'react'
 import jsQR from 'jsqr'
@@ -11,7 +11,11 @@ import { call, on } from './bridge'
 
 export default function App () {
   const [state, setState] = useState({ loading: true })
-  const [tracks, setTracks] = useState([])
+  const [albums, setAlbums] = useState([])
+  const [cursor, setCursor] = useState(0)
+  const [open, setOpen] = useState(null) // the album being viewed
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState(null)
   const [now, setNow] = useState(null)
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
@@ -19,9 +23,9 @@ export default function App () {
 
   useEffect(() => {
     call('init')
-      .then(async (s) => {
+      .then((s) => {
         setState({ ...s, loading: false })
-        if (s.connected) loadTracks()
+        if (s.connected) loadAlbums(0)
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
@@ -30,7 +34,6 @@ export default function App () {
       on('play:status', setStatus),
       on('play:stopped', () => { setNow(null); setStatus(null) }),
       on('play:error', (d) => setError(d.error)),
-      // The host revoked us, or went away. Say so; do not leave a dead player.
       on('host:disconnected', () => {
         setNow(null)
         setStatus(null)
@@ -45,10 +48,31 @@ export default function App () {
     return () => offs.forEach(f => f())
   }, [])
 
-  async function loadTracks () {
+  async function loadAlbums (from) {
     try {
-      const { items } = await call('tracks', { limit: 300 })
-      setTracks(items)
+      const page = await call('albums', { cursor: from, limit: 60 })
+      setAlbums(a => (from ? [...a, ...page.items] : page.items))
+      setCursor(page.nextCursor)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  async function openAlbum (id) {
+    try {
+      setOpen({ loading: true })
+      setOpen(await call('album', { id }))
+    } catch (e) {
+      setOpen(null)
+      setError(e.message)
+    }
+  }
+
+  async function runSearch (q) {
+    setQuery(q)
+    if (!q.trim()) return setResults(null)
+    try {
+      setResults(await call('search', { q }))
     } catch (e) {
       setError(e.message)
     }
@@ -60,11 +84,13 @@ export default function App () {
     try {
       const host = await call('pair', { link })
       setState(s => ({ ...s, host, connected: true }))
-      loadTracks()
+      loadAlbums(0)
     } catch (e) {
       setError(e.message)
     }
   }
+
+  const play = (t) => call('play', { trackId: t.id, title: t.title })
 
   if (state.loading) return <div className="center"><p className="muted">Starting…</p></div>
 
@@ -74,57 +100,155 @@ export default function App () {
       : <Welcome onScan={() => setScanning(true)} onPaste={onPaired} error={error} />
   }
 
+  if (open) {
+    return (
+      <Album
+        album={open}
+        now={now}
+        onBack={() => setOpen(null)}
+        onPlay={play}
+        footer={now && <NowPlaying now={now} status={status} />}
+      />
+    )
+  }
+
+  const searching = results && query.trim()
+
   return (
     <div className="app">
       <header>
         <h1>{state.host.libraryName || 'Library'}</h1>
-        <p className="muted">
-          {state.connected
-            ? `${tracks.length} tracks`
-            : 'Not connected'}
+        <p className="muted sm">
+          {state.connected ? `${albums.length} albums` : 'Not connected'}
         </p>
+        <input
+          className="search"
+          value={query}
+          onChange={e => runSearch(e.target.value)}
+          placeholder="Search artists, albums, tracks"
+        />
       </header>
 
       {error && <div className="error">{error}</div>}
 
+      {searching
+        ? (
+          <>
+            {!!results.albums.length && <h2>Albums</h2>}
+            <Grid albums={results.albums} onOpen={openAlbum} />
+            {!!results.tracks.length && <h2>Tracks</h2>}
+            <ul className="tracks">
+              {results.tracks.map(t => (
+                <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={play} />
+              ))}
+            </ul>
+            {!results.albums.length && !results.tracks.length && (
+              <p className="muted center-p">Nothing found.</p>
+            )}
+          </>
+          )
+        : (
+          <>
+            <Grid albums={albums} onOpen={openAlbum} />
+            {cursor != null && (
+              <button className="more" onClick={() => loadAlbums(cursor)}>Load more</button>
+            )}
+          </>
+          )}
+
+      {now && <NowPlaying now={now} status={status} />}
+    </div>
+  )
+}
+
+function Grid ({ albums, onOpen }) {
+  if (!albums.length) return null
+  return (
+    <div className="grid">
+      {albums.map(a => (
+        <div key={a.id} className="album" onClick={() => onOpen(a.id)}>
+          <Cover src={a.art} />
+          <div className="t sm">{a.name}</div>
+          <div className="muted sm sub">{a.artist}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// The cover comes over P2P via the worklet's loopback server. A library often
+// has albums with no art at all, so a missing cover must look intentional rather
+// than broken.
+function Cover ({ src, big }) {
+  const [failed, setFailed] = useState(false)
+  if (!src || failed) return <div className={'cover ph' + (big ? ' big' : '')} />
+  return (
+    <img
+      className={'cover' + (big ? ' big' : '')}
+      src={src}
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
+function Album ({ album, now, onBack, onPlay, footer }) {
+  if (album.loading) return <div className="center"><p className="muted">Loading…</p></div>
+
+  return (
+    <div className="app">
+      <button className="back" onClick={onBack}>‹ Back</button>
+
+      <div className="albumhead">
+        <Cover src={album.art} big />
+        <div>
+          <h1>{album.name}</h1>
+          <p className="muted sm">
+            {[album.artist, album.year].filter(Boolean).join(' · ')}
+          </p>
+        </div>
+      </div>
+
       <ul className="tracks">
-        {tracks.map(t => (
-          <li
-            key={t.id}
-            className={now?.trackId === t.id ? 'on' : ''}
-            onClick={() => call('play', { trackId: t.id, title: t.title })}
-          >
-            <div className="meta">
-              <div className="t">{t.title}</div>
-              {/* Navidrome gives us artist/album; the raw-folder adapter does not
-                  yet (no tag reading), so fall back to the file size rather than
-                  rendering an empty second line. */}
-              <div className="muted sm sub">
-                {t.artist
-                  ? [t.artist, t.album].filter(Boolean).join(' · ')
-                  : `${(t.size / 1048576).toFixed(1)} MB`}
-              </div>
-            </div>
-            <span className="muted sm dur">{t.durationMs ? fmt(t.durationMs) : ''}</span>
-          </li>
+        {(album.tracks || []).map(t => (
+          <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={onPlay} showTrackNo />
         ))}
       </ul>
 
-      {now && (
-        <footer>
-          <div>
-            <div className="t">{now.title}</div>
-            <div className="muted sm">
-              {status?.buffering ? 'buffering…' : status?.playing ? 'playing' : 'paused'}
-              {status?.durationMs
-                ? ` · ${fmt(status.positionMs)} / ${fmt(status.durationMs)}`
-                : ''}
-            </div>
-          </div>
-          <button onClick={() => call('stop')}>Stop</button>
-        </footer>
-      )}
+      {footer}
     </div>
+  )
+}
+
+function Row ({ t, on, onPlay, showTrackNo }) {
+  return (
+    <li className={on ? 'on' : ''} onClick={() => onPlay(t)}>
+      {showTrackNo && <span className="muted sm no">{t.track ?? ''}</span>}
+      <div className="meta">
+        <div className="t">{t.title}</div>
+        <div className="muted sm sub">
+          {t.artist
+            ? [t.artist, t.album].filter(Boolean).join(' · ')
+            : `${(t.size / 1048576).toFixed(1)} MB`}
+        </div>
+      </div>
+      <span className="muted sm dur">{t.durationMs ? fmt(t.durationMs) : ''}</span>
+    </li>
+  )
+}
+
+function NowPlaying ({ now, status }) {
+  return (
+    <footer>
+      <div className="meta">
+        <div className="t">{now.title}</div>
+        <div className="muted sm">
+          {status?.buffering ? 'buffering…' : status?.playing ? 'playing' : 'paused'}
+          {status?.durationMs ? ` · ${fmt(status.positionMs)} / ${fmt(status.durationMs)}` : ''}
+        </div>
+      </div>
+      <button onClick={() => call('stop')}>Stop</button>
+    </footer>
   )
 }
 
@@ -147,19 +271,13 @@ function Welcome ({ onScan, onPaste, error }) {
       <button className="primary" onClick={onScan}>Scan pairing code</button>
       <details>
         <summary className="muted sm">Paste a link instead</summary>
-        <input
-          value={link}
-          onChange={e => setLink(e.target.value)}
-          placeholder="pear://peartune/pair?…"
-        />
+        <input value={link} onChange={e => setLink(e.target.value)} placeholder="pear://peartune/pair?…" />
         <button onClick={() => onPaste(link.trim())} disabled={!link.trim()}>Pair</button>
       </details>
     </div>
   )
 }
 
-// The camera QR scanner runs in the WebView with getUserMedia + jsQR, the same
-// approach PearList already ships, so there is no native scanner module.
 function Scanner ({ onScan, onCancel, error }) {
   const video = useRef(null)
   const canvas = useRef(null)

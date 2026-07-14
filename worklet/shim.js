@@ -24,6 +24,11 @@ const http = require('bare-http1')
 
 const RANGE = /^bytes=(\d*)-(\d*)$/
 const TRACK_PATH = /^\/t\/([a-z0-9]+)/i
+// Artwork rides the same loopback server, so the WebView can just use a plain
+// <img src="http://127.0.0.1:PORT/art/...">. The bytes still travel over P2P; the
+// browser never knows. The alternative (pipe every cover through IPC as base64)
+// would be slower, fatter, and would make a grid of 50 covers miserable.
+const ART_PATH = /^\/art\/([^/?#]+)/
 
 // ExoPlayer sniffs the container anyway, but a correct type saves it a probe and
 // avoids it refusing an unknown stream outright.
@@ -55,6 +60,9 @@ function createAudioShim ({ client, log = () => {} }) {
   }
 
   const server = http.createServer(async (req, res) => {
+    const art = ART_PATH.exec(req.url || '')
+    if (art) return serveArt(decodeURIComponent(art[1]), req, res)
+
     const match = TRACK_PATH.exec(req.url || '')
     if (!match) {
       res.writeHead(404)
@@ -120,8 +128,52 @@ function createAudioShim ({ client, log = () => {} }) {
     }
   })
 
+  // Covers are small and re-requested constantly as the user scrolls a grid, so
+  // they are worth caching in the worklet. Bounded, because a big library has a
+  // lot of covers and a phone does not have a lot of memory.
+  const artCache = new Map()
+  const ART_CACHE_MAX = 120
+
+  async function serveArt (coverId, req, res) {
+    try {
+      let buf = artCache.get(coverId)
+
+      if (!buf) {
+        buf = await client.art({ coverId, size: 300 })
+        if (!buf || !buf.length) {
+          res.writeHead(404)
+          return res.end()
+        }
+        if (artCache.size >= ART_CACHE_MAX) {
+          artCache.delete(artCache.keys().next().value) // oldest out
+        }
+        artCache.set(coverId, buf)
+      }
+
+      res.writeHead(200, {
+        'content-type': 'image/jpeg',
+        'content-length': String(buf.length),
+        'cache-control': 'max-age=86400'
+      })
+      res.end(buf)
+    } catch (e) {
+      log('shim:art-failed', { cover: String(coverId).slice(0, 12), err: e?.message })
+      // A missing cover is not an error worth breaking the page over: answer 404
+      // and let the UI show its placeholder.
+      try {
+        res.writeHead(404)
+        res.end()
+      } catch {}
+    }
+  }
+
   return {
     server,
+
+    artUrlFor (coverId) {
+      const { port } = server.address()
+      return `http://127.0.0.1:${port}/art/${encodeURIComponent(coverId)}`
+    },
 
     async listen () {
       await new Promise((resolve, reject) => {

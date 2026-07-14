@@ -170,3 +170,87 @@ summary {
   cursor: pointer;
   padding: .5rem;
 }
+h2 {
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--muted);
+  margin: 1.4rem 0 .6rem;
+  font-weight: 600;
+}
+input.search {
+  margin-top: .8rem;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem .9rem;
+  margin-top: .5rem;
+}
+@media (min-width: 480px) {
+  .grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.album {
+  min-width: 0;
+}
+.album .t {
+  margin-top: .45rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.album .sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cover {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--card);
+  display: block;
+}
+.cover.ph {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent) 18%, var(--card)),
+      var(--card));
+}
+.cover.big {
+  width: 96px;
+  height: 96px;
+  aspect-ratio: 1;
+  flex: none;
+}
+.albumhead {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin: .5rem 0 1.2rem;
+}
+.albumhead h1 {
+  font-size: 1.15rem;
+}
+button.back {
+  padding: .4rem .7rem;
+  margin-bottom: .6rem;
+}
+button.more {
+  width: 100%;
+  margin: 1.2rem 0 0;
+}
+ul.tracks li .no {
+  flex: none;
+  width: 1.6rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.center-p {
+  text-align: center;
+  padding: 2rem 0;
+}

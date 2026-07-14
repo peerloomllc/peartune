@@ -177,8 +177,39 @@ const methods = {
     return client.list({ type: 'tracks', cursor, limit })
   },
 
+  // Album browsing is the primary way in. A flat list of 1358 tracks is not a
+  // music app, and Subsonic has no "all songs" call anyway - so the flat list
+  // could only ever show the first page. Albums page properly.
+  async albums ({ cursor = 0, limit = 60 } = {}) {
+    const page = await client.list({ type: 'albums', cursor, limit })
+    return {
+      ...page,
+      items: page.items.map(a => ({
+        ...a,
+        // Pre-resolve the loopback URL so the WebView can <img src> it directly.
+        art: a.coverId && shim ? shim.artUrlFor(a.coverId) : null
+      }))
+    }
+  },
+
+  async album ({ id }) {
+    const a = await client.get({ id, type: 'album' })
+    if (!a) return null
+    return {
+      ...a,
+      art: a.coverId && shim ? shim.artUrlFor(a.coverId) : null
+    }
+  },
+
   async search ({ q }) {
-    return client.search({ q })
+    const r = await client.search({ q })
+    return {
+      ...r,
+      albums: (r.albums || []).map(a => ({
+        ...a,
+        art: a.coverId && shim ? shim.artUrlFor(a.coverId) : null
+      }))
+    }
   },
 
   // The URL the RN player hands to ExoPlayer. The audio never touches RN: the
