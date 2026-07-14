@@ -157,7 +157,8 @@ async function connectTo (host) {
   emit('host:connected', {
     libraryName: host.libraryName,
     libraryId: host.libraryId,
-    shimPort
+    shimPort,
+    artBase: shim.artBase()
   })
 
   return { ...host, shimPort }
@@ -236,6 +237,7 @@ const methods = {
         await connectTo(host)
         state.connected = true
         state.shimPort = shimPort
+        state.artBase = shim.artBase()
       } catch (e) {
         log('init:connect-failed', { err: e.message })
         // Paired but unreachable is a normal state, not an error: the Umbrel may
@@ -278,9 +280,12 @@ const methods = {
     return client.stats()
   },
 
-  async tracks ({ cursor = 0, limit = 200 } = {}) {
+  // The Songs view. Navidrome answers an empty-query search3 with everything,
+  // paged, so this is a real list and not the 60-call album walk it used to be.
+  async tracks ({ cursor = 0, limit = 100 } = {}) {
     await ensureConnected()
-    return client.list({ type: 'tracks', cursor, limit })
+    const page = await client.list({ type: 'tracks', cursor, limit })
+    return { ...page, items: page.items.map(withArt) }
   },
 
   // Album browsing is the primary way in. A flat list of 1358 tracks is not a

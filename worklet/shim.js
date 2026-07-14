@@ -203,6 +203,15 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {} }) {
       current = c
     },
 
+    // The UI composes its own art URLs when the SIZE depends on something only it
+    // knows - the grid density. 3-up wants a 350px cover where 2-up wants 500, and
+    // re-fetching the whole album list just to change a number in a URL would be
+    // silly.
+    artBase () {
+      const { port } = server.address()
+      return `http://127.0.0.1:${port}/art/`
+    },
+
     artUrlFor (coverId, size) {
       const { port } = server.address()
       const q = size ? `?s=${Math.min(MAX_ART_SIZE, Number(size) || DEFAULT_ART_SIZE)}` : ''

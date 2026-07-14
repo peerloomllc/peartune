@@ -94,6 +94,87 @@ test('duration is converted from Subsonic seconds to our milliseconds', () => {
   assert.equal(a._track({ id: 's', duration: 171 }).durationMs, 171000)
 })
 
+// --- all songs --------------------------------------------------------------
+//
+// Subsonic proper has no "all songs" endpoint. Navidrome answers search3 with an
+// EMPTY query as "everything", paged - verified against the real library (1358
+// songs, songOffset paging works). A stricter server must still get an answer.
+
+test('songs come from search3 with an EMPTY query, paged by songOffset', async () => {
+  const a = make()
+  const calls = []
+  a._call = async (method, params) => {
+    calls.push(method)
+    assert.equal(method, 'search3')
+    assert.equal(params.query, '')
+    assert.equal(params.songOffset, 100)
+    assert.equal(params.songCount, 50)
+    return { searchResult3: { song: Array.from({ length: 50 }, (_, i) => ({ id: 's' + i, title: 't' + i })) } }
+  }
+
+  const page = await a.list({ type: 'tracks', cursor: 100, limit: 50 })
+  assert.equal(page.items.length, 50)
+  // A full page means there is probably another one.
+  assert.equal(page.nextCursor, 150)
+  // And crucially: it did NOT walk albums.
+  assert.deepEqual(calls, ['search3'])
+})
+
+test('a short page is the last page', async () => {
+  const a = make()
+  a._call = async () => ({ searchResult3: { song: [{ id: 's1', title: 'x' }] } })
+  const page = await a.list({ type: 'tracks', cursor: 0, limit: 50 })
+  assert.equal(page.nextCursor, null)
+})
+
+test('a server that refuses an empty query falls back to walking albums', async () => {
+  const a = make()
+  const calls = []
+  a._call = async (method) => {
+    calls.push(method)
+    if (method === 'search3') throw new Error('query is required')
+    if (method === 'getAlbumList2') return { albumList2: { album: [{ id: 'al1' }] } }
+    if (method === 'getAlbum') return { album: { song: [{ id: 's1', title: 'Fallback' }] } }
+    return {}
+  }
+
+  const page = await a.list({ type: 'tracks', cursor: 0, limit: 50 })
+  assert.equal(page.items[0].title, 'Fallback')
+  assert.ok(calls.includes('getAlbumList2'), 'must fall back to the album walk')
+})
+
+test('an EMPTY first page is treated as "unsupported", not as "no music"', async () => {
+  // The two are indistinguishable on the first page, and guessing wrong means an
+  // empty Songs tab on a library that has 1358 of them.
+  const a = make()
+  const calls = []
+  a._call = async (method) => {
+    calls.push(method)
+    if (method === 'search3') return { searchResult3: {} }
+    if (method === 'getAlbumList2') return { albumList2: { album: [{ id: 'al1' }] } }
+    if (method === 'getAlbum') return { album: { song: [{ id: 's1', title: 'Walked' }] } }
+    return {}
+  }
+
+  const page = await a.list({ type: 'tracks', cursor: 0, limit: 50 })
+  assert.equal(page.items[0].title, 'Walked')
+  assert.ok(calls.includes('getAlbum'))
+})
+
+test('past the first page, an empty result IS the end - do not re-walk', async () => {
+  const a = make()
+  const calls = []
+  a._call = async (method) => {
+    calls.push(method)
+    return { searchResult3: { song: [] } }
+  }
+
+  const page = await a.list({ type: 'tracks', cursor: 500, limit: 50 })
+  assert.deepEqual(page.items, [])
+  assert.equal(page.nextCursor, null)
+  assert.deepEqual(calls, ['search3'], 'must not fall back once we are deep in the list')
+})
+
 // --- artist detail ----------------------------------------------------------
 //
 // An artist is its albums. getArtist returns them in ONE call, so artist browsing

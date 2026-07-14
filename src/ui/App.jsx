@@ -16,7 +16,8 @@ import {
   MusicNotes, MusicNotesSimple, UsersThree, Gear, Info, CaretRight, CaretLeft,
   CaretDown, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, RepeatOnce, X,
   ArrowCounterClockwise, ArrowClockwise, Heart, CurrencyBtc, ShareNetwork,
-  EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise
+  EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
+  GridFour
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -37,6 +38,21 @@ const isIOS = () => typeof window !== 'undefined' && window.__pearPlatform === '
 const openUrl = (url) => { call('shell:openUrl', { url }).catch(() => {}) }
 const copyText = (text) => call('shell:clipboard', { text }).catch(() => {})
 
+// Grid density. One control, not two: "grid or list" and "how many per row" are the
+// same axis, and splitting them would give four states to explain for one decision.
+// 4-up is deliberately absent - on a phone that is an ~85px cover, too small to
+// recognise the art, which is the only reason to show a grid at all.
+//
+// The art SIZE follows the density. A cover fetched at 300px into a ~500px 2-up
+// tile is visibly soft, and a 500px cover behind a 110px list row is bytes over P2P
+// that nobody will ever see.
+const DENSITY = {
+  list: { cols: 1, art: 120, Icon: Rows, next: '2' },
+  2: { cols: 2, art: 500, Icon: SquaresFour, next: '3' },
+  3: { cols: 3, art: 350, Icon: GridFour, next: 'list' }
+}
+const densityOf = (d) => DENSITY[d] || DENSITY[2]
+
 export default function App () {
   const [state, setState] = useState({ loading: true })
   const [tab, setTab] = useState('library')
@@ -45,6 +61,9 @@ export default function App () {
   const [albums, setAlbums] = useState([])
   const [cursor, setCursor] = useState(0)
   const [artists, setArtists] = useState(null)
+  const [songs, setSongs] = useState(null)
+  const [songCursor, setSongCursor] = useState(0)
+  const [density, setDensity] = useState('2')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState(null)
   const [now, setNow] = useState(null)
@@ -65,6 +84,7 @@ export default function App () {
     call('init')
       .then((s) => {
         setState({ ...s, loading: false })
+        if (s.settings?.density) setDensity(String(s.settings.density))
         if (s.connected) loadAlbums(0)
       })
       .catch(e => setState({ loading: false, error: e.message }))
@@ -222,6 +242,37 @@ export default function App () {
     }
   }
 
+  // The Songs view. It exists because Navidrome answers an empty-query search3
+  // with everything, PAGED - so this is a real list, not the album walk the old
+  // code did (which could only ever reach the first page of albums, and is why
+  // this view was dropped the first time round).
+  async function loadSongs (from) {
+    try {
+      const page = await call('tracks', { cursor: from, limit: 100 })
+      setSongs(s => (from ? [...(s || []), ...page.items] : page.items))
+      setSongCursor(page.nextCursor)
+    } catch (e) {
+      setError(e.message)
+      setSongs(s => s || [])
+    }
+  }
+
+  async function showSongs (force) {
+    setBrowse('songs')
+    if (songs && !force) return
+    setSongs(null)
+    await loadSongs(0)
+  }
+
+  // Density is a per-device preference, so it lives where the theme does: the
+  // worklet's settings.json, not the WebView's storage.
+  function cycleDensity () {
+    const next = densityOf(density).next
+    haptic('light')
+    setDensity(next)
+    call('setSettings', { density: next }).catch(() => {})
+  }
+
   // Pull to refresh. The host does not push us anything when its library changes -
   // someone drops an album on the NAS and Navidrome rescans, and we would go on
   // showing yesterday's shelf until the app restarted. This is the gesture people
@@ -229,6 +280,7 @@ export default function App () {
   async function refresh () {
     setError(null)
     if (browse === 'artists') return showArtists(true)
+    if (browse === 'songs') return showSongs(true)
     setAlbumsLoaded(false)
     setAlbums([])
     await loadAlbums(0)
@@ -359,14 +411,22 @@ export default function App () {
   } else {
     screen = (
       <Library
-        state={state} albums={albums} artists={artists} cursor={cursor}
+        state={state} albums={albums} artists={artists} songs={songs}
+        cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
-        onBrowse={(b) => { haptic('light'); return b === 'artists' ? showArtists() : setBrowse('albums') }}
+        onBrowse={(b) => {
+          haptic('light')
+          if (b === 'artists') return showArtists()
+          if (b === 'songs') return showSongs()
+          return setBrowse('albums')
+        }}
+        onDensity={cycleDensity}
         onSearch={runSearch}
         onReconnect={reconnect}
         onRefresh={refresh}
         onMore={() => loadAlbums(cursor)}
+        onMoreSongs={() => loadSongs(songCursor)}
         onOpenAlbum={(id) => push({ type: 'album', id })}
         onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
         onPlay={playFrom}
@@ -487,11 +547,16 @@ function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) 
 // --- library -----------------------------------------------------------------
 
 function Library ({
-  state, albums, artists, cursor, browse, query, results, now, error,
-  albumsLoaded, reconnecting,
-  onBrowse, onSearch, onReconnect, onRefresh, onMore, onOpenAlbum, onOpenArtist, onPlay
+  state, albums, artists, songs, cursor, songCursor, density,
+  browse, query, results, now, error, albumsLoaded, reconnecting,
+  onBrowse, onDensity, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
+  onOpenAlbum, onOpenArtist, onPlay
 }) {
   const searching = results && query.trim()
+  const D = densityOf(density)
+  // The worklet hands us the base URL rather than finished art URLs, because only
+  // the UI knows the density, and therefore the size to ask for.
+  const artBase = state.artBase || state.host?.artBase || null
 
   // Pull to refresh, by hand: this is a WebView, so there is no RefreshControl to
   // borrow. Only arms when the document is ALREADY at the top, or the gesture would
@@ -582,13 +647,17 @@ function Library ({
         )}
       </div>
 
+      {/* The TITLE scrolls away; the search box and the picker do not. Those two
+          are the controls you reach for from halfway down a grid of 60 albums, and
+          scrolling back to the top to find them was the whole complaint. Keeping
+          the title sticky as well would cost twice the height for a word you
+          already know. */}
       <header>
         <h1>{state.host.libraryName || 'Library'}</h1>
-        <p className='muted sm'>
-          {browse === 'artists'
-            ? `${artists ? artists.length : 0} artists`
-            : `${albums.length} albums`}
-        </p>
+        <p className='muted sm'>{count(browse, { albums, artists, songs })}</p>
+      </header>
+
+      <div className='sticky'>
         <input
           className='search'
           value={query}
@@ -596,12 +665,20 @@ function Library ({
           placeholder='Search artists, albums, tracks'
         />
         {!searching && (
-          <div className='seg' style={{ marginTop: '.4rem' }}>
-            <button className={browse === 'albums' ? 'on' : ''} onClick={() => onBrowse('albums')}>Albums</button>
-            <button className={browse === 'artists' ? 'on' : ''} onClick={() => onBrowse('artists')}>Artists</button>
+          <div className='pickrow'>
+            <div className='seg'>
+              <button className={browse === 'albums' ? 'on' : ''} onClick={() => onBrowse('albums')}>Albums</button>
+              <button className={browse === 'artists' ? 'on' : ''} onClick={() => onBrowse('artists')}>Artists</button>
+              <button className={browse === 'songs' ? 'on' : ''} onClick={() => onBrowse('songs')}>Songs</button>
+            </div>
+            {browse !== 'songs' && (
+              <button className='icon dens' onClick={onDensity} aria-label='Change layout'>
+                <D.Icon size={20} weight='regular' />
+              </button>
+            )}
           </div>
         )}
-      </header>
+      </div>
 
       {error && <div className='error'>{error}</div>}
 
@@ -609,9 +686,9 @@ function Library ({
         ? (
           <>
             {!!results.artists?.length && <h2>Artists</h2>}
-            <ArtistGrid artists={results.artists || []} onOpen={onOpenArtist} empty={null} />
+            <ArtistGrid artists={results.artists || []} onOpen={onOpenArtist} d={D} empty={null} />
             {!!results.albums.length && <h2>Albums</h2>}
-            <Grid albums={results.albums} onOpen={onOpenAlbum} />
+            <Grid albums={results.albums} onOpen={onOpenAlbum} d={D} artBase={artBase} />
             {!!results.tracks.length && <h2>Tracks</h2>}
             <ul className='tracks'>
               {results.tracks.map(t => (
@@ -623,76 +700,143 @@ function Library ({
             )}
           </>
           )
-        : browse === 'artists'
-          ? (artists
-              ? <ArtistGrid artists={artists} onOpen={onOpenArtist} />
-              : <SkeletonGrid round />)
-          : !albumsLoaded
-              ? <SkeletonGrid />
-              : albums.length
-                ? (
-                  <>
-                    <Grid albums={albums} onOpen={onOpenAlbum} />
-                    {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
-                  </>
-                  )
-                : (
-                  <div className='blank'>
-                    <MusicNotesSimple size={40} weight='thin' />
-                    <h2>Nothing here yet</h2>
-                    <p className='muted sm'>
-                      This library has no albums. Add music on the server and let it
-                      rescan.
-                    </p>
-                  </div>
-                  )}
+        : browse === 'songs'
+          ? (songs
+              ? (songs.length
+                  ? (
+                    <>
+                      <ul className='tracks'>
+                        {songs.map(t => (
+                          <Row
+                            key={t.id} t={t} on={now?.trackId === t.id}
+                            onPlay={() => onPlay(songs, t)} art
+                          />
+                        ))}
+                      </ul>
+                      {songCursor != null && (
+                        <button className='more' onClick={onMoreSongs}>Load more</button>
+                      )}
+                    </>
+                    )
+                  : <Empty />)
+              : <SkeletonRows />)
+          : browse === 'artists'
+            ? (artists
+                ? <ArtistGrid artists={artists} onOpen={onOpenArtist} d={D} />
+                : <SkeletonGrid round d={D} />)
+            : !albumsLoaded
+                ? <SkeletonGrid d={D} />
+                : albums.length
+                  ? (
+                    <>
+                      <Grid albums={albums} onOpen={onOpenAlbum} d={D} artBase={artBase} />
+                      {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
+                    </>
+                    )
+                  : <Empty />}
     </div>
   )
+}
+
+function Empty () {
+  return (
+    <div className='blank'>
+      <MusicNotesSimple size={40} weight='thin' />
+      <h2>Nothing here yet</h2>
+      <p className='muted sm'>
+        This library is empty. Add music on the server and let it rescan.
+      </p>
+    </div>
+  )
+}
+
+function count (browse, { albums, artists, songs }) {
+  if (browse === 'artists') return `${artists ? artists.length : 0} artists`
+  // "60 albums" is the whole truth; "100 songs" is not - it is the first page of a
+  // list we are still walking. Say so rather than lying about the size of someone's
+  // library.
+  if (browse === 'songs') return songs ? `${songs.length} songs loaded` : 'Loading songs…'
+  return `${albums.length} albums`
 }
 
 // A grid of the right SHAPE, greyed and breathing, rather than the word
 // "Loading…" in the middle of an empty screen. The tiles are exactly the size the
 // covers will be, so nothing jumps when they arrive.
-function SkeletonGrid ({ round, n = 6 }) {
+function SkeletonGrid ({ round, n = 6, d = DENSITY[2] }) {
+  const list = d.cols === 1
   return (
-    <div className='grid'>
+    <div className={'grid' + (list ? ' aslist' : '')} style={{ '--cols': d.cols }}>
       {Array.from({ length: n }, (_, i) => (
         <div key={i} className={'album' + (round ? ' artist' : '')}>
           <div className={'cover skel' + (round ? ' artistpic' : '')} />
-          <div className='skel line' />
-          <div className='skel line short' />
+          <div className='meta'>
+            <div className='skel line' />
+            <div className='skel line short' />
+          </div>
         </div>
       ))}
     </div>
   )
 }
 
-function Grid ({ albums, onOpen }) {
-  if (!albums.length) return null
+function SkeletonRows ({ n = 8 }) {
   return (
-    <div className='grid'>
+    <ul className='tracks'>
+      {Array.from({ length: n }, (_, i) => (
+        <li key={i}>
+          <div className='cover sm-cover skel' />
+          <div className='meta'>
+            <div className='skel line' />
+            <div className='skel line short' />
+          </div>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+// One component for all three densities. A "list" is just a one-column grid whose
+// rows are laid out sideways - not a separate screen with its own bugs.
+function Grid ({ albums, onOpen, d = DENSITY[2], artBase }) {
+  if (!albums.length) return null
+  const list = d.cols === 1
+  return (
+    <div className={'grid' + (list ? ' aslist' : '')} style={{ '--cols': d.cols }}>
       {albums.map(a => (
         <div key={a.id} className='album' onClick={() => onOpen(a.id)}>
-          <Cover src={a.art} />
-          <div className='t sm'>{a.name}</div>
-          <div className='muted sm sub'>{a.artist}</div>
+          <Cover src={artFor(a, d, artBase)} />
+          <div className='meta'>
+            <div className='t sm'>{a.name}</div>
+            <div className='muted sm sub'>{a.artist}</div>
+          </div>
         </div>
       ))}
     </div>
   )
 }
 
-function ArtistGrid ({ artists, onOpen, empty = <p className='muted center-p'>No artists.</p> }) {
+// The art URL is built HERE because the size depends on the density, and asking
+// the worklet to re-list the whole library just to change a number in a URL would
+// be silly. Falls back to whatever it precomputed if the base is missing.
+function artFor (x, d, artBase) {
+  if (!x.coverId || !artBase) return x.art || null
+  return `${artBase}${encodeURIComponent(x.coverId)}?s=${d.art}`
+}
+
+function ArtistGrid ({ artists, onOpen, d = DENSITY[2], empty = <p className='muted center-p'>No artists.</p> }) {
   if (!artists.length) return empty
+  const list = d.cols === 1
   return (
-    <div className='grid'>
+    <div className={'grid' + (list ? ' aslist' : '')} style={{ '--cols': d.cols }}>
       {artists.map(a => (
         <div key={a.id} className='album artist' onClick={() => onOpen(a)}>
           <Cover src={a.art} artist />
-          <div className='t sm'>{a.name}</div>
-          {a.albumCount != null && (
-            <div className='muted sm sub'>{a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'}</div>
-          )}
+          <div className='meta'>
+            <div className='t sm'>{a.name}</div>
+            {a.albumCount != null && (
+              <div className='muted sm sub'>{a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'}</div>
+            )}
+          </div>
         </div>
       ))}
     </div>
@@ -828,10 +972,11 @@ function ArtistScreen ({ id, name, onBack, onOpenAlbum, onViewArt }) {
   )
 }
 
-function Row ({ t, on, onPlay, showTrackNo }) {
+function Row ({ t, on, onPlay, showTrackNo, art }) {
   return (
     <li className={on ? 'on' : ''} onClick={() => onPlay(t)}>
       {showTrackNo && <span className='muted sm no'>{t.track ?? ''}</span>}
+      {art && <Cover src={t.art} sm />}
       <div className='meta'>
         <div className='t'>{t.title}</div>
         <div className='muted sm sub'>

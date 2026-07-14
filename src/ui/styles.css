@@ -120,15 +120,26 @@ input.search { margin-top: .8rem; }
    "John Wick"]) therefore blows the column out past the screen edge - the
    classic CSS grid blowout. min-width:0 on the cell is the same guard. */
 .grid {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem .9rem;
-  margin-top: .5rem;
+  display: grid; grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+  gap: 1rem .9rem; margin-top: .5rem;
 }
-@media (min-width: 480px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .album { min-width: 0; }
 .album .t {
   margin-top: .45rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .album .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A list is the SAME component at one column, turned on its side - not a second
+   screen with its own bugs. */
+.grid.aslist { gap: 0; }
+.grid.aslist .album {
+  display: flex; align-items: center; gap: .85rem; padding: .5rem .25rem;
+  border-bottom: 1px solid var(--color-divider);
+}
+.grid.aslist .cover { width: 52px; height: 52px; flex: none; }
+.grid.aslist .meta { min-width: 0; flex: 1; }
+.grid.aslist .t { margin-top: 0; }
+.grid.aslist .artist .t, .grid.aslist .artist .sub { text-align: left; }
 .cover {
   width: 100%; aspect-ratio: 1; border-radius: 8px; object-fit: cover;
   background: var(--color-surface-card); display: block;
@@ -153,7 +164,24 @@ button.back { padding: .4rem .7rem; margin-bottom: .6rem; display: inline-flex;
               align-items: center; gap: .3rem; }
 button.more { width: 100%; margin: 1.2rem 0 0; }
 
-/* Segmented pill. Albums / Artists here, theme in Settings - one primitive. */
+/* The search box and the picker STICK; the library title above them scrolls away.
+   Those two are what you reach for from halfway down a grid of 60 albums, and
+   scrolling back to the top to find them was the whole complaint. The background is
+   opaque because the covers pass underneath. */
+.sticky {
+  position: sticky; top: 0; z-index: 20;
+  background: var(--color-surface-base);
+  padding: .35rem 0 .5rem;
+}
+.pickrow { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; }
+.pickrow .seg { flex: 1; }
+button.icon.dens {
+  flex: none; padding: .5rem .6rem; border: 1px solid var(--color-border);
+  background: var(--color-surface-input); border-radius: 9999px;
+  color: var(--color-text-secondary);
+}
+
+/* Segmented pill. Albums / Artists / Songs here, theme in Settings - one primitive. */
 .seg {
   display: flex; background: var(--color-surface-input);
   border: 1px solid var(--color-border); border-radius: 9999px; padding: 3px; gap: 2px;

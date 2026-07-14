@@ -144,8 +144,44 @@ class NavidromeAdapter {
     }
 
     if (type === 'tracks') {
-      // Subsonic has no flat "all songs" call, so a flat track list means walking
-      // albums. Fine for the milestone-1 UI; the real UI browses albums.
+      // Subsonic proper has no "all songs" call - which is why this used to walk
+      // albums, and why a flat list could only ever show the first page of them.
+      //
+      // Navidrome (OpenSubsonic) does answer `search3` with an EMPTY query as
+      // "everything", and it pages by songOffset. Measured against the real
+      // library: all 1358 songs, and songOffset=1000 returns the expected rows. So
+      // the Songs view is a paged list, not a 60-call album walk.
+      //
+      // The order is the SERVER's (roughly artist / album / track). We do not get
+      // to sort by title without pulling the whole library into memory first, and
+      // we are not doing that for a phone.
+      try {
+        const sr = await this._call('search3', {
+          query: '',
+          songCount: limit,
+          songOffset: offset,
+          albumCount: 0,
+          artistCount: 0
+        })
+        const songs = sr.searchResult3?.song || []
+        // A server that refuses an empty query answers with nothing. Only trust
+        // "no songs" as an answer once we are past the first page - otherwise an
+        // empty first page is indistinguishable from "not supported", and we fall
+        // through to the walk below.
+        if (songs.length || offset > 0) {
+          return {
+            type,
+            items: songs.map(s => this._track(s)),
+            nextCursor: songs.length === limit ? offset + limit : null
+          }
+        }
+      } catch {
+        // Not an error worth surfacing: it just means this server is stricter than
+        // Navidrome. Walk the albums instead.
+      }
+
+      // Fallback for a strict Subsonic server: walk albums. Slow, and it cannot
+      // page songs properly (the cursor counts ALBUMS), but it is honest.
       const sr = await this._call('getAlbumList2', {
         type: 'alphabeticalByName',
         size: Math.min(limit, 50),

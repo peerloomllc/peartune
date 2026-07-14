@@ -2,6 +2,40 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - Navidrome DOES have an all-songs endpoint. The Songs view is back
+Tier: T1 (host adapter)
+Context: this repo has said since milestone 2 that "Subsonic has no all-songs
+endpoint", which is why the flat track list was abandoned (it could only ever show
+the first page of albums walked) and albums became the way in. Tim asked for a
+Songs view anyway, so I went and asked the actual server.
+Finding: **Navidrome (OpenSubsonic) answers `search3` with an EMPTY query as
+"everything", and it pages by `songOffset`.** Measured against the real library:
+all 1358 songs, and songOffset=1000 returns the expected rows. So a Songs view is
+a paged list, not a 60-call album walk. The old claim was true of strict Subsonic
+and false of the server we actually target.
+Choice: `list({type:'tracks'})` uses the empty-query search3, and FALLS BACK to the
+album walk if the server refuses. The fallback matters: an empty first page is
+indistinguishable from "not supported", so an empty first page is treated as
+unsupported rather than as "this library has no music". Past the first page, empty
+means the end - do not re-walk.
+What we still do NOT get: sorting. The order is the server's (roughly artist /
+album / track). Sort-by-title would mean pulling all 1358 rows into the phone
+first, and we are not doing that for a scroll.
+
+## 2026-07-14 - Grid density is ONE control, and 4-up is not on it
+Tier: T1 (UI)
+Context: Tim proposed a grid/list toggle AND a 2/3/4-per-row picker.
+Choice: one control, cycling List -> 2-up -> 3-up. No 4-up.
+Why: "grid or list" and "how many per row" are the same axis - density - and
+splitting them gives four states to explain and test for one decision. 4-up on a
+phone is an ~85px cover, too small to recognise the art, which is the only reason
+a grid exists at all; a list serves that density better and shows the full title.
+Consequence worth having: the ART SIZE now follows the density (list 120px, 2-up
+500px, 3-up 350px). Covers were being fetched at a flat 300px into a ~500px 2-up
+tile, so they were already slightly soft, and a 500px cover behind a 52px list row
+is bytes crossing a P2P link for nobody. The UI composes the art URL itself (the
+worklet hands it a base URL) so changing density does not re-list the library.
+
 ## 2026-07-14 - Predictive back is OFF. It breaks the back button
 Tier: T1 (Android)
 Context: Android 14+ predictive back (`android:enableOnBackInvokedCallback="true"`)
