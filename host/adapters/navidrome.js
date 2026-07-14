@@ -220,19 +220,43 @@ class NavidromeAdapter {
       const sr = await this._call('getArtist', { id })
       const a = sr.artist
       if (!a) return null
-      return {
-        id: a.id,
-        name: a.name,
-        coverId: a.coverArt || null,
-        albums: (a.album || []).map(al => ({
-          id: al.id,
-          name: al.name,
-          artist: al.artist || a.name,
-          year: al.year ?? null,
-          songCount: al.songCount ?? null,
-          coverId: al.coverArt || al.id
-        }))
-      }
+
+      const albums = (a.album || []).map(al => ({
+        id: al.id,
+        name: al.name,
+        artist: al.artist || a.name,
+        year: al.year ?? null,
+        songCount: al.songCount ?? null,
+        coverId: al.coverArt || al.id
+      }))
+
+      const out = { id: a.id, name: a.name, coverId: a.coverArt || null, albums, tracks: [] }
+      if (albums.length) return out
+
+      // AN ARTIST WITH NO ALBUMS IS NOT A BUG, AND IT IS NOT EMPTY.
+      //
+      // Navidrome mints an artist row for every composite tag string it meets -
+      // "Thousand Foot Krutch/COFER", "Artist/Remixer" - and those rows have zero
+      // albums of their own (the album belongs to the primary artist). They DO have
+      // songs. Search happily returns them, so without this the artist page is a
+      // dead end that says nothing, and "Add to queue" fails with "nothing to play".
+      //
+      // There is no getSongsByArtist in Subsonic, and getTopSongs answers empty for
+      // these (tried it). search3 on the exact name is what works - filtered to an
+      // EXACT artist match, because a substring search for "Thousand Foot Krutch"
+      // would drag in the other artist's entire catalogue.
+      const s = await this._call('search3', {
+        query: a.name,
+        songCount: 200,
+        albumCount: 0,
+        artistCount: 0
+      }).catch(() => null)
+
+      out.tracks = (s?.searchResult3?.song || [])
+        .filter(song => song.artist === a.name)
+        .map(song => this._track(song))
+
+      return out
     }
 
     if (type === 'album') {
@@ -291,7 +315,26 @@ class NavidromeAdapter {
     })
     const r = sr.searchResult3 || {}
     return {
-      artists: (r.artist || []).map(a => ({ id: a.id, name: a.name })),
+      // REAL ARTISTS FIRST.
+      //
+      // Navidrome mints an artist row for every composite tag it meets, so a search
+      // for "krutch" returns ONE artist with 18 albums and NINETEEN participant
+      // rows ("Thousand Foot Krutch/COFER", ".../Red", ...) - and the server's order
+      // buries the real one among them. Sorting by album count puts the artist you
+      // were obviously looking for at the top and the featured-on entries below,
+      // where they are still reachable.
+      //
+      // coverArt is only carried for artists that HAVE albums: Navidrome answers
+      // the participant rows with its default white-star image, and a wall of those
+      // looks worse than our own placeholder.
+      artists: (r.artist || [])
+        .map(a => ({
+          id: a.id,
+          name: a.name,
+          albumCount: a.albumCount ?? 0,
+          coverId: (a.albumCount ?? 0) > 0 ? (a.coverArt || null) : null
+        }))
+        .sort((x, y) => y.albumCount - x.albumCount),
       albums: (r.album || []).map(a => ({
         id: a.id, name: a.name, artist: a.artist || null, coverId: a.coverArt || a.id
       })),

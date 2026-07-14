@@ -316,7 +316,13 @@ const methods = {
     await ensureConnected()
     const a = await client.get({ id, type: 'artist' })
     if (!a) return null
-    return { ...withBigArt(a), albums: (a.albums || []).map(withArt) }
+    // `tracks` is only ever populated for an artist with NO albums - Navidrome's
+    // composite-tag artists ("Artist/Remixer"). See the host adapter.
+    return {
+      ...withBigArt(a),
+      albums: (a.albums || []).map(withArt),
+      tracks: (a.tracks || []).map(withArt)
+    }
   },
 
   // Every track an artist has, in album order - what "Play" on an artist means.
@@ -329,6 +335,11 @@ const methods = {
     await ensureConnected()
     const a = await client.get({ id, type: 'artist' })
     if (!a) return { items: [] }
+
+    // An artist with no albums still has songs (see the host adapter). Play those
+    // rather than reporting an empty artist, which is what "nothing to play there"
+    // used to mean.
+    if (!(a.albums || []).length) return { items: (a.tracks || []).map(withArt) }
 
     const items = []
     for (const al of a.albums || []) {

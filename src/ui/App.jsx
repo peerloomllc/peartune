@@ -131,10 +131,10 @@ export default function App () {
   // does not change, which is the whole point of it - so without a word on screen
   // the button looks broken.
   const noteTimer = useRef(null)
-  function toast (msg) {
-    setNote(msg)
+  function toast (msg, bad = false) {
+    setNote({ msg, bad })
     clearTimeout(noteTimer.current)
-    noteTimer.current = setTimeout(() => setNote(null), 2400)
+    noteTimer.current = setTimeout(() => setNote(null), bad ? 3200 : 2400)
   }
 
   // --- theme -----------------------------------------------------------------
@@ -307,7 +307,7 @@ export default function App () {
     try {
       setResults(await call('search', { q }))
     } catch (e) {
-      setError(e.message)
+      toast(e.message, true)
     }
   }
 
@@ -462,11 +462,18 @@ export default function App () {
     setMenu(null)
     try {
       const list = await tracksFor(item)
-      if (!list.length) return setError('Nothing to play there.')
+      // Rare now that an album-less artist returns its songs, but if the library
+      // really has nothing behind it, say so IN PASSING - a red banner pinned to
+      // the top of the screen is the wrong weight for "that one is empty".
+      if (!list.length) {
+        haptic('warn')
+        return toast(`Nothing to play in ${item.name || 'that'}`, true)
+      }
       if (action === 'queue') return enqueue(list)
       return playAll(list, { shuffled: action === 'shuffle' })
     } catch (e) {
-      setError(e.message)
+      haptic('warn')
+      toast(e.message, true)
     }
   }
 
@@ -495,7 +502,8 @@ export default function App () {
   } else if (top?.type === 'artist') {
     screen = (
       <ArtistScreen
-        id={top.id} name={top.name} onBack={pop} onViewArt={viewArt} onLong={setMenu}
+        id={top.id} name={top.name} now={now} onPlay={playFrom}
+        onBack={pop} onViewArt={viewArt} onLong={setMenu}
         onArtistAction={(artistId, action) => menuAction({ type: 'artist', id: artistId }, action)}
         onOpenAlbum={(id) => push({ type: 'album', id })}
       />
@@ -562,7 +570,7 @@ export default function App () {
         <NavBar active={tab} onTab={goTab} queued={status?.queueLength ?? 0} />
       </div>
 
-      {note && <div className='toast'>{note}</div>}
+      {note && <div className={'toast' + (note.bad ? ' bad' : '')}>{note.msg}</div>}
       {menu && (
         <ActionSheet
           item={menu}
@@ -937,24 +945,10 @@ function Library ({
 
       {searching
         ? (
-          <>
-            {!!results.artists?.length && <h2>Artists</h2>}
-            <ArtistGrid artists={results.artists || []} onOpen={onOpenArtist} onLong={onLong} d={D} empty={null} />
-            {!!results.albums.length && <h2>Albums</h2>}
-            <Grid albums={results.albums} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} />
-            {!!results.tracks.length && <h2>Tracks</h2>}
-            <ul className='tracks'>
-              {results.tracks.map(t => (
-                <Row
-                  key={t.id} t={t} on={now?.trackId === t.id}
-                  onPlay={() => onPlay(results.tracks, t)} onLong={onLong}
-                />
-              ))}
-            </ul>
-            {!results.albums.length && !results.tracks.length && !results.artists?.length && (
-              <p className='muted center-p'>Nothing found.</p>
-            )}
-          </>
+          <SearchResults
+            results={results} now={now} d={D} artBase={artBase}
+            onOpenAlbum={onOpenAlbum} onOpenArtist={onOpenArtist} onPlay={onPlay} onLong={onLong}
+          />
           )
         : browse === 'songs'
           ? (songs
@@ -1053,6 +1047,73 @@ function SkeletonRows ({ n = 8 }) {
 
 // One component for all three densities. A "list" is just a one-column grid whose
 // rows are laid out sideways - not a separate screen with its own bugs.
+// Search results, GROUPED and collapsible.
+//
+// A search for "krutch" can return four artists, a dozen albums and thirty songs,
+// and the flat list meant scrolling past every artist to reach the songs. Each
+// group now says how many it found and opens on a tap.
+//
+// A group with a handful of hits opens itself: making someone tap to reveal two
+// results is a worse tax than the scrolling was.
+function SearchResults ({ results, now, d, artBase, onOpenAlbum, onOpenArtist, onPlay, onLong }) {
+  const groups = [
+    { key: 'artists', label: 'Artists', items: results.artists || [] },
+    { key: 'albums', label: 'Albums', items: results.albums || [] },
+    { key: 'tracks', label: 'Songs', items: results.tracks || [] }
+  ].filter(g => g.items.length)
+
+  const AUTO_OPEN = 5
+
+  // Each group opens and closes on its own - this is not an accordion. You often
+  // want the artists AND the songs; being forced to close one to see the other is
+  // the same tedium in a different shape.
+  const [open, setOpen] = useState({})
+  useEffect(() => { setOpen({}) }, [results]) // a new search starts fresh
+
+  if (!groups.length) return <p className='muted center-p'>Nothing found.</p>
+
+  return (
+    <>
+      {groups.map(g => {
+        const isOpen = open[g.key] ?? g.items.length <= AUTO_OPEN
+        return (
+          <div key={g.key} className='sgroup'>
+            <button
+              className='shead'
+              aria-expanded={isOpen}
+              onClick={() => { haptic('light'); setOpen(o => ({ ...o, [g.key]: !isOpen })) }}
+            >
+              <span>{g.label} <span className='cnt'>{g.items.length}</span></span>
+              <CaretRight size={15} className={'caret' + (isOpen ? ' open' : '')} />
+            </button>
+
+            {isOpen && (
+              <div className='sbody'>
+                {g.key === 'artists' && (
+                  <ArtistGrid artists={g.items} onOpen={onOpenArtist} onLong={onLong} d={d} />
+                )}
+                {g.key === 'albums' && (
+                  <Grid albums={g.items} onOpen={onOpenAlbum} onLong={onLong} d={d} artBase={artBase} />
+                )}
+                {g.key === 'tracks' && (
+                  <ul className='tracks'>
+                    {g.items.map(t => (
+                      <Row
+                        key={t.id} t={t} on={now?.trackId === t.id}
+                        onPlay={() => onPlay(g.items, t)} onLong={onLong} art
+                      />
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
 function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase }) {
   if (!albums.length) return null
   const list = d.cols === 1
@@ -1103,7 +1164,11 @@ function ArtistGrid ({ artists, onOpen, onLong, d = DENSITY[2], empty = <p class
           <Cover src={a.art} artist />
           <div className='meta'>
             <div className='t sm'>{a.name}</div>
-            {a.albumCount != null && (
+            {/* "0 albums" is a true thing to say and a useless one - it is how
+                Navidrome's participant-artist rows look, and stamping it under
+                nineteen of them is just noise. Say nothing; the artist page will
+                show their songs. */}
+            {a.albumCount > 0 && (
               <div className='muted sm sub'>{a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'}</div>
             )}
           </div>
@@ -1220,7 +1285,7 @@ function Actions ({ onPlay, onShuffle, onQueue }) {
 
 // An artist IS its albums (one getArtist call on the host), so this is the album
 // grid again rather than a new kind of screen.
-function ArtistScreen ({ id, name, onBack, onOpenAlbum, onViewArt, onLong, onArtistAction }) {
+function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, onLong, onArtistAction }) {
   const [artist, setArtist] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -1251,13 +1316,15 @@ function ArtistScreen ({ id, name, onBack, onOpenAlbum, onViewArt, onLong, onArt
           <h1>{artist?.name || name}</h1>
           {artist && (
             <p className='muted sm'>
-              {artist.albums.length} {artist.albums.length === 1 ? 'album' : 'albums'}
+              {artist.albums.length
+                ? `${artist.albums.length} ${artist.albums.length === 1 ? 'album' : 'albums'}`
+                : `${artist.tracks?.length || 0} ${artist.tracks?.length === 1 ? 'track' : 'tracks'}`}
             </p>
           )}
         </div>
       </div>
 
-      {artist && !!artist.albums.length && (
+      {artist && (!!artist.albums.length || !!artist.tracks?.length) && (
         <Actions
           onPlay={() => onArtistAction(id, 'play')}
           onShuffle={() => onArtistAction(id, 'shuffle')}
@@ -1267,9 +1334,25 @@ function ArtistScreen ({ id, name, onBack, onOpenAlbum, onViewArt, onLong, onArt
 
       {err && <div className='error'>{err}</div>}
       {!artist && !err && <p className='muted center-p'>Loading…</p>}
+
+      {/* An artist with no albums is not empty. Navidrome mints an artist row for
+          every composite tag ("Artist/Remixer"), and those have songs but no albums
+          of their own - so show the songs. This page used to say "No albums." and
+          leave you nowhere. */}
       {artist && (artist.albums.length
         ? <Grid albums={artist.albums} onOpen={onOpenAlbum} onLong={onLong} />
-        : <p className='muted center-p'>No albums.</p>)}
+        : artist.tracks?.length
+          ? (
+            <ul className='tracks'>
+              {artist.tracks.map(t => (
+                <Row
+                  key={t.id} t={t} on={now?.trackId === t.id}
+                  onPlay={() => onPlay(artist.tracks, t)} onLong={onLong} art
+                />
+              ))}
+            </ul>
+            )
+          : <p className='muted center-p'>Nothing here.</p>)}
     </div>
   )
 }

@@ -2,6 +2,36 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - An artist with NO ALBUMS is not empty, and search groups collapse
+Tier: T1 (host adapter + UI)
+Context: Tim searched "krutch", got artist results, and long-pressing one to add it
+to the queue failed with "nothing to play there". Opening it showed no albums and
+no songs.
+Root cause, and it is a Navidrome data fact, not a bug in our code:
+**Navidrome mints an artist row for every COMPOSITE TAG string it meets** -
+"Thousand Foot Krutch/COFER", ".../Karmageddon", ".../Red". A search for "krutch"
+returns ONE real artist (18 albums) and NINETEEN participant rows with
+`albumCount: 0`. They have songs; they have no albums of their own. Our artist page
+is built on "an artist IS its albums" (one getArtist call), so those rows were a
+dead end.
+Choices:
+1. An album-less artist falls back to its SONGS. There is no getSongsByArtist in
+   Subsonic and getTopSongs answers empty for these (tried it) - `search3` on the
+   exact name works, filtered to an EXACT artist match, because a substring search
+   for "Thousand Foot Krutch" would drag in the primary artist's whole catalogue.
+2. **Search ranks artists with albums FIRST.** The server's own order buried the
+   one artist you were obviously looking for underneath nineteen featured-on rows.
+3. The participant rows carry no coverArt (Navidrome answers them with its default
+   white-star image; a wall of those looks worse than our own placeholder), and no
+   "0 albums" label - a true thing to say, and a useless one.
+Search results are now COLLAPSIBLE GROUPS with counts (Artists 20 / Albums 18 /
+Songs 50). Each opens independently - this is deliberately NOT an accordion, since
+you often want the artists AND the songs, and closing one to see the other is the
+same tedium in a different shape. A group with <= 5 hits opens itself: making
+someone tap to reveal two results is a worse tax than the scrolling was.
+Also: a transient failure ("nothing to play in X") is now a TOAST, not a red banner
+nailed to the top of the screen until something else clears it.
+
 ## 2026-07-14 - The queue is a TAB, and playIndex must not announce
 Tier: T2 (native patch + player)
 Context: Tim asked for a way to play or queue an album/artist without drilling into
