@@ -76,6 +76,8 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         const persons = await host.grants.listPersons()
         return json(res, 200, {
           persons,
+          source: host.sourceView,
+          sourceError: host.sourceError || null,
           libraryName: host.libraryName,
           libraryId: host.libraryId,
           hostKey: z32.encode(host.publicKey),
@@ -97,6 +99,33 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
             online: d.online
           }))
         })
+      }
+
+      // --- where the music comes from -------------------------------------
+      //
+      // The operator picks the source in the dashboard, not by editing a compose
+      // file. See host/source.js: without this, an app-store install lands on the
+      // folder adapter, which has no tag reading, and the user gets a library of
+      // filenames.
+      if (req.method === 'POST' && url.pathname === '/api/source/test') {
+        const cfg = await readBody(req)
+        try {
+          return json(res, 200, await host.testSource(cfg))
+        } catch (e) {
+          // The whole point of a Test button: fail HERE, with the reason, instead of
+          // saving a broken source and wondering why the library went dark.
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/source') {
+        const cfg = await readBody(req)
+        try {
+          const r = await host.setSource(cfg)
+          return json(res, 200, { ok: true, ...r })
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
       }
 
       // --- open a pairing window, and hand back a QR ---

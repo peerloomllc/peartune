@@ -2,6 +2,31 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - The music source is DATA, not deployment
+Tier: T2 (new persisted config + new dashboard API)
+Context: preparing the community-store listing. A store install has no env vars, so
+it would land on the folder adapter - which has no tag reading - and the user would
+get a library of FILENAMES. Nobody installing an app from a store is going to
+hand-edit a docker-compose file to point it at their Navidrome.
+Choice: the source lives in the host's own data dir (source.json, 0600 - it holds a
+password), chosen in the dashboard. Precedence: source.json > env/CLI > folder. The
+operator's choice therefore SURVIVES a restart with different env vars, which is the
+whole point.
+Details that matter:
+- The adapter is swapped ATOMICALLY and only after the new one scans. Wrong
+  credentials throw and the OLD source keeps serving: a library going dark is not an
+  acceptable way to learn you mistyped a password. The dashboard has a Test button
+  for the same reason.
+- media.js takes a getAdapter() GETTER, not an adapter. A connection outlives a
+  source change, and a phone still streaming from the source you just switched away
+  from is a bug you would not find for weeks.
+- A BAD saved source does not stop the host from starting. If it did, the operator
+  would be locked out of the very dashboard they need to fix it.
+- The password is never sent to the browser (publicView). A blank password field on
+  an already-configured source means "leave it alone", not "set it to empty".
+Verified on the Umbrel with a container that had NO Navidrome env vars: 0 tracks
+(folder) -> configured from the dashboard -> 1358 tracks, and it survived a restart.
+
 ## 2026-07-14 - The dashboard gets a LOCK, because the host must own the network
 Tier: T3 (auth gate). Proposal: proposals/2026-07-14-dashboard-auth.md
 The chain of facts, each one measured rather than assumed:
