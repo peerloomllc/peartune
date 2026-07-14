@@ -13,6 +13,7 @@ const z32 = require('z32')
 
 const NS_LIBRARY = hcrypto.hash(b4a.from('peartune/library/1'))
 const NS_TRACK = hcrypto.hash(b4a.from('peartune/track/1'))
+const NS_GROUP = hcrypto.hash(b4a.from('peartune/group/1'))
 const NS_LEDGER_TOPIC = hcrypto.hash(b4a.from('peartune/ledger-topic/1'))
 
 function toBuf (x) {
@@ -46,6 +47,35 @@ function trackId (libId, sourceKind, sourceKey) {
   ])))
 }
 
+// An album or an artist id, for a source that has none of its own.
+//
+// Navidrome and Jellyfin hand us their own album and artist ids and we pass them
+// through untouched. A FOLDER has no such thing: an album is a fact we infer from
+// tags, so we have to mint the id ourselves - and it has to be stable, or every
+// rescan would hand the phone a fresh set of album ids and invalidate its art
+// cache for a library that did not change.
+//
+// Separate namespace from NS_TRACK on purpose. These ids travel the same wire and
+// end up in the same `id` fields; an album id that could collide with a track id
+// would be a lookup that silently answers the wrong object.
+//
+// UNLIKE trackId, these are NOT ledger keys - nothing durable is filed under an
+// album id - so their derivation may be changed without orphaning anyone's resume
+// positions. Changing trackId may not. Keep it that way.
+//
+// type: 'album' | 'artist'
+// key:  a normalized grouping key (see host/adapters/folder.js)
+function groupId (libId, sourceKind, type, key) {
+  if (!libId || !sourceKind || !type || !key) throw new Error('groupId needs libraryId, sourceKind, type, key')
+  return z32.encode(hcrypto.hash(b4a.concat([
+    NS_GROUP,
+    z32.decode(libId),
+    toBuf(sourceKind),
+    toBuf(type),
+    toBuf(key)
+  ])))
+}
+
 // Steady-state swarm topic for the shared ledger (resume / favorites / counts),
 // used from milestone 3. Namespaced so it can never collide with any other topic
 // the suite derives.
@@ -59,4 +89,4 @@ function randomRv () {
   return hcrypto.randomBytes(32)
 }
 
-module.exports = { libraryId, trackId, ledgerTopic, randomRv }
+module.exports = { libraryId, trackId, groupId, ledgerTopic, randomRv }

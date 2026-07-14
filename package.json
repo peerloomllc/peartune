@@ -42,6 +42,7 @@
     "hyperdht": "^6.20.3",
     "hyperswarm": "^4.8.4",
     "jsqr": "^1.4.0",
+    "music-metadata": "^11.14.0",
     "protomux": "^3.10.1",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",

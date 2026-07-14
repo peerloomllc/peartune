@@ -106,16 +106,18 @@ async function main () {
 
   await host.ready()
 
-  const stats = await host.adapter.stats()
+  const stats = await host.adapter.stats().catch(() => ({ source: host.adapter.kind, tracks: 0 }))
   const dashboard = await startDashboard({
     host, bind: args.host, port: args.port, password: args.password
   })
+
+  const where = host.source.url || host.source.root || args.music
 
   console.log(`
   PearTune host
 
   library    ${args.name}
-  source     ${stats.source}${navidrome ? ' @ ' + args.navidromeUrl : ' @ ' + args.music}  (${stats.tracks} tracks)
+  source     ${stats.source} @ ${where}  (${stats.tracks} tracks)${host.sourceError ? '\n  PROBLEM    ' + host.sourceError : ''}
   host key   ${z32.encode(host.publicKey)}
   dashboard  http://${args.host === '0.0.0.0' ? 'localhost' : args.host}:${args.port}
 

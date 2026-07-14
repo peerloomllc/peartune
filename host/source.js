@@ -3,9 +3,8 @@
 // This exists because of what a store install actually looks like. Someone installs
 // PearTune from the Umbrel app store, opens it, and there is no way on earth they
 // are going to hand-edit a docker-compose file to point it at their Navidrome. With
-// no configuration they would get the folder adapter, which has no tag reading -
-// a library of FILENAMES. Everything good about this app (albums, artists, artwork,
-// search) lives on the other side of that choice.
+// no configuration they would get the folder adapter - which now reads tags, but
+// still only sees what is MOUNTED into the container.
 //
 // So the source is data, not deployment. It lives in the host's own data dir, next
 // to the identity and the grant store, and the dashboard writes it.
@@ -18,56 +17,179 @@
 //
 // A saved source therefore SURVIVES a container restart with different env vars,
 // which is the whole point: the operator's choice outlives the deployment.
+//
+// ONE CONFIG PER KIND, NOT ONE CONFIG.
+//
+// The first cut stored a single flat config, so the file held whichever source was
+// current and nothing else. Switch Navidrome -> Folder -> Navidrome and the URL,
+// username and password were GONE: you retyped them, because saving the folder had
+// overwritten them. (Tim, first day of using it.)
+//
+// Now each kind keeps its own config and `active` is a POINTER. Flipping between
+// sources is free, credentials survive the round trip, and this is also the shape
+// that multiple simultaneous sources will need - which is where this is heading
+// (see the combined-source trap in DECISIONS: trackId is source-scoped, so a merged
+// library needs a dedup story before it can exist).
 
 const fs = require('fs')
 const path = require('path')
 
 const { FolderAdapter } = require('./adapters/folder')
 const { NavidromeAdapter } = require('./adapters/navidrome')
+const { JellyfinAdapter } = require('./adapters/jellyfin')
 
 const FILE = 'source.json'
+const VERSION = 2
+
+const KINDS = ['navidrome', 'jellyfin', 'folder']
+
+// Which fields belong to which kind. Everything the dashboard POSTs is filtered
+// through this, so a stray field from a browser cannot end up persisted in the
+// host's config file.
+const FIELDS = {
+  navidrome: ['url', 'username', 'password'],
+  jellyfin: ['url', 'username', 'password'],
+  folder: ['root']
+}
+
+// The secrets. Never sent to the browser, and preserved when the browser sends the
+// field back empty (which means "leave it alone", not "set it to the empty string").
+const SECRETS = ['password']
 
 function pathOf (dataDir) {
   return path.join(dataDir, FILE)
 }
 
-function loadSource (dataDir) {
-  try {
-    const raw = JSON.parse(fs.readFileSync(pathOf(dataDir), 'utf8'))
-    if (raw && (raw.kind === 'navidrome' || raw.kind === 'folder')) return raw
-  } catch {}
-  return null
+function pick (kind, cfg) {
+  const out = {}
+  for (const f of FIELDS[kind] || []) {
+    if (cfg[f] !== undefined && cfg[f] !== null) out[f] = cfg[f]
+  }
+  return out
 }
 
-function saveSource (dataDir, cfg) {
-  fs.mkdirSync(dataDir, { recursive: true })
-  // 0600: this file holds the Navidrome password. The identity seed next to it is
-  // already written this way; a credential should not be more readable than a key.
-  fs.writeFileSync(pathOf(dataDir), JSON.stringify(cfg, null, 2), { mode: 0o600 })
-  return cfg
-}
+// v1 was ONE flat config: { kind: 'navidrome', url, username, password }.
+//
+// Every host in the wild (Tim's Umbrel) has one of these on disk. Reading it as v2
+// and losing the source would mean the library goes dark on upgrade, which is the
+// one thing a source change must never do.
+function migrate (raw) {
+  if (!raw || typeof raw !== 'object') return null
 
-// The config the operator chose, or the one the container was started with, or the
-// folder. Never throws: a host that cannot decide where its music is should still
-// come up, say so, and let the operator fix it in the dashboard.
-function resolveSource ({ dataDir, navidrome, musicDir }) {
-  const saved = loadSource(dataDir)
-  if (saved) return { ...saved, from: 'dashboard' }
+  if (raw.version === VERSION && raw.sources) {
+    const sources = {}
+    for (const kind of KINDS) {
+      if (raw.sources[kind]) sources[kind] = pick(kind, raw.sources[kind])
+    }
+    const active = KINDS.includes(raw.active) ? raw.active : null
+    return { version: VERSION, active, sources }
+  }
 
-  if (navidrome?.url) {
+  if (KINDS.includes(raw.kind)) {
     return {
-      kind: 'navidrome',
-      url: navidrome.url,
-      username: navidrome.username,
-      password: navidrome.password,
-      from: 'env'
+      version: VERSION,
+      active: raw.kind,
+      sources: { [raw.kind]: pick(raw.kind, raw) }
     }
   }
 
-  return { kind: 'folder', root: musicDir, from: 'default' }
+  return null
 }
 
-function buildAdapter (cfg, { libraryId, musicDir }) {
+class SourceStore {
+  // env: what the container was started with (PEARTUNE_NAVIDROME_*), or null.
+  constructor ({ dataDir, env = null, musicDir = '/music' }) {
+    this.dataDir = dataDir
+    this.env = env
+    this.musicDir = musicDir
+    this.data = this._read() || { version: VERSION, active: null, sources: {} }
+  }
+
+  _read () {
+    try {
+      return migrate(JSON.parse(fs.readFileSync(pathOf(this.dataDir), 'utf8')))
+    } catch {
+      return null // no file, bad JSON, or a shape we do not recognise: fall through
+    }
+  }
+
+  _write () {
+    fs.mkdirSync(this.dataDir, { recursive: true })
+    // 0600: this file holds source passwords. The identity seed next to it is
+    // already written this way; a credential should not be more readable than a key.
+    fs.writeFileSync(pathOf(this.dataDir), JSON.stringify(this.data, null, 2), { mode: 0o600 })
+  }
+
+  // The config the operator chose, or the one the container was started with, or the
+  // folder. NEVER THROWS: a host that cannot decide where its music is should still
+  // come up, say so, and let the operator fix it in the dashboard.
+  active () {
+    const { active, sources } = this.data
+    if (active && sources[active]) return { kind: active, ...sources[active], from: 'dashboard' }
+
+    if (this.env?.navidrome?.url) {
+      return { kind: 'navidrome', ...pick('navidrome', this.env.navidrome), from: 'env' }
+    }
+
+    return { kind: 'folder', root: this.musicDir, from: 'default' }
+  }
+
+  // What the dashboard should PREFILL the form for this kind with, whether or not it
+  // is the one currently serving. This is what makes flipping between sources free.
+  configFor (kind) {
+    if (this.data.sources[kind]) return { ...this.data.sources[kind] }
+    if (kind === 'navidrome' && this.env?.navidrome?.url) return pick('navidrome', this.env.navidrome)
+    if (kind === 'folder') return { root: this.musicDir }
+    return {}
+  }
+
+  save (cfg) {
+    if (!KINDS.includes(cfg.kind)) throw new Error(`unknown source kind: ${cfg.kind}`)
+    this.data.sources[cfg.kind] = pick(cfg.kind, cfg)
+    this.data.active = cfg.kind
+    this._write()
+    return this.active()
+  }
+
+  // The password is never sent to the browser, so the browser cannot send it back.
+  //
+  // An empty password field on an already-configured source means "leave it alone" -
+  // not "set the password to empty string", which would silently break the library
+  // the next time the operator edited the URL.
+  //
+  // It reads from the STORE, not from the live source, and that is the fix for the
+  // credential-wiping bug: your Navidrome password is still there while a folder is
+  // serving, so switching back to Navidrome does not ask you to retype it.
+  withKeptSecrets (cfg) {
+    if (!KINDS.includes(cfg.kind)) throw new Error(`unknown source kind: ${cfg.kind}`)
+    const saved = this.configFor(cfg.kind)
+    const out = { ...cfg }
+    for (const s of SECRETS) {
+      if (!out[s] && saved[s]) out[s] = saved[s]
+    }
+    return out
+  }
+
+  // What the dashboard is allowed to see: every kind's config, with the passwords
+  // replaced by the only fact about them the operator needs - whether one is set.
+  // A dashboard session is not a licence to read back credentials.
+  view () {
+    const act = this.active()
+    const kinds = {}
+    for (const kind of KINDS) {
+      const cfg = this.configFor(kind)
+      const pub = {}
+      for (const f of FIELDS[kind]) {
+        if (SECRETS.includes(f)) pub[`has${f[0].toUpperCase()}${f.slice(1)}`] = !!cfg[f]
+        else pub[f] = cfg[f] || ''
+      }
+      kinds[kind] = pub
+    }
+    return { active: act.kind, from: act.from, kinds }
+  }
+}
+
+function buildAdapter (cfg, { libraryId, musicDir, log }) {
   if (cfg.kind === 'navidrome') {
     return new NavidromeAdapter({
       url: cfg.url,
@@ -76,21 +198,18 @@ function buildAdapter (cfg, { libraryId, musicDir }) {
       libraryId
     })
   }
-  return new FolderAdapter({ root: cfg.root || musicDir, libraryId })
-}
 
-// What the dashboard is allowed to see. The password NEVER leaves the host - the
-// operator gets told whether one is set, not what it is. A dashboard session is not
-// a licence to read back credentials.
-function publicView (cfg) {
-  return {
-    kind: cfg.kind,
-    url: cfg.url || '',
-    username: cfg.username || '',
-    hasPassword: !!cfg.password,
-    root: cfg.root || '',
-    from: cfg.from || 'dashboard'
+  if (cfg.kind === 'jellyfin') {
+    return new JellyfinAdapter({
+      url: cfg.url,
+      username: cfg.username,
+      password: cfg.password,
+      libraryId,
+      log
+    })
   }
+
+  return new FolderAdapter({ root: cfg.root || musicDir, libraryId, log })
 }
 
-module.exports = { loadSource, saveSource, resolveSource, buildAdapter, publicView }
+module.exports = { SourceStore, buildAdapter, KINDS, migrate }

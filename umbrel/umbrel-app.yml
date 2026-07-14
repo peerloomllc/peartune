@@ -16,9 +16,12 @@ description: >-
   never leaves your hardware: it streams through the live connection while it plays.
 
 
-  It reads your existing library. Point it at the Navidrome you already run and it
-  uses that - your tags, your artwork, your album art, and Navidrome's transcoding.
-  Or point it at a plain folder of files.
+  It reads your existing library. Point it at the Navidrome or Jellyfin you already
+  run and it uses that - your tags, your artwork, your album art, and the server's
+  transcoding. Or point it at a plain folder of files: PearTune reads the tags itself
+  (artist, album, track number, year and embedded cover art), so a folder is a real
+  library, not a list of filenames. You choose the source in the dashboard - no
+  compose file to edit.
 
 
   YOU decide who gets in. Every phone that pairs is a device on this dashboard, with

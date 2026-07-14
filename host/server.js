@@ -22,9 +22,7 @@ const { Grants } = require('./grants')
 const { decide, Connections } = require('./gate')
 const { serveMedia } = require('./media')
 const { PairSession } = require('./pair')
-const { FolderAdapter } = require('./adapters/folder')
-const { NavidromeAdapter } = require('./adapters/navidrome')
-const { resolveSource, saveSource, buildAdapter, publicView } = require('./source')
+const { SourceStore, buildAdapter } = require('./source')
 const { PAIR_PROTOCOL, MEDIA_PROTOCOL } = require('../protocol/constants')
 
 class PearTuneHost {
@@ -56,17 +54,32 @@ class PearTuneHost {
     // (env vars) - see host/source.js. Somebody installing this from an app store is
     // never going to hand-edit a compose file, and without Navidrome they would get a
     // library of filenames.
-    this.source = resolveSource({ dataDir: this.dataDir, navidrome, musicDir })
-    this.adapter = buildAdapter(this.source, {
-      libraryId: this.libraryId,
+    //
+    // ONE CONFIG PER KIND (host/source.js). Switching Navidrome -> Folder no longer
+    // throws the Navidrome credentials away; `active` is a pointer, and every kind
+    // keeps its own row.
+    this.sources = new SourceStore({
+      dataDir: this.dataDir,
+      env: navidrome ? { navidrome } : null,
       musicDir: this.musicDir
     })
+    this.source = this.sources.active()
+    this.adapter = this._build(this.source)
+    this.sourceError = null
     this.server = null
     this.pairSession = null
   }
 
   get publicKey () {
     return this.identity.publicKey
+  }
+
+  _build (cfg) {
+    return buildAdapter(cfg, {
+      libraryId: this.libraryId,
+      musicDir: this.musicDir,
+      log: this.log
+    })
   }
 
   // Change where the music comes from, live, without a restart.
@@ -76,14 +89,14 @@ class PearTuneHost {
   // A library that goes dark because someone mistyped a password is not an acceptable
   // way to find out you mistyped a password.
   async setSource (cfg) {
-    cfg = this._withKeptPassword(cfg)
-    const next = buildAdapter(cfg, { libraryId: this.libraryId, musicDir: this.musicDir })
-    const tracks = await next.scan() // throws on a bad URL or bad credentials
+    cfg = this.sources.withKeptSecrets(cfg)
+    const next = this._build(cfg)
+    const tracks = await next.scan() // throws on a bad URL, bad credentials, no folder
 
     this.adapter = next
-    this.source = { ...cfg, from: 'dashboard' }
+    this.sources.save(cfg)
+    this.source = this.sources.active()
     this.sourceError = null
-    saveSource(this.dataDir, cfg)
 
     this.log('host:source-changed', { source: cfg.kind, tracks })
     return { kind: cfg.kind, tracks }
@@ -92,25 +105,27 @@ class PearTuneHost {
   // Does this config actually work? Used by the dashboard's "Test" button, so an
   // operator finds out BEFORE committing to it - and it never touches the live
   // adapter.
+  //
+  // probe() rather than scan(): testing a FOLDER should not parse the tags of ten
+  // thousand files to answer "yes, that folder exists and has music in it". The
+  // adapters each know the cheapest way to prove they work.
   async testSource (cfg) {
-    cfg = this._withKeptPassword(cfg)
-    const probe = buildAdapter(cfg, { libraryId: this.libraryId, musicDir: this.musicDir })
-    const tracks = await probe.scan()
-    return { ok: true, kind: cfg.kind, tracks }
+    cfg = this.sources.withKeptSecrets(cfg)
+    return { ok: true, kind: cfg.kind, ...(await this._build(cfg).probe()) }
+  }
+
+  // Re-read the source. A FOLDER has no scanner watching it: copy an album onto the
+  // NAS and the host does not know until somebody says so. (Navidrome and Jellyfin
+  // watch their own libraries, so for them this is just a refresh.)
+  async rescan () {
+    const tracks = await this.adapter.scan()
+    this.sourceError = null
+    this.log('host:rescanned', { source: this.adapter.kind, tracks })
+    return { kind: this.adapter.kind, tracks }
   }
 
   get sourceView () {
-    return publicView(this.source)
-  }
-
-  // The password is never sent to the browser, so the browser cannot send it back.
-  // An empty password field on an already-configured Navidrome means "leave it
-  // alone" - not "set the password to empty string", which would silently break the
-  // library the next time the operator edited the URL.
-  _withKeptPassword (cfg) {
-    if (cfg.kind !== 'navidrome' || cfg.password) return cfg
-    const same = this.source?.kind === 'navidrome'
-    return same ? { ...cfg, password: this.source.password } : cfg
+    return this.sources.view()
   }
 
   get pairing () {

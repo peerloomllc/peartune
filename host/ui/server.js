@@ -23,6 +23,7 @@ const z32 = require('z32')
 const PAGE = require('./page')
 const LOGIN_PAGE = require('./login')
 const { createAuth, requireSafeBind } = require('./auth')
+const { browse } = require('../browse')
 
 function json (res, code, body) {
   const buf = Buffer.from(JSON.stringify(body))
@@ -71,7 +72,13 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
 
       // --- state ---
       if (req.method === 'GET' && url.pathname === '/api/state') {
-        const stats = await host.adapter.stats()
+        // A BROKEN SOURCE MUST NOT BREAK THE DASHBOARD. stats() talks to the source,
+        // so an unreachable Navidrome makes it throw - and a 500 here would blank the
+        // one page the operator needs in order to fix the source. Answer zeroes and
+        // let sourceError carry the news.
+        const stats = await host.adapter.stats().catch(() => ({
+          source: host.adapter.kind, tracks: 0, albums: 0, artists: 0, scannedAt: null
+        }))
         const devices = await host.listDevices()
         const persons = await host.grants.listPersons()
         return json(res, 200, {
@@ -125,6 +132,34 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
           return json(res, 200, { ok: true, ...r })
         } catch (e) {
           return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      // A folder has no scanner watching it: copy an album onto the NAS and the host
+      // does not know until somebody says so.
+      if (req.method === 'POST' && url.pathname === '/api/source/rescan') {
+        try {
+          return json(res, 200, { ok: true, ...(await host.rescan()) })
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      // WHAT CAN THIS CONTAINER SEE?
+      //
+      // The folder path is a path INSIDE the container, and a text box the host
+      // cannot verify is how an operator ends up typing their NAS's path, getting
+      // zero tracks, and concluding the app is broken. So the dashboard offers the
+      // directories that actually exist and lets them pick one.
+      //
+      // Directory NAMES only, never file contents, and behind the dashboard password
+      // like everything else here. The operator owns this box; they are allowed to
+      // see where their disks are mounted.
+      if (req.method === 'GET' && url.pathname === '/api/source/folders') {
+        try {
+          return json(res, 200, await browse(url.searchParams.get('path') || '/'))
+        } catch (e) {
+          return json(res, 400, { error: e.message })
         }
       }
 
