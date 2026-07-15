@@ -22,6 +22,7 @@ const hcrypto = require('hypercore-crypto')
 
 const { PearTuneClient } = require('../client')
 const { createAudioShim } = require('../worklet/shim')
+const { streamParams } = require('../worklet/quality')
 const { isPairLink } = require('../protocol/link')
 
 const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
@@ -29,7 +30,12 @@ const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
 const HOSTS_FILE = path.join(DATA_DIR, 'hosts.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
 
-const DEFAULT_SETTINGS = { theme: 'system', deviceName: '', userName: '' }
+const DEFAULT_SETTINGS = { theme: 'system', deviceName: '', userName: '', streamQuality: 'auto' }
+
+// What the network is right now, as reported by the shell (expo-network). Default
+// 'wifi' - the safe assumption, because wifi means original quality, i.e. no surprise
+// transcode and no surprise data use until we actually know we are on cellular.
+let networkType = 'wifi'
 
 let client = null
 let shim = null
@@ -138,7 +144,14 @@ async function connectTo (host) {
     // paused, the link has died, and the user presses play on their LOCK SCREEN.
     // Nothing on our side is awake to notice - the request simply arrives on the
     // loopback server, and it has to be able to fix the connection itself.
-    shim = createAudioShim({ client, log, ensure: ensureConnected })
+    shim = createAudioShim({
+      client,
+      log,
+      ensure: ensureConnected,
+      // Read fresh each request so a Settings change (or a wifi->cellular flip) applies
+      // to the next track without rebuilding the shim.
+      quality: () => streamParams(loadSettings(), networkType)
+    })
     shimPort = await shim.listen()
   } else {
     shim.setClient(client)
@@ -413,6 +426,19 @@ const methods = {
 
   async setSettings (patch) {
     return saveSettings(patch || {})
+  },
+
+  // The shell tells us what network we are on (expo-network). It drives 'auto'
+  // quality: original on wifi, a capped mp3 on cellular. It does NOT tear down a
+  // stream in flight - the change lands on the NEXT track, which is the right grain
+  // (nobody wants their current song to re-buffer because they walked out of wifi).
+  async setNetwork ({ type } = {}) {
+    const t = type === 'cellular' || type === 'wifi' || type === 'none' ? type : 'wifi'
+    if (t !== networkType) {
+      networkType = t
+      log('net:changed', { type: t })
+    }
+    return { networkType }
   },
 
   // The URL the RN player hands to ExoPlayer. The audio never touches RN: the

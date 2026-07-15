@@ -53,7 +53,12 @@ function mimeFor (name = '') {
   return MIME[ext] || 'application/octet-stream'
 }
 
-function createAudioShim ({ client, log = () => {}, ensure = async () => {} }) {
+// `quality()` decides, per request, whether to stream the original bytes or ask the
+// host for a smaller transcode. It returns null for direct play, or { format, bitrate }
+// to transcode. The worklet owns the policy (a Settings choice, and later the network
+// type); the shim just asks it at the moment a track is requested, so a change takes
+// effect on the next track without rebuilding anything.
+function createAudioShim ({ client, log = () => {}, ensure = async () => {}, quality = () => null }) {
   const meta = new Map() // trackId -> { size, mime }
 
   // The client is REPLACEABLE, and the indirection is the point. On a reconnect
@@ -98,6 +103,27 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {} }) {
       if (!m) {
         res.writeHead(404)
         return res.end()
+      }
+
+      // TRANSCODE PATH. When the policy says cap the bitrate (cellular, or a manual
+      // quality override), the host makes the bytes on the fly - so there is no known
+      // size and no stable byte offsets to seek to. We serve it PROGRESSIVELY: a plain
+      // 200 with no content-length, and `accept-ranges: none` so the player does not
+      // try to seek into bytes that do not exist yet. This is what Subsonic and
+      // Jellyfin do with their own transcodes; direct play below keeps full seeking.
+      const tc = quality(trackId)
+      if (tc) {
+        res.writeHead(200, {
+          'content-type': MIME[tc.format] || 'audio/mpeg',
+          'accept-ranges': 'none'
+        })
+        await current.streamTo(
+          { trackId, format: tc.format, bitrate: tc.bitrate },
+          (chunk) => res.write(chunk)
+        )
+        res.end()
+        log('shim:transcoded', { track: trackId.slice(0, 8), format: tc.format, bitrate: tc.bitrate })
+        return
       }
 
       let start = 0

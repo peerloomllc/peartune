@@ -18,6 +18,7 @@ import { WebView } from 'react-native-webview'
 import * as Linking from 'expo-linking'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
+import * as Network from 'expo-network'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Worklet } from 'react-native-bare-kit'
 // expo-audio, not expo-av: av is deprecated as of SDK 54.
@@ -37,6 +38,16 @@ type Pending = { resolve: (v: any) => void; reject: (e: any) => void }
 // and reports the RESOLVED scheme back down here.
 const SHELL_BG = { dark: '#14130f', light: '#faf8f5' }
 
+// The worklet only cares about metered-vs-not: cellular is where it caps the
+// bitrate, everything else is treated as free. ETHERNET and WIFI are both 'wifi'
+// (unmetered); UNKNOWN falls back to 'wifi' so we never surprise-transcode on wifi
+// just because Android was vague about the connection.
+function netKind (type?: Network.NetworkStateType): 'wifi' | 'cellular' | 'none' {
+  if (type === Network.NetworkStateType.CELLULAR) return 'cellular'
+  if (type === Network.NetworkStateType.NONE) return 'none'
+  return 'wifi'
+}
+
 export default function App () {
   const insets = useSafeAreaInsets()
   const webRef = useRef<WebView>(null)
@@ -47,6 +58,7 @@ export default function App () {
   const player = useRef<AudioPlayer | null>(null)
   const queueRef = useRef<any[]>([])
   const indexRef = useRef(0)
+  const netSub = useRef<{ remove: () => void } | null>(null)
   const [uiHtml, setUiHtml] = useState<string | null>(null)
   const [scheme, setScheme] = useState<'light' | 'dark'>('dark')
   // Whether the UI has a screen or overlay to pop. Suite convention
@@ -317,6 +329,22 @@ export default function App () {
       const ipc = worklet.IPC
       ipcRef.current = ipc
 
+      // Tell the worklet what network we are on, so 'Auto' quality knows when to cap
+      // the bitrate. Once now (before the first play), and again whenever it changes.
+      // Fire-and-forget: a failure just means we stay on the safe 'wifi' default.
+      // Always read the type from getNetworkStateAsync(), never from the listener's
+      // event payload: on Android that payload arrives with a stale `type` (measured -
+      // it reports WIFI even in airplane mode), while a fresh query is accurate. The
+      // listener is only a trigger; this function is the source of truth.
+      const reportNet = async () => {
+        try {
+          const st = await Network.getNetworkStateAsync()
+          await call('setNetwork', { type: netKind(st.type) })
+        } catch {}
+      }
+      reportNet()
+      netSub.current = Network.addNetworkStateListener(() => { reportNet() })
+
       let buf = ''
       ipc.on('data', (data: any) => {
         buf += b4a.toString(data)
@@ -411,7 +439,14 @@ export default function App () {
     // to prevent - but the app must not still be sitting on a dead connection when
     // the user returns to it. Tell the UI, and it reconnects before they notice.
     const appState = AppState.addEventListener('change', (s) => {
-      if (s === 'active') toWeb('app:active', {})
+      if (s === 'active') {
+        toWeb('app:active', {})
+        // The network may have changed while we were suspended (walked out of wifi),
+        // and the listener does not fire in the background - so re-check on resume.
+        Network.getNetworkStateAsync()
+          .then((st) => call('setNetwork', { type: netKind(st.type) }))
+          .catch(() => {})
+      }
     })
 
     return () => {
@@ -419,6 +454,7 @@ export default function App () {
       back.remove()
       appearance.remove()
       appState.remove()
+      netSub.current?.remove()
       stopPlayer()
       workletRef.current?.terminate?.()
     }
