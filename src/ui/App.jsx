@@ -1826,13 +1826,14 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
       <div className='meta'>
         <div className='t'>{t.title}</div>
         <div className='muted sm sub'>
-          {(t.artist
+          {t.artist
             ? [t.artist, t.album].filter(Boolean).join(' · ')
-            : `${(t.size / 1048576).toFixed(1)} MB`) +
-            (count != null ? ` · ${count} play${count === 1 ? '' : 's'}` : '')}
+            : `${(t.size / 1048576).toFixed(1)} MB`}
         </div>
       </div>
-      <span className='muted sm dur'>{t.durationMs ? fmt(t.durationMs) : ''}</span>
+      {count != null
+        ? <span className='muted sm plays'>{count} play{count === 1 ? '' : 's'}</span>
+        : <span className='muted sm dur'>{t.durationMs ? fmt(t.durationMs) : ''}</span>}
       {onFav && (
         // The heart lives on the row but must not play it. Stop the press at
         // pointerdown (usePress is pointer-based) AND the click.

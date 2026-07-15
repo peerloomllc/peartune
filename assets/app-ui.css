@@ -193,6 +193,10 @@ ul.tracks li .dur {
   flex: none;
   font-variant-numeric: tabular-nums;
 }
+ul.tracks li .plays {
+  flex: none;
+  white-space: nowrap;
+}
 ul.tracks li .no {
   flex: none;
   width: 1.6rem;

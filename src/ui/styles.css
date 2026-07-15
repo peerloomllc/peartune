@@ -97,6 +97,7 @@ ul.tracks li .sub {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: .15rem;
 }
 ul.tracks li .dur { flex: none; font-variant-numeric: tabular-nums; }
+ul.tracks li .plays { flex: none; white-space: nowrap; }
 ul.tracks li .no {
   flex: none; width: 1.6rem; text-align: right; font-variant-numeric: tabular-nums;
 }
