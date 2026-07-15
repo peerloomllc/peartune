@@ -1,8 +1,13 @@
-// Jellyfin source adapter.
+// Jellyfin / Emby source adapter.
 //
 // The third source, and the second SERVER one. Like Navidrome it already did the
 // hard part - scanning, tags, artwork, album/artist grouping and transcoding - so
 // this file is mostly mapping: Jellyfin's shapes into ours.
+//
+// It covers EMBY as well as Jellyfin. Jellyfin forked Emby ~2018, so the endpoints
+// are the same; only the auth header naming drifted, and _authHeaders() sends both
+// flavors so one code path serves both (see there). The server names itself via
+// ProductName ("Jellyfin" vs "Emby Server"), so no separate source kind is needed.
 //
 // It satisfies the SAME interface as FolderAdapter and SubsonicAdapter, and the
 // phone cannot tell which is behind the media API. That is the property that makes
@@ -61,17 +66,35 @@ class JellyfinAdapter {
     this._authing = null
   }
 
-  // Jellyfin wants its client identity in the Authorization header on EVERY request,
-  // authenticated or not. The token joins it once we have one.
-  _authHeader () {
-    const parts = [
+  // ONE adapter, TWO servers. Jellyfin forked Emby, so the endpoints match almost
+  // exactly - the difference is where the auth goes:
+  //   - Jellyfin reads the client identity AND the token from `Authorization:
+  //     MediaBrowser Client=..., Token="..."`.
+  //   - Emby reads the identity from `X-Emby-Authorization` and the token from a
+  //     separate `X-Emby-Token` header.
+  // Rather than sniff the server and branch, we send BOTH on every request. Each
+  // server reads the header it knows and ignores the other, so the same code path
+  // serves Jellyfin and Emby. (The label still comes from ProductName - "Jellyfin"
+  // vs "Emby Server" - see scan().)
+  _identity () {
+    return [
       `Client="${CLIENT}"`,
       'Device="PearTune host"',
       `DeviceId="${this.deviceId}"`,
       `Version="${VERSION}"`
     ]
-    if (this.token) parts.push(`Token="${this.token}"`)
-    return 'MediaBrowser ' + parts.join(', ')
+  }
+
+  _authHeaders () {
+    const parts = this._identity()
+    const h = {
+      // Jellyfin: identity + token together. Token joins once we have one.
+      authorization: 'MediaBrowser ' + (this.token ? [...parts, `Token="${this.token}"`] : parts).join(', '),
+      // Emby: identity only here; the token rides in X-Emby-Token below.
+      'x-emby-authorization': 'MediaBrowser ' + parts.join(', ')
+    }
+    if (this.token) h['x-emby-token'] = this.token
+    return h
   }
 
   // One login, shared. A cold host answering a screen's worth of art requests would
@@ -86,7 +109,7 @@ class JellyfinAdapter {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          authorization: this._authHeader()
+          ...this._authHeaders()
         },
         body: JSON.stringify({ Username: this.username, Pw: this.password })
       })
@@ -117,7 +140,7 @@ class JellyfinAdapter {
   async _call (route, params) {
     await this._auth()
     const res = await fetch(this._url(route, params), {
-      headers: { authorization: this._authHeader(), accept: 'application/json' }
+      headers: { ...this._authHeaders(), accept: 'application/json' }
     })
 
     // The token was revoked (the operator logged this device out in Jellyfin's own
@@ -127,7 +150,7 @@ class JellyfinAdapter {
       this.token = null
       await this._auth()
       const again = await fetch(this._url(route, params), {
-        headers: { authorization: this._authHeader(), accept: 'application/json' }
+        headers: { ...this._authHeaders(), accept: 'application/json' }
       })
       if (!again.ok) throw new Error(`jellyfin ${route}: HTTP ${again.status}`)
       return again.json()
@@ -198,14 +221,15 @@ class JellyfinAdapter {
     // failing loudly HERE, at boot or at Save, rather than on a user's first tap.
     await this._auth()
 
-    // The server NAMES ITSELF. System/Info/Public needs no auth and returns
-    // ProductName - "Jellyfin", or "Emby Server" for an Emby box - and Version. That
-    // is how the app can say which one it actually is (and it is how an eventual Emby
-    // adapter will tell itself apart from Jellyfin).
-    this._serverName = await fetch(`${this.base}/System/Info/Public`)
+    // The server NAMES ITSELF via System/Info/Public (no auth needed). Jellyfin returns
+    // ProductName "Jellyfin Server". Emby - measured against a real 4.9 box - returns NO
+    // ProductName at all (its ServerName is an operator-set string, often a container
+    // id, not the product). So for THIS kind, which is only ever Jellyfin or Emby, a
+    // reachable server with no ProductName is Emby. That is the only signal we get.
+    const info = await fetch(`${this.base}/System/Info/Public`)
       .then(r => r.ok ? r.json() : null)
-      .then(b => b?.ProductName || null)
       .catch(() => null)
+    this._serverName = this._nameFromInfo(info)
 
     const body = await this._call('/Items', {
       userId: this.userId,
@@ -216,6 +240,15 @@ class JellyfinAdapter {
     this._counts = body.TotalRecordCount ?? 0
     this.scannedAt = Date.now()
     return this._counts
+  }
+
+  // Jellyfin advertises ProductName ("Jellyfin Server"); Emby does not. A reachable
+  // MediaBrowser server (this kind is only ever one of the two) with no ProductName is
+  // therefore Emby. Null only when we could not reach it at all - then stats() falls
+  // back to the kind's primary label.
+  _nameFromInfo (info) {
+    if (!info) return null
+    return info.ProductName || 'Emby'
   }
 
   async probe () {
@@ -432,7 +465,7 @@ class JellyfinAdapter {
       quality: 90
     })
 
-    const res = await fetch(url, { headers: { authorization: this._authHeader() } })
+    const res = await fetch(url, { headers: this._authHeaders() })
     // 404 is the normal answer for an album with no artwork. Not an error - the app
     // draws its own placeholder.
     if (!res.ok) return null
@@ -465,7 +498,7 @@ class JellyfinAdapter {
       // whether to transcode, and the default path stops being exact original bytes.
       : this._url(`/Audio/${itemId}/stream`, { static: true })
 
-    const headers = { authorization: this._authHeader() }
+    const headers = this._authHeaders()
     if (offset > 0 || length) {
       const end = length ? offset + Number(length) - 1 : ''
       headers.range = `bytes=${offset}-${end}`
