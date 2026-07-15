@@ -242,6 +242,50 @@ ul.tracks li .favbtn:active {
 .favhead:active {
   transform: scale(.96);
 }
+.contcard {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+  margin: 0 0 1.2rem;
+  padding: .7rem .8rem;
+  border-radius: 12px;
+  cursor: pointer;
+  border: 1px solid var(--color-divider);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+.contcard:active {
+  transform: scale(.99);
+}
+.contcard .meta {
+  min-width: 0;
+  flex: 1;
+}
+.contcard .cont-h {
+  color: var(--color-primary);
+  font-weight: 600;
+  margin-bottom: .1rem;
+}
+.contcard .t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contcard .sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contplay {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+}
 .favview section {
   margin-bottom: 1.6rem;
 }

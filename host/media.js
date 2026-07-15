@@ -192,6 +192,12 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
         return send.res.send({ id, body: { positionMs: row?.positionMs || 0, durationMs: row?.durationMs || null } })
       }
 
+      case 'resume.latest': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        const row = await state.latestResume(ownerOf(grant))
+        return send.res.send({ id, body: row ? { trackId: row.trackId, positionMs: row.positionMs, durationMs: row.durationMs } : null })
+      }
+
       case 'resume.set': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')

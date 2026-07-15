@@ -78,6 +78,18 @@ class UserState {
     return node ? node.value : null
   }
 
+  // The owner's MOST RECENT resume - the "continue listening" candidate. Null if none.
+  async latestResume (ownerId) {
+    const lo = `resume:${ownerId}:`
+    const hi = `resume:${ownerId};`
+    let best = null
+    for await (const node of this.bee.createReadStream({ gte: lo, lt: hi }, { valueEncoding: 'json' })) {
+      const v = node.value
+      if (v && v.positionMs > 0 && (!best || v.updatedAt > best.updatedAt)) best = v
+    }
+    return best
+  }
+
   // The owner's favorites, grouped by kind: { track:[ids], album:[ids], artist:[ids] }.
   // One prefix scan per kind. Every `fav:{ownerId}:{kind}:{id}` key sorts below
   // `fav:{ownerId}:{kind};` (';' is ':'+1, and a z32 id never contains ':' or ';'), so

@@ -210,6 +210,7 @@ class PearTuneClient {
   // Resume positions (milestone 3, phase 2).
   resumeGet (params) { return this._request('resume.get', params) }
   resumeSet (params) { return this._request('resume.set', params) }
+  resumeLatest () { return this._request('resume.latest') }
 
   art (params) { return this._request('art.get', params, { stream: true }) }
 

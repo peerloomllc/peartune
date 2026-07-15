@@ -148,6 +148,24 @@ test('resume positions are per-owner isolated', async (t) => {
   assert.equal(await s.getResume('d:asas', 't1'), null, 'another owner has no resume for it')
 })
 
+test('latestResume returns the MOST RECENTLY updated resume (the continue candidate)', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  assert.equal(await s.latestResume('p:tim'), null, 'nothing to continue yet')
+
+  await s.setResume('p:tim', 't1', 10000, 200000)
+  await new Promise(r => setTimeout(r, 5)) // ensure a later updatedAt
+  await s.setResume('p:tim', 't2', 20000, 300000)
+
+  const latest = await s.latestResume('p:tim')
+  assert.equal(latest.trackId, 't2', 'the one touched last')
+  assert.equal(latest.positionMs, 20000)
+
+  // Finishing t2 (clear) makes t1 the candidate again.
+  await s.setResume('p:tim', 't2', 0)
+  assert.equal((await s.latestResume('p:tim')).trackId, 't1')
+})
+
 test('favorites persist across a store reopen (they are on disk, not in memory)', async (t) => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pt-state-persist-'))
   t.after(() => fsp.rm(dir, { recursive: true, force: true }))

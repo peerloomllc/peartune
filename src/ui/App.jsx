@@ -87,20 +87,21 @@ export default function App () {
   const [favs, setFavs] = useState(() => ({ track: new Set(), album: new Set(), artist: new Set() }))
   const [favSupported, setFavSupported] = useState(true) // false = host too old
   const [favItems, setFavItems] = useState(null) // the Favorites view, resolved + grouped
+  const [cont, setCont] = useState(null) // "continue listening": { track, positionMs }
 
   useEffect(() => {
     call('init')
       .then((s) => {
         setState({ ...s, loading: false })
         if (s.settings?.density) setDensity(String(s.settings.density))
-        if (s.connected) { loadAlbums(0); loadSource(); loadFavs() }
+        if (s.connected) { loadAlbums(0); loadSource(); loadFavs(); loadContinue() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
     const offs = [
       on('play:started', (d) => { setNow(d); setError(null) }),
       on('play:status', setStatus),
-      on('play:stopped', () => { setNow(null); setStatus(null) }),
+      on('play:stopped', () => { setNow(null); setStatus(null); loadContinue() }),
       on('play:error', (d) => setError(d.error)),
       // The buffer ran dry while we were disconnected and could not get back in - a
       // revoke, or a network hole. play:stopped clears the player; this just says why,
@@ -125,6 +126,7 @@ export default function App () {
         loadIdentity()
         loadSource()
         loadFavs()
+        loadContinue()
       }),
 
       // Back from the background, where the link almost certainly died. Reconnect
@@ -379,6 +381,14 @@ export default function App () {
   // The host owns the truth; `favs` is a local mirror so the hearts are instant. An
   // old host (no favorites support) reports supported:false, and we hide the hearts
   // rather than show a control that does nothing.
+  // The "continue listening" candidate for the launch card: the last track you were
+  // playing, resolved and ready to render. Refreshed on connect and when playback stops.
+  async function loadContinue () {
+    try {
+      setCont(await call('resumeLatest'))
+    } catch {}
+  }
+
   async function loadFavs () {
     try {
       const r = await call('favorites') // { track, album, artist, supported }
@@ -725,6 +735,8 @@ export default function App () {
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
         favs={favs} onFav={favSupported ? onFav : null}
         favSupported={favSupported} favItems={favItems}
+        cont={now ? null : cont}
+        onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
         onBrowse={(b) => {
           haptic('light')
           if (b === 'artists') return showArtists()
@@ -1000,7 +1012,7 @@ function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) 
 function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
-  favs, onFav, favSupported, favItems,
+  favs, onFav, favSupported, favItems, cont, onContinue,
   onBrowse, onDensity, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
@@ -1156,6 +1168,12 @@ function Library ({
 
       {error && <div className='error'>{error}</div>}
 
+      {/* Pick up where you left off. Only on the home view, and only when nothing is
+          already playing (the parent nulls `cont` in that case). */}
+      {cont?.track && !searching && browse === 'albums' && (
+        <ContinueCard cont={cont} onPlay={onContinue} />
+      )}
+
       {searching
         ? (
           <SearchResults
@@ -1269,6 +1287,27 @@ function FavoritesView ({ favItems, favs, onFav, now, d, artBase, onPlay, onLong
           </ul>
         </section>
       )}
+    </div>
+  )
+}
+
+// "Continue listening" - a launch affordance that resumes the last track from where it
+// was stopped. One tap plays it (playFrom applies the saved position). It disappears
+// once something is playing, or when there is nothing to continue.
+function ContinueCard ({ cont, onPlay }) {
+  const t = cont.track
+  const press = usePress(onPlay)
+  return (
+    <div className='contcard' {...press}>
+      <Cover src={t.art} sm />
+      <div className='meta'>
+        <div className='muted sm cont-h'>Continue listening</div>
+        <div className='t'>{t.title}</div>
+        <div className='muted sm sub'>
+          {[t.artist, cont.positionMs ? 'at ' + fmt(cont.positionMs) : ''].filter(Boolean).join(' · ')}
+        </div>
+      </div>
+      <div className='contplay'><Play size={20} weight='fill' /></div>
     </div>
   )
 }
