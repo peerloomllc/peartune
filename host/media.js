@@ -13,7 +13,7 @@ const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 
 // Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
 // so a new mutating method cannot accidentally ship without a scope check.
-const MUTATING = new Set(['identity.set', 'fav.set'])
+const MUTATING = new Set(['identity.set', 'fav.set', 'resume.set'])
 
 // WHO owns the user state on this connection. Derived from the grant the firewall
 // looked up from the Noise-authenticated remote key - NEVER from a client parameter,
@@ -181,6 +181,21 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
         }
         log('fav:set', { kind: row.kind, on: row.on })
         return send.res.send({ id, body: { ok: true, kind: row.kind, id: row.id, on: row.on } })
+      }
+
+      // --- resume positions (milestone 3, phase 2) --------------------------
+      case 'resume.get': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
+        const row = await state.getResume(ownerOf(grant), params.trackId)
+        return send.res.send({ id, body: { positionMs: row?.positionMs || 0, durationMs: row?.durationMs || null } })
+      }
+
+      case 'resume.set': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
+        await state.setResume(ownerOf(grant), params.trackId, Number(params.positionMs) || 0, params.durationMs)
+        return send.res.send({ id, body: { ok: true } })
       }
 
       case 'art.get': {

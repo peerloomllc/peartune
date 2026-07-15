@@ -142,6 +142,26 @@ export default function App () {
   const liveRef = useRef({})
   liveRef.current = { host: state.host, connected: state.connected, reconnecting }
 
+  // Resume positions (milestone 3, phase 2): every 8s while a track plays, save its
+  // position to the host, so it (and any of this person's other devices) can pick up
+  // where they left off. Clear near the end so a finished track starts fresh. Refs,
+  // because the interval registers once and must read the CURRENT track/status.
+  const nowRef = useRef(null); nowRef.current = now
+  const statusRef = useRef(null); statusRef.current = status
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const t = nowRef.current
+      const s = statusRef.current
+      if (!t?.trackId || !s) return
+      const pos = s.positionMs || 0
+      const dur = s.durationMs || t.durationMs || 0
+      if (pos < 5000) return // the first few seconds are not a resume point
+      const clear = dur && pos > dur * 0.95
+      call('resumeSave', { trackId: t.trackId, positionMs: clear ? 0 : pos, durationMs: dur }).catch(() => {})
+    }, 8000)
+    return () => clearInterval(iv)
+  }, [])
+
   // Who this device says it is. The HOST is the authority on what its dashboard
   // shows, so this is read back from it rather than trusted from local settings.
   async function loadIdentity () {
@@ -510,10 +530,22 @@ export default function App () {
 
   // Tapping a track queues the whole list behind it - which is what people mean
   // when they tap a track in an album.
-  const playFrom = (list, t) => {
+  //
+  // RESUME (milestone 3, phase 2): a track you deliberately stopped partway resumes
+  // from there - but ONLY the one you tapped, never a track that arrives via queue
+  // advance (that would jump you mid-listen). So the seek lives here, in the user-tap
+  // path, not in the status listener. Guarded to a real middle (>5s, <95%) so a nearly
+  // finished track just starts fresh.
+  const playFrom = async (list, t) => {
     haptic('light')
     const index = Math.max(0, list.findIndex(x => x.id === t.id))
-    return call('play', { queue: toQueue(list), index })
+    await call('play', { queue: toQueue(list), index })
+    try {
+      const r = await call('resumeGet', { trackId: t.id })
+      const pos = r?.positionMs || 0
+      const dur = r?.durationMs || t.durationMs || 0
+      if (pos > 5000 && (!dur || pos < dur * 0.95)) call('seekTo', { ms: pos }).catch(() => {})
+    } catch {}
   }
 
   // Play a whole album or artist without drilling into it for a track to tap.

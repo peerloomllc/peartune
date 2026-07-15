@@ -207,6 +207,10 @@ class PearTuneClient {
   favList () { return this._request('fav.list') }
   favSet (params) { return this._request('fav.set', params) }
 
+  // Resume positions (milestone 3, phase 2).
+  resumeGet (params) { return this._request('resume.get', params) }
+  resumeSet (params) { return this._request('resume.set', params) }
+
   art (params) { return this._request('art.get', params, { stream: true }) }
 
   // Resolves to the whole buffer. `onchunk` lets a caller start work before the

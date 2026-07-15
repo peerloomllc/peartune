@@ -474,6 +474,28 @@ const methods = {
     }
   },
 
+  // --- resume positions (milestone 3, phase 2) --------------------------------
+  //
+  // Fire-and-forget saves (the shell calls this on a timer while playing); a failure
+  // is fine, the position is not precious. resumeGet answers 0 offline / on an old
+  // host, so the caller simply starts the track from the top.
+  async resumeSave ({ trackId, positionMs, durationMs }) {
+    try {
+      await ensureConnected()
+      await client.resumeSet({ trackId, positionMs, durationMs })
+    } catch {}
+    return { ok: true }
+  },
+
+  async resumeGet ({ trackId }) {
+    try {
+      await ensureConnected()
+      return await client.resumeGet({ trackId })
+    } catch {
+      return { positionMs: 0 }
+    }
+  },
+
   // Toggle a favorite of any kind (track / album / artist). Writes go to the host
   // (Phase 1 needs a connection); the cache is updated so the heart survives offline.
   async toggleFav ({ kind = 'track', id, on }) {
