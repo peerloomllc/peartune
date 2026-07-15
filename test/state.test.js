@@ -209,3 +209,94 @@ test('favorites persist across a store reopen (they are on disk, not in memory)'
 
   assert.deepEqual((await new UserState(bee2).listFavs('p:tim')).artist, ['ar1'])
 })
+
+// --- playlists (milestone 3, phase 4) ----------------------------------------
+
+test('a playlist is created with a host-minted id and an empty ordered list', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  const pl = await s.createPlaylist('p:tim', 'Roadtrip')
+  assert.ok(pl.id, 'the host mints the id, the client does not')
+  assert.equal(pl.name, 'Roadtrip')
+  assert.deepEqual(pl.trackIds, [])
+  assert.ok(pl.createdAt && pl.updatedAt)
+
+  const back = await s.getPlaylist('p:tim', pl.id)
+  assert.deepEqual(back.trackIds, [])
+  assert.deepEqual((await s.listPlaylists('p:tim')).map(p => [p.name, p.count]), [['Roadtrip', 0]])
+})
+
+test('adding appends (dupes allowed); setTracks replaces the whole order', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  const pl = await s.createPlaylist('p:tim', 'Mix')
+
+  await s.addToPlaylist('p:tim', pl.id, ['a', 'b'])
+  await s.addToPlaylist('p:tim', pl.id, ['b', 'c']) // 'b' again is intentional
+  assert.deepEqual((await s.getPlaylist('p:tim', pl.id)).trackIds, ['a', 'b', 'b', 'c'])
+
+  // Reorder-and-remove is one write: send the new order (drop a dupe, flip the ends).
+  await s.setPlaylistTracks('p:tim', pl.id, ['c', 'b', 'a'])
+  assert.deepEqual((await s.getPlaylist('p:tim', pl.id)).trackIds, ['c', 'b', 'a'])
+})
+
+test('rename changes the name; delete removes the playlist', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  const pl = await s.createPlaylist('p:tim', 'old')
+
+  const renamed = await s.renamePlaylist('p:tim', pl.id, 'new')
+  assert.equal(renamed.name, 'new')
+  assert.equal((await s.getPlaylist('p:tim', pl.id)).name, 'new')
+
+  await s.deletePlaylist('p:tim', pl.id)
+  assert.equal(await s.getPlaylist('p:tim', pl.id), null)
+  assert.deepEqual(await s.listPlaylists('p:tim'), [])
+})
+
+test('a mutation on a playlist the owner does not have returns null (the ownership check)', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  const mine = await s.createPlaylist('p:tim', 'mine')
+
+  // Asa cannot touch Tim's playlist even knowing its id: the key carries the owner.
+  assert.equal(await s.getPlaylist('p:asa', mine.id), null)
+  assert.equal(await s.addToPlaylist('p:asa', mine.id, ['x']), null)
+  assert.equal(await s.renamePlaylist('p:asa', mine.id, 'hijack'), null)
+  assert.equal(await s.setPlaylistTracks('p:asa', mine.id, ['x']), null)
+  // Tim's playlist is untouched.
+  assert.deepEqual((await s.getPlaylist('p:tim', mine.id)).trackIds, [])
+  assert.deepEqual(await s.listPlaylists('p:asa'), [])
+})
+
+test('playlists are owner-isolated in the list scan', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.createPlaylist('p:tim', 'tim-one')
+  await s.createPlaylist('p:asa', 'asa-one')
+  assert.deepEqual((await s.listPlaylists('p:tim')).map(p => p.name), ['tim-one'])
+  assert.deepEqual((await s.listPlaylists('p:asa')).map(p => p.name), ['asa-one'])
+})
+
+test('a playlist name is sanitized: control chars stripped, empty becomes a default, length capped', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  const ctrl = await s.createPlaylist('p:tim', '  road\x00trip\t ')
+  assert.equal(ctrl.name, 'roadtrip', 'the NUL and tab (control chars) are stripped and the ends trimmed')
+
+  const blank = await s.createPlaylist('p:tim', '   ')
+  assert.equal(blank.name, 'Untitled playlist', 'an empty name is a sensible default, not a blank row')
+
+  const long = await s.createPlaylist('p:tim', 'x'.repeat(500))
+  assert.equal(long.name.length, 100, 'name capped')
+})
+
+test('trackIds are validated: non-strings are dropped, not stored', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  const pl = await s.createPlaylist('p:tim', 'Mix')
+  await s.addToPlaylist('p:tim', pl.id, ['a', 123, null, '', 'b', undefined])
+  assert.deepEqual((await s.getPlaylist('p:tim', pl.id)).trackIds, ['a', 'b'])
+})

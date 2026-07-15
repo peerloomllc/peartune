@@ -33,6 +33,10 @@ const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
 // truth (host-as-hub); this only lets the hearts render instantly and offline. Writes
 // still go to the host (favorites need a connection in Phase 1).
 const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json')
+// A read-through cache of THIS device's playlist SUMMARIES ([{ id, name, count }]), so
+// the Playlists list renders instantly and offline. The host owns the truth; a
+// playlist's tracks and every edit still need a connection (Phase 4, like favorites).
+const PLAYLISTS_FILE = path.join(DATA_DIR, 'playlists.json')
 
 const DEFAULT_SETTINGS = { theme: 'system', deviceName: '', userName: '', streamQuality: 'auto' }
 
@@ -139,6 +143,21 @@ function saveFavCache (g) {
   fs.writeFileSync(FAVORITES_FILE, JSON.stringify({
     track: g.track || [], album: g.album || [], artist: g.artist || []
   }))
+}
+
+// Same disposable-mirror deal for playlist summaries.
+function loadPlaylistCache () {
+  try {
+    const o = JSON.parse(fs.readFileSync(PLAYLISTS_FILE, 'utf8'))
+    return Array.isArray(o) ? o : []
+  } catch {
+    return []
+  }
+}
+
+function savePlaylistCache (items) {
+  fs.mkdirSync(DATA_DIR, { recursive: true })
+  fs.writeFileSync(PLAYLISTS_FILE, JSON.stringify(items || []))
 }
 
 // --- connection -------------------------------------------------------------
@@ -576,6 +595,69 @@ const methods = {
       albums: await resolve(grouped.album, 'album'),
       artists: await resolve(grouped.artist, 'artist')
     }
+  },
+
+  // --- playlists (milestone 3, phase 4) ---------------------------------------
+  //
+  // OUR playlists, host-owned. The list caches its summaries so the Playlists tab
+  // renders offline (like favorites); an old host answers ENOMETHOD and we report
+  // supported:false so the app can hide the feature rather than show a dead control.
+  async playlists () {
+    try {
+      await ensureConnected()
+      const { items } = await client.playlistList()
+      savePlaylistCache(items)
+      return { items, supported: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { items: [], supported: false }
+      return { items: loadPlaylistCache(), supported: true, offline: true }
+    }
+  },
+
+  // One playlist. We return BOTH the raw ordered trackIds and the resolved tracks:
+  // a track that no longer resolves (source changed, file gone) is left out of the
+  // rendered list, but its id STAYS in trackIds and each resolved track carries its raw
+  // index `_i`. That is what lets the app reorder/remove by editing the raw id list -
+  // so an edit never silently drops a track that merely failed to resolve this time.
+  async playlistDetail ({ id }) {
+    await ensureConnected()
+    const pl = await client.playlistGet({ id })
+    const ids = pl.trackIds || []
+    const tracks = []
+    for (let i = 0; i < ids.length; i++) {
+      const t = await client.get({ id: ids[i], type: 'track' }).catch(() => null)
+      if (t) tracks.push({ ...withArt(t), _i: i })
+    }
+    return { id: pl.id, name: pl.name, trackIds: ids, tracks }
+  },
+
+  async createPlaylist ({ name }) {
+    await ensureConnected()
+    return await client.playlistCreate({ name })
+  },
+
+  async renamePlaylist ({ id, name }) {
+    await ensureConnected()
+    return await client.playlistRename({ id, name })
+  },
+
+  async deletePlaylist ({ id }) {
+    await ensureConnected()
+    await client.playlistDelete({ id })
+    return { ok: true }
+  },
+
+  // Append tracks. The UI resolves an album/artist to its trackIds first (via the same
+  // tracksFor it uses for Play/Queue), so this just forwards the ids.
+  async addToPlaylist ({ id, trackIds }) {
+    await ensureConnected()
+    return await client.playlistAdd({ id, trackIds })
+  },
+
+  // Replace the whole order - the app's single write path for both remove and reorder.
+  async setPlaylistTracks ({ id, trackIds }) {
+    await ensureConnected()
+    return await client.playlistSetTracks({ id, trackIds })
   },
 
   // The shell tells us what network we are on (expo-network). It drives 'auto'

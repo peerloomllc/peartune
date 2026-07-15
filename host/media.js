@@ -13,7 +13,10 @@ const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 
 // Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
 // so a new mutating method cannot accidentally ship without a scope check.
-const MUTATING = new Set(['identity.set', 'fav.set', 'resume.set', 'count.bump'])
+const MUTATING = new Set([
+  'identity.set', 'fav.set', 'resume.set', 'count.bump',
+  'playlist.create', 'playlist.rename', 'playlist.delete', 'playlist.add', 'playlist.setTracks'
+])
 
 // WHO owns the user state on this connection. Derived from the grant the firewall
 // looked up from the Noise-authenticated remote key - NEVER from a client parameter,
@@ -218,6 +221,67 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
         await state.setResume(ownerOf(grant), params.trackId, Number(params.positionMs) || 0, params.durationMs)
         log('resume:set', { positionMs: Number(params.positionMs) || 0 })
         return send.res.send({ id, body: { ok: true } })
+      }
+
+      // --- playlists (milestone 3, phase 4) ---------------------------------
+      //
+      // Host-owned "our" playlists. The owner comes from ownerOf(grant), never from
+      // params - a device can only ever touch its own playlists, same rule as favorites
+      // above. A mutation that names a playlist the owner does not have gets NOT_FOUND
+      // (the state layer returns null), not a silent no-op.
+      case 'playlist.list': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        return send.res.send({ id, body: { items: await state.listPlaylists(ownerOf(grant)) } })
+      }
+
+      case 'playlist.get': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        const row = await state.getPlaylist(ownerOf(grant), params.id)
+        if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
+        return send.res.send({ id, body: { id: row.id, name: row.name, trackIds: row.trackIds || [] } })
+      }
+
+      case 'playlist.create': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        const row = await state.createPlaylist(ownerOf(grant), params?.name)
+        log('playlist:create', { id: row.id, name: row.name })
+        return send.res.send({ id, body: { id: row.id, name: row.name } })
+      }
+
+      case 'playlist.rename': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        const row = await state.renamePlaylist(ownerOf(grant), params.id, params?.name)
+        if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
+        log('playlist:rename', { id: row.id, name: row.name })
+        return send.res.send({ id, body: { id: row.id, name: row.name } })
+      }
+
+      case 'playlist.delete': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        await state.deletePlaylist(ownerOf(grant), params.id)
+        log('playlist:delete', { id: params.id })
+        return send.res.send({ id, body: { ok: true } })
+      }
+
+      case 'playlist.add': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        const row = await state.addToPlaylist(ownerOf(grant), params.id, params?.trackIds)
+        if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
+        log('playlist:add', { id: row.id, count: row.trackIds.length })
+        return send.res.send({ id, body: { ok: true, count: row.trackIds.length } })
+      }
+
+      case 'playlist.setTracks': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        const row = await state.setPlaylistTracks(ownerOf(grant), params.id, params?.trackIds)
+        if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
+        log('playlist:set-tracks', { id: row.id, count: row.trackIds.length })
+        return send.res.send({ id, body: { ok: true, count: row.trackIds.length } })
       }
 
       case 'art.get': {
