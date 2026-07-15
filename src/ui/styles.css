@@ -100,6 +100,12 @@ ul.tracks li .dur { flex: none; font-variant-numeric: tabular-nums; }
 ul.tracks li .no {
   flex: none; width: 1.6rem; text-align: right; font-variant-numeric: tabular-nums;
 }
+ul.tracks li .favbtn {
+  flex: none; background: none; border: 0; padding: .25rem; margin: -.25rem;
+  color: inherit; opacity: .45; cursor: pointer; display: inline-flex; line-height: 0;
+}
+ul.tracks li .favbtn.on { opacity: 1; color: var(--color-primary); }
+ul.tracks li .favbtn:active { transform: scale(.85); }
 
 .scanner { position: relative; min-height: 100vh; background: #000; }
 .scanner video { width: 100%; height: 100vh; object-fit: cover; }

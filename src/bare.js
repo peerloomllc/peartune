@@ -29,6 +29,10 @@ const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
 const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
 const HOSTS_FILE = path.join(DATA_DIR, 'hosts.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
+// A read-through cache of THIS device's favorite trackIds. The host is the source of
+// truth (host-as-hub); this only lets the hearts render instantly and offline. Writes
+// still go to the host (favorites need a connection in Phase 1).
+const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json')
 
 const DEFAULT_SETTINGS = { theme: 'system', deviceName: '', userName: '', streamQuality: 'auto' }
 
@@ -116,6 +120,22 @@ function saveSettings (patch) {
   fs.mkdirSync(DATA_DIR, { recursive: true })
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(next))
   return next
+}
+
+// The favorites cache is a plain array of trackIds. It is disposable - the host owns
+// the truth - so a missing or corrupt file is simply "no favorites cached yet".
+function loadFavCache () {
+  try {
+    const a = JSON.parse(fs.readFileSync(FAVORITES_FILE, 'utf8'))
+    return Array.isArray(a) ? a : []
+  } catch {
+    return []
+  }
+}
+
+function saveFavCache (trackIds) {
+  fs.mkdirSync(DATA_DIR, { recursive: true })
+  fs.writeFileSync(FAVORITES_FILE, JSON.stringify(trackIds))
 }
 
 // --- connection -------------------------------------------------------------
@@ -426,6 +446,55 @@ const methods = {
 
   async setSettings (patch) {
     return saveSettings(patch || {})
+  },
+
+  // --- favorites (host-as-hub, milestone 3) -----------------------------------
+  //
+  // The host owns the truth; we keep a read-through cache so the hearts render
+  // instantly and survive going offline. `supported` tells the UI whether the host is
+  // new enough to answer at all - an old host replies ENOMETHOD, and the app hides
+  // the hearts rather than showing a control that does nothing.
+  async favorites () {
+    try {
+      await ensureConnected()
+      const { trackIds } = await client.favList()
+      saveFavCache(trackIds)
+      return { trackIds, supported: true }
+    } catch (e) {
+      // ENOMETHOD: an old host with no favorites support. Anything else (offline): fall
+      // back to the cache so the hearts still render.
+      if (e?.code === 'ENOMETHOD') return { trackIds: loadFavCache(), supported: false }
+      return { trackIds: loadFavCache(), supported: true, offline: true }
+    }
+  },
+
+  // Toggle a favorite. Writes go to the host (Phase 1 needs a connection); the cache is
+  // updated optimistically so the heart flips at once, and reconciled from the host's
+  // answer.
+  async toggleFav ({ trackId, on }) {
+    await ensureConnected()
+    const r = await client.favSet({ trackId, on: on !== false })
+    const cache = new Set(loadFavCache())
+    if (r.on) cache.add(trackId)
+    else cache.delete(trackId)
+    saveFavCache([...cache])
+    return { trackId: r.trackId, on: r.on }
+  },
+
+  // The Favorites VIEW: the favorited trackIds resolved to playable tracks (title,
+  // artist, art). One get() per favorite - bounded by how many a person favorites, and
+  // the same shape as artistTracks. A track that no longer resolves (source changed,
+  // file gone) is skipped rather than rendered as a dead row.
+  async favoriteTracks () {
+    await ensureConnected()
+    const { trackIds } = await client.favList()
+    saveFavCache(trackIds)
+    const items = []
+    for (const id of trackIds) {
+      const t = await client.get({ id, type: 'track' }).catch(() => null)
+      if (t) items.push(withArt(t))
+    }
+    return { items }
   },
 
   // The shell tells us what network we are on (expo-network). It drives 'auto'

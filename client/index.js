@@ -202,6 +202,11 @@ class PearTuneClient {
   getIdentity () { return this._request('identity.get') }
   setIdentity (params) { return this._request('identity.set', params) }
 
+  // Favorites (host-as-hub, milestone 3). No owner param: the host takes it from the
+  // Noise-authenticated connection, exactly like identity above.
+  favList () { return this._request('fav.list') }
+  favSet (params) { return this._request('fav.set', params) }
+
   art (params) { return this._request('art.get', params, { stream: true }) }
 
   // Resolves to the whole buffer. `onchunk` lets a caller start work before the
