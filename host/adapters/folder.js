@@ -501,6 +501,10 @@ class FolderAdapter {
       }
     }
 
+    // A folder has no server-side playlists (an .m3u reader is a fine idea, and it is
+    // not this), so a playlist lookup is a clean null rather than a track miss.
+    if (type === 'playlist') return null
+
     return this._pub(this.tracks.get(id))
   }
 

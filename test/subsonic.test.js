@@ -151,6 +151,26 @@ test('a missing getPlaylists degrades to an empty list, not a throw', async () =
   assert.deepEqual(page.items, [])
 })
 
+test('get(playlist) resolves the server playlist to OUR track ids, in order', async () => {
+  const a = make()
+  a._call = async (method, params) => {
+    assert.equal(method, 'getPlaylist')
+    assert.equal(params.id, 'pl-1')
+    return { playlist: { id: 'pl-1', name: 'Roadtrip', entry: [{ id: 's2', title: 'B' }, { id: 's1', title: 'A' }] } }
+  }
+  const pl = await a.get({ type: 'playlist', id: 'pl-1' })
+  assert.equal(pl.name, 'Roadtrip')
+  // Order is the server's, and the ids are OURS (source-scoped), so listening state lines up.
+  assert.deepEqual(pl.tracks.map(t => t.title), ['B', 'A'])
+  assert.deepEqual(pl.tracks.map(t => t.id), [trackId(lib, 'subsonic', 's2'), trackId(lib, 'subsonic', 's1')])
+})
+
+test('get(playlist) degrades to null when the server has no playlist support', async () => {
+  const a = make()
+  a._call = async () => { throw new Error('subsonic getPlaylist: not implemented') }
+  assert.equal(await a.get({ type: 'playlist', id: 'pl-x' }), null)
+})
+
 test('a CRITICAL endpoint still throws (a broken source must fail loudly)', async () => {
   const a = make()
   // getAlbumList2 is load-bearing: without it there is no library, so it must NOT be

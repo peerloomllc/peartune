@@ -660,6 +660,27 @@ const methods = {
     return await client.playlistSetTracks({ id, trackIds })
   },
 
+  // The SERVER's own playlists (v2), read-only. These come from Navidrome/Jellyfin via
+  // the normal library.list/get - no host state involved - and the app shows them beside
+  // our host-stored ones and can play them, but not edit them (DECISIONS: no write-back).
+  // A folder source (or an old/limited server) simply returns none.
+  async serverPlaylists () {
+    try {
+      await ensureConnected()
+      const { items } = await client.list({ type: 'playlists' })
+      return { items: items || [] }
+    } catch {
+      return { items: [] }
+    }
+  },
+
+  async serverPlaylistDetail ({ id }) {
+    await ensureConnected()
+    const pl = await client.get({ id, type: 'playlist' })
+    if (!pl) return null
+    return { id: pl.id, name: pl.name, tracks: (pl.tracks || []).map(withArt) }
+  },
+
   // The shell tells us what network we are on (expo-network). It drives 'auto'
   // quality: original on wifi, a capped mp3 on cellular. It does NOT tear down a
   // stream in flight - the change lands on the NEXT track, which is the right grain

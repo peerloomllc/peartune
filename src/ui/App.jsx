@@ -18,7 +18,7 @@ import {
   ArrowCounterClockwise, ArrowClockwise, Heart, CurrencyBtc, ShareNetwork,
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
-  PencilSimple, ArrowUp, ArrowDown
+  PencilSimple, DotsSixVertical
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -93,6 +93,7 @@ export default function App () {
   const [youView, setYouView] = useState('favorites') // the "You" tab's sub-picker: favorites | top | playlists
   const [playlists, setPlaylists] = useState(null) // the Playlists list: [{ id, name, count }]
   const [plSupported, setPlSupported] = useState(true) // false = host too old for playlists
+  const [serverPls, setServerPls] = useState(null) // the source's OWN playlists (read-only, v2)
   const [addingTo, setAddingTo] = useState(null) // an item pending "add to playlist" (the picker)
   const [naming, setNaming] = useState(false) // the "new playlist" name prompt
 
@@ -508,9 +509,21 @@ export default function App () {
     }
   }
 
+  // The source's OWN playlists (read-only). Loaded lazily with the host ones; a folder
+  // source or a server without playlist support just returns [].
+  async function loadServerPlaylists (force) {
+    if (serverPls && !force) return
+    try {
+      const r = await call('serverPlaylists')
+      setServerPls(r.items || [])
+    } catch {
+      setServerPls(s => s || [])
+    }
+  }
+
   async function showPlaylists (force) {
     setYouView('playlists')
-    await loadPlaylists(force)
+    await Promise.all([loadPlaylists(force), loadServerPlaylists(force)])
   }
 
   // Create, then open the new playlist so the obvious next act - adding tracks - is
@@ -853,15 +866,25 @@ export default function App () {
       />
     )
   } else if (top?.type === 'playlist') {
-    screen = (
-      <PlaylistScreen
-        id={top.id} name={top.name} now={now} onBack={pop}
-        onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
-        onRename={renamePlaylist}
-        onSetTracks={(pid, trackIds) => call('setPlaylistTracks', { id: pid, trackIds }).then(() => loadPlaylists(true))}
-        onDelete={() => confirmDeletePlaylist(top.id, top.name)}
-      />
-    )
+    // Two kinds share this screen: our own (editable) and the server's (read-only).
+    // The `server` flag flips which worklet method fetches it and hides the edit tools.
+    screen = top.server
+      ? (
+        <PlaylistScreen
+          key={'srv:' + top.id} id={top.id} name={top.name} now={now} onBack={pop}
+          server sourceName={sourceText(state)}
+          onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
+        />
+        )
+      : (
+        <PlaylistScreen
+          key={top.id} id={top.id} name={top.name} now={now} onBack={pop}
+          onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
+          onRename={renamePlaylist}
+          onSetTracks={(pid, trackIds) => call('setPlaylistTracks', { id: pid, trackIds }).then(() => loadPlaylists(true))}
+          onDelete={() => confirmDeletePlaylist(top.id, top.name)}
+        />
+        )
   } else if (tab === 'you') {
     screen = (
       <You
@@ -870,7 +893,9 @@ export default function App () {
         favSupported={favSupported} favItems={favItems} mostPlayed={mostPlayed}
         favs={favs} onFav={favSupported ? onFav : null}
         playlists={playlists} plSupported={plSupported}
+        serverPls={serverPls} sourceName={sourceText(state)}
         onOpenPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name })}
+        onOpenServerPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name, server: true })}
         onNewPlaylist={promptNewPlaylist}
         onPlay={playFrom} onLong={setMenu}
         onOpenAlbum={(id) => push({ type: 'album', id })}
@@ -1528,7 +1553,8 @@ function FavEmpty () {
 function You ({
   state, density, now, youView, onYouView,
   favSupported, favItems, mostPlayed, favs, onFav,
-  playlists, plSupported, onOpenPlaylist, onNewPlaylist,
+  playlists, plSupported, serverPls, sourceName,
+  onOpenPlaylist, onOpenServerPlaylist, onNewPlaylist,
   onPlay, onLong, onOpenAlbum, onOpenArtist
 }) {
   const D = densityOf(density)
@@ -1541,7 +1567,7 @@ function You ({
     <div className='app'>
       <header>
         <h1>You</h1>
-        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists })}</p>
+        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists, serverPls })}</p>
       </header>
 
       <div className='sticky'>
@@ -1566,7 +1592,10 @@ function You ({
               />
             : <SkeletonRows />)
         : view === 'playlists'
-          ? <PlaylistsView playlists={playlists} onOpen={onOpenPlaylist} onNew={onNewPlaylist} />
+          ? <PlaylistsView
+              playlists={playlists} serverPls={serverPls} sourceName={sourceName}
+              onOpen={onOpenPlaylist} onOpenServer={onOpenServerPlaylist} onNew={onNewPlaylist}
+            />
           : (mostPlayed
               ? (mostPlayed.items.length
                   ? (
@@ -1586,53 +1615,85 @@ function You ({
   )
 }
 
-function youCount (view, { favItems, mostPlayed, playlists }) {
+function youCount (view, { favItems, mostPlayed, playlists, serverPls }) {
   if (view === 'top') return mostPlayed ? `${mostPlayed.items.length} most played` : 'Loading…'
   if (view === 'playlists') {
     if (!playlists) return 'Loading playlists…'
-    return `${playlists.length} playlist${playlists.length === 1 ? '' : 's'}`
+    const n = playlists.length + (serverPls?.length || 0)
+    return `${n} playlist${n === 1 ? '' : 's'}`
   }
   if (!favItems) return 'Loading favorites…'
   const n = favItems.tracks.length + favItems.albums.length + favItems.artists.length
   return `${n} favorite${n === 1 ? '' : 's'}`
 }
 
-// The Playlists list: a "New playlist" button, then a row per playlist (name + count).
-// Tapping a row opens its detail screen. Empty and loading states are their own thing so
-// "no playlists yet" reads as an invitation, not a blank.
-function PlaylistsView ({ playlists, onOpen, onNew }) {
+// The Playlists list: a "New playlist" button, then OUR playlists, then (v2) the
+// source's OWN playlists in a read-only "From <server>" section. Tapping a row opens its
+// detail. When there is nothing at all, one invitation rather than an empty grid.
+function PlaylistsView ({ playlists, serverPls, sourceName, onOpen, onOpenServer, onNew }) {
   if (!playlists) return <SkeletonRows />
+  const mine = playlists
+  const theirs = serverPls || []
+  const nothingAtAll = mine.length === 0 && theirs.length === 0
+  // A header over OUR list only earns its keep once the server section is also there to
+  // be told apart from; with just our own, the "New playlist" button already frames it.
+  const showMineHeader = mine.length > 0 && theirs.length > 0
   return (
     <div className='plview'>
       <button className='wide newpl' onClick={onNew}>
         <Plus size={18} weight='bold' /> New playlist
       </button>
-      {playlists.length === 0
-        ? (
-          <div className='blank'>
-            <PlaylistIcon size={40} weight='thin' />
-            <h2>No playlists yet</h2>
-            <p className='muted sm'>
-              Make one, then add tracks, albums or artists to it from their ⋯ menu. Your
-              playlists live on your server, so they follow you to your other devices.
-            </p>
-          </div>
-          )
-        : (
-          <ul className='pllist'>
-            {playlists.map(pl => (
-              <li key={pl.id} onClick={() => onOpen(pl)}>
-                <span className='plicon'><PlaylistIcon size={22} weight='regular' /></span>
-                <div className='meta'>
-                  <div className='t'>{pl.name}</div>
-                  <div className='muted sm sub'>{pl.count} track{pl.count === 1 ? '' : 's'}</div>
-                </div>
-                <CaretRight size={18} className='muted' />
-              </li>
-            ))}
-          </ul>
-          )}
+
+      {nothingAtAll && (
+        <div className='blank'>
+          <PlaylistIcon size={40} weight='thin' />
+          <h2>No playlists yet</h2>
+          <p className='muted sm'>
+            Make one, then add tracks, albums or artists to it from their ⋯ menu. Your
+            playlists live on your server, so they follow you to your other devices.
+          </p>
+        </div>
+      )}
+
+      {mine.length > 0 && (
+        <>
+          {showMineHeader && <h3 className='favh'>Your playlists</h3>}
+          <PlaylistRows items={mine} onOpen={onOpen} />
+        </>
+      )}
+
+      {theirs.length > 0 && (
+        <section className='plserver'>
+          <h3 className='favh'>{sourceName ? `From ${sourceName}` : 'From your server'}</h3>
+          <PlaylistRows items={theirs} onOpen={onOpenServer} server />
+        </section>
+      )}
     </div>
+  )
+}
+
+// The shared row list for both our playlists and the server's. Server rows carry a
+// count only when the source reports one (songCount), and a subtly different icon so
+// "yours vs the server's" reads at a glance.
+function PlaylistRows ({ items, onOpen, server }) {
+  return (
+    <ul className='pllist'>
+      {items.map(pl => {
+        const n = server ? pl.songCount : pl.count
+        return (
+          <li key={pl.id} onClick={() => onOpen(pl)}>
+            <span className='plicon'>
+              <PlaylistIcon size={22} weight={server ? 'thin' : 'regular'} />
+            </span>
+            <div className='meta'>
+              <div className='t'>{pl.name}</div>
+              {n != null && <div className='muted sm sub'>{n} track{n === 1 ? '' : 's'}</div>}
+            </div>
+            <CaretRight size={18} className='muted' />
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 
@@ -2139,20 +2200,24 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
 // Every edit works on the RAW id list (pl.trackIds) via each resolved track's raw index
 // `_i` - see the worklet's playlistDetail - so a track that failed to resolve this
 // session is never dropped by reordering or by a neighbour's removal.
-function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onRename, onDelete, onSetTracks }) {
+function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onRename, onDelete, onSetTracks, server, sourceName }) {
   const [pl, setPl] = useState(null)
   const [err, setErr] = useState(null)
   const [editing, setEditing] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [nm, setNm] = useState('')
+  const [drag, setDrag] = useState(null) // { from, to } while a row is being dragged
+  const rowH = useRef(64)
 
   useEffect(() => {
     let live = true
-    call('playlistDetail', { id })
+    // The server's own playlists are read-only and fetched differently; ours carry the
+    // raw id list needed to edit.
+    call(server ? 'serverPlaylistDetail' : 'playlistDetail', { id })
       .then(p => { if (live) setPl(p) })
       .catch(e => { if (live) setErr(e.message) })
     return () => { live = false }
-  }, [id])
+  }, [id, server])
 
   const title = pl?.name ?? name ?? 'Playlist'
   const tracks = pl?.tracks || []
@@ -2167,17 +2232,50 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
     const nextTracks = tracks.filter((_, k) => k !== i).map(x => ({ ...x, _i: x._i > t._i ? x._i - 1 : x._i }))
     haptic('light'); commit(rawIds, nextTracks)
   }
-  const move = (i, dir) => {
-    const j = i + dir
-    if (j < 0 || j >= tracks.length) return
-    const a = tracks[i]; const b = tracks[j]
+
+  // Move the resolved track at display index `from` to `to`. The resolved tracks own a
+  // set of raw slots (their `_i`); reordering re-assigns their ids across those SAME
+  // slots in the new order, so any unresolved id keeps its absolute position. This is
+  // the general form of the old up/down swap, now driven by the drag.
+  const reorderTo = (from, to) => {
+    if (from === to || from == null || to == null) return
+    const slots = tracks.map(t => t._i)
+    const next = tracks.slice()
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
     const rawIds = pl.trackIds.slice()
-    const tmp = rawIds[a._i]; rawIds[a._i] = rawIds[b._i]; rawIds[b._i] = tmp
-    const nextTracks = tracks.slice()
-    nextTracks[i] = { ...b, _i: a._i }
-    nextTracks[j] = { ...a, _i: b._i }
-    haptic('light'); commit(rawIds, nextTracks)
+    const nextTracks = next.map((t, k) => {
+      rawIds[slots[k]] = t.id
+      return { ...t, _i: slots[k] }
+    })
+    commit(rawIds, nextTracks)
   }
+
+  // Drag reorder. The grip captures the pointer (touch-action:none in CSS keeps the
+  // page from scrolling under the finger); as the finger crosses row midpoints the list
+  // reshuffles live, and the reorder is persisted once on release.
+  const dragStart = (i) => (e) => {
+    const li = e.currentTarget.closest('li')
+    if (li) rowH.current = li.offsetHeight || rowH.current
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+    haptic('light')
+    setDrag({ from: i, to: i, y: e.clientY })
+  }
+  const dragMove = (e) => {
+    if (!drag) return
+    const shift = Math.round((e.clientY - drag.y) / rowH.current)
+    const to = Math.max(0, Math.min(tracks.length - 1, drag.from + shift))
+    if (to !== drag.to) { haptic('light'); setDrag(d => ({ ...d, to })) }
+  }
+  const dragEnd = () => {
+    if (drag) reorderTo(drag.from, drag.to)
+    setDrag(null)
+  }
+  // The list as it looks mid-drag: the dragged row pulled out and reinserted at `to`.
+  const viewTracks = drag ? (() => {
+    const v = tracks.slice(); const [m] = v.splice(drag.from, 1); v.splice(drag.to, 0, m); return v
+  })() : tracks
+  const dragId = drag ? tracks[drag.from]?._i : null
 
   const saveName = () => {
     const n = nm.trim()
@@ -2207,7 +2305,10 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
           : (
             <>
               <h1>{title}</h1>
-              <p className='muted sm'>{tracks.length} track{tracks.length === 1 ? '' : 's'}</p>
+              <p className='muted sm'>
+                {tracks.length} track{tracks.length === 1 ? '' : 's'}
+                {server && sourceName ? ` · on ${sourceName}` : ''}
+              </p>
             </>
             )}
       </div>
@@ -2220,7 +2321,7 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
         />
       )}
 
-      {pl && (
+      {pl && !server && (
         <div className='pltools'>
           <button className={editing ? 'on' : ''} onClick={() => { haptic('light'); setEditing(e => !e) }}>
             <PencilSimple size={16} weight='bold' /> {editing ? 'Done' : 'Edit'}
@@ -2244,39 +2345,43 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
             <PlaylistIcon size={40} weight='thin' />
             <h2>This playlist is empty</h2>
             <p className='muted sm'>
-              Add tracks, albums or artists to it from their ⋯ menu anywhere in the app.
+              {server
+                ? 'This playlist has no tracks we can play from this source.'
+                : 'Add tracks, albums or artists to it from their ⋯ menu anywhere in the app.'}
             </p>
           </div>
           )
         : editing
           ? (
             <ul className='tracks editing'>
-              {tracks.map((t, i) => (
-                <li key={t._i} className='editrow'>
+              {viewTracks.map((t, i) => (
+                <li key={t._i} className={'editrow' + (t._i === dragId ? ' dragging' : '')}>
+                  <button
+                    className='grip' aria-label='Drag to reorder'
+                    onPointerDown={dragStart(i)} onPointerMove={dragMove}
+                    onPointerUp={dragEnd} onPointerCancel={dragEnd}
+                  >
+                    <DotsSixVertical size={20} weight='bold' />
+                  </button>
                   <div className='meta'>
                     <div className='t'>{t.title}</div>
                     <div className='muted sm sub'>{[t.artist, t.album].filter(Boolean).join(' · ')}</div>
                   </div>
-                  <div className='moves'>
-                    <button aria-label='Move up' disabled={i === 0} onClick={() => move(i, -1)}>
-                      <ArrowUp size={17} weight='bold' />
-                    </button>
-                    <button aria-label='Move down' disabled={i === tracks.length - 1} onClick={() => move(i, 1)}>
-                      <ArrowDown size={17} weight='bold' />
-                    </button>
-                    <button className='rm' aria-label='Remove from playlist' onClick={() => removeAt(i)}>
-                      <X size={17} weight='bold' />
-                    </button>
-                  </div>
+                  <button
+                    className='rm' aria-label='Remove from playlist'
+                    onClick={() => removeAt(tracks.indexOf(t))}
+                  >
+                    <X size={17} weight='bold' />
+                  </button>
                 </li>
               ))}
             </ul>
             )
           : (
             <ul className='tracks'>
-              {tracks.map(t => (
+              {tracks.map((t, i) => (
                 <Row
-                  key={t._i} t={t} on={now?.trackId === t.id}
+                  key={t._i ?? i} t={t} on={now?.trackId === t.id}
                   onPlay={() => onPlay(tracks, t)} art
                 />
               ))}

@@ -384,25 +384,33 @@ ul.pllist li .sub {
 ul.tracks.editing li.editrow {
   gap: .5rem;
 }
-.editrow .moves {
+.editrow .grip {
   flex: none;
+  background: none;
+  border: 0;
+  padding: .5rem .3rem;
+  margin-left: -.3rem;
+  color: var(--color-text-muted);
   display: inline-flex;
-  align-items: center;
-  gap: .1rem;
+  line-height: 0;
+  cursor: grab;
+  touch-action: none;
 }
-.editrow .moves button {
+.editrow .rm {
+  flex: none;
   background: none;
   border: 0;
   padding: .4rem;
-  color: var(--color-text-secondary);
+  color: var(--color-error);
   display: inline-flex;
   line-height: 0;
 }
-.editrow .moves button:disabled {
-  opacity: .3;
-}
-.editrow .moves button.rm {
-  color: var(--color-error);
+.editrow.dragging {
+  background: var(--color-surface-card);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+  position: relative;
+  z-index: 2;
 }
 .sheet .acts button.plpick {
   justify-content: space-between;

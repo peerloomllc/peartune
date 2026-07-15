@@ -178,15 +178,24 @@ ul.pllist li .sub { margin-top: .15rem; }
 .pltools button.on { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-text-on-primary); }
 .pltools button.danger.ghost { background: transparent; color: var(--color-error); }
 
-/* Reorder / remove rows, shown only in Edit mode. */
+/* Reorder (drag the grip) / remove rows, shown only in Edit mode. */
 ul.tracks.editing li.editrow { gap: .5rem; }
-.editrow .moves { flex: none; display: inline-flex; align-items: center; gap: .1rem; }
-.editrow .moves button {
-  background: none; border: 0; padding: .4rem; color: var(--color-text-secondary);
+.editrow .grip {
+  flex: none; background: none; border: 0; padding: .5rem .3rem; margin-left: -.3rem;
+  color: var(--color-text-muted); display: inline-flex; line-height: 0;
+  cursor: grab;
+  /* Critical: the grip owns the gesture, so the page does not scroll under a drag. */
+  touch-action: none;
+}
+.editrow .rm {
+  flex: none; background: none; border: 0; padding: .4rem; color: var(--color-error);
   display: inline-flex; line-height: 0;
 }
-.editrow .moves button:disabled { opacity: .3; }
-.editrow .moves button.rm { color: var(--color-error); }
+/* The lifted row while dragging. */
+.editrow.dragging {
+  background: var(--color-surface-card); border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .35); position: relative; z-index: 2;
+}
 
 /* A picked-playlist row in the add-to-playlist sheet: name left, count right. */
 .sheet .acts button.plpick { justify-content: space-between; }
