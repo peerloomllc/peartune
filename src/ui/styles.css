@@ -107,6 +107,22 @@ ul.tracks li .favbtn {
 ul.tracks li .favbtn.on { opacity: 1; color: var(--color-primary); }
 ul.tracks li .favbtn:active { transform: scale(.85); }
 
+/* --- favorites: header heart + grouped view -------------------------------- */
+.headmeta { min-width: 0; }
+.favhead {
+  display: inline-flex; align-items: center; gap: .4rem; margin-top: .7rem;
+  padding: .35rem .85rem; border-radius: 9999px; font: inherit; font-size: .85rem;
+  border: 1px solid var(--color-divider); background: none; color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.favhead.on { color: var(--color-primary); border-color: var(--color-primary); }
+.favhead:active { transform: scale(.96); }
+.favview section { margin-bottom: 1.6rem; }
+.favh {
+  font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
+  color: var(--color-text-muted); margin: 0 0 .7rem;
+}
+
 .scanner { position: relative; min-height: 100vh; background: #000; }
 .scanner video { width: 100%; height: 100vh; object-fit: cover; }
 .overlay {
@@ -129,7 +145,17 @@ input.search { margin-top: .8rem; }
   display: grid; grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
   gap: 1rem .9rem; margin-top: .5rem;
 }
-.album { min-width: 0; }
+.album { min-width: 0; position: relative; }
+/* the favorite heart floats over the cover corner; a scrim keeps it readable on any art */
+.tileheart {
+  position: absolute; top: .45rem; right: .45rem; z-index: 2; line-height: 0;
+  display: inline-flex; padding: .32rem; border: 0; border-radius: 9999px; cursor: pointer;
+  background: rgba(0, 0, 0, .5); color: #fff;
+}
+.tileheart.on { color: var(--color-primary); }
+.tileheart:active { transform: scale(.85); }
+.grid.aslist .tileheart { top: 50%; transform: translateY(-50%); background: none; color: var(--color-text-muted); }
+.grid.aslist .tileheart.on { color: var(--color-primary); }
 .album .t {
   margin-top: .45rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

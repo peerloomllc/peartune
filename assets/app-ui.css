@@ -218,6 +218,41 @@ ul.tracks li .favbtn.on {
 ul.tracks li .favbtn:active {
   transform: scale(.85);
 }
+.headmeta {
+  min-width: 0;
+}
+.favhead {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  margin-top: .7rem;
+  padding: .35rem .85rem;
+  border-radius: 9999px;
+  font: inherit;
+  font-size: .85rem;
+  border: 1px solid var(--color-divider);
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.favhead.on {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.favhead:active {
+  transform: scale(.96);
+}
+.favview section {
+  margin-bottom: 1.6rem;
+}
+.favh {
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin: 0 0 .7rem;
+}
 .scanner {
   position: relative;
   min-height: 100vh;
@@ -260,6 +295,36 @@ input.search {
 }
 .album {
   min-width: 0;
+  position: relative;
+}
+.tileheart {
+  position: absolute;
+  top: .45rem;
+  right: .45rem;
+  z-index: 2;
+  line-height: 0;
+  display: inline-flex;
+  padding: .32rem;
+  border: 0;
+  border-radius: 9999px;
+  cursor: pointer;
+  background: rgba(0, 0, 0, .5);
+  color: #fff;
+}
+.tileheart.on {
+  color: var(--color-primary);
+}
+.tileheart:active {
+  transform: scale(.85);
+}
+.grid.aslist .tileheart {
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  color: var(--color-text-muted);
+}
+.grid.aslist .tileheart.on {
+  color: var(--color-primary);
 }
 .album .t {
   margin-top: .45rem;

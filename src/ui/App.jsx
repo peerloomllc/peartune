@@ -83,9 +83,10 @@ export default function App () {
   const [shuffle, setShuffle] = useState(false)
   const [repeat, setRepeat] = useState(0) // 0 off, 1 one, 2 all
   const [themePref, setThemePref] = useState(() => loadThemePref())
-  const [favs, setFavs] = useState(() => new Set()) // favorited trackIds
+  // Favorited ids, grouped by kind (track / album / artist). Sets for O(1) heart checks.
+  const [favs, setFavs] = useState(() => ({ track: new Set(), album: new Set(), artist: new Set() }))
   const [favSupported, setFavSupported] = useState(true) // false = host too old
-  const [favTracks, setFavTracks] = useState(null) // the Favorites view list
+  const [favItems, setFavItems] = useState(null) // the Favorites view, resolved + grouped
 
   useEffect(() => {
     call('init')
@@ -346,8 +347,8 @@ export default function App () {
   // rather than show a control that does nothing.
   async function loadFavs () {
     try {
-      const r = await call('favorites')
-      setFavs(new Set(r.trackIds || []))
+      const r = await call('favorites') // { track, album, artist, supported }
+      setFavs({ track: new Set(r.track || []), album: new Set(r.album || []), artist: new Set(r.artist || []) })
       setFavSupported(r.supported !== false)
     } catch {
       // Keep whatever we have (offline, transient) - the worklet already falls back to
@@ -355,45 +356,49 @@ export default function App () {
     }
   }
 
-  // Optimistic toggle: flip the heart at once, then tell the host, and revert if it
-  // refuses. Favoriting needs a connection in Phase 1.
-  async function onFav (t) {
-    const id = t.id
-    const on = !favs.has(id)
+  // Optimistic toggle of a favorite of any KIND (track / album / artist). Flip the heart
+  // at once, tell the host, revert if it refuses. Favoriting needs a connection (Phase 1).
+  async function onFav (kind, item) {
+    const id = item.id
+    const on = !favs[kind].has(id)
     setFavs(prev => {
-      const next = new Set(prev)
-      if (on) next.add(id); else next.delete(id)
-      return next
+      const set = new Set(prev[kind])
+      if (on) set.add(id); else set.delete(id)
+      return { ...prev, [kind]: set }
     })
     haptic('light')
     try {
-      await call('toggleFav', { trackId: id, on })
-      // Keep the Favorites VIEW in sync. Removing filters the row out instantly;
-      // ADDING must invalidate the cached list so it re-resolves the new track on the
-      // next open (an empty [] is truthy, so without this the view would stay stale).
-      if (!on) setFavTracks(list => (list ? list.filter(x => x.id !== id) : list))
-      else setFavTracks(null)
+      await call('toggleFav', { kind, id, on })
+      // Keep the Favorites VIEW in sync. ADDING invalidates the resolved list so it
+      // re-fetches on the next open (an empty group is still truthy). REMOVING filters
+      // the row out of its group instantly.
+      if (on) setFavItems(null)
+      else {
+        const key = kind === 'track' ? 'tracks' : kind === 'album' ? 'albums' : 'artists'
+        setFavItems(prev => (prev ? { ...prev, [key]: prev[key].filter(x => x.id !== id) } : prev))
+      }
     } catch (e) {
       setFavs(prev => {
-        const next = new Set(prev)
-        if (on) next.delete(id); else next.add(id)
-        return next
+        const set = new Set(prev[kind])
+        if (on) set.delete(id); else set.add(id)
+        return { ...prev, [kind]: set }
       })
       setNote(favSupported ? 'Could not update favorite' : 'Favorites need a server update')
     }
   }
 
-  // The Favorites VIEW resolves the favorited ids to playable tracks on the host.
+  // The Favorites VIEW resolves the favorited ids to renderable objects, grouped
+  // { tracks, albums, artists }.
   async function showFavorites (force) {
     setBrowse('favorites')
-    if (favTracks && !force) return
-    setFavTracks(null)
+    if (favItems && !force) return
+    setFavItems(null)
     try {
-      const r = await call('favoriteTracks')
-      setFavTracks(r.items || [])
+      const r = await call('favoriteItems')
+      setFavItems({ tracks: r.tracks || [], albums: r.albums || [], artists: r.artists || [] })
     } catch (e) {
       setError(e.message)
-      setFavTracks([])
+      setFavItems({ tracks: [], albums: [], artists: [] })
     }
   }
 
@@ -640,6 +645,7 @@ export default function App () {
         onBack={pop} onViewArt={viewArt} onLong={setMenu}
         onArtistAction={(artistId, action) => menuAction({ type: 'artist', id: artistId }, action)}
         onOpenAlbum={(id) => push({ type: 'album', id })}
+        favs={favs} onFav={favSupported ? onFav : null}
       />
     )
   } else if (tab === 'queue') {
@@ -668,7 +674,7 @@ export default function App () {
         browse={browse} query={query} results={results} now={now} error={error}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
         favs={favs} onFav={favSupported ? onFav : null}
-        favSupported={favSupported} favTracks={favTracks}
+        favSupported={favSupported} favItems={favItems}
         onBrowse={(b) => {
           haptic('light')
           if (b === 'artists') return showArtists()
@@ -944,10 +950,12 @@ function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) 
 function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
-  favs, onFav, favSupported, favTracks,
+  favs, onFav, favSupported, favItems,
   onBrowse, onDensity, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
+  // Bind the generic onFav(kind, item) to per-kind heart handlers for the leaves.
+  const favTrack = onFav ? (t => onFav('track', t)) : null
   const searching = results && query.trim()
   const D = densityOf(density)
   // The worklet hands us the base URL rather than finished art URLs, because only
@@ -1057,7 +1065,7 @@ function Library ({
       <header>
         <h1>{state.host.libraryName || 'Library'}</h1>
         <p className='muted sm'>
-          {count(browse, { albums, artists, songs, favTracks })}
+          {count(browse, { albums, artists, songs, favItems })}
           {sourceText(state) && <> · {sourceText(state)}</>}
         </p>
       </header>
@@ -1101,7 +1109,7 @@ function Library ({
       {searching
         ? (
           <SearchResults
-            results={results} now={now} d={D} artBase={artBase}
+            results={results} now={now} d={D} artBase={artBase} favs={favs} onFav={onFav}
             onOpenAlbum={onOpenAlbum} onOpenArtist={onOpenArtist} onPlay={onPlay} onLong={onLong}
           />
           )
@@ -1115,7 +1123,7 @@ function Library ({
                           <Row
                             key={t.id} t={t} on={now?.trackId === t.id}
                             onPlay={() => onPlay(songs, t)} onLong={onLong} art
-                            fav={favs.has(t.id)} onFav={onFav}
+                            fav={favs.track.has(t.id)} onFav={favTrack}
                           />
                         ))}
                       </ul>
@@ -1127,31 +1135,22 @@ function Library ({
                   : <Empty />)
               : <SkeletonRows />)
           : browse === 'favorites'
-            ? (favTracks
-                ? (favTracks.length
-                    ? (
-                      <ul className='tracks'>
-                        {favTracks.map(t => (
-                          <Row
-                            key={t.id} t={t} on={now?.trackId === t.id}
-                            onPlay={() => onPlay(favTracks, t)} onLong={onLong} art
-                            fav={favs.has(t.id)} onFav={onFav}
-                          />
-                        ))}
-                      </ul>
-                      )
-                    : <FavEmpty />)
+            ? (favItems
+                ? <FavoritesView
+                    favItems={favItems} favs={favs} onFav={onFav} now={now} d={D} artBase={artBase}
+                    onPlay={onPlay} onLong={onLong} onOpenAlbum={onOpenAlbum} onOpenArtist={onOpenArtist}
+                  />
                 : <SkeletonRows />)
           : browse === 'artists'
             ? (artists
-                ? <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={D} />
+                ? <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={D} favs={favs} onFav={onFav} />
                 : <SkeletonGrid round d={D} />)
             : !albumsLoaded
                 ? <SkeletonGrid d={D} />
                 : albums.length
                   ? (
                     <>
-                      <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} />
+                      <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} favs={favs} onFav={onFav} />
                       {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
                     </>
                     )
@@ -1178,10 +1177,64 @@ function FavEmpty () {
       <Heart size={40} weight='thin' />
       <h2>No favorites yet</h2>
       <p className='muted sm'>
-        Tap the heart on any track to save it here. Your favorites live on your server,
-        so they follow you to your other devices.
+        Tap the heart on any track, album or artist to save it here. Your favorites live
+        on your server, so they follow you to your other devices.
       </p>
     </div>
+  )
+}
+
+// The Favorites view: favorited artists, albums and songs, each in its own section
+// (only the non-empty ones show). Reuses the same grids and rows as the rest of the
+// library; songs carry a heart to un-favorite inline.
+function FavoritesView ({ favItems, favs, onFav, now, d, artBase, onPlay, onLong, onOpenAlbum, onOpenArtist }) {
+  const { tracks, albums, artists } = favItems
+  if (!tracks.length && !albums.length && !artists.length) return <FavEmpty />
+  const favTrack = onFav ? (t => onFav('track', t)) : null
+  return (
+    <div className='favview'>
+      {artists.length > 0 && (
+        <section>
+          <h3 className='favh'>Artists</h3>
+          <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={d} favs={favs} onFav={onFav} />
+        </section>
+      )}
+      {albums.length > 0 && (
+        <section>
+          <h3 className='favh'>Albums</h3>
+          <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={d} artBase={artBase} favs={favs} onFav={onFav} />
+        </section>
+      )}
+      {tracks.length > 0 && (
+        <section>
+          <h3 className='favh'>Songs</h3>
+          <ul className='tracks'>
+            {tracks.map(t => (
+              <Row
+                key={t.id} t={t} on={now?.trackId === t.id}
+                onPlay={() => onPlay(tracks, t)} onLong={onLong} art
+                fav={favs.track.has(t.id)} onFav={favTrack}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  )
+}
+
+// A labelled heart for a detail header (album / artist). Bigger and clearer than the
+// row heart because it is the primary action on that screen.
+function FavHeart ({ on, onToggle, label }) {
+  return (
+    <button
+      className={'favhead' + (on ? ' on' : '')}
+      aria-label={on ? `Remove ${label} from favorites` : `Add ${label} to favorites`}
+      onClick={onToggle}
+    >
+      <Heart size={20} weight={on ? 'fill' : 'regular'} />
+      <span>{on ? 'Favorited' : 'Favorite'}</span>
+    </button>
   )
 }
 
@@ -1222,13 +1275,17 @@ function pairError (msg = '') {
   return 'Pairing failed. Show a fresh code on your server and try again.'
 }
 
-function count (browse, { albums, artists, songs, favTracks }) {
+function count (browse, { albums, artists, songs, favItems }) {
   if (browse === 'artists') return `${artists ? artists.length : 0} artists`
   // "60 albums" is the whole truth; "100 songs" is not - it is the first page of a
   // list we are still walking. Say so rather than lying about the size of someone's
   // library.
   if (browse === 'songs') return songs ? `${songs.length} songs loaded` : 'Loading songs…'
-  if (browse === 'favorites') return favTracks ? `${favTracks.length} favorite${favTracks.length === 1 ? '' : 's'}` : 'Loading favorites…'
+  if (browse === 'favorites') {
+    if (!favItems) return 'Loading favorites…'
+    const n = favItems.tracks.length + favItems.albums.length + favItems.artists.length
+    return `${n} favorite${n === 1 ? '' : 's'}`
+  }
   return `${albums.length} albums`
 }
 
@@ -1278,7 +1335,7 @@ function SkeletonRows ({ n = 8 }) {
 //
 // A group with a handful of hits opens itself: making someone tap to reveal two
 // results is a worse tax than the scrolling was.
-function SearchResults ({ results, now, d, artBase, onOpenAlbum, onOpenArtist, onPlay, onLong }) {
+function SearchResults ({ results, now, d, artBase, favs, onFav, onOpenAlbum, onOpenArtist, onPlay, onLong }) {
   const groups = [
     { key: 'artists', label: 'Artists', items: results.artists || [] },
     { key: 'albums', label: 'Albums', items: results.albums || [] },
@@ -1313,10 +1370,10 @@ function SearchResults ({ results, now, d, artBase, onOpenAlbum, onOpenArtist, o
             {isOpen && (
               <div className='sbody'>
                 {g.key === 'artists' && (
-                  <ArtistGrid artists={g.items} onOpen={onOpenArtist} onLong={onLong} d={d} />
+                  <ArtistGrid artists={g.items} onOpen={onOpenArtist} onLong={onLong} d={d} favs={favs} onFav={onFav} />
                 )}
                 {g.key === 'albums' && (
-                  <Grid albums={g.items} onOpen={onOpenAlbum} onLong={onLong} d={d} artBase={artBase} />
+                  <Grid albums={g.items} onOpen={onOpenAlbum} onLong={onLong} d={d} artBase={artBase} favs={favs} onFav={onFav} />
                 )}
                 {g.key === 'tracks' && (
                   <ul className='tracks'>
@@ -1324,6 +1381,7 @@ function SearchResults ({ results, now, d, artBase, onOpenAlbum, onOpenArtist, o
                       <Row
                         key={t.id} t={t} on={now?.trackId === t.id}
                         onPlay={() => onPlay(g.items, t)} onLong={onLong} art
+                        fav={favs?.track?.has(t.id)} onFav={onFav ? (x => onFav('track', x)) : null}
                       />
                     ))}
                   </ul>
@@ -1337,7 +1395,7 @@ function SearchResults ({ results, now, d, artBase, onOpenAlbum, onOpenArtist, o
   )
 }
 
-function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase }) {
+function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase, favs, onFav }) {
   if (!albums.length) return null
   const list = d.cols === 1
   return (
@@ -1347,6 +1405,8 @@ function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase }) {
           key={a.id} className='album'
           onPress={() => onOpen(a.id)}
           onLongPress={onLong && (() => onLong({ type: 'album', id: a.id, name: a.name }))}
+          fav={favs?.album?.has(a.id)}
+          onFav={onFav ? (() => onFav('album', a)) : null}
         >
           <Cover src={artFor(a, d, artBase)} />
           <div className='meta'>
@@ -1359,10 +1419,26 @@ function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase }) {
   )
 }
 
-// One element, two gestures: tap opens it, a long press offers to play it.
-function Tile ({ className, onPress, onLongPress, children }) {
+// One element, two gestures: tap opens it, a long press offers to play it. When onFav
+// is given it also carries a heart in the corner that must NOT trigger the tile's own
+// press (stop it at pointerdown, which is what usePress listens on).
+function Tile ({ className, onPress, onLongPress, children, fav, onFav }) {
   const press = usePress(onPress, onLongPress)
-  return <div className={className} {...press}>{children}</div>
+  return (
+    <div className={className} {...press}>
+      {children}
+      {onFav && (
+        <button
+          className={'tileheart' + (fav ? ' on' : '')}
+          aria-label={fav ? 'Remove from favorites' : 'Add to favorites'}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onFav() }}
+        >
+          <Heart size={17} weight={fav ? 'fill' : 'regular'} />
+        </button>
+      )}
+    </div>
+  )
 }
 
 // The art URL is built HERE because the size depends on the density, and asking
@@ -1373,7 +1449,7 @@ function artFor (x, d, artBase) {
   return `${artBase}${encodeURIComponent(x.coverId)}?s=${d.art}`
 }
 
-function ArtistGrid ({ artists, onOpen, onLong, d = DENSITY[2], empty = <p className='muted center-p'>No artists.</p> }) {
+function ArtistGrid ({ artists, onOpen, onLong, d = DENSITY[2], favs, onFav, empty = <p className='muted center-p'>No artists.</p> }) {
   if (!artists.length) return empty
   const list = d.cols === 1
   return (
@@ -1383,6 +1459,8 @@ function ArtistGrid ({ artists, onOpen, onLong, d = DENSITY[2], empty = <p class
           key={a.id} className='album artist'
           onPress={() => onOpen(a)}
           onLongPress={onLong && (() => onLong({ type: 'artist', id: a.id, name: a.name }))}
+          fav={favs?.artist?.has(a.id)}
+          onFav={onFav ? (() => onFav('artist', a)) : null}
         >
           <Cover src={a.art} artist />
           <div className='meta'>
@@ -1467,9 +1545,10 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
         <div className='tapart' onClick={() => onViewArt(album.artFull || album.art, album.name)}>
           <Cover src={album.art} big />
         </div>
-        <div>
+        <div className='headmeta'>
           <h1>{album.name}</h1>
           <p className='muted sm'>{[album.artist, album.year].filter(Boolean).join(' · ')}</p>
+          {onFav && <FavHeart on={favs?.album?.has(album.id)} onToggle={() => onFav('album', album)} label='album' />}
         </div>
       </div>
 
@@ -1483,7 +1562,7 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
         {tracks.map(t => (
           <Row
             key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo
-            fav={favs ? favs.has(t.id) : false} onFav={onFav}
+            fav={favs?.track?.has(t.id)} onFav={onFav ? (x => onFav('track', x)) : null}
           />
         ))}
       </ul>
@@ -1511,7 +1590,7 @@ function Actions ({ onPlay, onShuffle, onQueue }) {
 
 // An artist IS its albums (one getArtist call on the host), so this is the album
 // grid again rather than a new kind of screen.
-function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, onLong, onArtistAction }) {
+function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, onLong, onArtistAction, favs, onFav }) {
   const [artist, setArtist] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -1538,7 +1617,7 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
         <div className='tapart' onClick={() => onViewArt(artist?.artFull || artist?.art, artist?.name)}>
           <Cover src={artist?.art} big artist />
         </div>
-        <div>
+        <div className='headmeta'>
           <h1>{artist?.name || name}</h1>
           {artist && (
             <p className='muted sm'>
@@ -1547,6 +1626,7 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
                 : `${artist.tracks?.length || 0} ${artist.tracks?.length === 1 ? 'track' : 'tracks'}`}
             </p>
           )}
+          {onFav && artist && <FavHeart on={favs?.artist?.has(id)} onToggle={() => onFav('artist', { id, name: artist.name })} label='artist' />}
         </div>
       </div>
 
@@ -1566,7 +1646,7 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
           of their own - so show the songs. This page used to say "No albums." and
           leave you nowhere. */}
       {artist && (artist.albums.length
-        ? <Grid albums={artist.albums} onOpen={onOpenAlbum} onLong={onLong} />
+        ? <Grid albums={artist.albums} onOpen={onOpenAlbum} onLong={onLong} favs={favs} onFav={onFav} />
         : artist.tracks?.length
           ? (
             <ul className='tracks'>
@@ -1574,6 +1654,7 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
                 <Row
                   key={t.id} t={t} on={now?.trackId === t.id}
                   onPlay={() => onPlay(artist.tracks, t)} onLong={onLong} art
+                  fav={favs?.track?.has(t.id)} onFav={onFav ? (x => onFav('track', x)) : null}
                 />
               ))}
             </ul>

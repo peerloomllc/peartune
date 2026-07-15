@@ -13,48 +13,63 @@
 // threat and no conflict resolution to get wrong; the host stamps `updatedAt` itself, so
 // a client cannot backdate a write.
 //
+// Favorites are per KIND - a track, an album, or an artist - because that is what
+// people expect (Apple Music favorites all three; Subsonic `star` and Jellyfin
+// IsFavorite both apply to any of them).
+//
 // Rows (Tier 1, library-scoped - see the proposal's tiering):
-//   fav:{ownerId}:{trackId} -> { trackId, on, updatedAt }
+//   fav:{ownerId}:{kind}:{id} -> { kind, id, on, updatedAt }
 //
 // ownerId is `p:{personId}` for a device assigned to a person, else `d:{deviceKey}` for
-// an unclaimed device (it is its own owner until the operator confirms a claim).
+// an unclaimed device (it is its own owner until the operator confirms a claim). The id
+// is our source-scoped trackId for a track, or the adapter's album/artist id.
+//
+// NOTE: milestone-3-phase-1 stored track favorites as `fav:{ownerId}:{trackId}` (no
+// kind segment). Those legacy rows do not match a `fav:{ownerId}:{kind}:` scan and are
+// simply ignored - a clean break, acceptable because favorites only ever held a day of
+// test data. Nothing migrates.
+
+const FAV_KINDS = ['track', 'album', 'artist']
 
 class UserState {
   constructor (bee) {
     this.bee = bee
   }
 
-  _favKey (ownerId, trackId) {
-    return `fav:${ownerId}:${trackId}`
+  _favKey (ownerId, kind, id) {
+    return `fav:${ownerId}:${kind}:${id}`
   }
 
   // Toggle a favorite. The host stamps `updatedAt`; an un-favorite (on:false) is kept
   // as an explicit row rather than deleted, so "off" is durable and a later stale read
   // cannot resurrect it.
-  async setFav (ownerId, trackId, on) {
-    const row = { trackId, on: !!on, updatedAt: Date.now() }
-    await this.bee.put(this._favKey(ownerId, trackId), row, { valueEncoding: 'json' })
+  async setFav (ownerId, kind, id, on) {
+    if (!FAV_KINDS.includes(kind)) throw new Error('bad favorite kind: ' + kind)
+    const row = { kind, id, on: !!on, updatedAt: Date.now() }
+    await this.bee.put(this._favKey(ownerId, kind, id), row, { valueEncoding: 'json' })
     return row
   }
 
-  async getFav (ownerId, trackId) {
-    const node = await this.bee.get(this._favKey(ownerId, trackId), { valueEncoding: 'json' })
+  async getFav (ownerId, kind, id) {
+    const node = await this.bee.get(this._favKey(ownerId, kind, id), { valueEncoding: 'json' })
     return node ? node.value : null
   }
 
-  // The owner's currently-favorited trackIds. Prefix scan: every
-  // `fav:{ownerId}:{trackId}` key sorts below `fav:{ownerId};` (';' is ':'+1, and a
-  // z32 ownerId/trackId never contains ':' or ';'), so the range is exact. Same trick
-  // the grant store uses (host/grants.js).
+  // The owner's favorites, grouped by kind: { track:[ids], album:[ids], artist:[ids] }.
+  // One prefix scan per kind. Every `fav:{ownerId}:{kind}:{id}` key sorts below
+  // `fav:{ownerId}:{kind};` (';' is ':'+1, and a z32 id never contains ':' or ';'), so
+  // the range is exact - the same trick the grant store uses (host/grants.js).
   async listFavs (ownerId) {
-    const lo = `fav:${ownerId}:`
-    const hi = `fav:${ownerId};`
-    const out = []
-    for await (const node of this.bee.createReadStream({ gte: lo, lt: hi }, { valueEncoding: 'json' })) {
-      if (node.value && node.value.on) out.push(node.value.trackId)
+    const out = { track: [], album: [], artist: [] }
+    for (const kind of FAV_KINDS) {
+      const lo = `fav:${ownerId}:${kind}:`
+      const hi = `fav:${ownerId}:${kind};`
+      for await (const node of this.bee.createReadStream({ gte: lo, lt: hi }, { valueEncoding: 'json' })) {
+        if (node.value && node.value.on) out[kind].push(node.value.id)
+      }
     }
     return out
   }
 }
 
-module.exports = { UserState }
+module.exports = { UserState, FAV_KINDS }

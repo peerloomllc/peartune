@@ -122,20 +122,23 @@ function saveSettings (patch) {
   return next
 }
 
-// The favorites cache is a plain array of trackIds. It is disposable - the host owns
-// the truth - so a missing or corrupt file is simply "no favorites cached yet".
+// The favorites cache mirrors the host's grouped shape { track, album, artist } (each
+// an array of ids). It is disposable - the host owns the truth - so a missing or
+// corrupt file is simply "no favorites cached yet".
 function loadFavCache () {
   try {
-    const a = JSON.parse(fs.readFileSync(FAVORITES_FILE, 'utf8'))
-    return Array.isArray(a) ? a : []
+    const o = JSON.parse(fs.readFileSync(FAVORITES_FILE, 'utf8'))
+    return { track: o.track || [], album: o.album || [], artist: o.artist || [] }
   } catch {
-    return []
+    return { track: [], album: [], artist: [] }
   }
 }
 
-function saveFavCache (trackIds) {
+function saveFavCache (g) {
   fs.mkdirSync(DATA_DIR, { recursive: true })
-  fs.writeFileSync(FAVORITES_FILE, JSON.stringify(trackIds))
+  fs.writeFileSync(FAVORITES_FILE, JSON.stringify({
+    track: g.track || [], album: g.album || [], artist: g.artist || []
+  }))
 }
 
 // --- connection -------------------------------------------------------------
@@ -454,47 +457,59 @@ const methods = {
   // instantly and survive going offline. `supported` tells the UI whether the host is
   // new enough to answer at all - an old host replies ENOMETHOD, and the app hides
   // the hearts rather than showing a control that does nothing.
+  // The favorite ID SETS, grouped { track, album, artist }, for overlaying hearts
+  // everywhere. `supported:false` means an old host with no favorites support (the app
+  // hides the hearts); on any other failure we fall back to the cache so hearts still
+  // render offline.
   async favorites () {
     try {
       await ensureConnected()
-      const { trackIds } = await client.favList()
-      saveFavCache(trackIds)
-      return { trackIds, supported: true }
+      const g = await client.favList()
+      const grouped = { track: g.track || [], album: g.album || [], artist: g.artist || [] }
+      saveFavCache(grouped)
+      return { ...grouped, supported: true }
     } catch (e) {
-      // ENOMETHOD: an old host with no favorites support. Anything else (offline): fall
-      // back to the cache so the hearts still render.
-      if (e?.code === 'ENOMETHOD') return { trackIds: loadFavCache(), supported: false }
-      return { trackIds: loadFavCache(), supported: true, offline: true }
+      if (e?.code === 'ENOMETHOD') return { ...loadFavCache(), supported: false }
+      return { ...loadFavCache(), supported: true, offline: true }
     }
   },
 
-  // Toggle a favorite. Writes go to the host (Phase 1 needs a connection); the cache is
-  // updated optimistically so the heart flips at once, and reconciled from the host's
-  // answer.
-  async toggleFav ({ trackId, on }) {
+  // Toggle a favorite of any kind (track / album / artist). Writes go to the host
+  // (Phase 1 needs a connection); the cache is updated so the heart survives offline.
+  async toggleFav ({ kind = 'track', id, on }) {
     await ensureConnected()
-    const r = await client.favSet({ trackId, on: on !== false })
-    const cache = new Set(loadFavCache())
-    if (r.on) cache.add(trackId)
-    else cache.delete(trackId)
-    saveFavCache([...cache])
-    return { trackId: r.trackId, on: r.on }
+    const r = await client.favSet({ kind, id, on: on !== false })
+    const cache = loadFavCache()
+    const set = new Set(cache[r.kind] || [])
+    if (r.on) set.add(r.id)
+    else set.delete(r.id)
+    cache[r.kind] = [...set]
+    saveFavCache(cache)
+    return { kind: r.kind, id: r.id, on: r.on }
   },
 
-  // The Favorites VIEW: the favorited trackIds resolved to playable tracks (title,
-  // artist, art). One get() per favorite - bounded by how many a person favorites, and
-  // the same shape as artistTracks. A track that no longer resolves (source changed,
-  // file gone) is skipped rather than rendered as a dead row.
-  async favoriteTracks () {
+  // The Favorites VIEW: the favorited ids of each kind resolved to renderable objects
+  // (tracks, albums, artists), reusing the same library.get the rest of the app uses.
+  // One get() per favorite - bounded by how many a person favorites. Anything that no
+  // longer resolves (source changed, item gone) is skipped, not shown as a dead row.
+  async favoriteItems () {
     await ensureConnected()
-    const { trackIds } = await client.favList()
-    saveFavCache(trackIds)
-    const items = []
-    for (const id of trackIds) {
-      const t = await client.get({ id, type: 'track' }).catch(() => null)
-      if (t) items.push(withArt(t))
+    const g = await client.favList()
+    const grouped = { track: g.track || [], album: g.album || [], artist: g.artist || [] }
+    saveFavCache(grouped)
+    const resolve = async (ids, type) => {
+      const out = []
+      for (const id of ids) {
+        const it = await client.get({ id, type }).catch(() => null)
+        if (it) out.push(withArt(it))
+      }
+      return out
     }
-    return { items }
+    return {
+      tracks: await resolve(grouped.track, 'track'),
+      albums: await resolve(grouped.album, 'album'),
+      artists: await resolve(grouped.artist, 'artist')
+    }
   },
 
   // The shell tells us what network we are on (expo-network). It drives 'auto'
