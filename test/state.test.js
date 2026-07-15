@@ -118,6 +118,30 @@ test('one owner-prefix is not a prefix of another (range scan is exact)', async 
   assert.deepEqual((await s.listFavs('p:ti')).track, ['b'])
 })
 
+// --- play counts -------------------------------------------------------------
+
+test('bumpCount increments per play and reads back', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  assert.equal(await s.getCount('p:tim', 't1'), 0)
+  assert.equal(await s.bumpCount('p:tim', 't1'), 1)
+  assert.equal(await s.bumpCount('p:tim', 't1'), 2)
+  assert.equal(await s.getCount('p:tim', 't1'), 2)
+})
+
+test('topCounts returns most-played first, per owner', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.bumpCount('p:tim', 'a')
+  await s.bumpCount('p:tim', 'b'); await s.bumpCount('p:tim', 'b'); await s.bumpCount('p:tim', 'b')
+  await s.bumpCount('p:tim', 'c'); await s.bumpCount('p:tim', 'c')
+  await s.bumpCount('d:asas', 'z') // another owner, must not appear
+
+  const top = await s.topCounts('p:tim', 2)
+  assert.deepEqual(top, [{ trackId: 'b', count: 3 }, { trackId: 'c', count: 2 }])
+  assert.deepEqual(await s.topCounts('d:asas'), [{ trackId: 'z', count: 1 }])
+})
+
 // --- resume positions --------------------------------------------------------
 
 test('a resume position is set and read back for its owner', async (t) => {

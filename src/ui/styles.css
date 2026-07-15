@@ -235,9 +235,12 @@ button.icon.dens {
 .seg {
   display: flex; background: var(--color-surface-input);
   border: 1px solid var(--color-border); border-radius: 9999px; padding: 3px; gap: 2px;
+  overflow-x: auto; scrollbar-width: none;
 }
+.seg::-webkit-scrollbar { display: none; }
 .seg button {
-  flex: 1; border: none; border-radius: 9999px; padding: .5rem 0; font-size: .82rem;
+  flex: 0 0 auto; white-space: nowrap; border: none; border-radius: 9999px;
+  padding: .5rem .9rem; font-size: .82rem;
   font-weight: 500; background: transparent; color: var(--color-text-secondary);
 }
 .seg button.on { background: var(--color-primary); color: var(--color-text-on-primary); }

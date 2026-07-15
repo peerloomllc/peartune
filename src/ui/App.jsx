@@ -88,6 +88,7 @@ export default function App () {
   const [favSupported, setFavSupported] = useState(true) // false = host too old
   const [favItems, setFavItems] = useState(null) // the Favorites view, resolved + grouped
   const [cont, setCont] = useState(null) // "continue listening": { track, positionMs }
+  const [mostPlayed, setMostPlayed] = useState(null) // the Most Played view: { items }
 
   useEffect(() => {
     call('init')
@@ -99,7 +100,10 @@ export default function App () {
       .catch(e => setState({ loading: false, error: e.message }))
 
     const offs = [
-      on('play:started', (d) => { setNow(d); setError(null) }),
+      on('play:started', (d) => {
+        setNow(d); setError(null)
+        countedRef.current = { trackId: d?.trackId, counted: false } // a fresh play to count
+      }),
       on('play:status', setStatus),
       on('play:stopped', () => { setNow(null); setStatus(null); loadContinue() }),
       on('play:error', (d) => setError(d.error)),
@@ -153,6 +157,9 @@ export default function App () {
 
   // A resume seek waiting for its track to be ready to accept it (set in playFrom).
   const pendingResumeRef = useRef(null)
+  // A play is counted ONCE, after it has been listened to past a threshold. Reset each
+  // time a track starts (play:started), so a replay counts again.
+  const countedRef = useRef({ trackId: null, counted: false })
   useEffect(() => {
     const pr = pendingResumeRef.current
     if (!pr || !status || nowRef.current?.trackId !== pr.trackId) return
@@ -174,6 +181,15 @@ export default function App () {
       if (pos < 5000) return // the first few seconds are not a resume point
       const clear = dur && pos > dur * 0.95
       call('resumeSave', { trackId: t.trackId, positionMs: clear ? 0 : pos, durationMs: dur }).catch(() => {})
+
+      // Count a PLAY once it has been listened to past the scrobble threshold (half the
+      // track, or 4 minutes, whichever comes first) - and only once per play.
+      const c = countedRef.current
+      const threshold = dur ? Math.min(dur * 0.5, 240000) : 240000
+      if (c.trackId === t.trackId && !c.counted && pos >= threshold) {
+        countedRef.current = { trackId: t.trackId, counted: true }
+        call('countBump', { trackId: t.trackId }).catch(() => {})
+      }
     }, 8000)
     return () => clearInterval(iv)
   }, [])
@@ -428,6 +444,19 @@ export default function App () {
         return { ...prev, [kind]: set }
       })
       setNote(favSupported ? 'Could not update favorite' : 'Favorites need a server update')
+    }
+  }
+
+  // The Most Played view: the owner's top tracks, resolved (with their play counts).
+  async function showMostPlayed (force) {
+    setBrowse('top')
+    if (mostPlayed && !force) return
+    setMostPlayed(null)
+    try {
+      setMostPlayed(await call('topPlayed', { limit: 50 }))
+    } catch (e) {
+      setError(e.message)
+      setMostPlayed({ items: [] })
     }
   }
 
@@ -734,7 +763,7 @@ export default function App () {
         browse={browse} query={query} results={results} now={now} error={error}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
         favs={favs} onFav={favSupported ? onFav : null}
-        favSupported={favSupported} favItems={favItems}
+        favSupported={favSupported} favItems={favItems} mostPlayed={mostPlayed}
         cont={now ? null : cont}
         onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
         onBrowse={(b) => {
@@ -742,6 +771,7 @@ export default function App () {
           if (b === 'artists') return showArtists()
           if (b === 'songs') return showSongs()
           if (b === 'favorites') return showFavorites()
+          if (b === 'top') return showMostPlayed()
           return setBrowse('albums')
         }}
         onDensity={cycleDensity}
@@ -1012,7 +1042,7 @@ function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) 
 function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
-  favs, onFav, favSupported, favItems, cont, onContinue,
+  favs, onFav, favSupported, favItems, mostPlayed, cont, onContinue,
   onBrowse, onDensity, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
@@ -1127,7 +1157,7 @@ function Library ({
       <header>
         <h1>{state.host.libraryName || 'Library'}</h1>
         <p className='muted sm'>
-          {count(browse, { albums, artists, songs, favItems })}
+          {count(browse, { albums, artists, songs, favItems, mostPlayed })}
           {sourceText(state) && <> · {sourceText(state)}</>}
         </p>
       </header>
@@ -1148,6 +1178,7 @@ function Library ({
               {favSupported && (
                 <button className={browse === 'favorites' ? 'on' : ''} onClick={() => onBrowse('favorites')}>Favorites</button>
               )}
+              <button className={browse === 'top' ? 'on' : ''} onClick={() => onBrowse('top')}>Most Played</button>
             </div>
             {/* Stays PUT in the Songs view, disabled, rather than disappearing.
                 A control that vanishes reflows the row it was in, and the picker
@@ -1157,8 +1188,8 @@ function Library ({
             <button
               className='icon dens'
               onClick={onDensity}
-              disabled={browse === 'songs' || browse === 'favorites'}
-              aria-label={browse === 'songs' || browse === 'favorites' ? 'Layout (not available for lists)' : 'Change layout'}
+              disabled={browse === 'songs' || browse === 'favorites' || browse === 'top'}
+              aria-label={browse === 'songs' || browse === 'favorites' || browse === 'top' ? 'Layout (not available for lists)' : 'Change layout'}
             >
               <D.Icon size={20} weight='regular' />
             </button>
@@ -1209,6 +1240,22 @@ function Library ({
                     onPlay={onPlay} onLong={onLong} onOpenAlbum={onOpenAlbum} onOpenArtist={onOpenArtist}
                   />
                 : <SkeletonRows />)
+          : browse === 'top'
+            ? (mostPlayed
+                ? (mostPlayed.items.length
+                    ? (
+                      <ul className='tracks'>
+                        {mostPlayed.items.map(t => (
+                          <Row
+                            key={t.id} t={t} on={now?.trackId === t.id}
+                            onPlay={() => onPlay(mostPlayed.items, t)} onLong={onLong} art
+                            fav={favs.track.has(t.id)} onFav={favTrack} count={t.playCount}
+                          />
+                        ))}
+                      </ul>
+                      )
+                    : <TopEmpty />)
+                : <SkeletonRows />)
           : browse === 'artists'
             ? (artists
                 ? <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={D} favs={favs} onFav={onFav} />
@@ -1234,6 +1281,19 @@ function Empty () {
       <h2>Nothing here yet</h2>
       <p className='muted sm'>
         This library is empty. Add music on the server and let it rescan.
+      </p>
+    </div>
+  )
+}
+
+function TopEmpty () {
+  return (
+    <div className='blank'>
+      <MusicNotesSimple size={40} weight='thin' />
+      <h2>Nothing played yet</h2>
+      <p className='muted sm'>
+        Listen to a few tracks and your most-played will collect here, synced across
+        your devices.
       </p>
     </div>
   )
@@ -1364,7 +1424,8 @@ function pairError (msg = '') {
   return 'Pairing failed. Show a fresh code on your server and try again.'
 }
 
-function count (browse, { albums, artists, songs, favItems }) {
+function count (browse, { albums, artists, songs, favItems, mostPlayed }) {
+  if (browse === 'top') return mostPlayed ? `${mostPlayed.items.length} most played` : 'Loading…'
   if (browse === 'artists') return `${artists ? artists.length : 0} artists`
   // "60 albums" is the whole truth; "100 songs" is not - it is the first page of a
   // list we are still walking. Say so rather than lying about the size of someone's
@@ -1753,7 +1814,7 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
   )
 }
 
-function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav }) {
+function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
   const press = usePress(
     () => onPlay(t),
     onLong && (() => onLong({ type: 'track', track: t, name: t.title }))
@@ -1765,9 +1826,10 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav }) {
       <div className='meta'>
         <div className='t'>{t.title}</div>
         <div className='muted sm sub'>
-          {t.artist
+          {(t.artist
             ? [t.artist, t.album].filter(Boolean).join(' · ')
-            : `${(t.size / 1048576).toFixed(1)} MB`}
+            : `${(t.size / 1048576).toFixed(1)} MB`) +
+            (count != null ? ` · ${count} play${count === 1 ? '' : 's'}` : '')}
         </div>
       </div>
       <span className='muted sm dur'>{t.durationMs ? fmt(t.durationMs) : ''}</span>
