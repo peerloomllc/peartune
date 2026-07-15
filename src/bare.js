@@ -24,6 +24,7 @@ const { PearTuneClient } = require('../client')
 const { createAudioShim } = require('../worklet/shim')
 const { streamParams } = require('../worklet/quality')
 const { isPairLink } = require('../protocol/link')
+const { coalesce, clientCall } = require('../worklet/outbox')
 
 const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
 const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
@@ -37,6 +38,9 @@ const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json')
 // the Playlists list renders instantly and offline. The host owns the truth; a
 // playlist's tracks and every edit still need a connection (Phase 4, like favorites).
 const PLAYLISTS_FILE = path.join(DATA_DIR, 'playlists.json')
+// The offline write-queue: state writes (favorite / resume / count) made while the host
+// was unreachable, replayed in order on the next connect (milestone 3, phase 5).
+const OUTBOX_FILE = path.join(DATA_DIR, 'outbox.json')
 
 const DEFAULT_SETTINGS = { theme: 'system', deviceName: '', userName: '', streamQuality: 'auto' }
 
@@ -160,6 +164,61 @@ function savePlaylistCache (items) {
   fs.writeFileSync(PLAYLISTS_FILE, JSON.stringify(items || []))
 }
 
+// --- offline write-queue (milestone 3, phase 5) -----------------------------
+//
+// A state write that fails because the host is unreachable is queued to disk and
+// replayed, in order, the next time we connect. The coalescing (a favorite/resume keeps
+// only its latest, a play count accumulates) lives in worklet/outbox.js so it is testable;
+// here we just persist it and drive the client.
+let outbox = loadOutbox()
+let flushing = false
+
+function loadOutbox () {
+  try {
+    const o = JSON.parse(fs.readFileSync(OUTBOX_FILE, 'utf8'))
+    return Array.isArray(o) ? o : []
+  } catch {
+    return []
+  }
+}
+
+function saveOutbox () {
+  fs.mkdirSync(DATA_DIR, { recursive: true })
+  fs.writeFileSync(OUTBOX_FILE, JSON.stringify(outbox))
+}
+
+function enqueue (method, params) {
+  outbox = coalesce(outbox, { method, params })
+  saveOutbox()
+  log('outbox:queued', { method, depth: outbox.length })
+}
+
+// Replay the queue head-first. Stop at the first failure (still offline / a transient
+// error) and leave the rest for next time - order is preserved and each write is
+// idempotent on the host (LWW for fav/resume, a monotonic bump for counts), so a partial
+// flush is safe.
+async function flushOutbox () {
+  if (flushing || !outbox.length || !client) return
+  flushing = true
+  try {
+    while (outbox.length) {
+      const entry = outbox[0]
+      const call = clientCall(client, entry)
+      if (!call) { outbox = outbox.slice(1); saveOutbox(); continue } // unknown method: drop it
+      try {
+        await call()
+      } catch {
+        break // still cannot reach the host; keep this and everything after it
+      }
+      outbox = outbox.slice(1)
+      saveOutbox()
+    }
+    if (!outbox.length) log('outbox:drained')
+  } finally {
+    flushing = false
+  }
+}
+
 // --- connection -------------------------------------------------------------
 
 async function ensureClient () {
@@ -215,6 +274,10 @@ async function connectTo (host) {
     shimPort,
     artBase: shim.artBase()
   })
+
+  // Drain anything queued while we were offline (favorites/resume/counts). Fire and
+  // forget - a slow flush must not hold up the connection or the UI.
+  flushOutbox().catch(() => {})
 
   return { ...host, shimPort }
 }
@@ -499,10 +562,13 @@ const methods = {
   // is fine, the position is not precious. resumeGet answers 0 offline / on an old
   // host, so the caller simply starts the track from the top.
   async resumeSave ({ trackId, positionMs, durationMs }) {
-    try {
-      await ensureConnected()
-      await client.resumeSet({ trackId, positionMs, durationMs })
-    } catch {}
+    // When connected, write straight through; when not, queue immediately rather than
+    // block this frequent call on a doomed connect. The flush rides the next reconnect.
+    if (connected && client) {
+      try { await client.resumeSet({ trackId, positionMs, durationMs }) } catch { enqueue('resume.set', { trackId, positionMs, durationMs }) }
+    } else {
+      enqueue('resume.set', { trackId, positionMs, durationMs })
+    }
     return { ok: true }
   },
 
@@ -537,10 +603,12 @@ const methods = {
   // to past a threshold. topPlayed resolves the most-played ids to renderable tracks
   // for the "Most played" view.
   async countBump ({ trackId }) {
-    try {
-      await ensureConnected()
-      await client.countBump({ trackId })
-    } catch {}
+    if (connected && client) {
+      try { await client.countBump({ trackId }) } catch { enqueue('count.bump', { trackId }) }
+    } else {
+      // Offline: queue it (counts accumulate - each queued bump is a real play).
+      enqueue('count.bump', { trackId })
+    }
     return { ok: true }
   },
 
@@ -559,18 +627,38 @@ const methods = {
     }
   },
 
-  // Toggle a favorite of any kind (track / album / artist). Writes go to the host
-  // (Phase 1 needs a connection); the cache is updated so the heart survives offline.
+  // Toggle a favorite of any kind (track / album / artist). The local cache is updated
+  // OPTIMISTICALLY (so the heart survives offline and a reload), then the write goes to
+  // the host - or, if we are offline, into the write-queue for the next connect. An old
+  // host that has no favorites (ENOMETHOD) is the one case we undo and report, so the UI
+  // can say "favorites need a host update" instead of silently keeping a heart the host
+  // will never know about.
   async toggleFav ({ kind = 'track', id, on }) {
-    await ensureConnected()
-    const r = await client.favSet({ kind, id, on: on !== false })
-    const cache = loadFavCache()
-    const set = new Set(cache[r.kind] || [])
-    if (r.on) set.add(r.id)
-    else set.delete(r.id)
-    cache[r.kind] = [...set]
-    saveFavCache(cache)
-    return { kind: r.kind, id: r.id, on: r.on }
+    const want = on !== false
+    const apply = (v) => {
+      const cache = loadFavCache()
+      const set = new Set(cache[kind] || [])
+      if (v) set.add(id); else set.delete(id)
+      cache[kind] = [...set]
+      saveFavCache(cache)
+    }
+    apply(want)
+    if (connected && client) {
+      try {
+        const r = await client.favSet({ kind, id, on: want })
+        return { kind: r.kind, id: r.id, on: r.on }
+      } catch (e) {
+        if (e?.code === 'ENOMETHOD') { apply(!want); throw e }
+        enqueue('fav.set', { kind, id, on: want })
+        return { kind, id, on: want, queued: true }
+      }
+    }
+    // Offline: queue now (instant), and nudge a reconnect in the background - a favorite
+    // is user-initiated, so it is worth trying to sync it promptly. The flush happens
+    // when the reconnect lands.
+    enqueue('fav.set', { kind, id, on: want })
+    ensureConnected().catch(() => {})
+    return { kind, id, on: want, queued: true }
   },
 
   // The Favorites VIEW: the favorited ids of each kind resolved to renderable objects
