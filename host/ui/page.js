@@ -358,10 +358,10 @@ function markSourceDirty () {
   document.getElementById('srccancel').style.display = ''
 }
 
-// SERVER sources look alike; a folder does not. Everything that differs between
-// Navidrome and Jellyfin is the word on the button.
+// SERVER sources look alike; a folder does not. Everything that differs between a
+// Subsonic server and Jellyfin is the word on the button.
 const SERVERS = {
-  navidrome: { label: 'Navidrome', placeholder: 'http://localhost:4533' },
+  subsonic: { label: 'Subsonic server', placeholder: 'http://localhost:4533' },
   jellyfin: { label: 'Jellyfin', placeholder: 'http://localhost:8096' }
 }
 
@@ -369,6 +369,15 @@ let PICKED = 'folder'
 
 function serverFields (kind, cfg) {
   const s = SERVERS[kind]
+  // The Subsonic kind also accepts an OpenSubsonic API key (Nextcloud/ownCloud Music,
+  // Ampache 7). Given a key, username/password are left blank - the two schemes are
+  // mutually exclusive on the wire. Like the password, it is a secret: an empty box on
+  // an already-configured source means "leave it as it is".
+  const apiKeyField = kind === 'subsonic'
+    ? '<label>API key <span class="meta">- optional; for servers that use one</span></label>' +
+      '<input id="' + kind + '_apikey" type="password" oninput="markSourceDirty()" placeholder="' +
+        (cfg.hasApiKey ? 'unchanged' : 'leave blank to use username + password') + '">'
+    : ''
   return '<div id="k_' + kind + '" class="kind" style="display:none">' +
     '<label>' + s.label + ' URL</label>' +
     '<input id="' + kind + '_url" oninput="markSourceDirty()" placeholder="' + s.placeholder +
@@ -380,6 +389,7 @@ function serverFields (kind, cfg) {
     // on an already-configured source means "leave it as it is".
     '<input id="' + kind + '_pass" type="password" oninput="markSourceDirty()" placeholder="' +
       (cfg.hasPassword ? 'unchanged' : 'password') + '">' +
+    apiKeyField +
   '</div>'
 }
 
@@ -393,11 +403,11 @@ function renderSource (src, force) {
 
   el.innerHTML =
     '<div class="seg">' +
-      '<button id="s_navidrome" onclick="pickSource(\\'navidrome\\')">Navidrome</button>' +
+      '<button id="s_subsonic" onclick="pickSource(\\'subsonic\\')">Subsonic-compatible</button>' +
       '<button id="s_jellyfin" onclick="pickSource(\\'jellyfin\\')">Jellyfin</button>' +
       '<button id="s_folder" onclick="pickSource(\\'folder\\')">Folder</button>' +
     '</div>' +
-    serverFields('navidrome', kinds.navidrome || {}) +
+    serverFields('subsonic', kinds.subsonic || {}) +
     serverFields('jellyfin', kinds.jellyfin || {}) +
     '<div id="k_folder" class="kind" style="display:none">' +
       '<label>Folder <span class="meta">- a path INSIDE the PearTune container</span></label>' +
@@ -428,7 +438,7 @@ function cancelSource () {
 
 function showKind (kind) {
   PICKED = kind
-  for (const k of ['navidrome', 'jellyfin', 'folder']) {
+  for (const k of ['subsonic', 'jellyfin', 'folder']) {
     document.getElementById('s_' + k).className = k === kind ? 'on' : ''
     document.getElementById('k_' + k).style.display = k === kind ? 'block' : 'none'
   }
@@ -454,6 +464,9 @@ function sourceForm () {
   // Blank means "keep the password you already have"; the host fills it in.
   const pw = document.getElementById(PICKED + '_pass').value
   if (pw) cfg.password = pw
+  // The Subsonic kind also carries an optional API key (same blank-means-keep rule).
+  const ak = document.getElementById(PICKED + '_apikey')
+  if (ak && ak.value) cfg.apiKey = ak.value
   return cfg
 }
 

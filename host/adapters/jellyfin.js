@@ -4,7 +4,7 @@
 // hard part - scanning, tags, artwork, album/artist grouping and transcoding - so
 // this file is mostly mapping: Jellyfin's shapes into ours.
 //
-// It satisfies the SAME interface as FolderAdapter and NavidromeAdapter, and the
+// It satisfies the SAME interface as FolderAdapter and SubsonicAdapter, and the
 // phone cannot tell which is behind the media API. That is the property that makes
 // a new source a day of work instead of a milestone, and it is worth defending.
 //
