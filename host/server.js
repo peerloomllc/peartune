@@ -26,7 +26,7 @@ const { SourceStore, buildAdapter } = require('./source')
 const { PAIR_PROTOCOL, MEDIA_PROTOCOL } = require('../protocol/constants')
 
 class PearTuneHost {
-  constructor ({ dataDir, musicDir, libraryName = 'My Library', navidrome = null, dht = null, bootstrap = null, log = () => {} }) {
+  constructor ({ dataDir, musicDir, libraryName = 'My Library', subsonic = null, dht = null, bootstrap = null, log = () => {} }) {
     this.dataDir = path.resolve(dataDir)
     this.musicDir = musicDir
     this.libraryName = libraryName
@@ -60,7 +60,9 @@ class PearTuneHost {
     // keeps its own row.
     this.sources = new SourceStore({
       dataDir: this.dataDir,
-      env: navidrome ? { navidrome } : null,
+      // The env/CLI credential blob (PEARTUNE_NAVIDROME_* / --navidrome) now builds a
+      // 'subsonic'-kind source. The env var NAMES are kept - people have them set.
+      env: subsonic ? { subsonic } : null,
       musicDir: this.musicDir
     })
     this.source = this.sources.active()

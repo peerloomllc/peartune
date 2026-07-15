@@ -1,4 +1,4 @@
-// Navidrome adapter: auth and id mapping.
+// Subsonic-compatible adapter: auth and id mapping.
 //
 // No network here. What is worth pinning is the stuff that is silently wrong
 // rather than loudly broken: an auth scheme that leaks the password, and an id
@@ -10,15 +10,16 @@ const assert = require('node:assert/strict')
 const crypto = require('crypto')
 const hcrypto = require('hypercore-crypto')
 
-const { NavidromeAdapter } = require('../host/adapters/navidrome')
+const { SubsonicAdapter } = require('../host/adapters/subsonic')
 const { libraryId, trackId } = require('../protocol/ids')
 
 const lib = libraryId(hcrypto.keyPair().publicKey)
-const make = () => new NavidromeAdapter({
+const make = (opts = {}) => new SubsonicAdapter({
   url: 'http://localhost:4533/',
   username: 'tim',
   password: 'hunter2',
-  libraryId: lib
+  libraryId: lib,
+  ...opts
 })
 
 test('auth uses salted token, and NEVER sends the password', () => {
@@ -99,6 +100,65 @@ test('a real failure (wrong password, code 40) is NOT swallowed by the fallback'
   await assert.rejects(a._call('ping'), /code 40/)
 })
 
+// API-KEY AUTH (OpenSubsonic apiKeyAuthentication). Chosen when the operator gives a
+// key; it sends apiKey=<key> and NO username - the spec forbids mixing them (error 43).
+
+test('an apiKey selects apikey mode from the first call, no token probe', () => {
+  const a = make({ apiKey: 'KEY123' })
+  assert.equal(a._authMode, 'apikey')
+})
+
+test('apikey mode sends apiKey=<key> and NEVER a username or token/password', () => {
+  const a = make({ apiKey: 'KEY123' })
+  const qs = a._auth()
+
+  assert.ok(/(^|&)apiKey=KEY123(&|$)/.test(qs), 'must send apiKey=<key>')
+  // The spec is explicit: a client using an API key must not send u (error 43).
+  assert.ok(!/(^|&)u=/.test(qs), 'must NOT send a username with an apiKey')
+  assert.ok(!/(^|&)t=/.test(qs), 'no token in apikey mode')
+  assert.ok(!/(^|&)p=/.test(qs), 'no password in apikey mode')
+  assert.ok(!qs.includes('hunter2'), 'the password must not appear')
+  // The always-required client/version/format params still ride along.
+  assert.ok(qs.includes('c=peartune') && qs.includes('f=json'))
+})
+
+test('with no apiKey, mode is token (apikey is opt-in, never a fallback)', () => {
+  const a = make()
+  assert.equal(a._authMode, 'token')
+})
+
+// GRACEFUL DEGRADATION. "Subsonic-compatible" is a family, not a single spec:
+// Funkwhale implements only a subset. An OPTIONAL endpoint the server lacks must
+// return empty, not throw and take a whole screen down.
+
+test('a missing getArtists degrades to an empty list, not a throw', async () => {
+  const a = make()
+  a._call = async (method) => {
+    if (method === 'getArtists') throw new Error('subsonic getArtists: not implemented (code 70)')
+    return {}
+  }
+  const page = await a.list({ type: 'artists' })
+  assert.deepEqual(page.items, [], 'artists tab is empty, browsing by album still works')
+})
+
+test('a missing getPlaylists degrades to an empty list, not a throw', async () => {
+  const a = make()
+  a._call = async (method) => {
+    if (method === 'getPlaylists') throw new Error('subsonic getPlaylists: not implemented')
+    return {}
+  }
+  const page = await a.list({ type: 'playlists' })
+  assert.deepEqual(page.items, [])
+})
+
+test('a CRITICAL endpoint still throws (a broken source must fail loudly)', async () => {
+  const a = make()
+  // getAlbumList2 is load-bearing: without it there is no library, so it must NOT be
+  // swallowed the way an optional endpoint is.
+  a._call = async () => { throw new Error('subsonic getAlbumList2: HTTP 500') }
+  await assert.rejects(a.list({ type: 'albums' }), /getAlbumList2/)
+})
+
 // The server names itself. Every subsonic-response carries `type`, so the app can
 // say "Nextcloud Music" instead of the umbrella "Subsonic".
 
@@ -158,7 +218,7 @@ test('track ids match protocol/ids.js exactly, and are SOURCE-SCOPED', () => {
   const t = a._track({ id: 'song-42', title: 'Payback', size: 100 })
 
   // If this drifts, every resume position, favorite and play count is orphaned.
-  assert.equal(t.id, trackId(lib, 'navidrome', 'song-42'))
+  assert.equal(t.id, trackId(lib, 'subsonic', 'song-42'))
 
   // The same underlying file via the folder adapter is deliberately a DIFFERENT
   // id (DECISIONS 2026-07-13). Not a bug; do not "fix" it.

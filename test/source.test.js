@@ -33,21 +33,21 @@ test('with nothing configured, the source is the folder - honestly, not silently
 })
 
 test('env / CLI still works - every existing deployment depends on it', async (t) => {
-  const s = store(await dir(t), { navidrome: { url: 'http://localhost:4533', username: 'umbrel', password: 'pw' } })
+  const s = store(await dir(t), { subsonic: { url: 'http://localhost:4533', username: 'umbrel', password: 'pw' } })
   const a = s.active()
-  assert.equal(a.kind, 'navidrome')
+  assert.equal(a.kind, 'subsonic')
   assert.equal(a.from, 'env')
   assert.equal(a.url, 'http://localhost:4533')
 })
 
 test("THE OPERATOR'S CHOICE BEATS THE CONTAINER'S", async (t) => {
   const d = await dir(t)
-  store(d).save({ kind: 'navidrome', url: 'http://nas:4533', username: 'tim', password: 'chosen' })
+  store(d).save({ kind: 'subsonic', url: 'http://nas:4533', username: 'tim', password: 'chosen' })
 
   // The container was started pointing somewhere else entirely. The dashboard choice
   // wins - otherwise the operator's setting would silently evaporate on every
   // restart, which is the sort of bug that takes a week to believe.
-  const a = store(d, { navidrome: { url: 'http://localhost:4533', username: 'env', password: 'env' } }).active()
+  const a = store(d, { subsonic: { url: 'http://localhost:4533', username: 'env', password: 'env' } }).active()
   assert.equal(a.url, 'http://nas:4533')
   assert.equal(a.username, 'tim')
   assert.equal(a.from, 'dashboard')
@@ -64,47 +64,47 @@ test('switching KINDS does not wipe the other kind\'s credentials', async (t) =>
   const d = await dir(t)
   const s = store(d)
 
-  s.save({ kind: 'navidrome', url: 'http://nas:4533', username: 'tim', password: 'secret' })
+  s.save({ kind: 'subsonic', url: 'http://nas:4533', username: 'tim', password: 'secret' })
   s.save({ kind: 'folder', root: '/music' }) // <- used to overwrite the whole file
 
   // Flip back. The Navidrome config is still there, password and all, so the
   // dashboard can prefill it and the operator does not retype anything.
-  const nav = s.configFor('navidrome')
+  const nav = s.configFor('subsonic')
   assert.equal(nav.url, 'http://nas:4533')
   assert.equal(nav.username, 'tim')
   assert.equal(nav.password, 'secret')
 
   // And it survives a restart in that state.
-  const nav2 = store(d).configFor('navidrome')
+  const nav2 = store(d).configFor('subsonic')
   assert.equal(nav2.password, 'secret')
 })
 
 test('an empty password means KEEP the existing one, not blank it', async (t) => {
   const d = await dir(t)
   const s = store(d)
-  s.save({ kind: 'navidrome', url: 'http://nas:4533', username: 'tim', password: 'secret' })
+  s.save({ kind: 'subsonic', url: 'http://nas:4533', username: 'tim', password: 'secret' })
 
   // The operator edits the URL and leaves the password box empty - which the
   // dashboard sends as no password field at all.
-  const kept = s.withKeptSecrets({ kind: 'navidrome', url: 'http://nas:4533/new', username: 'tim' })
+  const kept = s.withKeptSecrets({ kind: 'subsonic', url: 'http://nas:4533/new', username: 'tim' })
   assert.equal(kept.password, 'secret', 'blank means "leave it alone"')
 
   // A NEW password does replace it.
-  const changed = s.withKeptSecrets({ kind: 'navidrome', url: 'http://nas:4533', username: 'tim', password: 'fresh' })
+  const changed = s.withKeptSecrets({ kind: 'subsonic', url: 'http://nas:4533', username: 'tim', password: 'fresh' })
   assert.equal(changed.password, 'fresh')
 })
 
 test('THE PASSWORD NEVER LEAVES THE HOST', async (t) => {
   const d = await dir(t)
   const s = store(d)
-  s.save({ kind: 'navidrome', url: 'http://localhost:4533', username: 'umbrel', password: 'hunter2' })
+  s.save({ kind: 'subsonic', url: 'http://localhost:4533', username: 'umbrel', password: 'hunter2' })
   s.save({ kind: 'jellyfin', url: 'http://localhost:8096', username: 'j', password: 'sesame' })
 
   const view = s.view()
   // A dashboard session is a licence to CHANGE the source, not to read back the
   // credentials of the machine it runs on.
-  assert.equal(view.kinds.navidrome.hasPassword, true)
-  assert.equal(view.kinds.navidrome.password, undefined)
+  assert.equal(view.kinds.subsonic.hasPassword, true)
+  assert.equal(view.kinds.subsonic.password, undefined)
   assert.equal(view.kinds.jellyfin.hasPassword, true)
   assert.ok(!JSON.stringify(view).includes('hunter2'))
   assert.ok(!JSON.stringify(view).includes('sesame'))
@@ -113,18 +113,18 @@ test('THE PASSWORD NEVER LEAVES THE HOST', async (t) => {
 test('the view carries every kind, so the dashboard can prefill any of them', async (t) => {
   const d = await dir(t)
   const s = store(d)
-  s.save({ kind: 'navidrome', url: 'http://nas:4533', username: 'tim', password: 'x' })
+  s.save({ kind: 'subsonic', url: 'http://nas:4533', username: 'tim', password: 'x' })
 
   const view = s.view()
-  assert.equal(view.active, 'navidrome')
+  assert.equal(view.active, 'subsonic')
   assert.deepEqual(Object.keys(view.kinds).sort(), [...KINDS].sort())
-  assert.equal(view.kinds.navidrome.url, 'http://nas:4533')
+  assert.equal(view.kinds.subsonic.url, 'http://nas:4533')
   assert.equal(view.kinds.jellyfin.url, '', 'never configured, but present and blank')
 })
 
 test('the source file is 0600 - it holds a password', async (t) => {
   const d = await dir(t)
-  store(d).save({ kind: 'navidrome', url: 'u', username: 'n', password: 'secret' })
+  store(d).save({ kind: 'subsonic', url: 'u', username: 'n', password: 'secret' })
   const mode = fs.statSync(path.join(d, 'source.json')).mode & 0o777
   assert.equal(mode, 0o600, 'a credential must not be more readable than the identity key beside it')
 })
@@ -147,10 +147,10 @@ test('garbage in source.json is ignored, not fatal', async (t) => {
 test('a v1 flat config migrates to v2, keeping the source', async (t) => {
   const d = await dir(t)
   fs.writeFileSync(path.join(d, 'source.json'),
-    JSON.stringify({ kind: 'navidrome', url: 'http://nas:4533', username: 'tim', password: 'secret' }))
+    JSON.stringify({ kind: 'subsonic', url: 'http://nas:4533', username: 'tim', password: 'secret' }))
 
   const a = store(d).active()
-  assert.equal(a.kind, 'navidrome')
+  assert.equal(a.kind, 'subsonic')
   assert.equal(a.url, 'http://nas:4533')
   assert.equal(a.password, 'secret', 'the whole point: the credential survives the upgrade')
 })
@@ -163,9 +163,9 @@ test('migrate() handles the shapes it will actually meet', () => {
   assert.equal(v1.sources.folder.root, '/music')
 
   // Already v2.
-  const v2 = migrate({ version: 2, active: 'navidrome', sources: { navidrome: { url: 'u', username: 'n', password: 'p' } } })
-  assert.equal(v2.active, 'navidrome')
-  assert.equal(v2.sources.navidrome.password, 'p')
+  const v2 = migrate({ version: 2, active: 'subsonic', sources: { subsonic: { url: 'u', username: 'n', password: 'p' } } })
+  assert.equal(v2.active, 'subsonic')
+  assert.equal(v2.sources.subsonic.password, 'p')
 
   // Junk.
   assert.equal(migrate(null), null)
@@ -177,4 +177,56 @@ test('jellyfin is a first-class kind now', async (t) => {
   const a = store(d).save({ kind: 'jellyfin', url: 'http://localhost:8096', username: 'j', password: 'p' })
   assert.equal(a.kind, 'jellyfin')
   assert.ok(KINDS.includes('jellyfin'))
+})
+
+// --- the navidrome -> subsonic rename (the T2 compat guarantee) --------------
+//
+// Every host in the wild has a source.json that says 'navidrome'. On upgrade it must
+// come up as 'subsonic' with its credentials intact - not fall through to an empty
+// folder, which would take Tim's library dark.
+
+test("a v1 flat 'navidrome' config migrates to the 'subsonic' kind", () => {
+  const m = migrate({ kind: 'navidrome', url: 'http://nas:4533', username: 'tim', password: 'secret' })
+  assert.equal(m.active, 'subsonic')
+  assert.equal(m.sources.subsonic.url, 'http://nas:4533')
+  assert.equal(m.sources.subsonic.password, 'secret', 'the credential survives the rename')
+  assert.equal(m.sources.navidrome, undefined, 'the old kind name is gone')
+})
+
+test("a v2 config with a 'navidrome' source migrates it to 'subsonic'", () => {
+  const m = migrate({
+    version: 2,
+    active: 'navidrome',
+    sources: { navidrome: { url: 'u', username: 'n', password: 'p' } }
+  })
+  assert.equal(m.active, 'subsonic')
+  assert.equal(m.sources.subsonic.password, 'p')
+  assert.equal(m.sources.navidrome, undefined)
+})
+
+test("Tim's Umbrel case: a saved 'navidrome' file comes up as subsonic, password intact", async (t) => {
+  const d = await dir(t)
+  fs.writeFileSync(path.join(d, 'source.json'),
+    JSON.stringify({ version: 2, active: 'navidrome', sources: { navidrome: { url: 'http://localhost:4533', username: 'umbrel', password: 'kept' } } }))
+
+  const a = store(d).active()
+  assert.equal(a.kind, 'subsonic')
+  assert.equal(a.password, 'kept', 'the library does not go dark on upgrade')
+})
+
+// --- the API key is a secret, like the password -----------------------------
+
+test('the apiKey never leaves the host, and blank-on-save keeps it', async (t) => {
+  const d = await dir(t)
+  const s = store(d)
+  s.save({ kind: 'subsonic', url: 'http://nc:8081', username: 'umbrel', apiKey: 'SECRETKEY' })
+
+  const view = s.view()
+  assert.equal(view.kinds.subsonic.hasApiKey, true)
+  assert.equal(view.kinds.subsonic.apiKey, undefined)
+  assert.ok(!JSON.stringify(view).includes('SECRETKEY'))
+
+  // Editing the URL with a blank key box keeps the stored key.
+  const kept = s.withKeptSecrets({ kind: 'subsonic', url: 'http://nc:8081/new', username: 'umbrel' })
+  assert.equal(kept.apiKey, 'SECRETKEY')
 })

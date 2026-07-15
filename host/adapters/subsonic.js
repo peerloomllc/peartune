@@ -1,12 +1,24 @@
-// Navidrome (Subsonic API) source adapter.
+// Subsonic-compatible source adapter.
+//
+// The Subsonic API is a de-facto standard a dozen servers implement, so this ONE
+// adapter covers Navidrome, Gonic, Ampache, Funkwhale, Koel, Nextcloud/ownCloud
+// Music, Supysonic, Airsonic-Advanced and more. It used to be called the
+// "Navidrome" adapter, which named one server the operator might not even run; the
+// app still shows the server's OWN name (sourceName) so nothing gets less specific.
 //
 // The point of connecting to an existing server instead of just reading the
 // folder: it already did the hard part. Scanning, tags, artwork, album/artist
 // grouping and ON-THE-FLY TRANSCODING all come for free, which is why we ship no
 // ffmpeg. See DECISIONS 2026-07-13 (bitrate).
 //
-// Auth is Subsonic token auth: t = md5(password + salt), with a fresh salt per
-// request. The password itself never crosses the wire, not even to localhost.
+// THREE auth schemes, because "Subsonic-compatible" is not one thing:
+//   - token:    t = md5(password + salt), fresh salt per request. The password
+//               never crosses the wire. Preferred; the default.
+//   - password: p = enc:<hex>. For servers that reject tokens (error 41) -
+//               Nextcloud/ownCloud Music, LMS. Flipped to automatically on a 41.
+//   - apiKey:   apiKey=<key>, no username at all. The OpenSubsonic
+//               `apiKeyAuthentication` extension (Nextcloud/ownCloud Music,
+//               Ampache 7). Chosen when the operator configures an apiKey.
 //
 // This adapter satisfies the SAME interface as FolderAdapter, and the phone
 // cannot tell which one is behind the media API. That is deliberate: it keeps
@@ -29,13 +41,14 @@ function subsonicName (type) {
   return SUBSONIC_NAME_OVERRIDES[key] || key.replace(/\b\w/g, c => c.toUpperCase())
 }
 
-class NavidromeAdapter {
-  constructor ({ url, username, password, libraryId }) {
+class SubsonicAdapter {
+  constructor ({ url, username, password, apiKey, libraryId }) {
     this.base = String(url).replace(/\/+$/, '')
     this.username = username
     this.password = password
+    this.apiKey = apiKey || null
     this.libraryId = libraryId
-    this.kind = 'navidrome'
+    this.kind = 'subsonic'
     this.scannedAt = null
 
     // HOW WE AUTHENTICATE, and it is not one-size-fits-all across Subsonic servers.
@@ -50,7 +63,12 @@ class NavidromeAdapter {
     // hex-encoded as `p=enc:<hex>` (the spec's obfuscated form - not encryption, just
     // not plaintext in a log). We flip to it automatically on the first 41 and
     // remember, so it costs one retry, once.
-    this._authMode = 'token' // 'token' | 'password'
+    //
+    // 'apikey' is the OpenSubsonic `apiKeyAuthentication` extension: apiKey=<key>,
+    // and NO username - the spec forbids sending `u` alongside `apiKey` (error 43).
+    // It is what the operator chose when they configured a key, so it is not a
+    // fallback: if a key is set we use it from the first call.
+    this._authMode = this.apiKey ? 'apikey' : 'token' // 'token' | 'password' | 'apikey'
     this.songIds = new Map()
     this._counts = null
   }
@@ -63,15 +81,23 @@ class NavidromeAdapter {
   // password: p = enc:<hex of password>. For servers that reject tokens (Nextcloud
   //           Music, LMS). The password rides along on every request; on a home LAN
   //           that is what every Subsonic client does, but it is why token is default.
+  // apikey:   apiKey=<key>, with NO `u`. The spec is explicit that a client using an
+  //           API key must not send a username - the two together are error 43.
   _auth () {
-    const base = `u=${encodeURIComponent(this.username)}&v=${API_VERSION}&c=${CLIENT}&f=json`
+    const common = `v=${API_VERSION}&c=${CLIENT}&f=json`
+
+    if (this._authMode === 'apikey') {
+      return `apiKey=${encodeURIComponent(this.apiKey)}&${common}`
+    }
+
+    const user = `u=${encodeURIComponent(this.username)}&${common}`
     if (this._authMode === 'password') {
       const hex = Buffer.from(String(this.password), 'utf8').toString('hex')
-      return `${base}&p=enc:${hex}`
+      return `${user}&p=enc:${hex}`
     }
     const salt = crypto.randomBytes(8).toString('hex')
     const token = crypto.createHash('md5').update(this.password + salt).digest('hex')
-    return `${base}&t=${token}&s=${salt}`
+    return `${user}&t=${token}&s=${salt}`
   }
 
   _url (method, params = {}) {
@@ -94,17 +120,32 @@ class NavidromeAdapter {
     }
 
     if (sr.status === 'failed') {
-      throw new Error(`navidrome ${method}: ${sr.error?.message || 'failed'} (code ${sr.error?.code})`)
+      throw new Error(`subsonic ${method}: ${sr.error?.message || 'failed'} (code ${sr.error?.code})`)
     }
     return sr
   }
 
+  // For OPTIONAL endpoints. "Subsonic-compatible" is a family, not a spec everyone
+  // implements in full - Funkwhale, for one, answers only a subset. A method the
+  // server does not implement must degrade to nothing (an empty list, a null) rather
+  // than throw and take a whole screen down with it. Used only where "absent" is a
+  // sane answer (no artists index, no playlists); the load-bearing calls (ping,
+  // getAlbumList2, search3, stream) still throw loudly, because without them the
+  // source genuinely does not work.
+  async _optional (method, params, fallback = null) {
+    try {
+      return await this._call(method, params)
+    } catch {
+      return fallback
+    }
+  }
+
   async _fetch (method, params) {
     const res = await fetch(this._url(method, params))
-    if (!res.ok) throw new Error(`navidrome ${method}: HTTP ${res.status}`)
+    if (!res.ok) throw new Error(`subsonic ${method}: HTTP ${res.status}`)
     const body = await res.json()
     const sr = body['subsonic-response']
-    if (!sr) throw new Error(`navidrome ${method}: malformed response`)
+    if (!sr) throw new Error(`subsonic ${method}: malformed response`)
 
     // The SERVER NAMES ITSELF. Every subsonic-response carries `type` (OpenSubsonic:
     // "navidrome", "nextcloud music", "gonic", "airsonic", ...) and often
@@ -181,8 +222,10 @@ class NavidromeAdapter {
     const offset = Number(cursor) || 0
 
     if (type === 'artists') {
-      const sr = await this._call('getArtists')
-      const items = (sr.artists?.index || []).flatMap(i => i.artist || []).map(a => ({
+      // Optional: a subset server without a getArtists index gets an empty tab, not
+      // a crash. Browsing by album still works.
+      const sr = await this._optional('getArtists')
+      const items = (sr?.artists?.index || []).flatMap(i => i.artist || []).map(a => ({
         id: a.id,
         name: a.name,
         albumCount: a.albumCount ?? null,
@@ -267,8 +310,9 @@ class NavidromeAdapter {
     }
 
     if (type === 'playlists') {
-      const sr = await this._call('getPlaylists')
-      const items = (sr.playlists?.playlist || []).map(p => ({
+      // Optional: a server without playlists support returns an empty list.
+      const sr = await this._optional('getPlaylists')
+      const items = (sr?.playlists?.playlist || []).map(p => ({
         id: p.id,
         name: p.name,
         songCount: p.songCount ?? null
@@ -450,4 +494,4 @@ class NavidromeAdapter {
   }
 }
 
-module.exports = { NavidromeAdapter }
+module.exports = { SubsonicAdapter }

@@ -1085,16 +1085,12 @@ function Empty () {
   )
 }
 
-// The human name for a source KIND. 'navidrome' is the kind for ANY Subsonic
-// server now (Navidrome, Nextcloud Music, LMS, ...), so "Subsonic" is the honest
-// umbrella rather than naming one server the operator may not even be running. A
-// distinct kind + a truer label per server is a roadmap item; until then this is
-// as specific as the wire lets us be.
-// What to call the current source. The host now reports the server's OWN name
-// (sourceName: "Nextcloud Music", "Gonic", "Emby Server"), which is what we want
-// when we have it. sourceLabel is the fallback for an older host that only sends the
-// coarse kind - and 'navidrome' is the kind for ANY Subsonic server, so "Subsonic"
-// is the honest umbrella there rather than naming one server the operator may not run.
+// What to call the current source. The host reports the server's OWN name
+// (sourceName: "Navidrome", "Nextcloud Music", "Gonic", "Emby Server"), which is what
+// we want when we have it. sourceLabel is the fallback for an older host that only
+// sends the coarse KIND - and 'subsonic' is the kind for ANY Subsonic server, so
+// "Subsonic" is the honest umbrella there rather than naming one server the operator
+// may not run. ('navidrome' is the pre-rename kind a not-yet-upgraded host still sends.)
 function sourceText (state) {
   if (state.sourceName) return state.sourceName
   return sourceLabel(state.source)
@@ -1103,7 +1099,9 @@ function sourceText (state) {
 function sourceLabel (kind) {
   if (kind === 'jellyfin') return 'Jellyfin'
   if (kind === 'folder') return 'Folder'
-  if (kind === 'navidrome') return 'Subsonic'
+  // 'subsonic' is the kind for ANY Subsonic server; 'navidrome' is the old name a
+  // not-yet-upgraded host still reports. Both mean the same umbrella.
+  if (kind === 'subsonic' || kind === 'navidrome') return 'Subsonic'
   return null
 }
 

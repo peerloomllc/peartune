@@ -87,11 +87,14 @@ async function main () {
     ? () => {}
     : (msg, data) => console.log(`[${new Date().toISOString()}] ${msg}`, data ? JSON.stringify(data) : '')
 
-  const navidrome = args.navidromeUrl
+  // The --navidrome / PEARTUNE_NAVIDROME_* credential blob. It builds a 'subsonic'
+  // source now (our adapter speaks to any Subsonic server); the flag/env names are
+  // kept because existing deployments set them.
+  const subsonic = args.navidromeUrl
     ? { url: args.navidromeUrl, username: args.navidromeUser, password: args.navidromePass }
     : null
 
-  if (navidrome && (!navidrome.username || !navidrome.password)) {
+  if (subsonic && (!subsonic.username || !subsonic.password)) {
     console.error('fatal: --navidrome needs --navidrome-user and --navidrome-pass')
     process.exit(1)
   }
@@ -100,7 +103,7 @@ async function main () {
     dataDir: path.resolve(args.data),
     musicDir: path.resolve(args.music),
     libraryName: args.name,
-    navidrome,
+    subsonic,
     log
   })
 

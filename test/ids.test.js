@@ -31,13 +31,13 @@ test('trackId is deterministic and stable across rescans', () => {
   assert.equal(a, b)
 })
 
-test('trackId is SOURCE-SCOPED: the same file via folder vs navidrome differs', () => {
+test('trackId is SOURCE-SCOPED: the same file via folder vs subsonic differs', () => {
   // This is deliberate and it is why switching sources orphans listening state.
   // See DECISIONS 2026-07-13. If this test ever "fails" because someone made ids
   // source-agnostic, that is a protocol change, not a bug fix - read the entry.
   const viaFolder = trackId(lib, 'folder', 'abc.flac')
-  const viaNavidrome = trackId(lib, 'navidrome', 'abc.flac')
-  assert.notEqual(viaFolder, viaNavidrome)
+  const viaSubsonic = trackId(lib, 'subsonic', 'abc.flac')
+  assert.notEqual(viaFolder, viaSubsonic)
 })
 
 test('trackId is scoped to the library: the same path on two hosts differs', () => {

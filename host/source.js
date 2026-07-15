@@ -35,26 +35,37 @@ const fs = require('fs')
 const path = require('path')
 
 const { FolderAdapter } = require('./adapters/folder')
-const { NavidromeAdapter } = require('./adapters/navidrome')
+const { SubsonicAdapter } = require('./adapters/subsonic')
 const { JellyfinAdapter } = require('./adapters/jellyfin')
 
 const FILE = 'source.json'
 const VERSION = 2
 
-const KINDS = ['navidrome', 'jellyfin', 'folder']
+const KINDS = ['subsonic', 'jellyfin', 'folder']
+
+// Kinds that were RENAMED. The adapter formerly called "navidrome" is really a
+// Subsonic adapter (it speaks to any Subsonic server), so the kind is now 'subsonic'.
+// Every host in the wild has a source.json that says 'navidrome'; migrate() maps it
+// on read so the library does not go dark on upgrade. `trackId` is re-scoped by the
+// rename, but nothing durable is keyed by it yet (the milestone-3 ledger does not
+// exist), so this costs nothing today - see the proposal.
+const RENAMED = { navidrome: 'subsonic' }
+const canonKind = (k) => RENAMED[k] || k
 
 // Which fields belong to which kind. Everything the dashboard POSTs is filtered
 // through this, so a stray field from a browser cannot end up persisted in the
 // host's config file.
 const FIELDS = {
-  navidrome: ['url', 'username', 'password'],
+  // apiKey: the OpenSubsonic apiKeyAuthentication credential, an alternative to
+  // username/password (Nextcloud/ownCloud Music, Ampache 7). A secret, like password.
+  subsonic: ['url', 'username', 'password', 'apiKey'],
   jellyfin: ['url', 'username', 'password'],
   folder: ['root']
 }
 
 // The secrets. Never sent to the browser, and preserved when the browser sends the
 // field back empty (which means "leave it alone", not "set it to the empty string").
-const SECRETS = ['password']
+const SECRETS = ['password', 'apiKey']
 
 function pathOf (dataDir) {
   return path.join(dataDir, FILE)
@@ -78,18 +89,23 @@ function migrate (raw) {
 
   if (raw.version === VERSION && raw.sources) {
     const sources = {}
-    for (const kind of KINDS) {
-      if (raw.sources[kind]) sources[kind] = pick(kind, raw.sources[kind])
+    // Iterate the FILE's keys (which may still say 'navidrome') and canonicalize,
+    // rather than iterating KINDS - otherwise a renamed kind on disk is silently
+    // dropped and the operator's Subsonic source vanishes on upgrade.
+    for (const [key, cfg] of Object.entries(raw.sources)) {
+      const kind = canonKind(key)
+      if (KINDS.includes(kind) && cfg) sources[kind] = pick(kind, cfg)
     }
-    const active = KINDS.includes(raw.active) ? raw.active : null
-    return { version: VERSION, active, sources }
+    const active = canonKind(raw.active)
+    return { version: VERSION, active: KINDS.includes(active) ? active : null, sources }
   }
 
-  if (KINDS.includes(raw.kind)) {
+  const kind = canonKind(raw.kind)
+  if (KINDS.includes(kind)) {
     return {
       version: VERSION,
-      active: raw.kind,
-      sources: { [raw.kind]: pick(raw.kind, raw) }
+      active: kind,
+      sources: { [kind]: pick(kind, raw) }
     }
   }
 
@@ -127,8 +143,8 @@ class SourceStore {
     const { active, sources } = this.data
     if (active && sources[active]) return { kind: active, ...sources[active], from: 'dashboard' }
 
-    if (this.env?.navidrome?.url) {
-      return { kind: 'navidrome', ...pick('navidrome', this.env.navidrome), from: 'env' }
+    if (this.env?.subsonic?.url) {
+      return { kind: 'subsonic', ...pick('subsonic', this.env.subsonic), from: 'env' }
     }
 
     return { kind: 'folder', root: this.musicDir, from: 'default' }
@@ -138,7 +154,7 @@ class SourceStore {
   // is the one currently serving. This is what makes flipping between sources free.
   configFor (kind) {
     if (this.data.sources[kind]) return { ...this.data.sources[kind] }
-    if (kind === 'navidrome' && this.env?.navidrome?.url) return pick('navidrome', this.env.navidrome)
+    if (kind === 'subsonic' && this.env?.subsonic?.url) return pick('subsonic', this.env.subsonic)
     if (kind === 'folder') return { root: this.musicDir }
     return {}
   }
@@ -190,11 +206,12 @@ class SourceStore {
 }
 
 function buildAdapter (cfg, { libraryId, musicDir, log }) {
-  if (cfg.kind === 'navidrome') {
-    return new NavidromeAdapter({
+  if (cfg.kind === 'subsonic') {
+    return new SubsonicAdapter({
       url: cfg.url,
       username: cfg.username,
       password: cfg.password,
+      apiKey: cfg.apiKey,
       libraryId
     })
   }

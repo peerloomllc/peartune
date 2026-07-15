@@ -29,14 +29,14 @@ function libraryId (hostKey) {
   return z32.encode(hcrypto.hash(b4a.concat([NS_LIBRARY, toBuf(hostKey)])))
 }
 
-// Source-scoped by design: the same file reached via Navidrome and via a raw
-// folder hashes differently, so switching sources orphans listening state. That
+// Source-scoped by design: the same file reached via a Subsonic server and via a
+// raw folder hashes differently, so switching sources orphans listening state. That
 // is an accepted, warned-about v1 tradeoff - see DECISIONS 2026-07-13. Do not
 // "fix" this by dropping libraryId or sourceKind from the input without reading
 // that entry first.
 //
-// sourceKind: 'navidrome' | 'folder'
-// sourceKey:  the Navidrome track id, or the library-relative file path.
+// sourceKind: 'subsonic' | 'jellyfin' | 'folder'
+// sourceKey:  the server's track id, or the library-relative file path.
 function trackId (libId, sourceKind, sourceKey) {
   if (!libId || !sourceKind || !sourceKey) throw new Error('trackId needs libraryId, sourceKind, sourceKey')
   return z32.encode(hcrypto.hash(b4a.concat([
