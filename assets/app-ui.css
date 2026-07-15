@@ -302,6 +302,111 @@ ul.tracks li .favbtn:active {
   color: var(--color-text-muted);
   margin: 0 0 .7rem;
 }
+.newpl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  margin-bottom: .5rem;
+}
+ul.pllist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+ul.pllist li {
+  display: flex;
+  align-items: center;
+  gap: .9rem;
+  padding: .85rem .25rem;
+  border-bottom: 1px solid var(--color-divider);
+  cursor: pointer;
+}
+ul.pllist li .plicon {
+  flex: none;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-input);
+  color: var(--color-text-secondary);
+}
+ul.pllist li .meta {
+  min-width: 0;
+  flex: 1;
+}
+ul.pllist li .t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+ul.pllist li .sub {
+  margin-top: .15rem;
+}
+.plhead {
+  margin: .2rem 0 1rem;
+}
+.plhead h1 {
+  margin: 0 0 .2rem;
+}
+.plrename {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+}
+.pltools {
+  display: flex;
+  gap: .5rem;
+  margin: 0 0 1rem;
+  flex-wrap: wrap;
+}
+.pltools button {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: .82rem;
+  padding: .45rem .8rem;
+  background: var(--color-surface-input);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+}
+.pltools button.on {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-on-primary);
+}
+.pltools button.danger.ghost {
+  background: transparent;
+  color: var(--color-error);
+}
+ul.tracks.editing li.editrow {
+  gap: .5rem;
+}
+.editrow .moves {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: .1rem;
+}
+.editrow .moves button {
+  background: none;
+  border: 0;
+  padding: .4rem;
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  line-height: 0;
+}
+.editrow .moves button:disabled {
+  opacity: .3;
+}
+.editrow .moves button.rm {
+  color: var(--color-error);
+}
+.sheet .acts button.plpick {
+  justify-content: space-between;
+}
 .scanner {
   position: relative;
   min-height: 100vh;

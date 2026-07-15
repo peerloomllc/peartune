@@ -29,7 +29,21 @@
 // simply ignored - a clean break, acceptable because favorites only ever held a day of
 // test data. Nothing migrates.
 
+const crypto = require('crypto')
+
 const FAV_KINDS = ['track', 'album', 'artist']
+
+const PLAYLIST_NAME_MAX = 100
+const PLAYLIST_MAX_TRACKS = 10000
+
+// Playlist names are operator-and-user text that renders on the phone (and could reach
+// the dashboard later), so strip control chars and cap the length here at the single
+// writer, exactly like device/user names (proposal 2026-07-14). An empty name is not an
+// error - it becomes a sensible default rather than an untitled blank row.
+function sanitizePlaylistName (name) {
+  const s = String(name ?? '').replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, PLAYLIST_NAME_MAX)
+  return s || 'Untitled playlist'
+}
 
 class UserState {
   constructor (bee) {
@@ -135,6 +149,95 @@ class UserState {
       }
     }
     return out
+  }
+
+  // --- playlists (milestone 3, phase 4) -------------------------------------
+  //
+  // OUR playlists, host-owned (host-as-hub). A playlist is one row holding its
+  // ordered trackIds inline:
+  //   playlist:{ownerId}:{playlistId} -> { id, name, trackIds:[...], createdAt, updatedAt }
+  //
+  // A plain ordered array is enough BECAUSE the host is the single writer - the
+  // fractional-index / CRDT machinery a ledger would need (the milestone-3 proposal
+  // calls this out) is a multi-writer problem we do not have. Reorder and remove are
+  // just a rewrite of the array. The playlistId is minted by the host (never by the
+  // client), so it cannot collide with or overwrite another owner's playlist; and
+  // because the key carries the host-derived ownerId, a client can only ever reach
+  // its own playlists even if it guesses another's id. These are TIER 1 (this one
+  // library's tracks); cross-library playlists are the deferred Tier 2.
+  _plKey (ownerId, id) {
+    return `playlist:${ownerId}:${id}`
+  }
+
+  async createPlaylist (ownerId, name) {
+    const id = crypto.randomBytes(9).toString('hex')
+    const now = Date.now()
+    const row = { id, name: sanitizePlaylistName(name), trackIds: [], createdAt: now, updatedAt: now }
+    await this.bee.put(this._plKey(ownerId, id), row, { valueEncoding: 'json' })
+    return row
+  }
+
+  async getPlaylist (ownerId, id) {
+    const node = await this.bee.get(this._plKey(ownerId, id), { valueEncoding: 'json' })
+    return node ? node.value : null
+  }
+
+  // Summaries only ({ id, name, count, updatedAt }) - the list view does not need
+  // every trackId, and a person with big playlists should not ship them all to render
+  // a menu. Most-recently-touched first.
+  async listPlaylists (ownerId) {
+    const lo = `playlist:${ownerId}:`
+    const hi = `playlist:${ownerId};`
+    const rows = []
+    for await (const node of this.bee.createReadStream({ gte: lo, lt: hi }, { valueEncoding: 'json' })) {
+      const v = node.value
+      if (v) rows.push({ id: v.id, name: v.name, count: (v.trackIds || []).length, updatedAt: v.updatedAt })
+    }
+    rows.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    return rows
+  }
+
+  // The mutations below read-modify-write the one row. They return the updated row, or
+  // NULL when no such playlist exists for this owner - which is also the ownership
+  // check: the key is built from the host-derived ownerId, so another owner's id
+  // simply misses. (Single writer + single-threaded host, so no lock; this is the same
+  // read-modify-write shape as bumpCount.)
+  async renamePlaylist (ownerId, id, name) {
+    const row = await this.getPlaylist(ownerId, id)
+    if (!row) return null
+    row.name = sanitizePlaylistName(name)
+    row.updatedAt = Date.now()
+    await this.bee.put(this._plKey(ownerId, id), row, { valueEncoding: 'json' })
+    return row
+  }
+
+  async deletePlaylist (ownerId, id) {
+    await this.bee.del(this._plKey(ownerId, id))
+    return { id }
+  }
+
+  // Append. Duplicates are allowed on purpose (adding an album you already have some of
+  // is a normal thing to do), and removal is by position via setPlaylistTracks.
+  async addToPlaylist (ownerId, id, trackIds) {
+    const row = await this.getPlaylist(ownerId, id)
+    if (!row) return null
+    const ids = (Array.isArray(trackIds) ? trackIds : []).filter(x => typeof x === 'string' && x)
+    row.trackIds = [...(row.trackIds || []), ...ids].slice(0, PLAYLIST_MAX_TRACKS)
+    row.updatedAt = Date.now()
+    await this.bee.put(this._plKey(ownerId, id), row, { valueEncoding: 'json' })
+    return row
+  }
+
+  // Replace the whole ordered list - this is how the app does BOTH reorder and remove
+  // (it sends the new order), so there is one write path to reason about instead of
+  // fiddly move/remove-at-index handlers.
+  async setPlaylistTracks (ownerId, id, trackIds) {
+    const row = await this.getPlaylist(ownerId, id)
+    if (!row) return null
+    row.trackIds = (Array.isArray(trackIds) ? trackIds : []).filter(x => typeof x === 'string' && x).slice(0, PLAYLIST_MAX_TRACKS)
+    row.updatedAt = Date.now()
+    await this.bee.put(this._plKey(ownerId, id), row, { valueEncoding: 'json' })
+    return row
   }
 }
 

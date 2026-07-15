@@ -216,6 +216,17 @@ class PearTuneClient {
   countBump (params) { return this._request('count.bump', params) }
   countTop (params) { return this._request('count.top', params) }
 
+  // Playlists (milestone 3, phase 4). Host-owned, single writer. No owner param - the
+  // host takes it from the connection, same rule as favorites. The playlist id is
+  // minted by the host on create.
+  playlistList () { return this._request('playlist.list') }
+  playlistGet (params) { return this._request('playlist.get', params) }
+  playlistCreate (params) { return this._request('playlist.create', params) }
+  playlistRename (params) { return this._request('playlist.rename', params) }
+  playlistDelete (params) { return this._request('playlist.delete', params) }
+  playlistAdd (params) { return this._request('playlist.add', params) }
+  playlistSetTracks (params) { return this._request('playlist.setTracks', params) }
+
   art (params) { return this._request('art.get', params, { stream: true }) }
 
   // Resolves to the whole buffer. `onchunk` lets a caller start work before the

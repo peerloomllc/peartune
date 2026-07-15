@@ -144,6 +144,57 @@ test('favorites are the DEVICE\'s: a second unclaimed device does not see them',
   assert.deepEqual((await b.client.favList()).track, [], 'per-owner isolation over the wire')
 })
 
+// --- playlists (host-as-hub, milestone 3, phase 4) --------------------------
+
+test('playlists: create, add, reorder/remove, rename, delete - over the real connection', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  assert.deepEqual((await client.playlistList()).items, [], 'no playlists yet')
+
+  const pl = await client.playlistCreate({ name: 'Roadtrip' })
+  assert.ok(pl.id, 'the host mints the id')
+  assert.equal(pl.name, 'Roadtrip')
+
+  // Append (dupes allowed), then read the ordered ids back.
+  await client.playlistAdd({ id: pl.id, trackIds: ['t1', 't2'] })
+  const add2 = await client.playlistAdd({ id: pl.id, trackIds: ['t2', 't3'] })
+  assert.equal(add2.count, 4)
+  assert.deepEqual((await client.playlistGet({ id: pl.id })).trackIds, ['t1', 't2', 't2', 't3'])
+
+  // The list view carries a count and the name.
+  assert.deepEqual((await client.playlistList()).items.map(p => [p.name, p.count]), [['Roadtrip', 4]])
+
+  // Reorder + remove is one setTracks call (the app sends the new order).
+  await client.playlistSetTracks({ id: pl.id, trackIds: ['t3', 't1'] })
+  assert.deepEqual((await client.playlistGet({ id: pl.id })).trackIds, ['t3', 't1'])
+
+  const rn = await client.playlistRename({ id: pl.id, name: 'Summer' })
+  assert.equal(rn.name, 'Summer')
+
+  await client.playlistDelete({ id: pl.id })
+  assert.deepEqual((await client.playlistList()).items, [], 'gone after delete')
+})
+
+test('a playlist is the DEVICE\'s: a second unclaimed device cannot see or touch it', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const a = await pairAndConnect(testnet, host)
+  const b = await pairAndConnect(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  const pl = await a.client.playlistCreate({ name: 'private' })
+
+  // B is a different owner: it sees none of A's playlists...
+  assert.deepEqual((await b.client.playlistList()).items, [], 'per-owner isolation over the wire')
+  // ...and cannot reach A's even knowing its id - the host keys by the connection's owner.
+  await assert.rejects(() => b.client.playlistGet({ id: pl.id }), /no such playlist/)
+  await assert.rejects(() => b.client.playlistRename({ id: pl.id, name: 'hijack' }), /no such playlist/)
+  // A's playlist is untouched.
+  assert.equal((await a.client.playlistList()).items[0].name, 'private')
+})
+
 test('stream a whole track, bytes identical to the file on disk', async (t) => {
   const { testnet, host, track } = await scaffold(t)
   const { client } = await pairAndConnect(testnet, host)

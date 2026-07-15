@@ -17,7 +17,8 @@ import {
   CaretDown, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, RepeatOnce, X,
   ArrowCounterClockwise, ArrowClockwise, Heart, CurrencyBtc, ShareNetwork,
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
-  GridFour, ListPlus, Queue as QueueIcon, Trash
+  GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
+  PencilSimple, ArrowUp, ArrowDown
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -89,14 +90,18 @@ export default function App () {
   const [favItems, setFavItems] = useState(null) // the Favorites view, resolved + grouped
   const [cont, setCont] = useState(null) // "continue listening": { track, positionMs }
   const [mostPlayed, setMostPlayed] = useState(null) // the Most Played view: { items }
-  const [youView, setYouView] = useState('favorites') // the "You" tab's sub-picker: favorites | top
+  const [youView, setYouView] = useState('favorites') // the "You" tab's sub-picker: favorites | top | playlists
+  const [playlists, setPlaylists] = useState(null) // the Playlists list: [{ id, name, count }]
+  const [plSupported, setPlSupported] = useState(true) // false = host too old for playlists
+  const [addingTo, setAddingTo] = useState(null) // an item pending "add to playlist" (the picker)
+  const [naming, setNaming] = useState(false) // the "new playlist" name prompt
 
   useEffect(() => {
     call('init')
       .then((s) => {
         setState({ ...s, loading: false })
         if (s.settings?.density) setDensity(String(s.settings.density))
-        if (s.connected) { loadAlbums(0); loadSource(); loadFavs(); loadContinue() }
+        if (s.connected) { loadAlbums(0); loadSource(); loadFavs(); loadContinue(); loadPlaylists() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
@@ -132,6 +137,7 @@ export default function App () {
         loadSource()
         loadFavs()
         loadContinue()
+        loadPlaylists(true)
       }),
 
       // Back from the background, where the link almost certainly died. Reconnect
@@ -306,7 +312,8 @@ export default function App () {
   // no favorites support has only Most Played, so fall through to it rather than land
   // on an empty, unswitchable Favorites list.
   const openYou = (v) => {
-    if (v === 'top' || !favSupported) showMostPlayed()
+    if (v === 'playlists') showPlaylists()
+    else if (v === 'top' || !favSupported) showMostPlayed()
     else showFavorites()
   }
 
@@ -483,6 +490,85 @@ export default function App () {
       setError(e.message)
       setFavItems({ tracks: [], albums: [], artists: [] })
     }
+  }
+
+  // --- playlists (host-as-hub, milestone 3, phase 4) --------------------------
+  //
+  // The list is summaries only ({ id, name, count }); a playlist's tracks are fetched
+  // when it is opened (PlaylistScreen). The worklet caches the summaries so this
+  // renders offline; supported:false means the host is too old and we hide the picker.
+  async function loadPlaylists (force) {
+    if (playlists && !force) return
+    try {
+      const r = await call('playlists')
+      setPlaylists(r.items || [])
+      setPlSupported(r.supported !== false)
+    } catch {
+      setPlaylists(p => p || [])
+    }
+  }
+
+  async function showPlaylists (force) {
+    setYouView('playlists')
+    await loadPlaylists(force)
+  }
+
+  // Create, then open the new playlist so the obvious next act - adding tracks - is
+  // one tap away. Returns the new id so the add-to-playlist picker can create-and-add.
+  async function createPlaylist (name) {
+    try {
+      const pl = await call('createPlaylist', { name })
+      await loadPlaylists(true)
+      return pl
+    } catch (e) {
+      haptic('warn'); toast(e.message, true)
+      return null
+    }
+  }
+
+  async function renamePlaylist (id, name) {
+    try {
+      await call('renamePlaylist', { id, name })
+      await loadPlaylists(true)
+    } catch (e) { haptic('warn'); toast(e.message, true) }
+  }
+
+  async function removePlaylist (id) {
+    try {
+      await call('deletePlaylist', { id })
+      setPlaylists(ps => (ps || []).filter(p => p.id !== id))
+    } catch (e) { haptic('warn'); toast(e.message, true) }
+  }
+
+  const promptNewPlaylist = () => setNaming(true)
+
+  // Make a playlist from the name prompt, then open it - adding tracks is the obvious
+  // next act, and an empty playlist is where you do it from.
+  async function createAndOpenPlaylist (name) {
+    setNaming(false)
+    const pl = await createPlaylist(name)
+    if (pl) { setYouView('playlists'); push({ type: 'playlist', id: pl.id, name: pl.name }) }
+  }
+
+  const confirmDeletePlaylist = (id, name) => setConfirming({
+    title: 'Delete playlist?',
+    body: `"${name}" will be removed. The tracks themselves stay in your library.`,
+    danger: true,
+    yes: 'Delete',
+    onYes: () => { removePlaylist(id); pop() }
+  })
+
+  // Add resolved tracks to a playlist. The caller already turned an album/artist/track
+  // into a track list via tracksFor, so this just forwards the ids and confirms.
+  async function addTracksToPlaylist (id, name, tracks) {
+    const trackIds = tracks.map(t => t.id).filter(Boolean)
+    if (!trackIds.length) { haptic('warn'); return toast('Nothing to add', true) }
+    try {
+      await call('addToPlaylist', { id, trackIds })
+      await loadPlaylists(true)
+      haptic('light')
+      toast(`Added ${trackIds.length} to ${name}`)
+    } catch (e) { haptic('warn'); toast(e.message, true) }
   }
 
   // Density is a per-device preference, so it lives where the theme does: the
@@ -683,6 +769,12 @@ export default function App () {
 
   async function menuAction (item, action) {
     setMenu(null)
+    // Add to playlist opens the PICKER; the tracks are resolved only once a playlist
+    // is chosen (an album's track list should not be fetched just to open a menu).
+    if (action === 'playlist') {
+      if (plSupported) loadPlaylists()
+      return setAddingTo(item)
+    }
     try {
       const list = await tracksFor(item)
       // Rare now that an album-less artist returns its songs, but if the library
@@ -698,6 +790,19 @@ export default function App () {
       haptic('warn')
       toast(e.message, true)
     }
+  }
+
+  // The picker chose a playlist (or made a new one): resolve the pending item to its
+  // tracks and append them. `pl` is { id, name }.
+  async function addItemToPlaylist (pl) {
+    const item = addingTo
+    setAddingTo(null)
+    if (!item || !pl) return
+    try {
+      const list = await tracksFor(item)
+      if (!list.length) { haptic('warn'); return toast(`Nothing to add from ${item.name || 'that'}`, true) }
+      await addTracksToPlaylist(pl.id, pl.name, list)
+    } catch (e) { haptic('warn'); toast(e.message, true) }
   }
 
   if (state.loading) return <div className='center'><p className='muted'>Starting…</p></div>
@@ -747,6 +852,16 @@ export default function App () {
         favs={favs} onFav={favSupported ? onFav : null}
       />
     )
+  } else if (top?.type === 'playlist') {
+    screen = (
+      <PlaylistScreen
+        id={top.id} name={top.name} now={now} onBack={pop}
+        onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
+        onRename={renamePlaylist}
+        onSetTracks={(pid, trackIds) => call('setPlaylistTracks', { id: pid, trackIds }).then(() => loadPlaylists(true))}
+        onDelete={() => confirmDeletePlaylist(top.id, top.name)}
+      />
+    )
   } else if (tab === 'you') {
     screen = (
       <You
@@ -754,6 +869,9 @@ export default function App () {
         youView={youView} onYouView={openYou}
         favSupported={favSupported} favItems={favItems} mostPlayed={mostPlayed}
         favs={favs} onFav={favSupported ? onFav : null}
+        playlists={playlists} plSupported={plSupported}
+        onOpenPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name })}
+        onNewPlaylist={promptNewPlaylist}
         onPlay={playFrom} onLong={setMenu}
         onOpenAlbum={(id) => push({ type: 'album', id })}
         onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
@@ -835,6 +953,29 @@ export default function App () {
           item={menu}
           onClose={() => setMenu(null)}
           onAction={(a) => menuAction(menu, a)}
+          canPlaylist={plSupported}
+        />
+      )}
+      {addingTo && (
+        <PlaylistPicker
+          item={addingTo}
+          playlists={playlists}
+          onClose={() => setAddingTo(null)}
+          onPick={addItemToPlaylist}
+          onCreate={async (name) => {
+            const pl = await createPlaylist(name)
+            if (pl) addItemToPlaylist(pl)
+            else setAddingTo(null)
+          }}
+        />
+      )}
+      {naming && (
+        <NamePrompt
+          title='New playlist'
+          placeholder='Playlist name'
+          submitLabel='Create'
+          onClose={() => setNaming(false)}
+          onSubmit={createAndOpenPlaylist}
         />
       )}
       {viewing && <ArtViewer {...viewing} onClose={() => setViewing(null)} />}
@@ -996,8 +1137,8 @@ function QueueScreen ({ items, index, onJump, onClear }) {
   )
 }
 
-// Play / Shuffle / Add to queue, without drilling into the thing first.
-function ActionSheet ({ item, onClose, onAction }) {
+// Play / Shuffle / Add to queue / Add to playlist, without drilling into the thing first.
+function ActionSheet ({ item, onClose, onAction, canPlaylist }) {
   return (
     <div className='sheetwrap' onClick={onClose}>
       <div className='sheet' onClick={e => e.stopPropagation()}>
@@ -1016,8 +1157,58 @@ function ActionSheet ({ item, onClose, onAction }) {
           <button className='wide' onClick={() => onAction('queue')}>
             <ListPlus size={17} weight='bold' /> Add to queue
           </button>
+          {canPlaylist && (
+            <button className='wide' onClick={() => onAction('playlist')}>
+              <PlaylistIcon size={17} weight='bold' /> Add to playlist
+            </button>
+          )}
           <button className='wide' onClick={onClose}>Cancel</button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// Choose a playlist to add the pending item to - or make a new one inline. The item's
+// tracks are only resolved once a playlist is picked (the parent's addItemToPlaylist),
+// so opening this never fetches an album's track list.
+function PlaylistPicker ({ item, playlists, onClose, onPick, onCreate }) {
+  const [creating, setCreating] = useState(false)
+  const [name, setName] = useState('')
+  const list = playlists || []
+  const submit = (e) => { e.preventDefault(); const n = name.trim(); if (n) onCreate(n) }
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Add to playlist</h1>
+        <p className='muted sm'>{item.name}</p>
+        {creating
+          ? (
+            <form className='plrename' onSubmit={submit}>
+              <input
+                className='search' autoFocus value={name}
+                onChange={e => setName(e.target.value)} placeholder='Playlist name'
+              />
+              <div className='btnrow'>
+                <button type='button' onClick={() => setCreating(false)}>Cancel</button>
+                <button type='submit' className='primary' disabled={!name.trim()}>Create &amp; add</button>
+              </div>
+            </form>
+            )
+          : (
+            <div className='acts'>
+              <button className='wide newpl' onClick={() => setCreating(true)}>
+                <Plus size={17} weight='bold' /> New playlist
+              </button>
+              {list.map(pl => (
+                <button key={pl.id} className='wide plpick' onClick={() => onPick(pl)}>
+                  <span>{pl.name}</span>
+                  <span className='muted sm'>{pl.count} track{pl.count === 1 ? '' : 's'}</span>
+                </button>
+              ))}
+              <button className='wide' onClick={onClose}>Cancel</button>
+            </div>
+            )}
       </div>
     </div>
   )
@@ -1052,6 +1243,30 @@ function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) 
             onClick={() => { haptic(danger ? 'warn' : 'light'); onConfirm() }}
           >{yes}</button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// A themed sheet that asks for one line of text (a new playlist's name). Same shape as
+// Confirm, with an input - a WebView's window.prompt is as ugly as its confirm.
+function NamePrompt ({ title, placeholder, submitLabel = 'Save', onSubmit, onClose }) {
+  const [value, setValue] = useState('')
+  const submit = (e) => { e.preventDefault(); const v = value.trim(); if (v) { haptic('light'); onSubmit(v) } }
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>{title}</h1>
+        <form onSubmit={submit}>
+          <input
+            className='search' autoFocus value={value}
+            onChange={e => setValue(e.target.value)} placeholder={placeholder}
+          />
+          <div className='btnrow'>
+            <button type='button' onClick={onClose}>Cancel</button>
+            <button type='submit' className='primary' disabled={!value.trim()}>{submitLabel}</button>
+          </div>
+        </form>
       </div>
     </div>
   )
@@ -1313,6 +1528,7 @@ function FavEmpty () {
 function You ({
   state, density, now, youView, onYouView,
   favSupported, favItems, mostPlayed, favs, onFav,
+  playlists, plSupported, onOpenPlaylist, onNewPlaylist,
   onPlay, onLong, onOpenAlbum, onOpenArtist
 }) {
   const D = densityOf(density)
@@ -1325,7 +1541,7 @@ function You ({
     <div className='app'>
       <header>
         <h1>You</h1>
-        <p className='muted sm'>{youCount(view, { favItems, mostPlayed })}</p>
+        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists })}</p>
       </header>
 
       <div className='sticky'>
@@ -1335,6 +1551,9 @@ function You ({
               <button className={view === 'favorites' ? 'on' : ''} onClick={() => onYouView('favorites')}>Favorites</button>
             )}
             <button className={view === 'top' ? 'on' : ''} onClick={() => onYouView('top')}>Most Played</button>
+            {plSupported && (
+              <button className={view === 'playlists' ? 'on' : ''} onClick={() => onYouView('playlists')}>Playlists</button>
+            )}
           </div>
         </div>
       </div>
@@ -1346,30 +1565,75 @@ function You ({
                 onPlay={onPlay} onLong={onLong} onOpenAlbum={onOpenAlbum} onOpenArtist={onOpenArtist}
               />
             : <SkeletonRows />)
-        : (mostPlayed
-            ? (mostPlayed.items.length
-                ? (
-                  <ul className='tracks'>
-                    {mostPlayed.items.map(t => (
-                      <Row
-                        key={t.id} t={t} on={now?.trackId === t.id}
-                        onPlay={() => onPlay(mostPlayed.items, t)} onLong={onLong} art
-                        fav={favs.track.has(t.id)} onFav={favTrack} count={t.playCount}
-                      />
-                    ))}
-                  </ul>
-                  )
-                : <TopEmpty />)
-            : <SkeletonRows />)}
+        : view === 'playlists'
+          ? <PlaylistsView playlists={playlists} onOpen={onOpenPlaylist} onNew={onNewPlaylist} />
+          : (mostPlayed
+              ? (mostPlayed.items.length
+                  ? (
+                    <ul className='tracks'>
+                      {mostPlayed.items.map(t => (
+                        <Row
+                          key={t.id} t={t} on={now?.trackId === t.id}
+                          onPlay={() => onPlay(mostPlayed.items, t)} onLong={onLong} art
+                          fav={favs.track.has(t.id)} onFav={favTrack} count={t.playCount}
+                        />
+                      ))}
+                    </ul>
+                    )
+                  : <TopEmpty />)
+              : <SkeletonRows />)}
     </div>
   )
 }
 
-function youCount (view, { favItems, mostPlayed }) {
+function youCount (view, { favItems, mostPlayed, playlists }) {
   if (view === 'top') return mostPlayed ? `${mostPlayed.items.length} most played` : 'Loading…'
+  if (view === 'playlists') {
+    if (!playlists) return 'Loading playlists…'
+    return `${playlists.length} playlist${playlists.length === 1 ? '' : 's'}`
+  }
   if (!favItems) return 'Loading favorites…'
   const n = favItems.tracks.length + favItems.albums.length + favItems.artists.length
   return `${n} favorite${n === 1 ? '' : 's'}`
+}
+
+// The Playlists list: a "New playlist" button, then a row per playlist (name + count).
+// Tapping a row opens its detail screen. Empty and loading states are their own thing so
+// "no playlists yet" reads as an invitation, not a blank.
+function PlaylistsView ({ playlists, onOpen, onNew }) {
+  if (!playlists) return <SkeletonRows />
+  return (
+    <div className='plview'>
+      <button className='wide newpl' onClick={onNew}>
+        <Plus size={18} weight='bold' /> New playlist
+      </button>
+      {playlists.length === 0
+        ? (
+          <div className='blank'>
+            <PlaylistIcon size={40} weight='thin' />
+            <h2>No playlists yet</h2>
+            <p className='muted sm'>
+              Make one, then add tracks, albums or artists to it from their ⋯ menu. Your
+              playlists live on your server, so they follow you to your other devices.
+            </p>
+          </div>
+          )
+        : (
+          <ul className='pllist'>
+            {playlists.map(pl => (
+              <li key={pl.id} onClick={() => onOpen(pl)}>
+                <span className='plicon'><PlaylistIcon size={22} weight='regular' /></span>
+                <div className='meta'>
+                  <div className='t'>{pl.name}</div>
+                  <div className='muted sm sub'>{pl.count} track{pl.count === 1 ? '' : 's'}</div>
+                </div>
+                <CaretRight size={18} className='muted' />
+              </li>
+            ))}
+          </ul>
+          )}
+    </div>
+  )
 }
 
 // The Favorites view: favorited artists, albums and songs, each in its own section
@@ -1864,6 +2128,160 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
             </ul>
             )
           : <p className='muted center-p'>Nothing here.</p>)}
+    </div>
+  )
+}
+
+// A playlist's own screen (a drill-down like an album). Tap a track to play the
+// playlist from there; Edit reveals per-row reorder/remove. Rename and delete live
+// under Edit so the default view stays about the music.
+//
+// Every edit works on the RAW id list (pl.trackIds) via each resolved track's raw index
+// `_i` - see the worklet's playlistDetail - so a track that failed to resolve this
+// session is never dropped by reordering or by a neighbour's removal.
+function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onRename, onDelete, onSetTracks }) {
+  const [pl, setPl] = useState(null)
+  const [err, setErr] = useState(null)
+  const [editing, setEditing] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [nm, setNm] = useState('')
+
+  useEffect(() => {
+    let live = true
+    call('playlistDetail', { id })
+      .then(p => { if (live) setPl(p) })
+      .catch(e => { if (live) setErr(e.message) })
+    return () => { live = false }
+  }, [id])
+
+  const title = pl?.name ?? name ?? 'Playlist'
+  const tracks = pl?.tracks || []
+
+  const commit = (rawIds, nextTracks) => {
+    setPl({ ...pl, trackIds: rawIds, tracks: nextTracks })
+    onSetTracks(id, rawIds)
+  }
+  const removeAt = (i) => {
+    const t = tracks[i]
+    const rawIds = pl.trackIds.slice(); rawIds.splice(t._i, 1)
+    const nextTracks = tracks.filter((_, k) => k !== i).map(x => ({ ...x, _i: x._i > t._i ? x._i - 1 : x._i }))
+    haptic('light'); commit(rawIds, nextTracks)
+  }
+  const move = (i, dir) => {
+    const j = i + dir
+    if (j < 0 || j >= tracks.length) return
+    const a = tracks[i]; const b = tracks[j]
+    const rawIds = pl.trackIds.slice()
+    const tmp = rawIds[a._i]; rawIds[a._i] = rawIds[b._i]; rawIds[b._i] = tmp
+    const nextTracks = tracks.slice()
+    nextTracks[i] = { ...b, _i: a._i }
+    nextTracks[j] = { ...a, _i: b._i }
+    haptic('light'); commit(rawIds, nextTracks)
+  }
+
+  const saveName = () => {
+    const n = nm.trim()
+    setRenaming(false)
+    if (n && n !== title) { setPl(p => ({ ...p, name: n })); onRename(id, n) }
+  }
+
+  return (
+    <div className='app'>
+      <Back onClick={onBack} />
+      {err && <div className='error'>{err}</div>}
+
+      <div className='plhead'>
+        {renaming
+          ? (
+            <form className='plrename' onSubmit={(e) => { e.preventDefault(); saveName() }}>
+              <input
+                className='search' autoFocus value={nm}
+                onChange={e => setNm(e.target.value)} placeholder='Playlist name'
+              />
+              <div className='btnrow'>
+                <button type='button' onClick={() => setRenaming(false)}>Cancel</button>
+                <button type='submit' className='primary' disabled={!nm.trim()}>Save</button>
+              </div>
+            </form>
+            )
+          : (
+            <>
+              <h1>{title}</h1>
+              <p className='muted sm'>{tracks.length} track{tracks.length === 1 ? '' : 's'}</p>
+            </>
+            )}
+      </div>
+
+      {!renaming && tracks.length > 0 && (
+        <Actions
+          onPlay={() => onPlayAll(tracks)}
+          onShuffle={() => onPlayAll(tracks, { shuffled: true })}
+          onQueue={() => onQueue(tracks)}
+        />
+      )}
+
+      {pl && (
+        <div className='pltools'>
+          <button className={editing ? 'on' : ''} onClick={() => { haptic('light'); setEditing(e => !e) }}>
+            <PencilSimple size={16} weight='bold' /> {editing ? 'Done' : 'Edit'}
+          </button>
+          {editing && (
+            <>
+              <button onClick={() => { setNm(title); setRenaming(true) }}>Rename</button>
+              <button className='danger ghost' onClick={onDelete}>
+                <Trash size={16} weight='bold' /> Delete
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {!pl && !err && <SkeletonRows />}
+
+      {pl && (tracks.length === 0
+        ? (
+          <div className='blank'>
+            <PlaylistIcon size={40} weight='thin' />
+            <h2>This playlist is empty</h2>
+            <p className='muted sm'>
+              Add tracks, albums or artists to it from their ⋯ menu anywhere in the app.
+            </p>
+          </div>
+          )
+        : editing
+          ? (
+            <ul className='tracks editing'>
+              {tracks.map((t, i) => (
+                <li key={t._i} className='editrow'>
+                  <div className='meta'>
+                    <div className='t'>{t.title}</div>
+                    <div className='muted sm sub'>{[t.artist, t.album].filter(Boolean).join(' · ')}</div>
+                  </div>
+                  <div className='moves'>
+                    <button aria-label='Move up' disabled={i === 0} onClick={() => move(i, -1)}>
+                      <ArrowUp size={17} weight='bold' />
+                    </button>
+                    <button aria-label='Move down' disabled={i === tracks.length - 1} onClick={() => move(i, 1)}>
+                      <ArrowDown size={17} weight='bold' />
+                    </button>
+                    <button className='rm' aria-label='Remove from playlist' onClick={() => removeAt(i)}>
+                      <X size={17} weight='bold' />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            )
+          : (
+            <ul className='tracks'>
+              {tracks.map(t => (
+                <Row
+                  key={t._i} t={t} on={now?.trackId === t.id}
+                  onPlay={() => onPlay(tracks, t)} art
+                />
+              ))}
+            </ul>
+            ))}
     </div>
   )
 }
