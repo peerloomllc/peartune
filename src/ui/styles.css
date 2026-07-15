@@ -145,7 +145,17 @@ input.search { margin-top: .8rem; }
   display: grid; grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
   gap: 1rem .9rem; margin-top: .5rem;
 }
-.album { min-width: 0; }
+.album { min-width: 0; position: relative; }
+/* the favorite heart floats over the cover corner; a scrim keeps it readable on any art */
+.tileheart {
+  position: absolute; top: .45rem; right: .45rem; z-index: 2; line-height: 0;
+  display: inline-flex; padding: .32rem; border: 0; border-radius: 9999px; cursor: pointer;
+  background: rgba(0, 0, 0, .5); color: #fff;
+}
+.tileheart.on { color: var(--color-primary); }
+.tileheart:active { transform: scale(.85); }
+.grid.aslist .tileheart { top: 50%; transform: translateY(-50%); background: none; color: var(--color-text-muted); }
+.grid.aslist .tileheart.on { color: var(--color-primary); }
 .album .t {
   margin-top: .45rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

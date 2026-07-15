@@ -295,6 +295,36 @@ input.search {
 }
 .album {
   min-width: 0;
+  position: relative;
+}
+.tileheart {
+  position: absolute;
+  top: .45rem;
+  right: .45rem;
+  z-index: 2;
+  line-height: 0;
+  display: inline-flex;
+  padding: .32rem;
+  border: 0;
+  border-radius: 9999px;
+  cursor: pointer;
+  background: rgba(0, 0, 0, .5);
+  color: #fff;
+}
+.tileheart.on {
+  color: var(--color-primary);
+}
+.tileheart:active {
+  transform: scale(.85);
+}
+.grid.aslist .tileheart {
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  color: var(--color-text-muted);
+}
+.grid.aslist .tileheart.on {
+  color: var(--color-primary);
 }
 .album .t {
   margin-top: .45rem;

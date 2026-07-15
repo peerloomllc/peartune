@@ -1109,7 +1109,7 @@ function Library ({
       {searching
         ? (
           <SearchResults
-            results={results} now={now} d={D} artBase={artBase}
+            results={results} now={now} d={D} artBase={artBase} favs={favs} onFav={onFav}
             onOpenAlbum={onOpenAlbum} onOpenArtist={onOpenArtist} onPlay={onPlay} onLong={onLong}
           />
           )
@@ -1143,14 +1143,14 @@ function Library ({
                 : <SkeletonRows />)
           : browse === 'artists'
             ? (artists
-                ? <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={D} />
+                ? <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={D} favs={favs} onFav={onFav} />
                 : <SkeletonGrid round d={D} />)
             : !albumsLoaded
                 ? <SkeletonGrid d={D} />
                 : albums.length
                   ? (
                     <>
-                      <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} />
+                      <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} favs={favs} onFav={onFav} />
                       {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
                     </>
                     )
@@ -1196,13 +1196,13 @@ function FavoritesView ({ favItems, favs, onFav, now, d, artBase, onPlay, onLong
       {artists.length > 0 && (
         <section>
           <h3 className='favh'>Artists</h3>
-          <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={d} />
+          <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={d} favs={favs} onFav={onFav} />
         </section>
       )}
       {albums.length > 0 && (
         <section>
           <h3 className='favh'>Albums</h3>
-          <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={d} artBase={artBase} />
+          <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={d} artBase={artBase} favs={favs} onFav={onFav} />
         </section>
       )}
       {tracks.length > 0 && (
@@ -1335,7 +1335,7 @@ function SkeletonRows ({ n = 8 }) {
 //
 // A group with a handful of hits opens itself: making someone tap to reveal two
 // results is a worse tax than the scrolling was.
-function SearchResults ({ results, now, d, artBase, onOpenAlbum, onOpenArtist, onPlay, onLong }) {
+function SearchResults ({ results, now, d, artBase, favs, onFav, onOpenAlbum, onOpenArtist, onPlay, onLong }) {
   const groups = [
     { key: 'artists', label: 'Artists', items: results.artists || [] },
     { key: 'albums', label: 'Albums', items: results.albums || [] },
@@ -1370,10 +1370,10 @@ function SearchResults ({ results, now, d, artBase, onOpenAlbum, onOpenArtist, o
             {isOpen && (
               <div className='sbody'>
                 {g.key === 'artists' && (
-                  <ArtistGrid artists={g.items} onOpen={onOpenArtist} onLong={onLong} d={d} />
+                  <ArtistGrid artists={g.items} onOpen={onOpenArtist} onLong={onLong} d={d} favs={favs} onFav={onFav} />
                 )}
                 {g.key === 'albums' && (
-                  <Grid albums={g.items} onOpen={onOpenAlbum} onLong={onLong} d={d} artBase={artBase} />
+                  <Grid albums={g.items} onOpen={onOpenAlbum} onLong={onLong} d={d} artBase={artBase} favs={favs} onFav={onFav} />
                 )}
                 {g.key === 'tracks' && (
                   <ul className='tracks'>
@@ -1381,6 +1381,7 @@ function SearchResults ({ results, now, d, artBase, onOpenAlbum, onOpenArtist, o
                       <Row
                         key={t.id} t={t} on={now?.trackId === t.id}
                         onPlay={() => onPlay(g.items, t)} onLong={onLong} art
+                        fav={favs?.track?.has(t.id)} onFav={onFav ? (x => onFav('track', x)) : null}
                       />
                     ))}
                   </ul>
@@ -1394,7 +1395,7 @@ function SearchResults ({ results, now, d, artBase, onOpenAlbum, onOpenArtist, o
   )
 }
 
-function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase }) {
+function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase, favs, onFav }) {
   if (!albums.length) return null
   const list = d.cols === 1
   return (
@@ -1404,6 +1405,8 @@ function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase }) {
           key={a.id} className='album'
           onPress={() => onOpen(a.id)}
           onLongPress={onLong && (() => onLong({ type: 'album', id: a.id, name: a.name }))}
+          fav={favs?.album?.has(a.id)}
+          onFav={onFav ? (() => onFav('album', a)) : null}
         >
           <Cover src={artFor(a, d, artBase)} />
           <div className='meta'>
@@ -1416,10 +1419,26 @@ function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase }) {
   )
 }
 
-// One element, two gestures: tap opens it, a long press offers to play it.
-function Tile ({ className, onPress, onLongPress, children }) {
+// One element, two gestures: tap opens it, a long press offers to play it. When onFav
+// is given it also carries a heart in the corner that must NOT trigger the tile's own
+// press (stop it at pointerdown, which is what usePress listens on).
+function Tile ({ className, onPress, onLongPress, children, fav, onFav }) {
   const press = usePress(onPress, onLongPress)
-  return <div className={className} {...press}>{children}</div>
+  return (
+    <div className={className} {...press}>
+      {children}
+      {onFav && (
+        <button
+          className={'tileheart' + (fav ? ' on' : '')}
+          aria-label={fav ? 'Remove from favorites' : 'Add to favorites'}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onFav() }}
+        >
+          <Heart size={17} weight={fav ? 'fill' : 'regular'} />
+        </button>
+      )}
+    </div>
+  )
 }
 
 // The art URL is built HERE because the size depends on the density, and asking
@@ -1430,7 +1449,7 @@ function artFor (x, d, artBase) {
   return `${artBase}${encodeURIComponent(x.coverId)}?s=${d.art}`
 }
 
-function ArtistGrid ({ artists, onOpen, onLong, d = DENSITY[2], empty = <p className='muted center-p'>No artists.</p> }) {
+function ArtistGrid ({ artists, onOpen, onLong, d = DENSITY[2], favs, onFav, empty = <p className='muted center-p'>No artists.</p> }) {
   if (!artists.length) return empty
   const list = d.cols === 1
   return (
@@ -1440,6 +1459,8 @@ function ArtistGrid ({ artists, onOpen, onLong, d = DENSITY[2], empty = <p class
           key={a.id} className='album artist'
           onPress={() => onOpen(a)}
           onLongPress={onLong && (() => onLong({ type: 'artist', id: a.id, name: a.name }))}
+          fav={favs?.artist?.has(a.id)}
+          onFav={onFav ? (() => onFav('artist', a)) : null}
         >
           <Cover src={a.art} artist />
           <div className='meta'>
@@ -1625,7 +1646,7 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
           of their own - so show the songs. This page used to say "No albums." and
           leave you nowhere. */}
       {artist && (artist.albums.length
-        ? <Grid albums={artist.albums} onOpen={onOpenAlbum} onLong={onLong} />
+        ? <Grid albums={artist.albums} onOpen={onOpenAlbum} onLong={onLong} favs={favs} onFav={onFav} />
         : artist.tracks?.length
           ? (
             <ul className='tracks'>
