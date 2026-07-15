@@ -27,18 +27,40 @@ class NavidromeAdapter {
     this.kind = 'navidrome'
     this.scannedAt = null
 
-    // trackId -> the Subsonic song id, so media.stream can map back. Populated as
-    // we list/search; a track we have never seen is fetched on demand.
+    // HOW WE AUTHENTICATE, and it is not one-size-fits-all across Subsonic servers.
+    //
+    // 'token' is the salted-token scheme: t = md5(password + salt), fresh salt per
+    // request, and the PASSWORD NEVER CROSSES THE WIRE. It is strictly better, so it
+    // is the default and what Navidrome/Airsonic/Gonic/Ampache use.
+    //
+    // But it is OPTIONAL in the spec, and some servers refuse it with error 41
+    // ("token authentication not supported") - Nextcloud/ownCloud Music and LMS are
+    // the common ones. For those we fall back to sending the password itself,
+    // hex-encoded as `p=enc:<hex>` (the spec's obfuscated form - not encryption, just
+    // not plaintext in a log). We flip to it automatically on the first 41 and
+    // remember, so it costs one retry, once.
+    this._authMode = 'token' // 'token' | 'password'
     this.songIds = new Map()
     this._counts = null
   }
 
-  // A fresh salt per call: a captured (t, s) pair cannot be replayed against a
-  // different salt, and the password is never sent.
+  // The credential half of the query string, in whichever scheme this server accepts.
+  //
+  // token:    t = md5(password + salt), fresh salt per call. A captured (t, s) pair
+  //           cannot be replayed against a different salt, and the password is never
+  //           sent. Preferred.
+  // password: p = enc:<hex of password>. For servers that reject tokens (Nextcloud
+  //           Music, LMS). The password rides along on every request; on a home LAN
+  //           that is what every Subsonic client does, but it is why token is default.
   _auth () {
+    const base = `u=${encodeURIComponent(this.username)}&v=${API_VERSION}&c=${CLIENT}&f=json`
+    if (this._authMode === 'password') {
+      const hex = Buffer.from(String(this.password), 'utf8').toString('hex')
+      return `${base}&p=enc:${hex}`
+    }
     const salt = crypto.randomBytes(8).toString('hex')
     const token = crypto.createHash('md5').update(this.password + salt).digest('hex')
-    return `u=${encodeURIComponent(this.username)}&t=${token}&s=${salt}&v=${API_VERSION}&c=${CLIENT}&f=json`
+    return `${base}&t=${token}&s=${salt}`
   }
 
   _url (method, params = {}) {
@@ -50,14 +72,28 @@ class NavidromeAdapter {
   }
 
   async _call (method, params) {
+    let sr = await this._fetch(method, params)
+
+    // Error 41 is "token authentication not supported". It is the server telling us,
+    // on the first call, that it is a Nextcloud/LMS-class server. Flip to sending the
+    // password and retry ONCE - then remember, so every later call goes straight there.
+    if (sr.status === 'failed' && sr.error?.code === 41 && this._authMode === 'token') {
+      this._authMode = 'password'
+      sr = await this._fetch(method, params)
+    }
+
+    if (sr.status === 'failed') {
+      throw new Error(`navidrome ${method}: ${sr.error?.message || 'failed'} (code ${sr.error?.code})`)
+    }
+    return sr
+  }
+
+  async _fetch (method, params) {
     const res = await fetch(this._url(method, params))
     if (!res.ok) throw new Error(`navidrome ${method}: HTTP ${res.status}`)
     const body = await res.json()
     const sr = body['subsonic-response']
     if (!sr) throw new Error(`navidrome ${method}: malformed response`)
-    if (sr.status === 'failed') {
-      throw new Error(`navidrome ${method}: ${sr.error?.message || 'failed'} (code ${sr.error?.code})`)
-    }
     return sr
   }
 
