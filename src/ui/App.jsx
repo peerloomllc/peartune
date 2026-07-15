@@ -2194,20 +2194,22 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
 }
 
 // A playlist's own screen (a drill-down like an album). Tap a track to play the
-// playlist from there; Edit reveals per-row reorder/remove. Rename and delete live
-// under Edit so the default view stays about the music.
+// playlist from there. For OUR playlists a pencil toggles Edit mode - the name becomes
+// an inline field, and each row gets a drag grip and a remove button; a trash icon
+// beside the pencil deletes the whole playlist. Server playlists are read-only (no
+// icons, no edit).
 //
 // Every edit works on the RAW id list (pl.trackIds) via each resolved track's raw index
 // `_i` - see the worklet's playlistDetail - so a track that failed to resolve this
-// session is never dropped by reordering or by a neighbour's removal.
+// session is never dropped by reordering or by a neighbour's removal. React keys use the
+// STABLE `_k` (not `_i`, which reordering reassigns) so a drag animates a move.
 function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onRename, onDelete, onSetTracks, server, sourceName }) {
   const [pl, setPl] = useState(null)
   const [err, setErr] = useState(null)
   const [editing, setEditing] = useState(false)
-  const [renaming, setRenaming] = useState(false)
   const [nm, setNm] = useState('')
-  const [drag, setDrag] = useState(null) // { from, to } while a row is being dragged
-  const rowH = useRef(64)
+  const [drag, setDrag] = useState(null)     // { from, dy, insertAt, rowH } during a drag
+  const [removing, setRemoving] = useState([]) // _k of rows fading out
 
   useEffect(() => {
     let live = true
@@ -2223,20 +2225,29 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
   const tracks = pl?.tracks || []
 
   const commit = (rawIds, nextTracks) => {
-    setPl({ ...pl, trackIds: rawIds, tracks: nextTracks })
+    setPl(p => ({ ...p, trackIds: rawIds, tracks: nextTracks }))
     onSetTracks(id, rawIds)
   }
+
+  // Remove: fade the row out first (a class flips opacity/height), THEN drop it from the
+  // data, so the row visibly leaves rather than blinking away.
+  const REMOVE_MS = 260
   const removeAt = (i) => {
     const t = tracks[i]
-    const rawIds = pl.trackIds.slice(); rawIds.splice(t._i, 1)
-    const nextTracks = tracks.filter((_, k) => k !== i).map(x => ({ ...x, _i: x._i > t._i ? x._i - 1 : x._i }))
-    haptic('light'); commit(rawIds, nextTracks)
+    if (!t || removing.includes(t._k)) return
+    haptic('light')
+    setRemoving(r => [...r, t._k])
+    setTimeout(() => {
+      const rawIds = pl.trackIds.slice(); rawIds.splice(t._i, 1)
+      const nextTracks = tracks.filter(x => x._k !== t._k).map(x => ({ ...x, _i: x._i > t._i ? x._i - 1 : x._i }))
+      commit(rawIds, nextTracks)
+      setRemoving(r => r.filter(k => k !== t._k))
+    }, REMOVE_MS)
   }
 
   // Move the resolved track at display index `from` to `to`. The resolved tracks own a
   // set of raw slots (their `_i`); reordering re-assigns their ids across those SAME
-  // slots in the new order, so any unresolved id keeps its absolute position. This is
-  // the general form of the old up/down swap, now driven by the drag.
+  // slots in the new order, so any unresolved id keeps its absolute position.
   const reorderTo = (from, to) => {
     if (from === to || from == null || to == null) return
     const slots = tracks.map(t => t._i)
@@ -2246,41 +2257,53 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
     const rawIds = pl.trackIds.slice()
     const nextTracks = next.map((t, k) => {
       rawIds[slots[k]] = t.id
-      return { ...t, _i: slots[k] }
+      return { ...t, _i: slots[k] } // _k stays, so the row keeps its identity across the move
     })
     commit(rawIds, nextTracks)
   }
 
-  // Drag reorder. The grip captures the pointer (touch-action:none in CSS keeps the
-  // page from scrolling under the finger); as the finger crosses row midpoints the list
-  // reshuffles live, and the reorder is persisted once on release.
+  // Drag reorder, PearList-style: the grip captures the pointer (touch-action:none in CSS
+  // stops the page scrolling under the finger). The lifted row follows the finger; the
+  // other rows slide by one to open a gap, and a highlight marks where it will land. The
+  // list keeps its DOM order and moves rows with transforms, so nothing remounts mid-drag.
   const dragStart = (i) => (e) => {
     const li = e.currentTarget.closest('li')
-    if (li) rowH.current = li.offsetHeight || rowH.current
+    const h = li?.offsetHeight || 64
     try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
-    haptic('light')
-    setDrag({ from: i, to: i, y: e.clientY })
+    haptic('medium')
+    setDrag({ from: i, dy: 0, insertAt: i, rowH: h, y0: e.clientY })
   }
   const dragMove = (e) => {
-    if (!drag) return
-    const shift = Math.round((e.clientY - drag.y) / rowH.current)
-    const to = Math.max(0, Math.min(tracks.length - 1, drag.from + shift))
-    if (to !== drag.to) { haptic('light'); setDrag(d => ({ ...d, to })) }
+    setDrag(d => {
+      if (!d) return d
+      const dy = e.clientY - d.y0
+      const insertAt = Math.max(0, Math.min(tracks.length - 1, d.from + Math.round(dy / d.rowH)))
+      if (insertAt !== d.insertAt) { try { haptic('light') } catch {} }
+      return { ...d, dy, insertAt }
+    })
   }
   const dragEnd = () => {
-    if (drag) reorderTo(drag.from, drag.to)
-    setDrag(null)
+    setDrag(d => { if (d) reorderTo(d.from, d.insertAt); return null })
   }
-  // The list as it looks mid-drag: the dragged row pulled out and reinserted at `to`.
-  const viewTracks = drag ? (() => {
-    const v = tracks.slice(); const [m] = v.splice(drag.from, 1); v.splice(drag.to, 0, m); return v
-  })() : tracks
-  const dragId = drag ? tracks[drag.from]?._i : null
+
+  // Where does row `i` sit right now (its transform), given a live drag?
+  const rowShift = (i) => {
+    if (!drag) return 0
+    if (i === drag.from) return drag.dy // the lifted row follows the finger
+    if (drag.from < drag.insertAt && i > drag.from && i <= drag.insertAt) return -drag.rowH
+    if (drag.from > drag.insertAt && i >= drag.insertAt && i < drag.from) return drag.rowH
+    return 0
+  }
 
   const saveName = () => {
     const n = nm.trim()
-    setRenaming(false)
     if (n && n !== title) { setPl(p => ({ ...p, name: n })); onRename(id, n) }
+  }
+  const toggleEdit = () => {
+    haptic('light')
+    if (editing) saveName() // leaving Edit: commit the name (unmount won't fire onBlur)
+    else setNm(title)
+    setEditing(e => !e)
   }
 
   return (
@@ -2289,52 +2312,44 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
       {err && <div className='error'>{err}</div>}
 
       <div className='plhead'>
-        {renaming
-          ? (
-            <form className='plrename' onSubmit={(e) => { e.preventDefault(); saveName() }}>
+        <div className='pltitlerow'>
+          {editing && !server
+            ? (
               <input
-                className='search' autoFocus value={nm}
-                onChange={e => setNm(e.target.value)} placeholder='Playlist name'
+                className='plname' autoFocus value={nm} aria-label='Playlist name'
+                onChange={e => setNm(e.target.value)}
+                onBlur={saveName}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() } }}
               />
-              <div className='btnrow'>
-                <button type='button' onClick={() => setRenaming(false)}>Cancel</button>
-                <button type='submit' className='primary' disabled={!nm.trim()}>Save</button>
-              </div>
-            </form>
-            )
-          : (
-            <>
-              <h1>{title}</h1>
-              <p className='muted sm'>
-                {tracks.length} track{tracks.length === 1 ? '' : 's'}
-                {server && sourceName ? ` · on ${sourceName}` : ''}
-              </p>
-            </>
-            )}
+              )
+            : <h1>{title}</h1>}
+          {pl && !server && (
+            <div className='plheadacts'>
+              <button
+                className={'plicon' + (editing ? ' on' : '')}
+                aria-label={editing ? 'Done editing' : 'Edit playlist'}
+                onClick={toggleEdit}
+              >
+                <PencilSimple size={20} weight={editing ? 'fill' : 'regular'} />
+              </button>
+              <button className='plicon del' aria-label='Delete playlist' onClick={onDelete}>
+                <Trash size={20} weight='regular' />
+              </button>
+            </div>
+          )}
+        </div>
+        <p className='muted sm'>
+          {tracks.length} track{tracks.length === 1 ? '' : 's'}
+          {server && sourceName ? ` · on ${sourceName}` : ''}
+        </p>
       </div>
 
-      {!renaming && tracks.length > 0 && (
+      {tracks.length > 0 && (
         <Actions
           onPlay={() => onPlayAll(tracks)}
           onShuffle={() => onPlayAll(tracks, { shuffled: true })}
           onQueue={() => onQueue(tracks)}
         />
-      )}
-
-      {pl && !server && (
-        <div className='pltools'>
-          <button className={editing ? 'on' : ''} onClick={() => { haptic('light'); setEditing(e => !e) }}>
-            <PencilSimple size={16} weight='bold' /> {editing ? 'Done' : 'Edit'}
-          </button>
-          {editing && (
-            <>
-              <button onClick={() => { setNm(title); setRenaming(true) }}>Rename</button>
-              <button className='danger ghost' onClick={onDelete}>
-                <Trash size={16} weight='bold' /> Delete
-              </button>
-            </>
-          )}
-        </div>
       )}
 
       {!pl && !err && <SkeletonRows />}
@@ -2353,35 +2368,52 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
           )
         : editing
           ? (
-            <ul className='tracks editing'>
-              {viewTracks.map((t, i) => (
-                <li key={t._i} className={'editrow' + (t._i === dragId ? ' dragging' : '')}>
-                  <button
-                    className='grip' aria-label='Drag to reorder'
-                    onPointerDown={dragStart(i)} onPointerMove={dragMove}
-                    onPointerUp={dragEnd} onPointerCancel={dragEnd}
+            <ul className='tracks editing' style={drag ? { '--rowh': drag.rowH + 'px' } : undefined}>
+              {drag && (
+                <li className='drophl' aria-hidden style={{ top: drag.insertAt * drag.rowH + 'px', height: drag.rowH + 'px' }} />
+              )}
+              {tracks.map((t, i) => {
+                const lifted = drag && i === drag.from
+                const gone = removing.includes(t._k)
+                return (
+                  <li
+                    key={t._k}
+                    className={'editrow' + (lifted ? ' lifted' : '') + (gone ? ' removing' : '')}
+                    // A removing row hands all styling to the .removing class (its inline
+                    // transition would otherwise block the fade); everyone else gets the
+                    // live drag transform.
+                    style={gone
+                      ? undefined
+                      : {
+                          transform: `translateY(${rowShift(i)}px)` + (lifted ? ' scale(1.02)' : ''),
+                          transition: lifted ? 'none' : 'transform 180ms cubic-bezier(0.2,0,0,1)',
+                          zIndex: lifted ? 3 : 1
+                        }}
                   >
-                    <DotsSixVertical size={20} weight='bold' />
-                  </button>
-                  <div className='meta'>
-                    <div className='t'>{t.title}</div>
-                    <div className='muted sm sub'>{[t.artist, t.album].filter(Boolean).join(' · ')}</div>
-                  </div>
-                  <button
-                    className='rm' aria-label='Remove from playlist'
-                    onClick={() => removeAt(tracks.indexOf(t))}
-                  >
-                    <X size={17} weight='bold' />
-                  </button>
-                </li>
-              ))}
+                    <button
+                      className='plgrip' aria-label='Drag to reorder'
+                      onPointerDown={dragStart(i)} onPointerMove={dragMove}
+                      onPointerUp={dragEnd} onPointerCancel={dragEnd}
+                    >
+                      <DotsSixVertical size={20} weight='bold' />
+                    </button>
+                    <div className='meta'>
+                      <div className='t'>{t.title}</div>
+                      <div className='muted sm sub'>{[t.artist, t.album].filter(Boolean).join(' · ')}</div>
+                    </div>
+                    <button className='rm' aria-label='Remove from playlist' onClick={() => removeAt(i)}>
+                      <X size={17} weight='bold' />
+                    </button>
+                  </li>
+                )
+              })}
             </ul>
             )
           : (
             <ul className='tracks'>
               {tracks.map((t, i) => (
                 <Row
-                  key={t._i ?? i} t={t} on={now?.trackId === t.id}
+                  key={t._k ?? i} t={t} on={now?.trackId === t.id}
                   onPlay={() => onPlay(tracks, t)} art
                 />
               ))}

@@ -626,7 +626,10 @@ const methods = {
     const tracks = []
     for (let i = 0; i < ids.length; i++) {
       const t = await client.get({ id: ids[i], type: 'track' }).catch(() => null)
-      if (t) tracks.push({ ...withArt(t), _i: i })
+      // `_i` is the raw slot (reassigned when the app reorders); `_k` is a STABLE
+      // per-row identity for React keys, so a drag animates a move rather than
+      // remounting rows (a track id can repeat within a playlist, so it cannot key).
+      if (t) tracks.push({ ...withArt(t), _i: i, _k: tracks.length })
     }
     return { id: pl.id, name: pl.name, trackIds: ids, tracks }
   },
