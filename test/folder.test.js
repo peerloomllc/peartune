@@ -218,6 +218,59 @@ test('non-audio files are not tracks', async () => {
   assert.ok(!items.some(t => t.title.includes('notes')), 'notes.txt sits in the fixture library')
 })
 
+// --- transcoding (spike) ----------------------------------------------------
+//
+// The one thing a server connector had over a folder: capping a FLAC for cellular.
+// If ffmpeg is on the box the folder adapter now does it too. These skip cleanly
+// where ffmpeg is not installed, so the gate stays green on a bare CI box.
+let HAS_FFMPEG = false
+try { require('child_process').execSync('ffmpeg -hide_banner -version', { stdio: 'ignore' }); HAS_FFMPEG = true } catch {}
+
+test('transcode: format+bitrate yields a valid, different stream', { skip: !HAS_FFMPEG && 'ffmpeg not installed' }, async () => {
+  const a = await scanned()
+  const { items } = await a.list({ type: 'tracks' })
+  const flac = items.find(t => t.suffix === 'flac')
+
+  const raw = await drain(await a.stream({ trackId: flac.id }))
+  const mp3 = await drain(await a.stream({ trackId: flac.id, format: 'mp3', bitrate: 128 }))
+
+  assert.ok(mp3.length > 0, 'produced audio')
+  assert.notEqual(mp3.length, raw.length, 'it is not just the raw file')
+  // ID3 tag or an MPEG frame sync (0xFFEx) at the head - i.e. a real MP3.
+  const head = mp3.subarray(0, 3).toString('hex')
+  assert.ok(head === '494433' || (mp3[0] === 0xff && (mp3[1] & 0xe0) === 0xe0), 'looks like an MP3')
+})
+
+test('transcode is REQUESTED-only - no format means exact original bytes', async () => {
+  const a = await scanned()
+  const { items } = await a.list({ type: 'tracks' })
+  const t = items[0]
+  const raw = await drain(await a.stream({ trackId: t.id }))
+  assert.equal(raw.length, t.size, 'a plain stream is byte-for-byte the file')
+})
+
+test('transcode requested but ffmpeg ABSENT falls back to raw, never errors', async (t) => {
+  // A fresh module instance with a broken ffmpeg path, so hasFfmpeg() resolves false.
+  const dir = require('path').join(__dirname, '..', 'host', 'adapters', 'folder.js')
+  const resolved = require.resolve(dir)
+  const saved = require.cache[resolved]
+  delete require.cache[resolved]
+  const prev = process.env.PEARTUNE_FFMPEG
+  process.env.PEARTUNE_FFMPEG = '/nonexistent/ffmpeg'
+  t.after(() => {
+    delete require.cache[resolved]
+    if (saved) require.cache[resolved] = saved
+    if (prev === undefined) delete process.env.PEARTUNE_FFMPEG; else process.env.PEARTUNE_FFMPEG = prev
+  })
+
+  const { FolderAdapter } = require(dir)
+  const a = new FolderAdapter({ root: MUSIC, libraryId: LIB })
+  await a.scan()
+  const track = (await a.list({ type: 'tracks' })).items[0]
+  const buf = await drain(await a.stream({ trackId: track.id, format: 'mp3', bitrate: 128 }))
+  assert.equal(buf.length, track.size, 'degrades to the raw file rather than failing')
+})
+
 test('streaming: whole file, and a range for seeking', async () => {
   const a = await scanned()
   const { items } = await a.list({ type: 'tracks' })

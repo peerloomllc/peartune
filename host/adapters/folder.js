@@ -23,7 +23,40 @@ const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
 const { Readable } = require('stream')
+const { spawn } = require('child_process')
 const { trackId, groupId } = require('../../protocol/ids')
+
+// The transcoder. `PEARTUNE_FFMPEG` overrides the binary (a bundled static build,
+// say); otherwise we trust PATH. Adding ffmpeg to the host image is what turns
+// folder mode from "raw bytes only" into something that can cap a FLAC for cellular.
+const FFMPEG = process.env.PEARTUNE_FFMPEG || 'ffmpeg'
+
+// format -> ffmpeg codec + CONTAINER. The container is the trap: `-f aac` is not a
+// thing (it is `adts`), and opus rides in an ogg container.
+const TRANSCODE = {
+  mp3: { codec: 'libmp3lame', container: 'mp3' },
+  opus: { codec: 'libopus', container: 'ogg' },
+  aac: { codec: 'aac', container: 'adts' }
+}
+
+// Is ffmpeg actually here? Checked ONCE and memoized: if it is missing, transcoding
+// silently degrades to raw bytes (the pre-transcoder behavior), never an error. The
+// promise is cached so a screenful of stream requests does not spawn a probe each.
+let _ffmpeg = null
+function hasFfmpeg () {
+  if (_ffmpeg) return _ffmpeg
+  _ffmpeg = new Promise((resolve) => {
+    let ff
+    try {
+      ff = spawn(FFMPEG, ['-hide_banner', '-version'])
+    } catch {
+      return resolve(false)
+    }
+    ff.on('error', () => resolve(false))
+    ff.on('close', (code) => resolve(code === 0))
+  })
+  return _ffmpeg
+}
 
 const AUDIO_EXT = new Set(['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.wma', '.aiff', '.aif'])
 
@@ -580,19 +613,66 @@ class FolderAdapter {
   // BOTH seeking and resuming a half-finished pinned download. Bolting it on
   // later would mean reworking the client's whole fetch path.
   //
-  // The folder adapter ignores `format` / `bitrate`: it has no transcoder to
-  // delegate to (that is Navidrome's job). So a raw FLAC library over cellular
-  // is the one case that still burns real data, and the client warns about that
-  // combination - see DECISIONS 2026-07-13.
-  async stream ({ trackId: id, offset = 0, length } = {}) {
+  // TRANSCODING (spike, 2026-07-14). The folder adapter USED to ignore
+  // `format`/`bitrate` because it had no transcoder - so a raw-FLAC library over
+  // cellular was the one case that burned real data (DECISIONS 2026-07-13). If ffmpeg
+  // is available it now transcodes on the fly, which is the single biggest thing a
+  // server connector had over a folder. Measured: FLAC -> mp3@128k is ~7x smaller at
+  // ~50x realtime, so a 300MB album becomes ~40MB and keeps up with playback easily.
+  //
+  // If ffmpeg is NOT present we fall back to raw bytes - the pre-spike behavior. The
+  // client still warns about raw-over-cellular, so this degrades to exactly what it
+  // was, never worse.
+  async stream ({ trackId: id, offset = 0, length, format, bitrate } = {}) {
     const t = this.tracks.get(id)
     if (!t) return null
+
+    if ((format || bitrate) && await hasFfmpeg()) {
+      const stream = this._transcode(t, { format, bitrate })
+      if (stream) return stream
+      // fall through to raw if the transcode could not start
+    }
 
     const start = Math.max(0, Number(offset) || 0)
     if (start >= t.size) return null
 
     const end = length ? Math.min(t.size - 1, start + Number(length) - 1) : t.size - 1
     return fs.createReadStream(t.absPath, { start, end })
+  }
+
+  // Spawn ffmpeg and hand back its stdout as the audio stream.
+  //
+  // Byte offsets do NOT survive a transcode - the bytes do not exist until ffmpeg
+  // makes them - so this ignores `offset`/`length` and streams from the start, the
+  // same best-effort-range limitation Navidrome and Jellyfin have while transcoding.
+  // The client only asks for a transcode on cellular, where it also tends not to scrub.
+  _transcode (t, { format = 'mp3', bitrate }) {
+    const spec = TRANSCODE[format] || TRANSCODE.mp3
+    const args = [
+      '-hide_banner', '-loglevel', 'error',
+      '-i', t.absPath,
+      '-vn', '-map', '0:a:0', // audio only - drop any embedded cover art
+      '-c:a', spec.codec
+    ]
+    if (bitrate) args.push('-b:a', `${Number(bitrate)}k`)
+    args.push('-f', spec.container, 'pipe:1')
+
+    let ff
+    try {
+      ff = spawn(FFMPEG, args)
+    } catch {
+      return null // ffmpeg vanished between the check and here
+    }
+
+    // A transcode nobody finishes reading (the phone paused, the link dropped) must
+    // not leave ffmpeg chewing CPU on a Pi. Kill it when the reader is done or breaks.
+    const kill = () => { try { ff.kill('SIGKILL') } catch {} }
+    ff.stdout.on('close', kill)
+    ff.stdout.on('error', kill)
+    ff.on('error', (e) => { this.log('folder:transcode-failed', { err: e?.message }); kill() })
+    ff.stderr.on('data', (d) => this.log('folder:transcode-stderr', { msg: String(d).slice(0, 200) }))
+
+    return ff.stdout
   }
 }
 

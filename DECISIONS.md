@@ -2,6 +2,46 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - ffmpeg SPIKE: the transcoder was the easy part; delivery is a client+shim project
+Tier: T1 (host groundwork landed; the shippable feature is deferred with findings)
+Context: the folder-first strategy named "ffmpeg in the folder adapter" the
+highest-leverage move, because transcoding (capping a FLAC for cellular) is the main
+thing a server connector had over a folder. Spiked it.
+What the spike PROVED, and it is the cheap half:
+- The folder adapter can transcode. Behind the existing `format`/`bitrate` params it
+  spawns ffmpeg and streams stdout. Measured FLAC -> mp3@128k at ~7x smaller,
+  ~50x realtime; opus@96k ~14x. If ffmpeg is absent it falls back to raw bytes - never
+  an error - so the box degrades to exactly the pre-spike behavior. Tested.
+- Image cost is NOT the apt `ffmpeg` metapackage (466MB, nearly doubles the image). A
+  per-arch STATIC ffmpeg binary is ~40MB (amd64) / ~19MB (arm64) compressed, fetched
+  in the Dockerfile. ~10% image growth, not 2x.
+What the spike DISCOVERED, and it is the real cost - the phone cannot receive a
+transcode today, for two reasons:
+1. The client never REQUESTS one. `media.stream` carries `format`/`bitrate`, but the
+   worklet/shim never set them. (This was always true; the "bitrate adapts to network"
+   entry of 2026-07-13 was a plan, never built on the client.)
+2. THE SHIM IS BUILT ON BYTE RANGES, and a transcode has none. worklet/shim.js reports
+   the track's exact size as content-length, answers 206 with content-range, and
+   ExoPlayer seeks by byte offset - all of which require stable byte offsets that a
+   transcoded stream does not have (byte 5,000,000 of the mp3 does not exist until
+   ffmpeg makes it, and its size is unknown until it is done). Serving a transcode means
+   a non-seekable 200 stream with no content-length, and seeking becomes "re-transcode
+   from a time offset with -ss". That is a real rework of a PROVEN component.
+The reframing: "cellular transcoding" is NOT a folder-adapter change. It is a
+CLIENT + SHIM project (detect network -> request format/bitrate; shim serves a
+length-unknown non-seekable stream; seek = re-transcode with -ss), and it is
+SOURCE-AGNOSTIC - the same work lights up Navidrome and Jellyfin transcoding too, which
+have the identical latent gap. So it is more valuable than a folder feature, but it is
+also more than "add ffmpeg."
+Choice:
+- LAND the host-side transcoder now, as groundwork. It is correct, tested, gated behind
+  params nothing sends yet, and harmless (inert until requested).
+- Do NOT add ffmpeg to the shipped image yet - 40MB of dead weight until the client can
+  ask for a transcode. Add it together with the client+shim work.
+- Track "cellular transcoding" as its own milestone (client network policy + shim
+  transcode-mode), NOT as a folder task. It is the honest next step, and it benefits
+  all three sources at once.
+
 ## 2026-07-14 - Folder is the product; a connector inherits a server, it does not fetch music
 Tier: T1 (strategy / roadmap direction, no wire change)
 Context: with the folder adapter now reading tags, Tim asked the sharp question - if
