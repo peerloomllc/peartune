@@ -2107,7 +2107,7 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
 
       <div className='card'>
         <h3>Streaming quality</h3>
-        <div className='seg'>
+        <div className='seg scroll'>
           {QUALITIES.map(([k, l]) => (
             <button
               key={k} className={quality === k ? 'on' : ''}
