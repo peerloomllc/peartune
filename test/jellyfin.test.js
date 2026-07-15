@@ -107,3 +107,27 @@ test('a sparse item normalizes without throwing', () => {
   assert.equal(t.size, 0)
   assert.equal(t.durationMs, null)
 })
+
+// --- playlists (v2: read the server's own, resolved to our track ids) --------
+
+test('get(playlist) returns the ordered tracks with OUR ids', async () => {
+  const a = make()
+  a.userId = 'u1'
+  a._call = async (path) => {
+    if (path === '/Users/u1/Items/pl-1') return { Name: 'Roadtrip' }
+    if (path === '/Playlists/pl-1/Items') return { Items: [{ Id: 'i2', Name: 'B' }, { Id: 'i1', Name: 'A' }] }
+    return null
+  }
+  const pl = await a.get({ type: 'playlist', id: 'pl-1' })
+  assert.equal(pl.name, 'Roadtrip')
+  // Playlist order is the server's; the ids are ours (source-scoped).
+  assert.deepEqual(pl.tracks.map(t => t.title), ['B', 'A'])
+  assert.deepEqual(pl.tracks.map(t => t.id), [trackId(lib, 'jellyfin', 'i2'), trackId(lib, 'jellyfin', 'i1')])
+})
+
+test('get(playlist) is null when neither the playlist nor its items resolve', async () => {
+  const a = make()
+  a.userId = 'u1'
+  a._call = async () => { throw new Error('Jellyfin: 404') }
+  assert.equal(await a.get({ type: 'playlist', id: 'gone' }), null)
+})

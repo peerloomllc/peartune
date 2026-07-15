@@ -391,6 +391,24 @@ class JellyfinAdapter {
       return out
     }
 
+    // A server-owned playlist, resolved to its ordered tracks. Read-only, shown
+    // alongside our host-stored playlists (DECISIONS: we do not write back). The
+    // /Playlists/{id}/Items endpoint returns entries in playlist order, which is the
+    // whole point of using it over a plain /Items?ParentId query.
+    if (type === 'playlist') {
+      const [pl, songs] = await Promise.all([
+        this._call(`/Users/${this.userId}/Items/${id}`).catch(() => null),
+        this._call(`/Playlists/${id}/Items`, { userId: this.userId, Fields: TRACK_FIELDS }).catch(() => null)
+      ])
+      if (!pl && !songs) return null
+      return {
+        id,
+        name: pl?.Name || 'Playlist',
+        coverId: pl?.ImageTags?.Primary ? id : null,
+        tracks: (songs?.Items || []).map(i => this._track(i))
+      }
+    }
+
     const itemId = await this._itemId(id)
     if (!itemId) return null
     const item = await this._call(`/Users/${this.userId}/Items/${itemId}`, { Fields: TRACK_FIELDS })

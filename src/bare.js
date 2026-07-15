@@ -626,7 +626,10 @@ const methods = {
     const tracks = []
     for (let i = 0; i < ids.length; i++) {
       const t = await client.get({ id: ids[i], type: 'track' }).catch(() => null)
-      if (t) tracks.push({ ...withArt(t), _i: i })
+      // `_i` is the raw slot (reassigned when the app reorders); `_k` is a STABLE
+      // per-row identity for React keys, so a drag animates a move rather than
+      // remounting rows (a track id can repeat within a playlist, so it cannot key).
+      if (t) tracks.push({ ...withArt(t), _i: i, _k: tracks.length })
     }
     return { id: pl.id, name: pl.name, trackIds: ids, tracks }
   },
@@ -658,6 +661,27 @@ const methods = {
   async setPlaylistTracks ({ id, trackIds }) {
     await ensureConnected()
     return await client.playlistSetTracks({ id, trackIds })
+  },
+
+  // The SERVER's own playlists (v2), read-only. These come from Navidrome/Jellyfin via
+  // the normal library.list/get - no host state involved - and the app shows them beside
+  // our host-stored ones and can play them, but not edit them (DECISIONS: no write-back).
+  // A folder source (or an old/limited server) simply returns none.
+  async serverPlaylists () {
+    try {
+      await ensureConnected()
+      const { items } = await client.list({ type: 'playlists' })
+      return { items: items || [] }
+    } catch {
+      return { items: [] }
+    }
+  },
+
+  async serverPlaylistDetail ({ id }) {
+    await ensureConnected()
+    const pl = await client.get({ id, type: 'playlist' })
+    if (!pl) return null
+    return { id: pl.id, name: pl.name, tracks: (pl.tracks || []).map(withArt) }
   },
 
   // The shell tells us what network we are on (expo-network). It drives 'auto'

@@ -383,6 +383,22 @@ class SubsonicAdapter {
       }
     }
 
+    // A server-owned playlist, resolved to its tracks. Read-only (we do not write
+    // back - DECISIONS): the app shows these alongside our host-stored playlists and
+    // can play them. Optional, so a server without playlist support degrades to null
+    // rather than throwing (Funkwhale-style subsets).
+    if (type === 'playlist') {
+      const sr = await this._optional('getPlaylist', { id })
+      const pl = sr?.playlist
+      if (!pl) return null
+      return {
+        id: pl.id,
+        name: pl.name,
+        coverId: pl.coverArt || null,
+        tracks: (pl.entry || []).map(s => this._track(s))
+      }
+    }
+
     // A track, by OUR id. The shim calls this for the file size, so it must work
     // for an id we have not listed this session (e.g. after a host restart).
     const songId = await this._songId(id)
