@@ -114,6 +114,7 @@ h2 {
 }
 header {
   padding: .5rem 0 1rem;
+  text-align: center;
 }
 button {
   font: inherit;
@@ -496,14 +497,9 @@ button.icon.dens {
   border-radius: 9999px;
   padding: 3px;
   gap: 2px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.seg::-webkit-scrollbar {
-  display: none;
 }
 .seg button {
-  flex: 0 0 auto;
+  flex: 1;
   white-space: nowrap;
   border: none;
   border-radius: 9999px;
@@ -516,6 +512,16 @@ button.icon.dens {
 .seg button.on {
   background: var(--color-primary);
   color: var(--color-text-on-primary);
+}
+.seg.scroll {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.seg.scroll::-webkit-scrollbar {
+  display: none;
+}
+.seg.scroll button {
+  flex: 0 0 auto;
 }
 .dock {
   position: fixed;
@@ -921,7 +927,7 @@ button.wide {
   margin: .5rem 0 1rem;
 }
 .wordmark .name {
-  font-size: 1.75rem;
+  font-size: 1.35rem;
   font-weight: 600;
   letter-spacing: -.01em;
 }

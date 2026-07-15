@@ -59,7 +59,9 @@ h2 {
 }
 .center-p { text-align: center; padding: 2rem 0; }
 .app { padding: 1rem 1rem calc(var(--dock-h) + 1rem); max-width: 560px; margin: 0 auto; }
-header { padding: .5rem 0 1rem; }
+/* Page titles (Library, You, Queue, Settings) are centered - the h1 and its muted
+   count line. The controls below (search, pickers, cards) stay left-aligned. */
+header { padding: .5rem 0 1rem; text-align: center; }
 
 button {
   font: inherit; font-weight: 500; padding: .7rem 1.2rem; border-radius: 10px;
@@ -232,19 +234,26 @@ button.icon.dens {
   color: var(--color-text-secondary);
 }
 
-/* Segmented pill. Albums / Artists / Songs here, theme in Settings - one primitive. */
+/* Segmented pill. Albums / Artists / Songs here, Favorites / Most Played in the
+   You tab, theme in Settings - one primitive. Its two or three buttons split the
+   width evenly now that the crowded 5-way library picker is gone (split across two
+   tabs). The exception is `.seg.scroll` below. */
 .seg {
   display: flex; background: var(--color-surface-input);
   border: 1px solid var(--color-border); border-radius: 9999px; padding: 3px; gap: 2px;
-  overflow-x: auto; scrollbar-width: none;
 }
-.seg::-webkit-scrollbar { display: none; }
 .seg button {
-  flex: 0 0 auto; white-space: nowrap; border: none; border-radius: 9999px;
+  flex: 1; white-space: nowrap; border: none; border-radius: 9999px;
   padding: .5rem .9rem; font-size: .82rem;
   font-weight: 500; background: transparent; color: var(--color-text-secondary);
 }
 .seg button.on { background: var(--color-primary); color: var(--color-text-on-primary); }
+/* The streaming-quality picker has five options (Auto / Original / 320k / 192k /
+   128k) - too many to split the pill evenly without clipping the last one, so it
+   keeps each button its natural width and scrolls instead. */
+.seg.scroll { overflow-x: auto; scrollbar-width: none; }
+.seg.scroll::-webkit-scrollbar { display: none; }
+.seg.scroll button { flex: 0 0 auto; }
 
 /* --- the dock: player over navbar ---------------------------------------- */
 .dock {
@@ -437,7 +446,7 @@ button.wide { width: 100%; }
   color: var(--color-text-secondary); font-size: .875rem; line-height: 1.5;
 }
 .wordmark { text-align: center; margin: .5rem 0 1rem; }
-.wordmark .name { font-size: 1.75rem; font-weight: 600; letter-spacing: -.01em; }
+.wordmark .name { font-size: 1.35rem; font-weight: 600; letter-spacing: -.01em; }
 .wordmark .name .tune { color: var(--color-primary); }
 .version { text-align: center; color: var(--color-text-muted); font-size: .8rem;
            margin-top: .5rem; }
