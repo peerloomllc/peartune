@@ -38,6 +38,7 @@
     "hyperbee": "^2.24.2",
     "hypercore-crypto": "^3.6.1",
     "hyperdht": "^6.20.3",
+    "music-metadata": "^11.14.0",
     "protomux": "^3.10.1",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",

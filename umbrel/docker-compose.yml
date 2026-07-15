@@ -33,10 +33,26 @@ services:
       PEARTUNE_NAVIDROME_URL: ${APP_PEARTUNE_NAVIDROME_URL:-}
       PEARTUNE_NAVIDROME_USER: ${APP_PEARTUNE_NAVIDROME_USER:-}
       PEARTUNE_NAVIDROME_PASS: ${APP_PEARTUNE_NAVIDROME_PASS:-}
-      PEARTUNE_MUSIC: /music
+      # The DEFAULT library, for a folder install with no dashboard choice. This is
+      # the path INSIDE the container, and it points at the music subfolder of the
+      # mount below. The operator can pick a different folder in the dashboard
+      # (music vs podcasts vs audiobooks) - it browses what the container can see.
+      PEARTUNE_MUSIC: /library/music
     volumes:
       # The host identity seed and the grant store. Losing this means every device
       # must re-pair; leaking it means someone can impersonate your library.
       - ${APP_DATA_DIR}/data:/data
-      # Read-only, always. PearTune serves music; it has no business writing to it.
-      - ${UMBREL_ROOT}/data/storage/downloads:/music:ro
+      # WHERE AN UMBREL USER'S MUSIC ACTUALLY LIVES.
+      #
+      # This mounted ${UMBREL_ROOT}/data/storage/downloads before, and that path was
+      # simply WRONG: on a real Umbrel it is a different, empty directory, so a folder
+      # install landed on an empty library and looked broken. Navidrome's own Umbrel
+      # app - the established music app on the box, the one PearTune reads alongside -
+      # mounts ${UMBREL_ROOT}/home/Downloads/music, and that is where the files are
+      # (verified on hardware: 1357 tracks there, 0 in the old path).
+      #
+      # We mount the whole Downloads directory, not just music/, so the dashboard's
+      # folder picker can also reach podcasts/ and audiobooks/ if that is where a
+      # given user keeps things. Read-only, always: PearTune serves music, it has no
+      # business writing to it.
+      - ${UMBREL_ROOT}/home/Downloads:/library:ro

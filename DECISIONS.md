@@ -2,6 +2,120 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - The folder adapter reads TAGS, and infers albums from them
+Tier: T2. Proposal: proposals/2026-07-14-music-sources.md
+Context: the folder adapter listed filenames and nothing else. It is the DEFAULT for
+anyone without Navidrome - a store install lands here - so "a library of filenames"
+was the first impression of the whole app for exactly the people with no server.
+Choice: parse tags with `music-metadata` (MIT: ID3, Vorbis, MP4, RIFF). We are not
+writing a tag reader; a decade of other people's broken tags is baked into that
+library and none of it into ours.
+The interesting part is not reading a tag, it is deciding WHAT AN ALBUM IS in a bare
+folder, and getting it wrong gives you 400 albums called "Greatest Hits" or one album
+per track. Three cases, in order:
+1. An ALBUMARTIST tag - trust it completely. (albumartist, album) is the album,
+   wherever the files sit. This is what merges Disc 1/ and Disc 2/ back into one
+   album, and the only signal that survives a library organised by year or genre.
+2. An album tag but NO albumartist - group by (DIRECTORY, album), never by (track
+   artist, album). The second splinters every compilation into one album per guest
+   performer. A directory is the strongest statement a folder makes about what belongs
+   together. A compilation with differing performers and no albumartist is labelled
+   "Various Artists" rather than whichever track was first off the disk.
+3. No album tag - the DIRECTORY is the album. Untagged rips live in a folder named
+   after the album roughly always.
+Other choices that matter:
+- Artwork is an adjacent cover.jpg/folder.jpg (usually the better scan, and one open()
+  instead of parsing a 40MB FLAC) or the embedded picture, resolved LAZILY per album
+  and cached - including MISSES, or an album with no art re-parses its files on every
+  scroll. The scan skips covers entirely; holding 1358 embedded JPEGs to build a track
+  list would cost hundreds of MB for art nobody asked to see.
+- A file with unreadable tags is STILL A TRACK (filename as title). Losing a playable
+  file because we could not read its tags would make the tag reader worse than none.
+- trackId stays the PATH, not the tags. A library whose ids changed when someone fixed
+  a title typo would orphan that track's play count (see the 2026-07-13 id entry). A
+  NEW `groupId()` mints stable album/artist ids for a source that has none of its own;
+  it is deliberately NOT a ledger key, so its derivation can change later. trackId's
+  cannot.
+- A missing folder THROWS with the list of what the container CAN see, instead of
+  reporting 0 tracks. "0 tracks" is indistinguishable from an empty library, and that
+  is exactly the trap that cost an evening (below).
+
+## 2026-07-14 - ONE CONFIG PER KIND; switching sources keeps the other's credentials
+Tier: T2 (persisted config shape). Proposal: proposals/2026-07-14-music-sources.md
+Context: Tim went Navidrome -> Folder -> Navidrome and the URL, username and password
+were gone. source.json held ONE flat config, so saving a folder overwrote the
+Navidrome credentials.
+Choice: source.json v2 is `{ version, active, sources: { navidrome, jellyfin, folder } }`.
+`active` is a POINTER; each kind keeps its own row. Flipping between them is free, the
+dashboard prefills any kind, and this is also the shape MULTIPLE SIMULTANEOUS SOURCES
+will need (the direction this is heading - see the combined-source trap in the
+2026-07-13 trackId entry: a merged library needs a dedup story because trackId is
+source-scoped).
+Compat: v1 flat configs migrate on read (migrate()). Tim's Umbrel has a v1 file; it
+keeps working, password intact, and the credential surviving the upgrade is the whole
+point - losing it would take the library dark on a restart. Passwords still never
+leave the host (the view reports has-a-password, not the password); a blank field
+still means "leave it alone", now read from the STORE rather than the live adapter,
+which is what lets a kept Navidrome password survive while a folder is serving.
+
+## 2026-07-14 - Jellyfin ships; PLEX does NOT (and not for legal reasons)
+Tier: T2 (new source kind). Proposal: proposals/2026-07-14-music-sources.md
+Context: the release phase named Jellyfin and Plex as the two server adapters to add
+alongside Navidrome. Plex was to be spiked first and dropped if it turned ugly.
+JELLYFIN: shipped. Same interface as Navidrome, mostly mapping. Username + password
+exchanged ONCE for an access token that does not expire until revoked; no cloud, no
+refresh, no third party. The token lives in memory; the PASSWORD is what we persist,
+because a cached token we could not refresh would strand the library on the first
+restart after the operator logged us out elsewhere. A stable deviceId (derived from
+libraryId) keeps Jellyfin's device list from filling with ghost PearTunes. Verified
+against a live server: auth, listing, album/artist detail, search, exact-byte
+streaming, Range 206, artwork, and the cold-restart id-rebuild path.
+PLEX: spiked, DECLINED. The reads are comparable to Jellyfin. The killer is auth:
+- There is NO local credential. Plex Media Server has no username/password endpoint;
+  every authenticated read is gated by a token minted at plex.tv. So a headless host
+  reading a disk three feet away must (a) run a browser-mediated plex.tv/link flow at
+  setup, and (b) as of Sept 2025 keep a ROLLING 7-DAY cloud refresh loop alive for the
+  life of the install (nonce -> sign an Ed25519 device JWT -> exchange), forever.
+- The only escape is `allowedNetworks` ("allowed without auth"), which means telling
+  the user to WEAKEN their Plex server's security - a grotesque thing for THIS app,
+  whose pitch is "do not expose your server", to ask.
+A dependency on plex.tv being reachable every 7 days, so the daemon can read a local
+file, is precisely the failure mode PearTune exists to abolish. We would be shipping
+it on purpose, in the always-on process.
+IMPORTANT, so nobody re-opens this on the wrong grounds: this is a decision on COST and
+ARCHITECTURE, NOT on legality. Plex published an official, versioned API in Sept 2025
+and applauded the reverse-engineers; the ToS explicitly contemplates "client
+applications that communicate directly or indirectly with the Plex Solution"; music is
+EXPLICITLY exempt from the 2025 remote-playback paywall; and there is no enforcement
+history against clients (Plezy does exactly this in the open today). If we ever revisit
+- the argument for reach is real, Plex's install base dwarfs the others - do it after
+  milestone 4, JWT-flow only, music-only (the paywall exemption is audio-shaped; video
+  would invert the whole calculus), and never instruct anyone to set allowedNetworks.
+
+## 2026-07-14 - The folder path is a CONTAINER path, so the dashboard must not guess
+Tier: T1 (dashboard + adapter). Proposal: proposals/2026-07-14-music-sources.md
+Context: Tim typed the path Navidrome uses on the HOST
+(/home/umbrel/umbrel/home/Downloads/music) into the folder field and got zero tracks.
+Correctly - that path does not exist INSIDE the container, only what is MOUNTED does
+(/music) - but "0 tracks" is indistinguishable from an empty library, so it reads as
+"this app is broken" rather than "that path is wrong". It cost a real evening.
+Two compounding facts made it worse: the compose mounted an EMPTY docker volume, so
+even the right path had nothing; and nothing anywhere said "container path".
+Choice: a free-text box the host cannot verify is the bug.
+1. A folder BROWSER (/api/source/folders): the dashboard lists the directories the
+   container can actually see, flags which ones contain music, and the operator PICKS
+   one. The value that fills the box came from something that provably exists. Built
+   with DOM nodes, not string concatenation - these names come off a filesystem, onto
+   the page that holds the revoke buttons (see the stored-XSS entry).
+2. Test on a missing path THROWS a sentence naming what IS visible, instead of "0
+   tracks". Test that reaches a real but empty folder says "reachable, but NO MUSIC in
+   there" - zero tracks is not a pass.
+3. The Umbrel compose mount was simply WRONG: ${UMBREL_ROOT}/data/storage/downloads is
+   empty on a real Umbrel. Navidrome's own app mounts ${UMBREL_ROOT}/home/Downloads,
+   which is where the files are (verified: 1357 tracks there, 0 in the old path). The
+   compose now mounts that, defaulting the library to its music/ subfolder, with the
+   whole Downloads dir visible so the picker can reach podcasts/ and audiobooks/ too.
+
 ## 2026-07-14 - The music source is DATA, not deployment
 Tier: T2 (new persisted config + new dashboard API)
 Context: preparing the community-store listing. A store install has no env vars, so

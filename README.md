@@ -19,12 +19,15 @@ Every connection is end-to-end encrypted and mutually authenticated. The host kn
 
 ## Library sources
 
-Point the host at either:
+Pick a source in the dashboard - no compose file to edit. Point the host at:
 
 - an existing **Navidrome** (or any Subsonic-API) server, and PearTune uses its library, artwork and transcoding, or
-- a **plain folder of music files**, and PearTune scans the tags itself.
+- an existing **Jellyfin** server, likewise, or
+- a **plain folder of music files**, and PearTune reads the tags itself - artist, album, track number, year and embedded cover art (ID3, Vorbis, MP4, FLAC), so a folder is a real library, not a list of filenames.
 
-The app cannot tell the difference.
+The app cannot tell the difference. Switching sources keeps each one's settings, so you can flip between them freely.
+
+**Plex** is intentionally not supported. Not for legal reasons - Plex publishes an official API and exempts music from its remote-playback paywall - but because a Plex server can only be read through a plex.tv **cloud** account whose token expires every seven days. A daemon that must phone a cloud service every week just to read a disk it is sitting next to is the exact problem PearTune exists to remove. (See `DECISIONS.md`, 2026-07-14.)
 
 ## Access control
 

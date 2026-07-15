@@ -95,6 +95,13 @@ class NavidromeAdapter {
     return this._counts ?? 0
   }
 
+  // "Does this work?", for the dashboard's Test button. For Navidrome that is the
+  // same work as a scan - it already did the scanning - so this is scan() by
+  // another name. The FOLDER adapter is where the two genuinely differ.
+  async probe () {
+    return { tracks: await this.scan() }
+  }
+
   async stats () {
     let tracks = this._counts ?? 0
     if (!tracks) {

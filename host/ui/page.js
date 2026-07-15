@@ -58,6 +58,34 @@ module.exports = `<!doctype html>
   .ok { color: var(--accent); }
   .hint { color: var(--muted); font-size: .8rem; line-height: 1.5; margin: .8rem 0 0; }
   .hint.warn { color: var(--warn, #ffb74d); }
+  .err {
+    padding: .7rem .9rem; border-radius: 8px; margin-bottom: 1rem; font-size: .85rem;
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  }
+
+  /* --- the folder picker ------------------------------------------------ */
+  .pick { display: flex; gap: .5rem; align-items: center; max-width: 28rem; }
+  .pick input { flex: 1; }
+  #browse {
+    margin-top: .8rem; border: 1px solid var(--line); border-radius: 10px;
+    max-width: 28rem; overflow: hidden; background: var(--bg);
+  }
+  #browse .head {
+    display: flex; gap: .5rem; align-items: center; justify-content: space-between;
+    padding: .5rem .6rem; border-bottom: 1px solid var(--line);
+  }
+  #browse .head code { color: var(--fg); }
+  #browse ul { list-style: none; margin: 0; padding: 0; max-height: 15rem; overflow-y: auto; }
+  #browse li { border-top: 1px solid var(--line); }
+  #browse li:first-child { border-top: 0; }
+  #browse li button {
+    width: 100%; text-align: left; border: 0; border-radius: 0; background: transparent;
+    padding: .45rem .6rem; display: flex; justify-content: space-between; gap: .5rem;
+  }
+  #browse li button:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  #browse .has { color: var(--accent); font-size: .75rem; }
   button.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
   #qr { margin: 1rem 0; }
   #qr svg { width: 220px; height: 220px; background: #fff; padding: 10px; border-radius: 8px; }
@@ -121,11 +149,12 @@ module.exports = `<!doctype html>
 
   <div class="card">
     <h2>Music source</h2>
+    <div id="sourceerr" class="err" style="display:none"></div>
     <div id="source"></div>
     <p class="hint">
-      Point PearTune at the Navidrome you already run and you get its tags, artwork
-      and transcoding. A plain folder works too, but it has no tag reading yet - you
-      will see filenames, not albums.
+      Point PearTune at a Navidrome or Jellyfin you already run and you get its tags,
+      artwork and transcoding. A plain folder works too - PearTune reads the tags
+      itself (artist, album, track number, year and embedded cover art).
     </p>
     <p class="hint warn" id="sourcewarn" style="display:none">
       Changing the source changes every track's identity, so play counts and resume
@@ -292,38 +321,65 @@ function markSourceDirty () {
   document.getElementById('srccancel').style.display = ''
 }
 
+// SERVER sources look alike; a folder does not. Everything that differs between
+// Navidrome and Jellyfin is the word on the button.
+const SERVERS = {
+  navidrome: { label: 'Navidrome', placeholder: 'http://localhost:4533' },
+  jellyfin: { label: 'Jellyfin', placeholder: 'http://localhost:8096' }
+}
+
+let PICKED = 'folder'
+
+function serverFields (kind, cfg) {
+  const s = SERVERS[kind]
+  return '<div id="k_' + kind + '" class="kind" style="display:none">' +
+    '<label>' + s.label + ' URL</label>' +
+    '<input id="' + kind + '_url" oninput="markSourceDirty()" placeholder="' + s.placeholder +
+      '" value="' + esc(cfg.url) + '">' +
+    '<label>Username</label>' +
+    '<input id="' + kind + '_user" oninput="markSourceDirty()" placeholder="umbrel" value="' + esc(cfg.username) + '">' +
+    '<label>Password</label>' +
+    // The password is never sent BACK to the browser (host/source.js). An empty box
+    // on an already-configured source means "leave it as it is".
+    '<input id="' + kind + '_pass" type="password" oninput="markSourceDirty()" placeholder="' +
+      (cfg.hasPassword ? 'unchanged' : 'password') + '">' +
+  '</div>'
+}
+
 function renderSource (src, force) {
   if (SOURCE_DIRTY && !force) return
 
   const el = document.getElementById('source')
-  const nav = (src && src.kind === 'navidrome')
+  const kinds = (src && src.kinds) || {}
+  const active = (src && src.active) || 'folder'
+  const folder = kinds.folder || {}
 
   el.innerHTML =
     '<div class="seg">' +
-      '<button id="s_nav" class="' + (nav ? 'on' : '') + '" onclick="pickSource(true)">Navidrome</button>' +
-      '<button id="s_fold" class="' + (nav ? '' : 'on') + '" onclick="pickSource(false)">Folder</button>' +
+      '<button id="s_navidrome" onclick="pickSource(\\'navidrome\\')">Navidrome</button>' +
+      '<button id="s_jellyfin" onclick="pickSource(\\'jellyfin\\')">Jellyfin</button>' +
+      '<button id="s_folder" onclick="pickSource(\\'folder\\')">Folder</button>' +
     '</div>' +
-    '<div id="navfields" style="display:' + (nav ? 'block' : 'none') + '">' +
-      '<label>Navidrome URL</label>' +
-      '<input id="n_url" oninput="markSourceDirty()" placeholder="http://localhost:4533" value="' + esc(src && src.url) + '">' +
-      '<label>Username</label>' +
-      '<input id="n_user" oninput="markSourceDirty()" placeholder="umbrel" value="' + esc(src && src.username) + '">' +
-      '<label>Password</label>' +
-      // The password is never sent BACK to the browser (host/source.js publicView).
-      // An empty box on an already-configured source means "leave it as it is".
-      '<input id="n_pass" type="password" oninput="markSourceDirty()" placeholder="' +
-        ((src && src.hasPassword) ? 'unchanged' : 'password') + '">' +
-    '</div>' +
-    '<div id="foldfields" style="display:' + (nav ? 'none' : 'block') + '">' +
-      '<label>Folder</label>' +
-      '<input id="f_root" oninput="markSourceDirty()" placeholder="/music" value="' + esc((src && src.root) || '/music') + '">' +
+    serverFields('navidrome', kinds.navidrome || {}) +
+    serverFields('jellyfin', kinds.jellyfin || {}) +
+    '<div id="k_folder" class="kind" style="display:none">' +
+      '<label>Folder <span class="meta">- a path INSIDE the PearTune container</span></label>' +
+      '<div class="pick">' +
+        '<input id="f_root" oninput="markSourceDirty()" placeholder="/music" value="' +
+          esc(folder.root || '/music') + '">' +
+        '<button onclick="openBrowse()">Browse…</button>' +
+      '</div>' +
+      '<div id="browse" style="display:none"></div>' +
     '</div>' +
     '<div class="row">' +
       '<button onclick="testSource()">Test</button>' +
       '<button class="primary" onclick="saveSource()">Save</button>' +
+      '<button onclick="rescan()">Rescan</button>' +
       '<button id="srccancel" style="display:none" onclick="cancelSource()">Cancel</button>' +
       '<span id="srcmsg" class="meta"></span>' +
     '</div>'
+
+  showKind(active)
 }
 
 // Hand the card back to the server: whatever is actually running wins again.
@@ -333,35 +389,137 @@ function cancelSource () {
   refresh()
 }
 
-function pickSource (nav) {
-  document.getElementById('s_nav').className = nav ? 'on' : ''
-  document.getElementById('s_fold').className = nav ? '' : 'on'
-  document.getElementById('navfields').style.display = nav ? 'block' : 'none'
-  document.getElementById('foldfields').style.display = nav ? 'none' : 'block'
+function showKind (kind) {
+  PICKED = kind
+  for (const k of ['navidrome', 'jellyfin', 'folder']) {
+    document.getElementById('s_' + k).className = k === kind ? 'on' : ''
+    document.getElementById('k_' + k).style.display = k === kind ? 'block' : 'none'
+  }
+}
+
+function pickSource (kind) {
+  showKind(kind)
   markSourceDirty()
 }
 
+// Each kind's fields are their OWN, and the host keeps them that way (one config per
+// kind; active is a pointer). Flipping to Folder and back no longer asks you to
+// retype your Navidrome password, which is what it used to do.
 function sourceForm () {
-  const nav = document.getElementById('s_nav').className === 'on'
-  if (!nav) return { kind: 'folder', root: document.getElementById('f_root').value.trim() }
+  if (PICKED === 'folder') {
+    return { kind: 'folder', root: document.getElementById('f_root').value.trim() }
+  }
   const cfg = {
-    kind: 'navidrome',
-    url: document.getElementById('n_url').value.trim(),
-    username: document.getElementById('n_user').value.trim()
+    kind: PICKED,
+    url: document.getElementById(PICKED + '_url').value.trim(),
+    username: document.getElementById(PICKED + '_user').value.trim()
   }
   // Blank means "keep the password you already have"; the host fills it in.
-  const pw = document.getElementById('n_pass').value
+  const pw = document.getElementById(PICKED + '_pass').value
   if (pw) cfg.password = pw
   return cfg
+}
+
+// --- the folder picker ------------------------------------------------------
+//
+// A free-text path the host cannot verify is what made this a trap: the box wants a
+// path INSIDE THE CONTAINER, and the operator is looking at their NAS. Typing the
+// path Navidrome uses gives you zero tracks - correctly, and indistinguishably from
+// an empty library. So: show what the container can actually see, and let them click.
+//
+// Built with DOM nodes rather than string concatenation, on purpose. These names come
+// off a filesystem, and this is the page with the revoke buttons on it (see esc(),
+// and the stored XSS that made us write it).
+async function openBrowse (path) {
+  const el = document.getElementById('browse')
+  el.style.display = 'block'
+  el.textContent = 'looking…'
+
+  const start = path || document.getElementById('f_root').value.trim() || '/'
+  let r = await api('/api/source/folders?path=' + encodeURIComponent(start))
+  // The path in the box may not exist - that is the whole reason this button is
+  // here. Fall back to the root rather than showing the operator an error about
+  // the thing they came here to fix.
+  if (r.error) r = await api('/api/source/folders?path=/')
+  if (r.error) { el.textContent = r.error; return }
+
+  el.textContent = ''
+
+  const head = document.createElement('div')
+  head.className = 'head'
+
+  const where = document.createElement('code')
+  where.textContent = r.path + (r.here ? ' · ' + r.here + ' audio files here' : '')
+  head.appendChild(where)
+
+  const use = document.createElement('button')
+  use.className = 'primary'
+  use.textContent = 'Use this folder'
+  use.onclick = () => {
+    document.getElementById('f_root').value = r.path
+    el.style.display = 'none'
+    markSourceDirty()
+  }
+  head.appendChild(use)
+  el.appendChild(head)
+
+  const ul = document.createElement('ul')
+
+  if (r.parent) {
+    const li = document.createElement('li')
+    const b = document.createElement('button')
+    b.textContent = '../'
+    b.onclick = () => openBrowse(r.parent)
+    li.appendChild(b)
+    ul.appendChild(li)
+  }
+
+  for (const d of r.dirs) {
+    const li = document.createElement('li')
+    const b = document.createElement('button')
+
+    const name = document.createElement('span')
+    name.textContent = d.name + '/'
+    b.appendChild(name)
+
+    // The only thing an operator actually wants to know about a directory here.
+    if (d.music) {
+      const tag = document.createElement('span')
+      tag.className = 'has'
+      tag.textContent = 'music'
+      b.appendChild(tag)
+    }
+
+    b.onclick = () => openBrowse(d.path)
+    li.appendChild(b)
+    ul.appendChild(li)
+  }
+
+  if (!r.dirs.length && !r.here) {
+    const li = document.createElement('li')
+    li.className = 'empty'
+    li.style.padding = '.5rem .6rem'
+    li.textContent = 'nothing in here'
+    ul.appendChild(li)
+  }
+
+  el.appendChild(ul)
 }
 
 async function testSource () {
   const msg = document.getElementById('srcmsg')
   msg.textContent = 'testing...'
   const r = await api('/api/source/test', sourceForm())
-  msg.innerHTML = r.ok
+  if (!r.ok) {
+    msg.innerHTML = '<span class="revoked">' + esc(r.error) + '</span>'
+    return
+  }
+  // "works - 0 tracks" is the sentence that wasted an evening. Zero tracks is not a
+  // pass; it means the path is wrong, or the folder is empty, and either way there
+  // is nothing to play.
+  msg.innerHTML = r.tracks
     ? '<span class="ok">works - ' + r.tracks + ' tracks</span>'
-    : '<span class="revoked">' + esc(r.error) + '</span>'
+    : '<span class="revoked">reachable, but NO MUSIC in there. Nothing to play.</span>'
 }
 
 async function saveSource () {
@@ -372,10 +530,26 @@ async function saveSource () {
     msg.innerHTML = '<span class="revoked">' + esc(r.error) + '</span>'
     return
   }
-  msg.innerHTML = '<span class="ok">saved - ' + r.tracks + ' tracks</span>'
   SOURCE_DIRTY = false
   document.getElementById('sourcewarn').style.display = 'none'
-  refresh()
+
+  // The refresh REBUILDS this card, so the message has to be written on the other
+  // side of it. Set first and it lives for a few milliseconds and vanishes, which
+  // reads as "nothing happened" - and this is the button that just changed where
+  // all the music comes from.
+  await refresh()
+  document.getElementById('srcmsg').innerHTML = '<span class="ok">saved - ' + r.tracks + ' tracks</span>'
+}
+
+// A folder has no scanner watching it. Copy an album onto the NAS and PearTune does
+// not know until somebody says so - this is that somebody.
+async function rescan () {
+  document.getElementById('srcmsg').textContent = 'rescanning...'
+  const r = await api('/api/source/rescan', {})
+  await refresh()
+  document.getElementById('srcmsg').innerHTML = r.ok
+    ? '<span class="ok">rescanned - ' + r.tracks + ' tracks</span>'
+    : '<span class="revoked">' + esc(r.error) + '</span>'
 }
 
 function renderDevices (devices) {
@@ -438,9 +612,26 @@ async function refresh () {
   PEOPLE = s.persons || []
   DEVICES = s.devices || []
   renderSource(s.source)
+
+  // The host comes up even when its source is broken - it must, or a mistyped
+  // password would lock the operator out of the dashboard they need in order to fix
+  // it (DECISIONS 2026-07-14). But it was only saying so in the LOG. The one person
+  // who can fix a broken source is the one looking at this page.
+  const err = document.getElementById('sourceerr')
+  if (s.sourceError) {
+    err.style.display = 'block'
+    err.textContent = 'The music source is not working: ' + s.sourceError
+  } else {
+    err.style.display = 'none'
+  }
+
   document.getElementById('lib').textContent = s.libraryName
+  const st = s.stats || {}
   document.getElementById('sub').textContent =
-    s.stats.tracks + ' tracks · ' + s.stats.source + ' · ' +
+    (st.tracks || 0) + ' tracks · ' +
+    (st.albums ? st.albums + ' albums · ' : '') +
+    (st.artists ? st.artists + ' artists · ' : '') +
+    (st.source || '?') + ' · ' +
     s.devices.filter(d => !d.revokedAt).length + ' device(s)'
   renderPeople(PEOPLE, s.devices)
   renderDevices(s.devices)
