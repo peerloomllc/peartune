@@ -44,6 +44,61 @@ test('a fresh salt per request (a captured token cannot be replayed)', () => {
   assert.notEqual(s1, s2)
 })
 
+// AUTH FALLBACK, for Subsonic servers that reject the token scheme (Nextcloud
+// Music, LMS answer error 41). The token scheme stays the default and the
+// preferred one - the fallback sends the password, so we only use it when a server
+// tells us it will not accept anything else.
+
+test('the default auth mode is token - the fallback is never used unprompted', () => {
+  const a = make()
+  assert.equal(a._authMode, 'token')
+  // A server that never says "41" must never see the password.
+  assert.ok(!a._auth().includes('hunter2'))
+})
+
+test('in password mode it sends p=enc:<hex>, never the plaintext password', () => {
+  const a = make()
+  a._authMode = 'password' // what the 41 fallback sets
+
+  const qs = a._auth()
+  assert.ok(!/[?&]t=/.test(qs), 'no token in password mode')
+  assert.ok(!qs.includes('hunter2'), 'the raw password must not appear even here')
+
+  // p=enc:<hex of the password>, the Subsonic obfuscated form.
+  const hex = /[?&]p=enc:([0-9a-f]+)/.exec(qs)?.[1]
+  assert.ok(hex, 'must send p=enc:<hex>')
+  assert.equal(Buffer.from(hex, 'hex').toString('utf8'), 'hunter2')
+})
+
+test('error 41 flips token -> password and retries once, then remembers', async () => {
+  const a = make()
+  let calls = 0
+  const seen = []
+  // Stub the network. Answer 41 to the token scheme once, ok to password.
+  a._fetch = async (method) => {
+    calls++
+    seen.push(a._authMode)
+    if (a._authMode === 'token') return { status: 'failed', error: { code: 41, message: 'token auth not supported' } }
+    return { status: 'ok', method }
+  }
+
+  const r = await a._call('ping')
+  assert.equal(r.status, 'ok')
+  assert.equal(calls, 2, 'one 41, one retry')
+  assert.deepEqual(seen, ['token', 'password'])
+  assert.equal(a._authMode, 'password')
+
+  // The next call goes STRAIGHT to password - it does not re-probe the token scheme.
+  await a._call('ping')
+  assert.equal(calls, 3, 'no second probe')
+})
+
+test('a real failure (wrong password, code 40) is NOT swallowed by the fallback', async () => {
+  const a = make()
+  a._fetch = async () => ({ status: 'failed', error: { code: 40, message: 'Wrong username or password' } })
+  await assert.rejects(a._call('ping'), /code 40/)
+})
+
 test('trailing slashes on the base url do not produce a double slash', () => {
   const a = make()
   assert.ok(a._url('ping').startsWith('http://localhost:4533/rest/ping?'))
