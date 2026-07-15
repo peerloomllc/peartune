@@ -53,37 +53,58 @@ test("a person's two devices share an owner; a stranger does not", () => {
 
 // --- the store ---------------------------------------------------------------
 
-test('a favorite is set and listed back for its owner', async (t) => {
+test('a favorite is set and listed back for its owner, grouped by kind', async (t) => {
   const { bee } = await store(t)
   const s = new UserState(bee)
 
-  assert.deepEqual(await s.listFavs('p:tim'), [])
-  const row = await s.setFav('p:tim', 'track-1', true)
+  assert.deepEqual(await s.listFavs('p:tim'), { track: [], album: [], artist: [] })
+  const row = await s.setFav('p:tim', 'track', 'track-1', true)
   assert.equal(row.on, true)
   assert.ok(row.updatedAt, 'the host stamps updatedAt')
-  assert.deepEqual(await s.listFavs('p:tim'), ['track-1'])
+  assert.deepEqual(await s.listFavs('p:tim'), { track: ['track-1'], album: [], artist: [] })
+})
+
+test('favorites are grouped by KIND: track / album / artist are independent buckets', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  await s.setFav('p:tim', 'track', 't1', true)
+  await s.setFav('p:tim', 'album', 'al1', true)
+  await s.setFav('p:tim', 'artist', 'ar1', true)
+  // Same id string under two kinds must not collide.
+  await s.setFav('p:tim', 'album', 'shared', true)
+  await s.setFav('p:tim', 'artist', 'shared', true)
+
+  assert.deepEqual(await s.listFavs('p:tim'), {
+    track: ['t1'], album: ['al1', 'shared'], artist: ['ar1', 'shared']
+  })
+})
+
+test('an unknown kind is rejected, not stored', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await assert.rejects(() => s.setFav('p:tim', 'playlist', 'x', true), /bad favorite kind/)
 })
 
 test('un-favoriting is durable: the row stays off, not resurrected', async (t) => {
   const { bee } = await store(t)
   const s = new UserState(bee)
 
-  await s.setFav('p:tim', 'track-1', true)
-  await s.setFav('p:tim', 'track-1', false)
-  assert.deepEqual(await s.listFavs('p:tim'), [], 'off is off')
-  // The row is still there as an explicit off, not merely absent.
-  assert.equal((await s.getFav('p:tim', 'track-1')).on, false)
+  await s.setFav('p:tim', 'album', 'al1', true)
+  await s.setFav('p:tim', 'album', 'al1', false)
+  assert.deepEqual((await s.listFavs('p:tim')).album, [], 'off is off')
+  assert.equal((await s.getFav('p:tim', 'album', 'al1')).on, false)
 })
 
 test('owners are ISOLATED: one owner never sees another owner\'s favorites', async (t) => {
   const { bee } = await store(t)
   const s = new UserState(bee)
 
-  await s.setFav('p:tim', 'track-1', true)
-  await s.setFav('d:asasphone', 'track-2', true)
+  await s.setFav('p:tim', 'track', 'track-1', true)
+  await s.setFav('d:asasphone', 'track', 'track-2', true)
 
-  assert.deepEqual(await s.listFavs('p:tim'), ['track-1'])
-  assert.deepEqual(await s.listFavs('d:asasphone'), ['track-2'])
+  assert.deepEqual((await s.listFavs('p:tim')).track, ['track-1'])
+  assert.deepEqual((await s.listFavs('d:asasphone')).track, ['track-2'])
 })
 
 test('one owner-prefix is not a prefix of another (range scan is exact)', async (t) => {
@@ -91,10 +112,10 @@ test('one owner-prefix is not a prefix of another (range scan is exact)', async 
   const s = new UserState(bee)
 
   // 'p:tim' must not leak into a scan for 'p:ti' or vice versa.
-  await s.setFav('p:tim', 'a', true)
-  await s.setFav('p:ti', 'b', true)
-  assert.deepEqual(await s.listFavs('p:tim'), ['a'])
-  assert.deepEqual(await s.listFavs('p:ti'), ['b'])
+  await s.setFav('p:tim', 'track', 'a', true)
+  await s.setFav('p:ti', 'track', 'b', true)
+  assert.deepEqual((await s.listFavs('p:tim')).track, ['a'])
+  assert.deepEqual((await s.listFavs('p:ti')).track, ['b'])
 })
 
 test('favorites persist across a store reopen (they are on disk, not in memory)', async (t) => {
@@ -104,7 +125,7 @@ test('favorites persist across a store reopen (they are on disk, not in memory)'
   const cs1 = new Corestore(dir)
   const bee1 = new Hyperbee(cs1.get({ name: 's' }), { keyEncoding: 'utf-8', valueEncoding: 'json' })
   await bee1.ready()
-  await new UserState(bee1).setFav('p:tim', 'track-1', true)
+  await new UserState(bee1).setFav('p:tim', 'artist', 'ar1', true)
   await bee1.close()
   await cs1.close()
 
@@ -114,5 +135,5 @@ test('favorites persist across a store reopen (they are on disk, not in memory)'
   await bee2.ready()
   t.after(async () => { await bee2.close(); await cs2.close() })
 
-  assert.deepEqual(await new UserState(bee2).listFavs('p:tim'), ['track-1'])
+  assert.deepEqual((await new UserState(bee2).listFavs('p:tim')).artist, ['ar1'])
 })

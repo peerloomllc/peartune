@@ -162,16 +162,25 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
       // same rule as identity.set. A device can only ever touch its own state.
       case 'fav.list': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        return send.res.send({ id, body: { trackIds: await state.listFavs(ownerOf(grant)) } })
+        // Grouped { track:[ids], album:[ids], artist:[ids] }.
+        return send.res.send({ id, body: await state.listFavs(ownerOf(grant)) })
       }
 
       case 'fav.set': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
-        // Default to favoriting; on:false is an explicit un-favorite.
-        const row = await state.setFav(ownerOf(grant), params.trackId, params.on !== false)
-        log('fav:set', { on: row.on })
-        return send.res.send({ id, body: { ok: true, trackId: row.trackId, on: row.on } })
+        // kind defaults to 'track', and id accepts the old `trackId` name, so a phase-1
+        // app degrades cleanly. An unknown kind is a bad-params error, not a throw.
+        const kind = params?.kind || 'track'
+        const favId = params?.id || params?.trackId
+        if (!favId) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        let row
+        try {
+          row = await state.setFav(ownerOf(grant), kind, favId, params?.on !== false)
+        } catch {
+          return safeErr(id, ERR.BAD_PARAMS, 'bad favorite kind')
+        }
+        log('fav:set', { kind: row.kind, on: row.on })
+        return send.res.send({ id, body: { ok: true, kind: row.kind, id: row.id, on: row.on } })
       }
 
       case 'art.get': {

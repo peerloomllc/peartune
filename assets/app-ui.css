@@ -218,6 +218,41 @@ ul.tracks li .favbtn.on {
 ul.tracks li .favbtn:active {
   transform: scale(.85);
 }
+.headmeta {
+  min-width: 0;
+}
+.favhead {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  margin-top: .7rem;
+  padding: .35rem .85rem;
+  border-radius: 9999px;
+  font: inherit;
+  font-size: .85rem;
+  border: 1px solid var(--color-divider);
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.favhead.on {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.favhead:active {
+  transform: scale(.96);
+}
+.favview section {
+  margin-bottom: 1.6rem;
+}
+.favh {
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin: 0 0 .7rem;
+}
 .scanner {
   position: relative;
   min-height: 100vh;
