@@ -89,6 +89,7 @@ export default function App () {
   const [favItems, setFavItems] = useState(null) // the Favorites view, resolved + grouped
   const [cont, setCont] = useState(null) // "continue listening": { track, positionMs }
   const [mostPlayed, setMostPlayed] = useState(null) // the Most Played view: { items }
+  const [youView, setYouView] = useState('favorites') // the "You" tab's sub-picker: favorites | top
 
   useEffect(() => {
     call('init')
@@ -297,8 +298,17 @@ export default function App () {
   const push = (screen) => { haptic('light'); setStack(s => [...s, screen]) }
   const pop = () => setStack(s => s.slice(0, -1))
 
-  // A tab is a fresh start, so it drops any drill-down under it.
-  const goTab = (k) => { haptic('light'); setStack([]); setTab(k) }
+  // A tab is a fresh start, so it drops any drill-down under it. Entering "You"
+  // kicks off the active collection's fetch (each loader guards on its own cache).
+  const goTab = (k) => { haptic('light'); setStack([]); setTab(k); if (k === 'you') openYou(youView) }
+
+  // Open a "You" sub-view, loading it. Favorites is the default, but an old host with
+  // no favorites support has only Most Played, so fall through to it rather than land
+  // on an empty, unswitchable Favorites list.
+  const openYou = (v) => {
+    if (v === 'top' || !favSupported) showMostPlayed()
+    else showFavorites()
+  }
 
   // The dock (player + navbar) is fixed, so the content underneath has to know how
   // tall it is or its last row hides behind it. It changes height when the player
@@ -449,7 +459,7 @@ export default function App () {
 
   // The Most Played view: the owner's top tracks, resolved (with their play counts).
   async function showMostPlayed (force) {
-    setBrowse('top')
+    setYouView('top')
     if (mostPlayed && !force) return
     setMostPlayed(null)
     try {
@@ -463,7 +473,7 @@ export default function App () {
   // The Favorites VIEW resolves the favorited ids to renderable objects, grouped
   // { tracks, albums, artists }.
   async function showFavorites (force) {
-    setBrowse('favorites')
+    setYouView('favorites')
     if (favItems && !force) return
     setFavItems(null)
     try {
@@ -737,6 +747,18 @@ export default function App () {
         favs={favs} onFav={favSupported ? onFav : null}
       />
     )
+  } else if (tab === 'you') {
+    screen = (
+      <You
+        state={state} density={density} now={now}
+        youView={youView} onYouView={openYou}
+        favSupported={favSupported} favItems={favItems} mostPlayed={mostPlayed}
+        favs={favs} onFav={favSupported ? onFav : null}
+        onPlay={playFrom} onLong={setMenu}
+        onOpenAlbum={(id) => push({ type: 'album', id })}
+        onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
+      />
+    )
   } else if (tab === 'queue') {
     screen = (
       <QueueScreen
@@ -763,15 +785,12 @@ export default function App () {
         browse={browse} query={query} results={results} now={now} error={error}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
         favs={favs} onFav={favSupported ? onFav : null}
-        favSupported={favSupported} favItems={favItems} mostPlayed={mostPlayed}
         cont={now ? null : cont}
         onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
         onBrowse={(b) => {
           haptic('light')
           if (b === 'artists') return showArtists()
           if (b === 'songs') return showSongs()
-          if (b === 'favorites') return showFavorites()
-          if (b === 'top') return showMostPlayed()
           return setBrowse('albums')
         }}
         onDensity={cycleDensity}
@@ -835,6 +854,7 @@ export default function App () {
 
 const TABS = [
   { key: 'library', label: 'Library', Icon: MusicNotes },
+  { key: 'you', label: 'You', Icon: Heart },
   { key: 'queue', label: 'Queue', Icon: QueueIcon },
   { key: 'settings', label: 'Settings', Icon: Gear },
   { key: 'about', label: 'About', Icon: Info }
@@ -1042,7 +1062,7 @@ function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) 
 function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
-  favs, onFav, favSupported, favItems, mostPlayed, cont, onContinue,
+  favs, onFav, cont, onContinue,
   onBrowse, onDensity, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
@@ -1157,7 +1177,7 @@ function Library ({
       <header>
         <h1>{state.host.libraryName || 'Library'}</h1>
         <p className='muted sm'>
-          {count(browse, { albums, artists, songs, favItems, mostPlayed })}
+          {count(browse, { albums, artists, songs })}
           {sourceText(state) && <> · {sourceText(state)}</>}
         </p>
       </header>
@@ -1175,10 +1195,6 @@ function Library ({
               <button className={browse === 'albums' ? 'on' : ''} onClick={() => onBrowse('albums')}>Albums</button>
               <button className={browse === 'artists' ? 'on' : ''} onClick={() => onBrowse('artists')}>Artists</button>
               <button className={browse === 'songs' ? 'on' : ''} onClick={() => onBrowse('songs')}>Songs</button>
-              {favSupported && (
-                <button className={browse === 'favorites' ? 'on' : ''} onClick={() => onBrowse('favorites')}>Favorites</button>
-              )}
-              <button className={browse === 'top' ? 'on' : ''} onClick={() => onBrowse('top')}>Most Played</button>
             </div>
             {/* Stays PUT in the Songs view, disabled, rather than disappearing.
                 A control that vanishes reflows the row it was in, and the picker
@@ -1188,8 +1204,8 @@ function Library ({
             <button
               className='icon dens'
               onClick={onDensity}
-              disabled={browse === 'songs' || browse === 'favorites' || browse === 'top'}
-              aria-label={browse === 'songs' || browse === 'favorites' || browse === 'top' ? 'Layout (not available for lists)' : 'Change layout'}
+              disabled={browse === 'songs'}
+              aria-label={browse === 'songs' ? 'Layout (not available for lists)' : 'Change layout'}
             >
               <D.Icon size={20} weight='regular' />
             </button>
@@ -1233,29 +1249,6 @@ function Library ({
                     )
                   : <Empty />)
               : <SkeletonRows />)
-          : browse === 'favorites'
-            ? (favItems
-                ? <FavoritesView
-                    favItems={favItems} favs={favs} onFav={onFav} now={now} d={D} artBase={artBase}
-                    onPlay={onPlay} onLong={onLong} onOpenAlbum={onOpenAlbum} onOpenArtist={onOpenArtist}
-                  />
-                : <SkeletonRows />)
-          : browse === 'top'
-            ? (mostPlayed
-                ? (mostPlayed.items.length
-                    ? (
-                      <ul className='tracks'>
-                        {mostPlayed.items.map(t => (
-                          <Row
-                            key={t.id} t={t} on={now?.trackId === t.id}
-                            onPlay={() => onPlay(mostPlayed.items, t)} onLong={onLong} art
-                            fav={favs.track.has(t.id)} onFav={favTrack} count={t.playCount}
-                          />
-                        ))}
-                      </ul>
-                      )
-                    : <TopEmpty />)
-                : <SkeletonRows />)
           : browse === 'artists'
             ? (artists
                 ? <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={D} favs={favs} onFav={onFav} />
@@ -1310,6 +1303,73 @@ function FavEmpty () {
       </p>
     </div>
   )
+}
+
+// The "You" tab: a person's own collections, split out of Library so the library
+// picker stays a clean Albums / Artists / Songs. Its own small sub-picker switches
+// between Favorites and Most Played (Playlists slots in here at P4). The content is
+// the same FavoritesView and Most-Played list that used to live in Library; only the
+// home changed.
+function You ({
+  state, density, now, youView, onYouView,
+  favSupported, favItems, mostPlayed, favs, onFav,
+  onPlay, onLong, onOpenAlbum, onOpenArtist
+}) {
+  const D = densityOf(density)
+  const artBase = state.artBase || state.host?.artBase || null
+  const favTrack = onFav ? (t => onFav('track', t)) : null
+  // An old host with no favorites support has only Most Played; never sit on an
+  // empty, hidden Favorites view.
+  const view = (!favSupported && youView === 'favorites') ? 'top' : youView
+  return (
+    <div className='app'>
+      <header>
+        <h1>You</h1>
+        <p className='muted sm'>{youCount(view, { favItems, mostPlayed })}</p>
+      </header>
+
+      <div className='sticky'>
+        <div className='pickrow'>
+          <div className='seg'>
+            {favSupported && (
+              <button className={view === 'favorites' ? 'on' : ''} onClick={() => onYouView('favorites')}>Favorites</button>
+            )}
+            <button className={view === 'top' ? 'on' : ''} onClick={() => onYouView('top')}>Most Played</button>
+          </div>
+        </div>
+      </div>
+
+      {view === 'favorites'
+        ? (favItems
+            ? <FavoritesView
+                favItems={favItems} favs={favs} onFav={onFav} now={now} d={D} artBase={artBase}
+                onPlay={onPlay} onLong={onLong} onOpenAlbum={onOpenAlbum} onOpenArtist={onOpenArtist}
+              />
+            : <SkeletonRows />)
+        : (mostPlayed
+            ? (mostPlayed.items.length
+                ? (
+                  <ul className='tracks'>
+                    {mostPlayed.items.map(t => (
+                      <Row
+                        key={t.id} t={t} on={now?.trackId === t.id}
+                        onPlay={() => onPlay(mostPlayed.items, t)} onLong={onLong} art
+                        fav={favs.track.has(t.id)} onFav={favTrack} count={t.playCount}
+                      />
+                    ))}
+                  </ul>
+                  )
+                : <TopEmpty />)
+            : <SkeletonRows />)}
+    </div>
+  )
+}
+
+function youCount (view, { favItems, mostPlayed }) {
+  if (view === 'top') return mostPlayed ? `${mostPlayed.items.length} most played` : 'Loading…'
+  if (!favItems) return 'Loading favorites…'
+  const n = favItems.tracks.length + favItems.albums.length + favItems.artists.length
+  return `${n} favorite${n === 1 ? '' : 's'}`
 }
 
 // The Favorites view: favorited artists, albums and songs, each in its own section
@@ -1424,18 +1484,12 @@ function pairError (msg = '') {
   return 'Pairing failed. Show a fresh code on your server and try again.'
 }
 
-function count (browse, { albums, artists, songs, favItems, mostPlayed }) {
-  if (browse === 'top') return mostPlayed ? `${mostPlayed.items.length} most played` : 'Loading…'
+function count (browse, { albums, artists, songs }) {
   if (browse === 'artists') return `${artists ? artists.length : 0} artists`
   // "60 albums" is the whole truth; "100 songs" is not - it is the first page of a
   // list we are still walking. Say so rather than lying about the size of someone's
   // library.
   if (browse === 'songs') return songs ? `${songs.length} songs loaded` : 'Loading songs…'
-  if (browse === 'favorites') {
-    if (!favItems) return 'Loading favorites…'
-    const n = favItems.tracks.length + favItems.albums.length + favItems.artists.length
-    return `${n} favorite${n === 1 ? '' : 's'}`
-  }
   return `${albums.length} albums`
 }
 

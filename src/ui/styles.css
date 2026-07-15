@@ -232,15 +232,15 @@ button.icon.dens {
   color: var(--color-text-secondary);
 }
 
-/* Segmented pill. Albums / Artists / Songs here, theme in Settings - one primitive. */
+/* Segmented pill. Albums / Artists / Songs here, Favorites / Most Played in the
+   You tab, theme in Settings - one primitive, and each fits its buttons without a
+   scroll now that the crowded 5-way library picker is split across two tabs. */
 .seg {
   display: flex; background: var(--color-surface-input);
   border: 1px solid var(--color-border); border-radius: 9999px; padding: 3px; gap: 2px;
-  overflow-x: auto; scrollbar-width: none;
 }
-.seg::-webkit-scrollbar { display: none; }
 .seg button {
-  flex: 0 0 auto; white-space: nowrap; border: none; border-radius: 9999px;
+  flex: 1; white-space: nowrap; border: none; border-radius: 9999px;
   padding: .5rem .9rem; font-size: .82rem;
   font-weight: 500; background: transparent; color: var(--color-text-secondary);
 }

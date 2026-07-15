@@ -496,14 +496,9 @@ button.icon.dens {
   border-radius: 9999px;
   padding: 3px;
   gap: 2px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.seg::-webkit-scrollbar {
-  display: none;
 }
 .seg button {
-  flex: 0 0 auto;
+  flex: 1;
   white-space: nowrap;
   border: none;
   border-radius: 9999px;
