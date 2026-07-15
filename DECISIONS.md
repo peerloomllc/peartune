@@ -2,6 +2,42 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - A drop is not a stop; revoke cuts NEW access, not the current buffer
+Tier: T3. Proposal: proposals/2026-07-14-graceful-reconnect.md (approved by Tim)
+Context: switching networks (wifi<->cellular) killed the P2P connection, and the shell
+reacted by calling stop() - tearing the player down AND wiping the queue. A five-second
+network blip cost you the whole queue. That teardown existed because a revoke and a
+network drop look IDENTICAL at the instant of disconnect, and stopping was the safe
+reaction that made "revoke stops the music within a second" true.
+Decision (Tim): revoke does not need to cut the CURRENT track's already-buffered audio.
+It needs to cut everything NEW. A revoked device may finish what ExoPlayer already
+buffered; it may not start the next track, browse, search, or fetch art or any new
+bytes. Sound against the real threats (lost phone, removed guest) - they hear the tail
+of one song, nothing more - and revoke never stopped a determined client from capturing
+the current stream anyway.
+The key: a revoke and a switch look identical at disconnect but DIVERGE ON RECONNECT -
+a switch reconnects, a revoke is denied. So the phone stops guessing at disconnect time.
+Implementation (client only, no wire change):
+- The shell no longer calls stop() on host:disconnected. It keeps the player and the
+  queue and proactively reconnects.
+- The shim ALREADY reconnects on demand (every request awaits ensure()), so ExoPlayer's
+  next chunk request rides through the blip - a switch is a stall the buffer usually
+  hides; a revoke is denied and the buffer starves.
+- STARVATION net: if the player sits buffering (isBuffering true - which distinguishes a
+  starve from a user pause) with position frozen for 15s while disconnected, the buffer
+  ran dry and we cannot get back in - stop, and say "lost the connection" (NOT "revoked":
+  from the phone a revoke and a tunnel are the same, per the 2026-07-14 background
+  entry).
+VERIFIED on the TCL: played a track, revoked it from the dashboard. host:revoked killed
+the live connection, gate:deny {reason: device-revoked} denied the reconnect (NEW access
+cut off), and the player kept playing its buffer (the whole small track was buffered) -
+exactly the policy. Playing-to-end-of-a-buffered-track and the wifi<->cellular switch
+were verified separately (switch on the Pixel; the starvation timeout is reasoned from
+isBuffering + frozen-position and observed only indirectly - a large FLAC revoked
+mid-buffer is the case to confirm).
+The acceptance test in CLAUDE.md changed accordingly: "revoke stops the music within a
+second" -> "revoke cuts all NEW access within a second; the current track may finish".
+
 ## 2026-07-14 - ffmpeg SPIKE: the transcoder was the easy part; delivery is a client+shim project
 Tier: T1 (host groundwork landed; the shippable feature is deferred with findings)
 Context: the folder-first strategy named "ffmpeg in the folder adapter" the

@@ -66,7 +66,7 @@ Everything else is a music app. These two are why this is T3, and breaking eithe
 
 1. **The grant store is host-local and never replicated.** If the allow-list lived in the shared ledger, a revoked device could write itself back in. The host is the sole authority on who gets in.
 
-2. **Revoke must kill live connections, not just future ones.** The HyperDHT `firewall` hook only runs at connect time, so revoking a phone mid-song would otherwise do nothing until it reconnected. The host holds `deviceKey -> Set<connection>` and destroys them on revoke. "Revoke stops the music within a second" is an acceptance test.
+2. **Revoke must kill live connections, not just future ones.** The HyperDHT `firewall` hook only runs at connect time, so revoking a phone mid-song would otherwise do nothing until it reconnected. The host holds `deviceKey -> Set<connection>` and destroys them on revoke. The acceptance test is **"revoke cuts off all NEW access within a second"** — browse, the next track, art, and reconnect are all denied immediately. The current track may play out whatever the phone already buffered (proposal 2026-07-14-graceful-reconnect); that is deliberate, so a network switch does not also stop the music. What revoke must never allow is anything NEW after the cut.
 
 ## No bearer tokens, ever
 
@@ -79,7 +79,7 @@ Per Constitution §5, the canonical gate is `npm run verify`. Do not merge red.
 Manual smoke on top of the green gate, against the Umbrel on the LAN:
 1. Pair an Android phone by scanning the dashboard QR.
 2. Browse, play a track, seek.
-3. **Revoke the phone from the dashboard mid-song. Playback must stop and reconnect must be denied.**
+3. **Revoke the phone from the dashboard mid-song. Within a second: reconnect is denied, and browse / next track / art all fail. The current track may finish its buffer, then playback stops.** (Also: switch the phone between wifi and cellular mid-song — playback must continue, queue intact.)
 
 ## Devices
 

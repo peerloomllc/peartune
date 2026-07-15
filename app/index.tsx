@@ -38,6 +38,12 @@ type Pending = { resolve: (v: any) => void; reject: (e: any) => void }
 // and reports the RESOLVED scheme back down here.
 const SHELL_BG = { dark: '#14130f', light: '#faf8f5' }
 
+// How long the player may sit buffering-with-no-progress while disconnected before we
+// call it: the buffer starved and we cannot get back in. Long enough that a normal
+// network switch reconnects and refills first (the buffer usually covers a fast one
+// outright); short enough that a revoke does not leave a frozen player for a minute.
+const STARVE_MS = 15000
+
 // The worklet only cares about metered-vs-not: cellular is where it caps the
 // bitrate, everything else is treated as free. ETHERNET and WIFI are both 'wifi'
 // (unmetered); UNKNOWN falls back to 'wifi' so we never surprise-transcode on wifi
@@ -59,6 +65,14 @@ export default function App () {
   const queueRef = useRef<any[]>([])
   const indexRef = useRef(0)
   const netSub = useRef<{ remove: () => void } | null>(null)
+  // Are we currently disconnected from the host? On a drop we do NOT tear the
+  // player down (a network switch and a revoke look identical here) - we keep the
+  // buffer playing and let the RECONNECT result decide: a switch reconnects and
+  // playback rides through; a revoke is denied and the buffer starves.
+  const dropped = useRef(false)
+  // Progress watchdog for the starvation case: { pos, at }. If we are dropped and
+  // buffering with pos frozen past STARVE_MS, the buffer has run dry.
+  const starve = useRef({ pos: -1, at: 0 })
   const [uiHtml, setUiHtml] = useState<string | null>(null)
   const [scheme, setScheme] = useState<'light' | 'dark'>('dark')
   // Whether the UI has a screen or overlay to pop. Suite convention
@@ -131,6 +145,20 @@ export default function App () {
         if (i !== indexRef.current) {
           indexRef.current = i
           announce(i)
+        }
+
+        // STARVATION. We are off the wire (dropped) and ExoPlayer is buffering -
+        // waiting for bytes it cannot get. On a network switch the reconnect lands
+        // and this resolves; on a revoke it never will. `isBuffering` is what tells a
+        // starve apart from a user PAUSE (a pause is not buffering). If the position
+        // stays frozen while buffering-and-dropped past the grace window, the buffer
+        // has run dry and we cannot get back in - end it.
+        const posMs = Math.round((s.currentTime ?? 0) * 1000)
+        if (dropped.current && s.isBuffering) {
+          if (posMs !== starve.current.pos) starve.current = { pos: posMs, at: Date.now() }
+          else if (Date.now() - starve.current.at > STARVE_MS) { onStarved(); return }
+        } else {
+          starve.current = { pos: -1, at: Date.now() }
         }
 
         // The playlist ran out.
@@ -298,6 +326,33 @@ export default function App () {
     player.current = null
   }
 
+  // A network drop. Keep the player and the queue; try to get back in. On a switch
+  // the reconnect succeeds and the buffer covers the gap. On a revoke it is denied -
+  // and we do NOT stop here: the current track plays out whatever ExoPlayer already
+  // buffered, and the player starving (below) is what finally ends it. The shim also
+  // reconnects on demand for the request that broke mid-stream, so this proactive
+  // call is just to get a switch back faster.
+  async function onHostDropped () {
+    if (dropped.current) return
+    dropped.current = true
+    try {
+      await call('reconnect')
+      dropped.current = false
+    } catch {
+      // Denied (revoke) or host unreachable. Leave the buffer playing.
+    }
+  }
+
+  // The buffer starved while disconnected and we could not reconnect - a revoke, or a
+  // network hole we did not climb out of in time. Stop, and tell the UI it was a lost
+  // connection (NOT necessarily a revoke: from here a revoke and a tunnel look the
+  // same, and only a denied reconnect - which the worklet reports separately - would
+  // justify saying "revoked"). DECISIONS 2026-07-14.
+  function onStarved () {
+    toWeb('play:lost', {})
+    stop()
+  }
+
   function stop () {
     stopPlayer()
     queueRef.current = []
@@ -360,9 +415,13 @@ export default function App () {
           }
 
           if (msg.event) {
-            // The host cut us off (revoked, or it went away). Stop the player
-            // rather than leaving a stalled one on screen.
-            if (msg.event === 'host:disconnected') stop()
+            // A DROP IS NOT A STOP. This used to call stop() - tear the player down
+            // and wipe the queue - because a network switch and a revoke are
+            // indistinguishable at the instant of disconnect. They diverge on
+            // RECONNECT (a switch succeeds, a revoke is denied), so we keep the buffer
+            // playing and let the reconnect decide (proposal 2026-07-14).
+            if (msg.event === 'host:disconnected') onHostDropped()
+            else if (msg.event === 'host:connected') dropped.current = false
             toWeb(msg.event, msg.data)
             continue
           }
