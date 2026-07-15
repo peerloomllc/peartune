@@ -213,6 +213,17 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         return json(res, 200, { ok: true, devices: revoked.length, killed })
       }
 
+      // Delete an EMPTY person (one holding no un-revoked device) from the store, so
+      // the People list does not fill with dead rows. Refused for a person who still
+      // holds a live device - revoke them first.
+      if (req.method === 'POST' && url.pathname === '/api/person/delete') {
+        const { personId } = await readBody(req)
+        if (!personId) return json(res, 400, { error: 'personId required' })
+        const { deleted } = await host.deletePerson(personId)
+        if (!deleted) return json(res, 400, { error: 'can only delete a person with no active devices' })
+        return json(res, 200, { ok: true })
+      }
+
       // --- the teeth ---
       if (req.method === 'POST' && url.pathname === '/api/revoke') {
         const { deviceKey } = await readBody(req)
@@ -223,6 +234,18 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         // it, because "revoked" and "revoked AND the music stopped" are different
         // claims and the operator deserves to know which one happened.
         return json(res, 200, { ok: true, killed })
+      }
+
+      // Cleanup for the teeth: remove a REVOKED device's tombstone row from the store,
+      // so the Devices list does not grow forever. Refused for a live device (revoke
+      // it first); deleting never re-admits - a deleted device must pair again to
+      // return (see host.deleteDevice, gate.js fail-closed).
+      if (req.method === 'POST' && url.pathname === '/api/device/delete') {
+        const { deviceKey } = await readBody(req)
+        if (!deviceKey) return json(res, 400, { error: 'deviceKey required' })
+        const { deleted } = await host.deleteDevice(deviceKey)
+        if (!deleted) return json(res, 400, { error: 'can only delete a revoked device' })
+        return json(res, 200, { ok: true })
       }
 
       json(res, 404, { error: 'not found' })

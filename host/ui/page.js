@@ -33,7 +33,7 @@ module.exports = `<!doctype html>
     padding: 1.25rem; margin-bottom: 1.25rem;
   }
   h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .07em;
-       color: var(--muted); margin: 0 0 1rem; font-weight: 600; }
+       color: var(--muted); margin: 0 0 1rem; font-weight: 600; text-align: center; }
   button {
     font: inherit; font-weight: 500; padding: .5rem 1rem; border-radius: 8px;
     border: 1px solid var(--line); background: var(--card); color: var(--fg);
@@ -44,7 +44,9 @@ module.exports = `<!doctype html>
   button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
 
   /* --- music source --------------------------------------------------- */
-  .seg { display: inline-flex; gap: .25rem; padding: 3px; margin-bottom: .8rem;
+  /* fit-content + auto side margins centres just the pill, leaving the fields below
+     left-aligned where they read best. */
+  .seg { display: flex; width: fit-content; gap: .25rem; padding: 3px; margin: 0 auto .8rem;
          border: 1px solid var(--line); border-radius: 9999px; background: var(--bg); }
   .seg button { border: none; border-radius: 9999px; padding: .35rem 1rem; background: transparent; }
   .seg button.on { background: var(--accent); color: #fff; }
@@ -100,6 +102,8 @@ module.exports = `<!doctype html>
          background: var(--accent); margin-right: .4rem; }
   .dot.off { background: var(--line); }
   .revoked { color: var(--danger); font-size: .8rem; }
+  .link { background: none; border: 0; padding: 0; font: inherit; color: var(--accent);
+          text-decoration: underline; cursor: pointer; }
   .empty { color: var(--muted); font-size: .9rem; }
   .addrow { display: flex; gap: .5rem; margin-top: 1rem; }
   .addrow input { flex: 1; font: inherit; padding: .5rem .7rem; border-radius: 8px;
@@ -207,6 +211,9 @@ async function stopPair () {
 
 let PEOPLE = []
 let DEVICES = []
+// Revoked devices are hidden by default so the live list stays short; the footer under
+// Devices toggles them, and each shown revoked row gets a Delete to purge it for good.
+let SHOW_REVOKED = false
 
 async function addPerson () {
   const el = document.getElementById('pname')
@@ -231,6 +238,15 @@ async function revokePerson (id, name) {
   if (r.error) return flash('Failed: ' + esc(r.error))
   flash('Revoked <b>' + esc(name) + '</b>: ' + r.devices + ' device(s), ' +
         r.killed + ' live connection(s) cut off.')
+  refresh()
+}
+
+// Only offered for a person with NO devices, so this removes a record, not access.
+async function deletePerson (id, name) {
+  if (!confirm('Delete ' + name + ' from the list?\\n\\nThey have no devices, so this only tidies the list. Nothing is revoked.')) return
+  const r = await api('/api/person/delete', { personId: id })
+  if (r.error) return flash('Failed: ' + esc(r.error))
+  flash('Deleted <b>' + esc(name) + '</b> from the list.')
   refresh()
 }
 
@@ -272,7 +288,10 @@ function renderPeople (people, devices) {
         (theirs.length
           ? '<button class="danger" onclick="revokePerson(\\'' + p.id + '\\', \\'' +
             esc(p.name) + '\\')">Revoke all</button>'
-          : '<span class="meta">no devices</span>') +
+          // No devices: nothing to revoke, so offer to remove the empty row instead of
+          // leaving a dead "no devices" label that never clears.
+          : '<button class="danger" onclick="deletePerson(\\'' + p.id + '\\', \\'' +
+            esc(p.name) + '\\')">Delete</button>') +
       '</td></tr>'
   }).join('') + '</table>'
 }
@@ -292,6 +311,24 @@ async function revoke (key) {
     ? 'Revoked <b>' + esc(label) + '</b> and cut off ' + r.killed + ' live connection' + (r.killed === 1 ? '' : 's') + '.'
     : 'Revoked <b>' + esc(label) + '</b>. It was not connected.')
   refresh()
+}
+
+// Delete only ever appears on an ALREADY-REVOKED device, so this removes the record,
+// not the access. The host refuses to delete a live grant, and a deleted device stays
+// locked out until it pairs again - deleting cannot re-admit it.
+async function deleteDevice (key) {
+  const d = DEVICES.find(x => x.deviceKey === key)
+  const label = d ? d.label : 'this device'
+  if (!confirm('Delete "' + label + '" from the list?\\n\\nAccess is already revoked and stays revoked. This only removes the record; the device would have to pair again to return.')) return
+  const r = await api('/api/device/delete', { deviceKey: key })
+  if (r.error) return flash('Failed: ' + esc(r.error))
+  flash('Deleted <b>' + esc(label) + '</b> from the list.')
+  refresh()
+}
+
+function toggleRevoked () {
+  SHOW_REVOKED = !SHOW_REVOKED
+  renderDevices(DEVICES)
 }
 
 // The operator turning a device's CLAIM into a real assignment. This is the only
@@ -560,7 +597,23 @@ function renderDevices (devices) {
   }
   const live = PEOPLE.filter(p => !p.revokedAt)
 
-  el.innerHTML = '<table>' + devices.map(d => {
+  // Revoked rows are dead weight in the live list. Hide them behind the footer toggle
+  // unless the operator has asked to see them (to delete one).
+  const revokedCount = devices.filter(d => d.revokedAt).length
+  const shown = SHOW_REVOKED ? devices : devices.filter(d => !d.revokedAt)
+
+  const footer = revokedCount
+    ? '<p class="meta" style="margin-top:1rem">' + revokedCount + ' revoked · ' +
+      '<button class="link" onclick="toggleRevoked()">' +
+      (SHOW_REVOKED ? 'hide' : 'show') + '</button></p>'
+    : ''
+
+  if (!shown.length) {
+    el.innerHTML = '<p class="empty">No active devices.</p>' + footer
+    return
+  }
+
+  el.innerHTML = '<table>' + shown.map(d => {
     const status = d.revokedAt
       ? '<span class="revoked">revoked ' + ago(d.revokedAt) + '</span>'
       : '<span class="meta"><span class="dot ' + (d.online ? '' : 'off') + '"></span>' +
@@ -578,8 +631,9 @@ function renderDevices (devices) {
 
     // The key ONLY. A device-supplied label was being interpolated into this
     // onclick, which is exactly the injection this page must not have.
+    // A revoked row offers Delete (remove the tombstone) instead of Revoke.
     const action = d.revokedAt
-      ? ''
+      ? '<button class="danger" onclick="deleteDevice(\\'' + d.deviceKey + '\\')">Delete</button>'
       : '<button class="danger" onclick="revoke(\\'' + d.deviceKey + '\\')">Revoke</button>'
 
     // A device says who it belongs to; the OPERATOR decides. Until confirmed the
@@ -604,7 +658,7 @@ function renderDevices (devices) {
       '<td>' + owner + '</td>' +
       '<td style="text-align:right">' + action + '</td>' +
     '</tr>'
-  }).join('') + '</table>'
+  }).join('') + '</table>' + footer
 }
 
 async function refresh () {
