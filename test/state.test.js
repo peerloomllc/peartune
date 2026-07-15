@@ -118,6 +118,54 @@ test('one owner-prefix is not a prefix of another (range scan is exact)', async 
   assert.deepEqual((await s.listFavs('p:ti')).track, ['b'])
 })
 
+// --- resume positions --------------------------------------------------------
+
+test('a resume position is set and read back for its owner', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  assert.deepEqual(await s.getResume('p:tim', 't1'), null, 'nothing yet')
+  const row = await s.setResume('p:tim', 't1', 90000, 240000)
+  assert.equal(row.positionMs, 90000)
+  assert.equal(row.durationMs, 240000)
+  assert.ok(row.updatedAt)
+  assert.equal((await s.getResume('p:tim', 't1')).positionMs, 90000)
+})
+
+test('a position of 0 (or finishing) DELETES the row - the track starts fresh', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  await s.setResume('p:tim', 't1', 90000, 240000)
+  assert.equal(await s.setResume('p:tim', 't1', 0, 240000), null, 'zero is a clear')
+  assert.equal(await s.getResume('p:tim', 't1'), null, 'the row is gone, not a stored 0')
+})
+
+test('resume positions are per-owner isolated', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.setResume('p:tim', 't1', 5000, 100000)
+  assert.equal(await s.getResume('d:asas', 't1'), null, 'another owner has no resume for it')
+})
+
+test('latestResume returns the MOST RECENTLY updated resume (the continue candidate)', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  assert.equal(await s.latestResume('p:tim'), null, 'nothing to continue yet')
+
+  await s.setResume('p:tim', 't1', 10000, 200000)
+  await new Promise(r => setTimeout(r, 5)) // ensure a later updatedAt
+  await s.setResume('p:tim', 't2', 20000, 300000)
+
+  const latest = await s.latestResume('p:tim')
+  assert.equal(latest.trackId, 't2', 'the one touched last')
+  assert.equal(latest.positionMs, 20000)
+
+  // Finishing t2 (clear) makes t1 the candidate again.
+  await s.setResume('p:tim', 't2', 0)
+  assert.equal((await s.latestResume('p:tim')).trackId, 't1')
+})
+
 test('favorites persist across a store reopen (they are on disk, not in memory)', async (t) => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pt-state-persist-'))
   t.after(() => fsp.rm(dir, { recursive: true, force: true }))

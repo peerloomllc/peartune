@@ -55,6 +55,41 @@ class UserState {
     return node ? node.value : null
   }
 
+  // --- resume positions (milestone 3, phase 2) ------------------------------
+  //
+  // resume:{ownerId}:{trackId} -> { trackId, positionMs, durationMs, updatedAt }.
+  // Same host-as-hub deal: the host stamps updatedAt, the owner comes from the
+  // connection, and cross-device "pick up where you left off" is free because a
+  // person's devices share the store. A position of 0 (or less) is not stored - it is a
+  // DELETE, so finishing a track leaves no row and it starts fresh next time.
+  async setResume (ownerId, trackId, positionMs, durationMs) {
+    const key = `resume:${ownerId}:${trackId}`
+    if (!(positionMs > 0)) {
+      await this.bee.del(key)
+      return null
+    }
+    const row = { trackId, positionMs, durationMs: durationMs || null, updatedAt: Date.now() }
+    await this.bee.put(key, row, { valueEncoding: 'json' })
+    return row
+  }
+
+  async getResume (ownerId, trackId) {
+    const node = await this.bee.get(`resume:${ownerId}:${trackId}`, { valueEncoding: 'json' })
+    return node ? node.value : null
+  }
+
+  // The owner's MOST RECENT resume - the "continue listening" candidate. Null if none.
+  async latestResume (ownerId) {
+    const lo = `resume:${ownerId}:`
+    const hi = `resume:${ownerId};`
+    let best = null
+    for await (const node of this.bee.createReadStream({ gte: lo, lt: hi }, { valueEncoding: 'json' })) {
+      const v = node.value
+      if (v && v.positionMs > 0 && (!best || v.updatedAt > best.updatedAt)) best = v
+    }
+    return best
+  }
+
   // The owner's favorites, grouped by kind: { track:[ids], album:[ids], artist:[ids] }.
   // One prefix scan per kind. Every `fav:{ownerId}:{kind}:{id}` key sorts below
   // `fav:{ownerId}:{kind};` (';' is ':'+1, and a z32 id never contains ':' or ';'), so

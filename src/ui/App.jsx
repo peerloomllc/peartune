@@ -87,20 +87,21 @@ export default function App () {
   const [favs, setFavs] = useState(() => ({ track: new Set(), album: new Set(), artist: new Set() }))
   const [favSupported, setFavSupported] = useState(true) // false = host too old
   const [favItems, setFavItems] = useState(null) // the Favorites view, resolved + grouped
+  const [cont, setCont] = useState(null) // "continue listening": { track, positionMs }
 
   useEffect(() => {
     call('init')
       .then((s) => {
         setState({ ...s, loading: false })
         if (s.settings?.density) setDensity(String(s.settings.density))
-        if (s.connected) { loadAlbums(0); loadSource(); loadFavs() }
+        if (s.connected) { loadAlbums(0); loadSource(); loadFavs(); loadContinue() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
     const offs = [
       on('play:started', (d) => { setNow(d); setError(null) }),
       on('play:status', setStatus),
-      on('play:stopped', () => { setNow(null); setStatus(null) }),
+      on('play:stopped', () => { setNow(null); setStatus(null); loadContinue() }),
       on('play:error', (d) => setError(d.error)),
       // The buffer ran dry while we were disconnected and could not get back in - a
       // revoke, or a network hole. play:stopped clears the player; this just says why,
@@ -125,6 +126,7 @@ export default function App () {
         loadIdentity()
         loadSource()
         loadFavs()
+        loadContinue()
       }),
 
       // Back from the background, where the link almost certainly died. Reconnect
@@ -141,6 +143,40 @@ export default function App () {
   // What the once-registered listeners above need to see, always current.
   const liveRef = useRef({})
   liveRef.current = { host: state.host, connected: state.connected, reconnecting }
+
+  // Resume positions (milestone 3, phase 2): every 8s while a track plays, save its
+  // position to the host, so it (and any of this person's other devices) can pick up
+  // where they left off. Clear near the end so a finished track starts fresh. Refs,
+  // because the interval registers once and must read the CURRENT track/status.
+  const nowRef = useRef(null); nowRef.current = now
+  const statusRef = useRef(null); statusRef.current = status
+
+  // A resume seek waiting for its track to be ready to accept it (set in playFrom).
+  const pendingResumeRef = useRef(null)
+  useEffect(() => {
+    const pr = pendingResumeRef.current
+    if (!pr || !status || nowRef.current?.trackId !== pr.trackId) return
+    // The track is live and reporting status now, so the player will honour the seek.
+    // Only apply while still near the start, then clear so we never re-seek.
+    if ((status.positionMs || 0) < pr.positionMs) {
+      pendingResumeRef.current = null
+      call('seekTo', { ms: pr.positionMs }).catch(() => {})
+    }
+  }, [status])
+
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const t = nowRef.current
+      const s = statusRef.current
+      if (!t?.trackId || !s) return
+      const pos = s.positionMs || 0
+      const dur = s.durationMs || t.durationMs || 0
+      if (pos < 5000) return // the first few seconds are not a resume point
+      const clear = dur && pos > dur * 0.95
+      call('resumeSave', { trackId: t.trackId, positionMs: clear ? 0 : pos, durationMs: dur }).catch(() => {})
+    }, 8000)
+    return () => clearInterval(iv)
+  }, [])
 
   // Who this device says it is. The HOST is the authority on what its dashboard
   // shows, so this is read back from it rather than trusted from local settings.
@@ -345,6 +381,14 @@ export default function App () {
   // The host owns the truth; `favs` is a local mirror so the hearts are instant. An
   // old host (no favorites support) reports supported:false, and we hide the hearts
   // rather than show a control that does nothing.
+  // The "continue listening" candidate for the launch card: the last track you were
+  // playing, resolved and ready to render. Refreshed on connect and when playback stops.
+  async function loadContinue () {
+    try {
+      setCont(await call('resumeLatest'))
+    } catch {}
+  }
+
   async function loadFavs () {
     try {
       const r = await call('favorites') // { track, album, artist, supported }
@@ -510,10 +554,26 @@ export default function App () {
 
   // Tapping a track queues the whole list behind it - which is what people mean
   // when they tap a track in an album.
-  const playFrom = (list, t) => {
+  //
+  // RESUME (milestone 3, phase 2): a track you deliberately stopped partway resumes
+  // from there - but ONLY the one you tapped, never a track that arrives via queue
+  // advance (that would jump you mid-listen). So the seek lives here, in the user-tap
+  // path, not in the status listener. Guarded to a real middle (>5s, <95%) so a nearly
+  // finished track just starts fresh.
+  const playFrom = async (list, t) => {
     haptic('light')
     const index = Math.max(0, list.findIndex(x => x.id === t.id))
-    return call('play', { queue: toQueue(list), index })
+    // Ask for the resume BEFORE the seek can be dropped: seeking straight after play()
+    // races the player getting ready and is ignored. Instead stash a PENDING resume and
+    // apply it on the track's first status (below), when the player can honour it.
+    pendingResumeRef.current = null
+    call('play', { queue: toQueue(list), index })
+    try {
+      const r = await call('resumeGet', { trackId: t.id })
+      const pos = r?.positionMs || 0
+      const dur = r?.durationMs || t.durationMs || 0
+      if (pos > 5000 && (!dur || pos < dur * 0.95)) pendingResumeRef.current = { trackId: t.id, positionMs: pos }
+    } catch {}
   }
 
   // Play a whole album or artist without drilling into it for a track to tap.
@@ -675,6 +735,8 @@ export default function App () {
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
         favs={favs} onFav={favSupported ? onFav : null}
         favSupported={favSupported} favItems={favItems}
+        cont={now ? null : cont}
+        onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
         onBrowse={(b) => {
           haptic('light')
           if (b === 'artists') return showArtists()
@@ -950,7 +1012,7 @@ function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) 
 function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
-  favs, onFav, favSupported, favItems,
+  favs, onFav, favSupported, favItems, cont, onContinue,
   onBrowse, onDensity, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
@@ -1106,6 +1168,12 @@ function Library ({
 
       {error && <div className='error'>{error}</div>}
 
+      {/* Pick up where you left off. Only on the home view, and only when nothing is
+          already playing (the parent nulls `cont` in that case). */}
+      {cont?.track && !searching && browse === 'albums' && (
+        <ContinueCard cont={cont} onPlay={onContinue} />
+      )}
+
       {searching
         ? (
           <SearchResults
@@ -1219,6 +1287,27 @@ function FavoritesView ({ favItems, favs, onFav, now, d, artBase, onPlay, onLong
           </ul>
         </section>
       )}
+    </div>
+  )
+}
+
+// "Continue listening" - a launch affordance that resumes the last track from where it
+// was stopped. One tap plays it (playFrom applies the saved position). It disappears
+// once something is playing, or when there is nothing to continue.
+function ContinueCard ({ cont, onPlay }) {
+  const t = cont.track
+  const press = usePress(onPlay)
+  return (
+    <div className='contcard' {...press}>
+      <Cover src={t.art} sm />
+      <div className='meta'>
+        <div className='muted sm cont-h'>Continue listening</div>
+        <div className='t'>{t.title}</div>
+        <div className='muted sm sub'>
+          {[t.artist, cont.positionMs ? 'at ' + fmt(cont.positionMs) : ''].filter(Boolean).join(' · ')}
+        </div>
+      </div>
+      <div className='contplay'><Play size={20} weight='fill' /></div>
     </div>
   )
 }
