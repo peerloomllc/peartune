@@ -368,7 +368,11 @@ export default function App () {
     haptic('light')
     try {
       await call('toggleFav', { trackId: id, on })
+      // Keep the Favorites VIEW in sync. Removing filters the row out instantly;
+      // ADDING must invalidate the cached list so it re-resolves the new track on the
+      // next open (an empty [] is truthy, so without this the view would stay stale).
       if (!on) setFavTracks(list => (list ? list.filter(x => x.id !== id) : list))
+      else setFavTracks(null)
     } catch (e) {
       setFavs(prev => {
         const next = new Set(prev)
