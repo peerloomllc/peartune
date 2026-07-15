@@ -138,6 +138,38 @@ class Grants {
     return revoked
   }
 
+  // Remove a grant row ENTIRELY. This is the cleanup that stops the Devices list
+  // growing without bound as revoked tombstones and pairing tests pile up.
+  //
+  // It is cleanup, NOT a second flavour of revoke, and the distinction is a SECURITY
+  // one: we refuse to delete a LIVE grant. Deleting a live row would drop the device's
+  // access with no tombstone - a revoke that forgot to kill the connection. So revoke
+  // first (which tombstones AND cuts the live connection), and only THEN may the
+  // revoked row be deleted. Deleting never re-admits: with the row gone, lookup()
+  // returns no grant and the gate denies by default (fail-closed, gate.js decide()).
+  // A deleted device must pair again to return, exactly like one that never paired.
+  async deleteGrant (deviceKey) {
+    const key = Grants.keyOf(deviceKey)
+    const row = await this.get(key)
+    if (!row || !row.revokedAt) return null
+    await this.bee.del('grant:' + key)
+    return row
+  }
+
+  // Remove a person row - only an EMPTY one, holding no device that still has access.
+  // Refusing while a live device points here means we never orphan a live grant's
+  // personId or lose the subject of a "revoke this person" action. Revoked devices may
+  // still point at a deleted person; that pointer is cosmetic (they are denied
+  // regardless) and the dashboard tolerates a missing person.
+  async deletePerson (personId) {
+    const person = await this.getPerson(personId)
+    if (!person) return null
+    const holdsLive = (await this.list()).some(g => g.personId === personId && !g.revokedAt)
+    if (holdsLive) return null
+    await this.bee.del('person:' + personId)
+    return person
+  }
+
   // Attach a device to a person (or detach, with personId = null). This is what
   // makes "revoke that friend, not my tablet" possible: revocation then has a
   // subject a human recognises instead of a 52-character key.

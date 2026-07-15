@@ -106,3 +106,68 @@ test('assigning an unknown device is a null, not a throw', async (t) => {
   const ada = await g.addPerson('Ada')
   assert.equal(await g.assign(key(), ada.id), null)
 })
+
+// --- deletion (dashboard cleanup, must never re-admit) ----------------------
+
+test('a REVOKED device can be deleted, and stays denied afterwards', async (t) => {
+  const g = await store(t)
+  const dev = await g.grant({ deviceKey: key(), label: 'old phone' })
+  await g.revoke(dev.deviceKey)
+
+  const gone = await g.deleteGrant(dev.deviceKey)
+  assert.equal(gone.deviceKey, dev.deviceKey)
+  assert.equal(await g.get(dev.deviceKey), null, 'row is gone from the store')
+
+  // The whole security point: a deleted row is no grant, and no grant is denied by
+  // default (fail-closed). Deleting must never resurrect access.
+  assert.equal(decide(await g.lookup(dev.deviceKey)).allow, false)
+  assert.equal(decide(await g.lookup(dev.deviceKey)).reason, 'no-grant')
+})
+
+test('deleting a LIVE grant is refused (revoke first)', async (t) => {
+  const g = await store(t)
+  const dev = await g.grant({ deviceKey: key(), label: 'phone' })
+
+  // A live row deleted would drop access with no tombstone - a revoke that forgot to
+  // kill the connection. Refuse it: the row must still be there, still admitting.
+  assert.equal(await g.deleteGrant(dev.deviceKey), null)
+  assert.notEqual(await g.get(dev.deviceKey), null)
+  assert.equal(decide(await g.lookup(dev.deviceKey)).allow, true)
+})
+
+test('deleting an unknown device is a null, not a throw', async (t) => {
+  const g = await store(t)
+  assert.equal(await g.deleteGrant(key()), null)
+})
+
+test('an EMPTY person can be deleted', async (t) => {
+  const g = await store(t)
+  const ada = await g.addPerson('Ada')
+
+  const gone = await g.deletePerson(ada.id)
+  assert.equal(gone.id, ada.id)
+  assert.equal(await g.getPerson(ada.id), null)
+})
+
+test('deleting a person who still holds a LIVE device is refused', async (t) => {
+  const g = await store(t)
+  const ada = await g.addPerson('Ada')
+  const dev = await g.grant({ deviceKey: key(), label: 'phone' })
+  await g.assign(dev.deviceKey, ada.id)
+
+  // Deleting would orphan the live device's personId and lose the revoke subject.
+  assert.equal(await g.deletePerson(ada.id), null)
+  assert.notEqual(await g.getPerson(ada.id), null)
+})
+
+test('a person whose only devices are REVOKED can be deleted', async (t) => {
+  const g = await store(t)
+  const ada = await g.addPerson('Ada')
+  const dev = await g.grant({ deviceKey: key(), label: 'phone' })
+  await g.assign(dev.deviceKey, ada.id)
+  await g.revoke(dev.deviceKey)
+
+  // No LIVE device holds her, so the empty row can go.
+  const gone = await g.deletePerson(ada.id)
+  assert.equal(gone.id, ada.id)
+})

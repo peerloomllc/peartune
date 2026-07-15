@@ -305,6 +305,30 @@ class PearTuneHost {
     return { revoked, killed }
   }
 
+  // Cleanup, not revocation. Removes a REVOKED device's tombstone so the Devices list
+  // stops growing forever; grants.deleteGrant refuses a live grant, so the operator has
+  // to revoke first (which tombstones and cuts the connection). We kill any lingering
+  // connection here too, belt-and-braces: a revoked device should have none, but a
+  // delete must never leave one half-alive, and it can never re-admit - with the row
+  // gone the gate denies by default (gate.js).
+  async deleteDevice (deviceKey) {
+    const row = await this.grants.deleteGrant(deviceKey)
+    if (!row) return { deleted: null, killed: 0 }
+    const killed = this.connections.kill(deviceKey)
+    this.log('host:device-deleted', { device: Grants.keyOf(deviceKey).slice(0, 8), killed })
+    return { deleted: row, killed }
+  }
+
+  // Remove an empty person (grants.deletePerson refuses one that still holds a live
+  // device). Nothing to kill: their live devices, if any, are what would have blocked
+  // the delete.
+  async deletePerson (personId) {
+    const person = await this.grants.deletePerson(personId)
+    if (!person) return { deleted: null }
+    this.log('host:person-deleted', { personId })
+    return { deleted: person }
+  }
+
   async listDevices () {
     const rows = await this.grants.list()
     return rows.map(r => ({
