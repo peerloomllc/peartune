@@ -83,13 +83,16 @@ export default function App () {
   const [shuffle, setShuffle] = useState(false)
   const [repeat, setRepeat] = useState(0) // 0 off, 1 one, 2 all
   const [themePref, setThemePref] = useState(() => loadThemePref())
+  const [favs, setFavs] = useState(() => new Set()) // favorited trackIds
+  const [favSupported, setFavSupported] = useState(true) // false = host too old
+  const [favTracks, setFavTracks] = useState(null) // the Favorites view list
 
   useEffect(() => {
     call('init')
       .then((s) => {
         setState({ ...s, loading: false })
         if (s.settings?.density) setDensity(String(s.settings.density))
-        if (s.connected) { loadAlbums(0); loadSource() }
+        if (s.connected) { loadAlbums(0); loadSource(); loadFavs() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
@@ -120,6 +123,7 @@ export default function App () {
         setError(null)
         loadIdentity()
         loadSource()
+        loadFavs()
       }),
 
       // Back from the background, where the link almost certainly died. Reconnect
@@ -333,6 +337,64 @@ export default function App () {
     if (songs && !force) return
     setSongs(null)
     await loadSongs(0)
+  }
+
+  // --- favorites (host-as-hub, milestone 3) -----------------------------------
+  //
+  // The host owns the truth; `favs` is a local mirror so the hearts are instant. An
+  // old host (no favorites support) reports supported:false, and we hide the hearts
+  // rather than show a control that does nothing.
+  async function loadFavs () {
+    try {
+      const r = await call('favorites')
+      setFavs(new Set(r.trackIds || []))
+      setFavSupported(r.supported !== false)
+    } catch {
+      // Keep whatever we have (offline, transient) - the worklet already falls back to
+      // its cache, so a throw here is rare.
+    }
+  }
+
+  // Optimistic toggle: flip the heart at once, then tell the host, and revert if it
+  // refuses. Favoriting needs a connection in Phase 1.
+  async function onFav (t) {
+    const id = t.id
+    const on = !favs.has(id)
+    setFavs(prev => {
+      const next = new Set(prev)
+      if (on) next.add(id); else next.delete(id)
+      return next
+    })
+    haptic('light')
+    try {
+      await call('toggleFav', { trackId: id, on })
+      // Keep the Favorites VIEW in sync. Removing filters the row out instantly;
+      // ADDING must invalidate the cached list so it re-resolves the new track on the
+      // next open (an empty [] is truthy, so without this the view would stay stale).
+      if (!on) setFavTracks(list => (list ? list.filter(x => x.id !== id) : list))
+      else setFavTracks(null)
+    } catch (e) {
+      setFavs(prev => {
+        const next = new Set(prev)
+        if (on) next.delete(id); else next.add(id)
+        return next
+      })
+      setNote(favSupported ? 'Could not update favorite' : 'Favorites need a server update')
+    }
+  }
+
+  // The Favorites VIEW resolves the favorited ids to playable tracks on the host.
+  async function showFavorites (force) {
+    setBrowse('favorites')
+    if (favTracks && !force) return
+    setFavTracks(null)
+    try {
+      const r = await call('favoriteTracks')
+      setFavTracks(r.items || [])
+    } catch (e) {
+      setError(e.message)
+      setFavTracks([])
+    }
   }
 
   // Density is a per-device preference, so it lives where the theme does: the
@@ -568,6 +630,7 @@ export default function App () {
       <AlbumScreen
         id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom}
         onPlayAll={playAll} onQueue={enqueue} onViewArt={viewArt}
+        favs={favs} onFav={favSupported ? onFav : null}
       />
     )
   } else if (top?.type === 'artist') {
@@ -604,10 +667,13 @@ export default function App () {
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
+        favs={favs} onFav={favSupported ? onFav : null}
+        favSupported={favSupported} favTracks={favTracks}
         onBrowse={(b) => {
           haptic('light')
           if (b === 'artists') return showArtists()
           if (b === 'songs') return showSongs()
+          if (b === 'favorites') return showFavorites()
           return setBrowse('albums')
         }}
         onDensity={cycleDensity}
@@ -878,6 +944,7 @@ function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) 
 function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
+  favs, onFav, favSupported, favTracks,
   onBrowse, onDensity, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
@@ -990,7 +1057,7 @@ function Library ({
       <header>
         <h1>{state.host.libraryName || 'Library'}</h1>
         <p className='muted sm'>
-          {count(browse, { albums, artists, songs })}
+          {count(browse, { albums, artists, songs, favTracks })}
           {sourceText(state) && <> · {sourceText(state)}</>}
         </p>
       </header>
@@ -1008,6 +1075,9 @@ function Library ({
               <button className={browse === 'albums' ? 'on' : ''} onClick={() => onBrowse('albums')}>Albums</button>
               <button className={browse === 'artists' ? 'on' : ''} onClick={() => onBrowse('artists')}>Artists</button>
               <button className={browse === 'songs' ? 'on' : ''} onClick={() => onBrowse('songs')}>Songs</button>
+              {favSupported && (
+                <button className={browse === 'favorites' ? 'on' : ''} onClick={() => onBrowse('favorites')}>Favorites</button>
+              )}
             </div>
             {/* Stays PUT in the Songs view, disabled, rather than disappearing.
                 A control that vanishes reflows the row it was in, and the picker
@@ -1017,8 +1087,8 @@ function Library ({
             <button
               className='icon dens'
               onClick={onDensity}
-              disabled={browse === 'songs'}
-              aria-label={browse === 'songs' ? 'Layout (not available for songs)' : 'Change layout'}
+              disabled={browse === 'songs' || browse === 'favorites'}
+              aria-label={browse === 'songs' || browse === 'favorites' ? 'Layout (not available for lists)' : 'Change layout'}
             >
               <D.Icon size={20} weight='regular' />
             </button>
@@ -1045,6 +1115,7 @@ function Library ({
                           <Row
                             key={t.id} t={t} on={now?.trackId === t.id}
                             onPlay={() => onPlay(songs, t)} onLong={onLong} art
+                            fav={favs.has(t.id)} onFav={onFav}
                           />
                         ))}
                       </ul>
@@ -1055,6 +1126,22 @@ function Library ({
                     )
                   : <Empty />)
               : <SkeletonRows />)
+          : browse === 'favorites'
+            ? (favTracks
+                ? (favTracks.length
+                    ? (
+                      <ul className='tracks'>
+                        {favTracks.map(t => (
+                          <Row
+                            key={t.id} t={t} on={now?.trackId === t.id}
+                            onPlay={() => onPlay(favTracks, t)} onLong={onLong} art
+                            fav={favs.has(t.id)} onFav={onFav}
+                          />
+                        ))}
+                      </ul>
+                      )
+                    : <FavEmpty />)
+                : <SkeletonRows />)
           : browse === 'artists'
             ? (artists
                 ? <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={D} />
@@ -1080,6 +1167,19 @@ function Empty () {
       <h2>Nothing here yet</h2>
       <p className='muted sm'>
         This library is empty. Add music on the server and let it rescan.
+      </p>
+    </div>
+  )
+}
+
+function FavEmpty () {
+  return (
+    <div className='blank'>
+      <Heart size={40} weight='thin' />
+      <h2>No favorites yet</h2>
+      <p className='muted sm'>
+        Tap the heart on any track to save it here. Your favorites live on your server,
+        so they follow you to your other devices.
       </p>
     </div>
   )
@@ -1122,12 +1222,13 @@ function pairError (msg = '') {
   return 'Pairing failed. Show a fresh code on your server and try again.'
 }
 
-function count (browse, { albums, artists, songs }) {
+function count (browse, { albums, artists, songs, favTracks }) {
   if (browse === 'artists') return `${artists ? artists.length : 0} artists`
   // "60 albums" is the whole truth; "100 songs" is not - it is the first page of a
   // list we are still walking. Say so rather than lying about the size of someone's
   // library.
   if (browse === 'songs') return songs ? `${songs.length} songs loaded` : 'Loading songs…'
+  if (browse === 'favorites') return favTracks ? `${favTracks.length} favorite${favTracks.length === 1 ? '' : 's'}` : 'Loading favorites…'
   return `${albums.length} albums`
 }
 
@@ -1320,7 +1421,7 @@ function Cover ({ src, big, sm, artist }) {
 
 // Each drill-down fetches its own data from its id, so the nav stack holds nothing
 // but ids and popping back never has to restore anything.
-function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt }) {
+function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt, favs, onFav }) {
   const [album, setAlbum] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -1380,7 +1481,10 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
 
       <ul className='tracks'>
         {tracks.map(t => (
-          <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo />
+          <Row
+            key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo
+            fav={favs ? favs.has(t.id) : false} onFav={onFav}
+          />
         ))}
       </ul>
     </div>
@@ -1479,7 +1583,7 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
   )
 }
 
-function Row ({ t, on, onPlay, onLong, showTrackNo, art }) {
+function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav }) {
   const press = usePress(
     () => onPlay(t),
     onLong && (() => onLong({ type: 'track', track: t, name: t.title }))
@@ -1497,6 +1601,18 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art }) {
         </div>
       </div>
       <span className='muted sm dur'>{t.durationMs ? fmt(t.durationMs) : ''}</span>
+      {onFav && (
+        // The heart lives on the row but must not play it. Stop the press at
+        // pointerdown (usePress is pointer-based) AND the click.
+        <button
+          className={'favbtn' + (fav ? ' on' : '')}
+          aria-label={fav ? 'Remove from favorites' : 'Add to favorites'}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onFav(t) }}
+        >
+          <Heart size={18} weight={fav ? 'fill' : 'regular'} />
+        </button>
+      )}
     </li>
   )
 }

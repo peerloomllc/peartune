@@ -19,6 +19,7 @@ const z32 = require('z32')
 
 const { createIdentity } = require('./identity')
 const { Grants } = require('./grants')
+const { UserState } = require('./state')
 const { decide, Connections } = require('./gate')
 const { serveMedia } = require('./media')
 const { PairSession } = require('./pair')
@@ -44,6 +45,17 @@ class PearTuneHost {
       valueEncoding: 'json'
     })
     this.grants = new Grants(this.bee)
+
+    // User state (favorites, later resume/counts/playlists) - HOST-AS-HUB, milestone 3.
+    // A SEPARATE Hyperbee from grants, on purpose: grants are a single-purpose,
+    // never-replicated security surface, and user state should not share that store or
+    // its rules. Both live in the one corestore.
+    this.stateBee = new Hyperbee(this.store.get({ name: 'state' }), {
+      keyEncoding: 'utf-8',
+      valueEncoding: 'json'
+    })
+    this.userState = new UserState(this.stateBee)
+
     this.connections = new Connections()
 
     // One interface, two implementations. The app never learns which is behind the
@@ -136,6 +148,7 @@ class PearTuneHost {
 
   async ready () {
     await this.bee.ready()
+    await this.stateBee.ready()
 
     // A BAD SOURCE MUST NOT STOP THE HOST FROM STARTING.
     //
@@ -258,6 +271,9 @@ class PearTuneHost {
         // from is a bug you would not find for weeks.
         getAdapter: () => this.adapter,
         grant: lookup.grant,
+        // The host-as-hub user-state store. serveMedia derives the owner from THIS
+        // connection's grant, so a device can only ever read/write its own state.
+        state: this.userState,
         // Passed so a device can name ITSELF (identity.set). The row it may write
         // is fixed by `grant`, which came from the Noise-authenticated key of this
         // very connection - see host/grants.js setIdentity.
@@ -343,6 +359,7 @@ class PearTuneHost {
     this.stopPairing()
     if (this.server) await this.server.close()
     await this.bee.close()
+    await this.stateBee.close()
     await this.store.close()
     if (this._ownDht) await this.dht.destroy()
     this.log('host:closed')

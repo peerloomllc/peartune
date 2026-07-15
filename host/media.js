@@ -13,9 +13,18 @@ const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 
 // Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
 // so a new mutating method cannot accidentally ship without a scope check.
-const MUTATING = new Set(['identity.set'])
+const MUTATING = new Set(['identity.set', 'fav.set'])
 
-function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, log = () => {} }) {
+// WHO owns the user state on this connection. Derived from the grant the firewall
+// looked up from the Noise-authenticated remote key - NEVER from a client parameter,
+// which is the whole reason host-as-hub is safe (there is nothing to forge). A device
+// assigned to a person owns state as that person (so their phone + tablet share it);
+// an unclaimed device is its own owner until the operator confirms a claim.
+function ownerOf (grant) {
+  return grant.personId ? 'p:' + grant.personId : 'd:' + grant.deviceKey
+}
+
+function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Registration order is fixed in protocol/channels.js and MUST match the
@@ -147,6 +156,24 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, log = 
         return send.res.send({ id, body: { ok: true, ...(await identityOf(row)) } })
       }
 
+      // --- user state: favorites (host-as-hub, milestone 3) ------------------
+      //
+      // The owner comes from THIS connection's grant (ownerOf), never from params -
+      // same rule as identity.set. A device can only ever touch its own state.
+      case 'fav.list': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        return send.res.send({ id, body: { trackIds: await state.listFavs(ownerOf(grant)) } })
+      }
+
+      case 'fav.set': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
+        // Default to favoriting; on:false is an explicit un-favorite.
+        const row = await state.setFav(ownerOf(grant), params.trackId, params.on !== false)
+        log('fav:set', { on: row.on })
+        return send.res.send({ id, body: { ok: true, trackId: row.trackId, on: row.on } })
+      }
+
       case 'art.get': {
         const stream = await getAdapter().art(params || {})
         if (!stream) return safeErr(id, ERR.NOT_FOUND, 'no artwork')
@@ -170,4 +197,4 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, log = 
   return channel
 }
 
-module.exports = { serveMedia }
+module.exports = { serveMedia, ownerOf }

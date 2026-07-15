@@ -104,6 +104,43 @@ test('pair by QR link, then reach the library', async (t) => {
   assert.equal(devices[0].revokedAt, null)
 })
 
+// --- favorites (host-as-hub, milestone 3) -----------------------------------
+
+test('favorites: set, list back, and toggle off - over the real connection', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  const { items } = await client.list({ type: 'tracks' })
+  const id = items[0].id
+
+  assert.deepEqual((await client.favList()).trackIds, [], 'nothing favorited yet')
+
+  const r = await client.favSet({ trackId: id, on: true })
+  assert.equal(r.ok, true)
+  assert.equal(r.on, true)
+  assert.deepEqual((await client.favList()).trackIds, [id], 'listed back')
+
+  await client.favSet({ trackId: id, on: false })
+  assert.deepEqual((await client.favList()).trackIds, [], 'toggled off')
+})
+
+test('favorites are the DEVICE\'s: a second unclaimed device does not see them', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const a = await pairAndConnect(testnet, host)
+  const b = await pairAndConnect(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  const { items } = await a.client.list({ type: 'tracks' })
+  await a.client.favSet({ trackId: items[0].id, on: true })
+
+  // B is a different device with no person assigned, so it is a different owner and
+  // sees nothing of A's. The owner came from A's Noise-authenticated connection - B
+  // could not have set it as A even if it tried (there is no owner param to send).
+  assert.deepEqual((await b.client.favList()).trackIds, [], 'per-owner isolation over the wire')
+})
+
 test('stream a whole track, bytes identical to the file on disk', async (t) => {
   const { testnet, host, track } = await scaffold(t)
   const { client } = await pairAndConnect(testnet, host)
