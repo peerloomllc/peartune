@@ -2,6 +2,30 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-15 - Emby is a SHIM on the Jellyfin adapter, not a new source kind
+Tier: T1 (no wire change, no new persisted kind/field, no migration)
+Context: the compatibility roadmap ranked Emby second (Family 2). Emby is in the Umbrel
+official store, and Jellyfin forked Emby ~2018, so the roadmap called for "a shim, not a
+rewrite".
+Finding: the endpoints are the same (/Users/AuthenticateByName, /Items, /Audio/{id}/
+stream?static=true, /Audio/{id}/universal, /Items/{id}/Images/Primary, /System/Info/
+Public). The ONLY delta is where auth goes: Jellyfin reads identity+token from
+`Authorization: MediaBrowser Client=..., Token="..."`; Emby reads identity from
+`X-Emby-Authorization` and the token from a separate `X-Emby-Token` header.
+Choice: SEND BOTH header flavors on every request (_authHeaders()). Each server reads the
+one it knows and ignores the other, so ONE code path serves both with no server-sniffing
+branch. Emby rides the existing 'jellyfin' kind (the DECISIONS 2026-07-14 Jellyfin entry
+already anticipated this - "how an eventual Emby adapter will label itself without a new
+source kind"). The picker button becomes "Jellyfin / Emby"; the app still shows the
+server's OWN name via ProductName ("Jellyfin" vs "Emby Server"), so nothing is guessed.
+Why no new kind: a new 'emby' kind would be a T2 (persisted config + trackId re-scoping)
+for zero benefit - the adapter, endpoints and mapping are identical, and sourceName
+already distinguishes the two servers to the user. Keeping one kind avoids a migration and
+matches how 'subsonic' covers many servers (DECISIONS 2026-07-15).
+Verify: unit tests pin that both header flavors are sent and the token lands in BOTH the
+Authorization header and X-Emby-Token. Live: probe a real Emby on the Umbrel (browse +
+stream via the Emby headers), and confirm Jellyfin is unregressed.
+
 ## 2026-07-14 - A drop is not a stop; revoke cuts NEW access, not the current buffer
 Tier: T3. Proposal: proposals/2026-07-14-graceful-reconnect.md (approved by Tim)
 Context: switching networks (wifi<->cellular) killed the P2P connection, and the shell

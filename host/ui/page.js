@@ -156,9 +156,10 @@ module.exports = `<!doctype html>
     <div id="sourceerr" class="err" style="display:none"></div>
     <div id="source"></div>
     <p class="hint">
-      Point PearTune at a Navidrome or Jellyfin you already run and you get its tags,
-      artwork and transcoding. A plain folder works too - PearTune reads the tags
-      itself (artist, album, track number, year and embedded cover art).
+      Point PearTune at a Subsonic server (Navidrome, Nextcloud Music, …), Jellyfin or
+      Emby you already run and you get its tags, artwork and transcoding. A plain folder
+      works too - PearTune reads the tags itself (artist, album, track number, year and
+      embedded cover art).
     </p>
     <p class="hint warn" id="sourcewarn" style="display:none">
       Changing the source changes every track's identity, so play counts and resume
@@ -362,7 +363,7 @@ function markSourceDirty () {
 // Subsonic server and Jellyfin is the word on the button.
 const SERVERS = {
   subsonic: { label: 'Subsonic server', placeholder: 'http://localhost:4533' },
-  jellyfin: { label: 'Jellyfin', placeholder: 'http://localhost:8096' }
+  jellyfin: { label: 'Jellyfin / Emby', placeholder: 'http://localhost:8096' }
 }
 
 let PICKED = 'folder'
@@ -404,7 +405,7 @@ function renderSource (src, force) {
   el.innerHTML =
     '<div class="seg">' +
       '<button id="s_subsonic" onclick="pickSource(\\'subsonic\\')">Subsonic-compatible</button>' +
-      '<button id="s_jellyfin" onclick="pickSource(\\'jellyfin\\')">Jellyfin</button>' +
+      '<button id="s_jellyfin" onclick="pickSource(\\'jellyfin\\')">Jellyfin / Emby</button>' +
       '<button id="s_folder" onclick="pickSource(\\'folder\\')">Folder</button>' +
     '</div>' +
     serverFields('subsonic', kinds.subsonic || {}) +
