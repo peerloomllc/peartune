@@ -197,6 +197,16 @@ class JellyfinAdapter {
     // Jellyfin already scanned. We confirm we can talk to it and cache the count -
     // failing loudly HERE, at boot or at Save, rather than on a user's first tap.
     await this._auth()
+
+    // The server NAMES ITSELF. System/Info/Public needs no auth and returns
+    // ProductName - "Jellyfin", or "Emby Server" for an Emby box - and Version. That
+    // is how the app can say which one it actually is (and it is how an eventual Emby
+    // adapter will tell itself apart from Jellyfin).
+    this._serverName = await fetch(`${this.base}/System/Info/Public`)
+      .then(r => r.ok ? r.json() : null)
+      .then(b => b?.ProductName || null)
+      .catch(() => null)
+
     const body = await this._call('/Items', {
       userId: this.userId,
       IncludeItemTypes: 'Audio',
@@ -215,6 +225,7 @@ class JellyfinAdapter {
   async stats () {
     return {
       source: this.kind,
+      sourceName: this._serverName || 'Jellyfin',
       root: this.base,
       tracks: this._counts ?? 0,
       albums: 0,

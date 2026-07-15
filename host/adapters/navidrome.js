@@ -18,6 +18,17 @@ const { trackId } = require('../../protocol/ids')
 const API_VERSION = '1.16.1'
 const CLIENT = 'peartune'
 
+// A server's self-reported `type` into a name a human would write. The strings are
+// already close ("nextcloud music"); Title-Case is right for almost all of them, with
+// a couple of initialisms that Title-Case would mangle.
+const SUBSONIC_NAME_OVERRIDES = { lms: 'LMS', 'nextcloud music': 'Nextcloud Music' }
+function subsonicName (type) {
+  if (!type) return null
+  const key = String(type).trim().toLowerCase()
+  if (!key) return null
+  return SUBSONIC_NAME_OVERRIDES[key] || key.replace(/\b\w/g, c => c.toUpperCase())
+}
+
 class NavidromeAdapter {
   constructor ({ url, username, password, libraryId }) {
     this.base = String(url).replace(/\/+$/, '')
@@ -94,6 +105,14 @@ class NavidromeAdapter {
     const body = await res.json()
     const sr = body['subsonic-response']
     if (!sr) throw new Error(`navidrome ${method}: malformed response`)
+
+    // The SERVER NAMES ITSELF. Every subsonic-response carries `type` (OpenSubsonic:
+    // "navidrome", "nextcloud music", "gonic", "airsonic", ...) and often
+    // `serverVersion`. That is how the app can say "Nextcloud Music" instead of the
+    // useless umbrella "Subsonic" - no URL sniffing, no guessing, the server told us.
+    if (sr.type) this.serverType = sr.type
+    if (sr.serverVersion) this.serverVersion = sr.serverVersion
+
     return sr
   }
 
@@ -146,6 +165,10 @@ class NavidromeAdapter {
     }
     return {
       source: this.kind,
+      // The server's OWN name for itself ("Navidrome", "Nextcloud Music", "Gonic"),
+      // so the app can stop calling every Subsonic server "Navidrome". Null until we
+      // have talked to it (a scan sets it); the app falls back to a generic label.
+      sourceName: subsonicName(this.serverType),
       root: this.base,
       tracks,
       albums: 0,

@@ -395,6 +395,7 @@ class FolderAdapter {
   async stats () {
     return {
       source: this.kind,
+      sourceName: 'Folder',
       root: this.root,
       tracks: this.tracks.size,
       albums: this.albums.size,

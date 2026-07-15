@@ -89,7 +89,7 @@ export default function App () {
       .then((s) => {
         setState({ ...s, loading: false })
         if (s.settings?.density) setDensity(String(s.settings.density))
-        if (s.connected) loadAlbums(0)
+        if (s.connected) { loadAlbums(0); loadSource() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
@@ -112,6 +112,7 @@ export default function App () {
         setState(s => ({ ...s, connected: true, host: { ...s.host, ...d } }))
         setError(null)
         loadIdentity()
+        loadSource()
       }),
 
       // Back from the background, where the link almost certainly died. Reconnect
@@ -136,6 +137,24 @@ export default function App () {
       setIdent(await call('identity'))
     } catch {
       // Offline, or an old host with no identity API. Settings shows what we know.
+    }
+  }
+
+  // WHICH library am I looking at? While only one source can be active at a time,
+  // the app is the only place that can say which - a Navidrome, a Jellyfin and a raw
+  // folder are three very different libraries, and now that any Subsonic server rides
+  // the same source, "Navidrome" alone is no longer even the honest word for it.
+  // Cheap (one stats call), and it refreshes on every reconnect and pull-to-refresh,
+  // so flipping the source in the dashboard shows up here on the next pull.
+  async function loadSource () {
+    try {
+      const st = await call('stats')
+      // sourceName is the server's OWN name for itself ("Nextcloud Music", "Gonic",
+      // "Emby Server"); source is the coarse kind. Prefer the specific one, keep the
+      // kind so an older host with no sourceName still gets a label.
+      setState(s => ({ ...s, source: st.source, sourceName: st.sourceName || null }))
+    } catch {
+      // Offline, or a host too old to answer: the indicator just stays hidden.
     }
   }
 
@@ -255,6 +274,7 @@ export default function App () {
       setArtists(null)
       setAlbumsLoaded(false)
       await loadAlbums(0)
+      loadSource()
       haptic('success')
     } catch (e) {
       setError(e.message)
@@ -314,6 +334,7 @@ export default function App () {
   // already reach for.
   async function refresh () {
     setError(null)
+    loadSource() // the operator may have switched the source since we last looked
     if (browse === 'artists') return showArtists(true)
     if (browse === 'songs') return showSongs(true)
     setAlbumsLoaded(false)
@@ -944,7 +965,10 @@ function Library ({
           already know. */}
       <header>
         <h1>{state.host.libraryName || 'Library'}</h1>
-        <p className='muted sm'>{count(browse, { albums, artists, songs })}</p>
+        <p className='muted sm'>
+          {count(browse, { albums, artists, songs })}
+          {sourceText(state) && <> · {sourceText(state)}</>}
+        </p>
       </header>
 
       <div className='sticky'>
@@ -1035,6 +1059,28 @@ function Empty () {
       </p>
     </div>
   )
+}
+
+// The human name for a source KIND. 'navidrome' is the kind for ANY Subsonic
+// server now (Navidrome, Nextcloud Music, LMS, ...), so "Subsonic" is the honest
+// umbrella rather than naming one server the operator may not even be running. A
+// distinct kind + a truer label per server is a roadmap item; until then this is
+// as specific as the wire lets us be.
+// What to call the current source. The host now reports the server's OWN name
+// (sourceName: "Nextcloud Music", "Gonic", "Emby Server"), which is what we want
+// when we have it. sourceLabel is the fallback for an older host that only sends the
+// coarse kind - and 'navidrome' is the kind for ANY Subsonic server, so "Subsonic"
+// is the honest umbrella there rather than naming one server the operator may not run.
+function sourceText (state) {
+  if (state.sourceName) return state.sourceName
+  return sourceLabel(state.source)
+}
+
+function sourceLabel (kind) {
+  if (kind === 'jellyfin') return 'Jellyfin'
+  if (kind === 'folder') return 'Folder'
+  if (kind === 'navidrome') return 'Subsonic'
+  return null
 }
 
 function count (browse, { albums, artists, songs }) {
@@ -1674,6 +1720,18 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity 
             {state.connected ? '●' : '○'}
           </span>
         </div>
+        {sourceText(state) && (
+          <div className='row'>
+            <div>
+              <div className='label'>Source</div>
+              <div className='desc'>
+                Where this library comes from. Your server's operator chooses it; you
+                see whatever they point it at.
+              </div>
+            </div>
+            <span className='val'>{sourceText(state)}</span>
+          </div>
+        )}
         <div className='row'>
           <div>
             <div className='label'>Unpair</div>

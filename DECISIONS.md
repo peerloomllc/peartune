@@ -2,6 +2,72 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-14 - Folder is the product; a connector inherits a server, it does not fetch music
+Tier: T1 (strategy / roadmap direction, no wire change)
+Context: with the folder adapter now reading tags, Tim asked the sharp question - if
+every music server just points at folders on disk, and we can point at those same
+folders, what does connecting to Navidrome/Jellyfin/Subsonic actually BUY over folder
+mode? Worth writing down before we spend effort adding more connectors.
+The framing that settles it: **a connector does not fetch the music - the bytes are in
+folders either way. It inherits the server's LIBRARY MODEL and SERVICES.** Concretely,
+what a connector gives that a folder does not, ranked by how defensible each is:
+1. TRANSCODING. Navidrome/Jellyfin transcode FLAC -> a capped bitrate on the fly; the
+   folder adapter ships no ffmpeg, so a raw-FLAC folder over CELLULAR is ~1GB/album.
+   For "playable anywhere" that is the case that matters. BUT it is replicable: ffmpeg
+   in the host image (already a backlog item) would give folder mode transcoding too,
+   which would erase this advantage. This is the biggest reason to connect AND the one
+   we could most easily make moot.
+2. INHERIT WHAT THE USER ALREADY CURATED. Someone running Navidrome has playlists,
+   favorites, ratings, fixed artwork, a chosen album grouping. Connecting shows them
+   THE SAME library they already see; a folder re-scan cannot inherit playlists or
+   curation. This is the DURABLE reason connectors exist - consistency with an
+   existing setup - and folder mode structurally cannot cover it.
+3. MUSIC THAT IS NOT A MOUNTABLE LOCAL FOLDER. We hit this with Nextcloud (files live
+   in its data dir; folder mode needed a bind-mount). Plex/Jellyfin can span network
+   shares or cloud mounts the host cannot easily reach. The server abstracts "where
+   the bytes physically are."
+4. The server already scanned/indexed and watches for changes; folder mode re-scans at
+   boot and needs a manual Rescan.
+The counter-evidence, measured on Tim's own box: his Jellyfin GROUPED THE SAME FILES
+WORSE than folder mode - 10 folder-lumped "albums" (one of 667 tracks) vs folder
+mode's 604 clean tag-grouped albums (which matched Navidrome within a few percent). So
+for a plain, well-tagged local folder, the connector was strictly worse EXCEPT it can
+transcode. That is the whole tradeoff in one example.
+Decision / direction:
+- **Treat folder mode as the product, not the fallback** (the code has always hinted
+  this: "the fallback and arguably the real product"). It is the only source that
+  works for 100% of users, including everyone with no server.
+- **The connectors worth keeping are the ones that give something a folder cannot:**
+  Subsonic (cheap, broad, matches what server-runners already see) and Jellyfin
+  (Start9 has nothing else - DECISIONS 2026-07-14 platform survey). Be skeptical of
+  chasing the bespoke long tail (Koel/Polaris/mStream) - the compatibility roadmap in
+  TODO.md ranks them low for this reason.
+- **The highest-leverage investment is ffmpeg in the folder adapter**, because
+  transcoding is connectors' biggest edge and adding it to folder mode gives cellular
+  playback to EVERYONE, not only to people who run Navidrome. Pair it with .m3u
+  playlist reading and folder mode covers most of what connectors do.
+Net: the value-add of a connector is "inherit my existing server's
+playlists/curation/transcoding," not "get my music." Build breadth of connectors only
+where they deliver that; otherwise pour effort into making folder mode great.
+
+## 2026-07-14 - The app shows the server's OWN name, not the source KIND
+Tier: T1 (app UI + adapter stats field; no wire break - stats is free-form JSON)
+Context: the source indicator first showed the KIND ("Subsonic"), which is a lie when
+the kind 'navidrome' is actually serving Nextcloud Music or LMS. Tim: "Should
+'Subsonic' be the source when it's really Nextcloud?"
+Finding: we do not have to guess or sniff the URL. **The server names itself.** Every
+Subsonic response carries `type` ("navidrome", "nextcloud music", "gonic", ...) and
+usually `serverVersion`; Jellyfin's System/Info/Public carries ProductName ("Jellyfin"
+vs "Emby Server") and Version. The adapters capture these (Subsonic off any response;
+Jellyfin off one unauthenticated call at scan) and report a `sourceName` in stats().
+Choice: the app prefers `sourceName` (the server's own name) and falls back to a coarse
+kind label only for an older host that does not send one - where 'navidrome' stays
+"Subsonic" (the honest umbrella, since the kind is shared across all Subsonic servers).
+Verified on the TCL against the real Umbrel: the header reads "Nextcloud Music" while
+serving Nextcloud, "Folder" on the folder source.
+Consequence: this is also how an eventual Emby adapter will label itself without a new
+source kind - ProductName already says "Emby Server".
+
 ## 2026-07-14 - The folder adapter reads TAGS, and infers albums from them
 Tier: T2. Proposal: proposals/2026-07-14-music-sources.md
 Context: the folder adapter listed filenames and nothing else. It is the DEFAULT for
