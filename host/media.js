@@ -188,6 +188,7 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
         const row = await state.getResume(ownerOf(grant), params.trackId)
+        log('resume:get', { positionMs: row?.positionMs || 0 })
         return send.res.send({ id, body: { positionMs: row?.positionMs || 0, durationMs: row?.durationMs || null } })
       }
 
@@ -195,6 +196,7 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
         await state.setResume(ownerOf(grant), params.trackId, Number(params.positionMs) || 0, params.durationMs)
+        log('resume:set', { positionMs: Number(params.positionMs) || 0 })
         return send.res.send({ id, body: { ok: true } })
       }
 

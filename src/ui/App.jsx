@@ -148,6 +148,20 @@ export default function App () {
   // because the interval registers once and must read the CURRENT track/status.
   const nowRef = useRef(null); nowRef.current = now
   const statusRef = useRef(null); statusRef.current = status
+
+  // A resume seek waiting for its track to be ready to accept it (set in playFrom).
+  const pendingResumeRef = useRef(null)
+  useEffect(() => {
+    const pr = pendingResumeRef.current
+    if (!pr || !status || nowRef.current?.trackId !== pr.trackId) return
+    // The track is live and reporting status now, so the player will honour the seek.
+    // Only apply while still near the start, then clear so we never re-seek.
+    if ((status.positionMs || 0) < pr.positionMs) {
+      pendingResumeRef.current = null
+      call('seekTo', { ms: pr.positionMs }).catch(() => {})
+    }
+  }, [status])
+
   useEffect(() => {
     const iv = setInterval(() => {
       const t = nowRef.current
@@ -539,12 +553,16 @@ export default function App () {
   const playFrom = async (list, t) => {
     haptic('light')
     const index = Math.max(0, list.findIndex(x => x.id === t.id))
-    await call('play', { queue: toQueue(list), index })
+    // Ask for the resume BEFORE the seek can be dropped: seeking straight after play()
+    // races the player getting ready and is ignored. Instead stash a PENDING resume and
+    // apply it on the track's first status (below), when the player can honour it.
+    pendingResumeRef.current = null
+    call('play', { queue: toQueue(list), index })
     try {
       const r = await call('resumeGet', { trackId: t.id })
       const pos = r?.positionMs || 0
       const dur = r?.durationMs || t.durationMs || 0
-      if (pos > 5000 && (!dur || pos < dur * 0.95)) call('seekTo', { ms: pos }).catch(() => {})
+      if (pos > 5000 && (!dur || pos < dur * 0.95)) pendingResumeRef.current = { trackId: t.id, positionMs: pos }
     } catch {}
   }
 
