@@ -149,7 +149,10 @@ export default function App () {
   async function loadSource () {
     try {
       const st = await call('stats')
-      setState(s => ({ ...s, source: st.source }))
+      // sourceName is the server's OWN name for itself ("Nextcloud Music", "Gonic",
+      // "Emby Server"); source is the coarse kind. Prefer the specific one, keep the
+      // kind so an older host with no sourceName still gets a label.
+      setState(s => ({ ...s, source: st.source, sourceName: st.sourceName || null }))
     } catch {
       // Offline, or a host too old to answer: the indicator just stays hidden.
     }
@@ -964,7 +967,7 @@ function Library ({
         <h1>{state.host.libraryName || 'Library'}</h1>
         <p className='muted sm'>
           {count(browse, { albums, artists, songs })}
-          {sourceLabel(state.source) && <> · {sourceLabel(state.source)}</>}
+          {sourceText(state) && <> · {sourceText(state)}</>}
         </p>
       </header>
 
@@ -1063,6 +1066,16 @@ function Empty () {
 // umbrella rather than naming one server the operator may not even be running. A
 // distinct kind + a truer label per server is a roadmap item; until then this is
 // as specific as the wire lets us be.
+// What to call the current source. The host now reports the server's OWN name
+// (sourceName: "Nextcloud Music", "Gonic", "Emby Server"), which is what we want
+// when we have it. sourceLabel is the fallback for an older host that only sends the
+// coarse kind - and 'navidrome' is the kind for ANY Subsonic server, so "Subsonic"
+// is the honest umbrella there rather than naming one server the operator may not run.
+function sourceText (state) {
+  if (state.sourceName) return state.sourceName
+  return sourceLabel(state.source)
+}
+
 function sourceLabel (kind) {
   if (kind === 'jellyfin') return 'Jellyfin'
   if (kind === 'folder') return 'Folder'
@@ -1707,7 +1720,7 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity 
             {state.connected ? '●' : '○'}
           </span>
         </div>
-        {sourceLabel(state.source) && (
+        {sourceText(state) && (
           <div className='row'>
             <div>
               <div className='label'>Source</div>
@@ -1716,7 +1729,7 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity 
                 see whatever they point it at.
               </div>
             </div>
-            <span className='val'>{sourceLabel(state.source)}</span>
+            <span className='val'>{sourceText(state)}</span>
           </div>
         )}
         <div className='row'>

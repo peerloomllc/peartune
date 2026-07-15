@@ -99,6 +99,42 @@ test('a real failure (wrong password, code 40) is NOT swallowed by the fallback'
   await assert.rejects(a._call('ping'), /code 40/)
 })
 
+// The server names itself. Every subsonic-response carries `type`, so the app can
+// say "Nextcloud Music" instead of the umbrella "Subsonic".
+
+test('_fetch CAPTURES the server type off a real subsonic-response', async (t) => {
+  const a = make()
+  const real = global.fetch
+  // What a real Nextcloud Music answers with, in the response envelope.
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({ 'subsonic-response': { status: 'ok', type: 'nextcloud music', serverVersion: '3.1.0', scanStatus: { count: 5 } } })
+  })
+  t.after(() => { global.fetch = real })
+
+  await a.scan()
+  assert.equal(a.serverType, 'nextcloud music')
+  assert.equal(a.serverVersion, '3.1.0')
+  assert.equal((await a.stats()).sourceName, 'Nextcloud Music')
+})
+
+test('the name is Title-Cased, with initialisms kept (navidrome, gonic, LMS)', async () => {
+  const cases = { navidrome: 'Navidrome', gonic: 'Gonic', lms: 'LMS', airsonic: 'Airsonic', 'nextcloud music': 'Nextcloud Music' }
+  for (const [type, expected] of Object.entries(cases)) {
+    const a = make()
+    a._counts = 1 // so stats() does not go back to the network
+    a.serverType = type
+    assert.equal((await a.stats()).sourceName, expected)
+  }
+})
+
+test('a strict old server that sends no type yields a null name (app falls back)', async () => {
+  const a = make()
+  a._counts = 1
+  assert.equal(a.serverType, undefined)
+  assert.equal((await a.stats()).sourceName, null)
+})
+
 test('trailing slashes on the base url do not produce a double slash', () => {
   const a = make()
   assert.ok(a._url('ping').startsWith('http://localhost:4533/rest/ping?'))
