@@ -424,7 +424,7 @@ export default function App () {
       haptic('success')
       loadAlbums(0)
     } catch (e) {
-      setError(e.message)
+      setError(pairError(e.message))
       haptic('warn')
     }
   }
@@ -543,13 +543,15 @@ export default function App () {
       ? (
         <Scanner
           onScan={(link) => onPaired(link, scanning)}
-          onCancel={() => setScanning(false)}
+          onCancel={() => { setError(null); setScanning(false) }}
           error={error}
         />
         )
       : (
         <Welcome
-          onScan={(names) => setScanning(names || {})}
+          // Clear any stale error when opening the scanner - a failure from a
+          // PREVIOUS attempt must not greet you on the fresh one.
+          onScan={(names) => { setError(null); setScanning(names || {}) }}
           onPaste={onPaired}
           error={error}
         />
@@ -944,7 +946,13 @@ function Library ({
               <PlugsConnected size={40} weight='thin' />
               <h2>Not connected</h2>
               <p className='muted sm'>
-                {error || 'PearTune cannot reach this library. The server may be off, or its access for this device may have been revoked.'}
+                {/* Always the plain, honest reason - never a raw reconnect error.
+                    Off and revoked are indistinguishable from here, and a leaked
+                    "host refused the connection (is a pairing window open?)" is
+                    developer-speak that belonged to a pairing attempt, not this
+                    screen. */}
+                PearTune can't reach this library. Your server may be off, or its
+                access for this device may have been revoked.
               </p>
               <button className='primary' onClick={onReconnect}>
                 <ArrowsClockwise size={16} weight='bold' />
@@ -1097,6 +1105,23 @@ function sourceLabel (kind) {
   if (kind === 'folder') return 'Folder'
   if (kind === 'navidrome') return 'Subsonic'
   return null
+}
+
+// Turn a raw pairing failure into something a person can act on. The wire errors
+// are written for a developer ("host refused the connection (is a pairing window
+// open?)"); the person holding the phone needs to know what to DO.
+function pairError (msg = '') {
+  const m = String(msg)
+  if (/pairing window|host refused|firewall|denied/i.test(m)) {
+    return "Couldn't reach your library. Make sure the pairing code is still showing on your server's dashboard, then try again."
+  }
+  if (/not a peartune|not a valid|invalid|malformed/i.test(m)) {
+    return "That doesn't look like a PearTune pairing code. Copy it again from your server's dashboard."
+  }
+  if (/timed out|timeout|expired/i.test(m)) {
+    return 'That pairing code has expired. Show a fresh one on your server and try again.'
+  }
+  return 'Pairing failed. Show a fresh code on your server and try again.'
 }
 
 function count (browse, { albums, artists, songs }) {
