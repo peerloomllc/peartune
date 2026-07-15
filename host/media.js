@@ -13,7 +13,7 @@ const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 
 // Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
 // so a new mutating method cannot accidentally ship without a scope check.
-const MUTATING = new Set(['identity.set', 'fav.set', 'resume.set'])
+const MUTATING = new Set(['identity.set', 'fav.set', 'resume.set', 'count.bump'])
 
 // WHO owns the user state on this connection. Derived from the grant the firewall
 // looked up from the Noise-authenticated remote key - NEVER from a client parameter,
@@ -181,6 +181,20 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
         }
         log('fav:set', { kind: row.kind, on: row.on })
         return send.res.send({ id, body: { ok: true, kind: row.kind, id: row.id, on: row.on } })
+      }
+
+      // --- play counts (milestone 3, phase 3) -------------------------------
+      case 'count.bump': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
+        const count = await state.bumpCount(ownerOf(grant), params.trackId)
+        log('count:bump', { count })
+        return send.res.send({ id, body: { ok: true, count } })
+      }
+
+      case 'count.top': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        return send.res.send({ id, body: { items: await state.topCounts(ownerOf(grant), Number(params?.limit) || 50) } })
       }
 
       // --- resume positions (milestone 3, phase 2) --------------------------

@@ -212,6 +212,10 @@ class PearTuneClient {
   resumeSet (params) { return this._request('resume.set', params) }
   resumeLatest () { return this._request('resume.latest') }
 
+  // Play counts (milestone 3, phase 3).
+  countBump (params) { return this._request('count.bump', params) }
+  countTop (params) { return this._request('count.top', params) }
+
   art (params) { return this._request('art.get', params, { stream: true }) }
 
   // Resolves to the whole buffer. `onchunk` lets a caller start work before the

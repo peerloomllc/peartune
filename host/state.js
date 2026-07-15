@@ -78,6 +78,37 @@ class UserState {
     return node ? node.value : null
   }
 
+  // --- play counts (milestone 3, phase 3) -----------------------------------
+  //
+  // count:{ownerId}:{trackId} -> { trackId, count, updatedAt }. Host-as-hub, so the
+  // host is the single writer and just reads-modifies-writes the integer - no
+  // per-writer accounting (that was only needed for the ledger design we did NOT take;
+  // see DECISIONS). Counts survive revoke by design (they are history, not access).
+  async bumpCount (ownerId, trackId) {
+    const key = `count:${ownerId}:${trackId}`
+    const node = await this.bee.get(key, { valueEncoding: 'json' })
+    const count = (node?.value?.count || 0) + 1
+    await this.bee.put(key, { trackId, count, updatedAt: Date.now() }, { valueEncoding: 'json' })
+    return count
+  }
+
+  async getCount (ownerId, trackId) {
+    const node = await this.bee.get(`count:${ownerId}:${trackId}`, { valueEncoding: 'json' })
+    return node?.value?.count || 0
+  }
+
+  // The owner's most-played trackIds, [{ trackId, count }] descending.
+  async topCounts (ownerId, limit = 50) {
+    const lo = `count:${ownerId}:`
+    const hi = `count:${ownerId};`
+    const rows = []
+    for await (const node of this.bee.createReadStream({ gte: lo, lt: hi }, { valueEncoding: 'json' })) {
+      if (node.value?.count > 0) rows.push({ trackId: node.value.trackId, count: node.value.count })
+    }
+    rows.sort((a, b) => b.count - a.count)
+    return rows.slice(0, limit)
+  }
+
   // The owner's MOST RECENT resume - the "continue listening" candidate. Null if none.
   async latestResume (ownerId) {
     const lo = `resume:${ownerId}:`

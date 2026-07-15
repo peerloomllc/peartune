@@ -512,6 +512,34 @@ const methods = {
     }
   },
 
+  // --- play counts (milestone 3, phase 3) -------------------------------------
+  //
+  // Count a play (fire-and-forget); the app calls this once a track has been listened
+  // to past a threshold. topPlayed resolves the most-played ids to renderable tracks
+  // for the "Most played" view.
+  async countBump ({ trackId }) {
+    try {
+      await ensureConnected()
+      await client.countBump({ trackId })
+    } catch {}
+    return { ok: true }
+  },
+
+  async topPlayed ({ limit = 50 } = {}) {
+    try {
+      await ensureConnected()
+      const { items } = await client.countTop({ limit })
+      const out = []
+      for (const it of items) {
+        const t = await client.get({ id: it.trackId, type: 'track' }).catch(() => null)
+        if (t) out.push({ ...withArt(t), playCount: it.count })
+      }
+      return { items: out }
+    } catch {
+      return { items: [] }
+    }
+  },
+
   // Toggle a favorite of any kind (track / album / artist). Writes go to the host
   // (Phase 1 needs a connection); the cache is updated so the heart survives offline.
   async toggleFav ({ kind = 'track', id, on }) {
