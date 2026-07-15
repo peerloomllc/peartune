@@ -93,15 +93,44 @@ async function main () {
   const missing = await get(port, '/t/deadbeef')
   console.log('   status:', missing.status, '(expect 404)')
 
+  await shim.close()
+
+  // --- transcode path (cellular) ------------------------------------------
+  //
+  // A separate shim whose policy always transcodes. The response must be a
+  // PROGRESSIVE 200 - no content-length, accept-ranges: none - because a transcode
+  // has no stable byte offsets. This is the bare-http1 behavior we most need to prove
+  // (chunked/EOF-delimited body without a content-length), since it is new ground.
+  console.log('\n9. TRANSCODE: progressive stream (expect 200, no ranges)')
+  const tshim = createAudioShim({
+    client,
+    log: (m, d) => console.log('  [tshim]', m, JSON.stringify(d)),
+    quality: () => ({ format: 'mp3', bitrate: 128 })
+  })
+  const tport = await tshim.listen()
+  const tc = await get(tport, `/t/${track.id}`, 'bytes=0-')
+  console.log('   status:', tc.status, '(expect 200)')
+  console.log('   accept-ranges:', tc.headers['accept-ranges'], '(expect none)')
+  console.log('   content-length:', tc.headers['content-length'], '(expect undefined)')
+  console.log('   content-type:', tc.headers['content-type'], '(expect audio/mpeg)')
+  console.log('   got bytes:', tc.body.length, '| magic', tc.body.subarray(0, 4).toString('hex'))
+  const validMp3 = tc.body.length > 0 &&
+    (tc.body.subarray(0, 3).toString('hex') === '494433' || (tc.body[0] === 0xff && (tc.body[1] & 0xe0) === 0xe0))
+  console.log('   looks like an mp3:', validMp3 ? 'YES' : 'NO', '| smaller than original:', tc.body.length < track.size ? 'YES' : 'no (host may not transcode this source)')
+  await tshim.close()
+
   const ok = probe.status === 206 &&
     probe.body.length === track.size &&
     seek.status === 206 &&
     seek.body.length === 1000 &&
     same &&
     bad.status === 416 &&
-    missing.status === 404
+    missing.status === 404 &&
+    tc.status === 200 &&
+    tc.headers['accept-ranges'] === 'none' &&
+    !tc.headers['content-length'] &&
+    validMp3
 
-  await shim.close()
   await client.close()
 
   console.log(ok ? '\nSPIKE PASSED - the shim behaves as ExoPlayer needs' : '\nSPIKE FAILED')

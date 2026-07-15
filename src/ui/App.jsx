@@ -191,6 +191,15 @@ export default function App () {
     applyThemePref(pref)
   }
 
+  // Streaming quality. Lives in the worklet's settings next to the theme, because the
+  // SHIM reads it (in the worklet) to decide whether to ask the host for a transcode -
+  // the WebView never touches audio. Optimistic: reflect the choice now, persist async.
+  const changeQuality = (q) => {
+    haptic('light')
+    setState(s => ({ ...s, settings: { ...(s.settings || {}), streamQuality: q } }))
+    call('setSettings', { streamQuality: q }).catch(() => {})
+  }
+
   // --- navigation ------------------------------------------------------------
   //
   // Android back, suite convention: tell the shell whether we have anything to
@@ -574,7 +583,7 @@ export default function App () {
     screen = (
       <Settings
         state={state} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
-        ident={ident} onSaveIdentity={saveIdentity}
+        ident={ident} onSaveIdentity={saveIdentity} onQuality={changeQuality}
       />
     )
   } else if (tab === 'about') {
@@ -1602,7 +1611,16 @@ function fmt (ms) {
 
 // --- settings ----------------------------------------------------------------
 
-function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity }) {
+const QUALITIES = [
+  ['auto', 'Auto'],
+  ['original', 'Original'],
+  ['320', '320k'],
+  ['192', '192k'],
+  ['128', '128k']
+]
+
+function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality }) {
+  const quality = state.settings?.streamQuality || 'auto'
   const [copied, setCopied] = useState(false)
   const [dev, setDev] = useState(null)
   const [usr, setUsr] = useState(null)
@@ -1651,6 +1669,26 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity 
               onClick={() => { haptic('light'); onTheme(k) }}
             >{l}</button>
           ))}
+        </div>
+      </div>
+
+      <div className='card'>
+        <h3>Streaming quality</h3>
+        <div className='seg'>
+          {QUALITIES.map(([k, l]) => (
+            <button
+              key={k} className={quality === k ? 'on' : ''}
+              aria-pressed={quality === k}
+              onClick={() => onQuality(k)}
+            >{l}</button>
+          ))}
+        </div>
+        <div className='desc' style={{ marginTop: '.6rem' }}>
+          {quality === 'auto'
+            ? 'Full quality on Wi-Fi; a smaller stream on cellular to save data. Your server does the converting.'
+            : quality === 'original'
+              ? 'Always stream the original file. Best quality, most data - a FLAC album is around a gigabyte.'
+              : `Always stream at ${quality}k. Saves data everywhere, at some cost to quality.`}
         </div>
       </div>
 
