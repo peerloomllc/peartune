@@ -98,14 +98,21 @@ export default function App () {
       on('play:status', setStatus),
       on('play:stopped', () => { setNow(null); setStatus(null) }),
       on('play:error', (d) => setError(d.error)),
+      // The buffer ran dry while we were disconnected and could not get back in - a
+      // revoke, or a network hole. play:stopped clears the player; this just says why,
+      // once, without claiming "revoked" (from here it is indistinguishable from a
+      // tunnel - see the host:disconnected note below).
+      on('play:lost', () => toast('Lost the connection to your library.', true)),
       // The link died. Usually this is just Android suspending us in the
       // background, so do NOT accuse the server of revoking anyone - we cannot
       // tell the difference from here, and "your access may have been revoked" is
       // an alarming thing to say when the real answer is "you locked your phone".
       // Mark it and move on; the next thing that needs the wire will reconnect.
       on('host:disconnected', () => {
-        setNow(null)
-        setStatus(null)
+        // A drop is no longer a stop: the shell keeps the buffer playing and tries to
+        // reconnect (proposal 2026-07-14). So DON'T clear the now-playing UI - the
+        // music is still going. Just note we are off the wire; play:stopped is what
+        // clears the player, and only if the buffer actually starves (a revoke).
         setState(s => ({ ...s, connected: false }))
       }),
       on('host:connected', (d) => {
