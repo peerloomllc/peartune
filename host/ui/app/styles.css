@@ -75,12 +75,13 @@ a { color: var(--primary-strong); }
 .brand-name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
 .brand-name span { color: var(--primary); }
 .brand-sub { color: var(--subtle); font-size: 12px; white-space: nowrap; }
-.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
 
 .pill {
   display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted);
   background: var(--surface); border: 1px solid var(--border); padding: 5px 11px; border-radius: 999px;
   white-space: nowrap; max-width: 15rem; overflow: hidden; text-overflow: ellipsis;
+  margin-left: auto; /* pushes the pill + the icon group to the right on desktop */
 }
 .pill .v { color: var(--subtle); }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--subtle); }
@@ -146,10 +147,17 @@ a { color: var(--primary-strong); }
 .sub { color: var(--muted); font-size: 12.5px; margin-top: 1px; display: flex; align-items: center; gap: 7px; min-width: 0; }
 .sub > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub.rev { color: var(--warn); }
-/* Pending identity claim: a compact amber pill on the status line (keeps every
-   device row the same two-line height) that opens the confirm modal. */
-.claimchip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; padding: 1px 9px; font-size: 11px; font-weight: 500; border-radius: 999px; cursor: pointer; color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
-.claimchip:hover { background: color-mix(in srgb, var(--warn) 28%, transparent); filter: none; }
+/* Needs-confirmation: a pending claim gets its own roomy card at the top of the
+   list, so device rows stay uniform and the claim has space to be read + acted on. */
+.pend-hdr { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--warn); font-weight: 700; margin: 2px 2px 8px; }
+.pending { background: color-mix(in srgb, var(--warn) 8%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); border-radius: 12px; padding: 11px 12px; margin-bottom: 10px; }
+.pend-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pend-top .nm { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pend-st { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.pend-claim { font-size: 13px; color: var(--muted); margin-top: 3px; }
+.pend-claim b { color: var(--warn); font-weight: 700; }
+.pend-acts { display: flex; gap: 8px; margin-top: 11px; }
+.pend-acts button { flex: 1 1 0; }
 .live { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: var(--primary); box-shadow: 0 0 0 0 var(--glow); animation: beat 2.4s ease-in-out infinite; }
 .live.off { background: var(--subtle); box-shadow: none; animation: none; }
 .live.rev { background: var(--warn); box-shadow: none; animation: none; }
@@ -258,10 +266,13 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .stack.center { align-items: center; text-align: center; }
 .qr { width: 216px; height: 216px; background: #fff; border-radius: 12px; padding: 10px; }
 .tabs { display: flex; gap: 8px; margin-bottom: 14px; width: 100%; }
-.tabs button { flex: 1; padding: 9px 6px; font-size: 13px; gap: 5px; }
-/* donation buttons: one full-width Copy, or Copy + Open split evenly */
+.tabs button { flex: 1 1 0; min-width: 0; padding: 9px 4px; font-size: 12.5px; gap: 5px; white-space: nowrap; }
+/* Reserved caption height so the sheet stays the same size across Lightning /
+   On-chain / USD (their captions differ in length). */
+.donate-cap { color: var(--muted); font-size: 12.5px; line-height: 1.45; text-align: center; min-height: 36px; display: flex; align-items: center; justify-content: center; }
+/* donation buttons: one full-width Copy, or Copy + Open split evenly - always one row */
 .donate-actions { display: flex; gap: 8px; width: 100%; margin-top: 2px; }
-.donate-actions > * { flex: 1; }
+.donate-actions > * { flex: 1 1 0; min-width: 0; }
 .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--muted); word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; width: 100%; text-align: center; }
 .key.addr { white-space: nowrap; overflow-x: auto; font-size: 11.5px; word-break: normal; }
 .btnrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
@@ -304,12 +315,33 @@ button.destructive { background: var(--bad); color: #fff; }
 /* ---- mobile --------------------------------------------------------------- */
 @media (max-width: 620px) {
   .app { padding: 0 12px; }
-  .topbar { flex-wrap: wrap; gap: 8px; padding: 12px 0 10px; }
+
+  /* Top bar: brand + icons on row 1, the source pill on its own row below. */
+  .topbar { flex-wrap: wrap; gap: 8px; padding: calc(10px + env(safe-area-inset-top)) 0 8px; }
   .brand-sub { display: none; }
+  .topbar-right { order: 1; margin-left: auto; }
+  .pill { order: 2; flex-basis: 100%; margin-left: 0; max-width: none; justify-content: flex-start; }
+
+  /* Bigger touch targets. */
+  .iconbtn { width: 40px; height: 40px; }
+
+  /* ONE scroll: panels grow to their content and the whole .main scrolls, instead
+     of a growing panel with its own inner scroll (which fights touch scrolling).
+     The top bar and action bar stay pinned via the flex shell. */
+  .panel.grow { flex: 0 0 auto; }
+  .list { overflow: visible; }
+
   .stats { gap: 8px; }
   .stat { padding: 12px; }
   .stat .num { font-size: 22px; }
+
+  /* Action bar sits above the home indicator. */
+  .actionbar { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+
+  /* Modals become full-width bottom sheets. */
   .overlay { padding: 0; align-items: flex-end; }
   .modal { max-width: none; border-radius: 18px 18px 0 0; max-height: 92dvh; }
+  .tabs button { font-size: 12px; padding: 9px 3px; }
+
   .prow { flex-wrap: wrap; }
 }

@@ -154,11 +154,11 @@ function TopBar ({ state, isDark, onTheme, onOpen }) {
           <div className='brand-sub'>{state.libraryName || 'Your music, anywhere'}</div>
         </div>
       </div>
+      <span className='pill' title={sourceOk ? 'Music source' : state.sourceError}>
+        <span className={'dot ' + (sourceOk ? 'good' : 'bad')} />
+        {st.source ? titleCase(st.source) : 'No source'}
+      </span>
       <div className='topbar-right'>
-        <span className='pill' title={sourceOk ? 'Music source' : state.sourceError}>
-          <span className={'dot ' + (sourceOk ? 'good' : 'bad')} />
-          {st.source ? titleCase(st.source) : 'No source'}
-        </span>
         <button className='iconbtn' onClick={onTheme} aria-label='Toggle theme' title={isDark ? 'Switch to light' : 'Switch to dark'}>
           {isDark ? <Sun size={17} /> : <Moon size={17} />}
         </button>
@@ -201,7 +201,16 @@ function AccessPanel ({ state, refresh, toast, online }) {
   const persons = (state.persons || []).filter(p => !p.revokedAt)
   const devices = state.devices || []
   const byPerson = id => devices.filter(d => d.personId === id)
-  const unassigned = devices.filter(d => !d.personId && !d.revokedAt)
+  // A device is "pending" when it claims an identity that isn't (yet) its confirmed
+  // person. Pending devices are surfaced in their own Needs-confirmation card and
+  // pulled out of the normal lists, so every device row stays uniform.
+  const claimMismatch = d => {
+    if (d.revokedAt || !d.claimedUser) return false
+    const holder = persons.find(p => p.id === d.personId)
+    return !holder || holder.name.toLowerCase() !== d.claimedUser.toLowerCase()
+  }
+  const pending = devices.filter(claimMismatch)
+  const unassigned = devices.filter(d => !d.personId && !d.revokedAt && !claimMismatch(d))
   const revokedLoose = devices.filter(d => !d.personId && d.revokedAt)
   const revokedCount = devices.filter(d => d.revokedAt).length
 
@@ -235,13 +244,12 @@ function AccessPanel ({ state, refresh, toast, online }) {
     if (!await askConfirm({ title: `Delete "${d.label}"?`, message: 'Access is already revoked and stays revoked. This only removes the record; the device would have to pair again to return.', confirmLabel: 'Delete' })) return
     mutate('/api/device/delete', { deviceKey: d.deviceKey }, () => `Deleted ${d.label}.`)
   }
-  const confirmClaim = async d => {
-    if (!await askConfirm({ title: `Confirm ${d.label} belongs to ${d.claimedUser}?`, message: 'They will be created if new, and you can then revoke all of their devices in one click.', confirmLabel: 'Confirm' })) return
-    mutate('/api/person/confirm', { deviceKey: d.deviceKey }, r => `${d.label} now belongs to ${r.person.name}.`)
-  }
+  // Confirm is direct: the Needs-confirmation card already shows the claim in full,
+  // so a second dialog would be redundant. (Revoke still double-checks - it's destructive.)
+  const confirmClaim = d => mutate('/api/person/confirm', { deviceKey: d.deviceKey }, r => `${d.label} now belongs to ${r.person.name}.`)
   const assign = (d, personId) => mutate('/api/assign', { deviceKey: d.deviceKey, personId: personId || null })
 
-  const empty = !persons.length && !unassigned.length && !(showRevoked && revokedCount)
+  const empty = !persons.length && !unassigned.length && !pending.length && !(showRevoked && revokedCount)
 
   return (
     <div className='panel grow'>
@@ -253,8 +261,13 @@ function AccessPanel ({ state, refresh, toast, online }) {
         {empty
           ? <div className='empty'><strong>No devices paired yet.</strong><br />Use “Pair a device” below to add one.</div>
           : <>
+              {pending.length > 0 &&
+                <>
+                  <div className='pend-hdr'>⚑ Needs confirmation</div>
+                  {pending.map(d => <PendingCard key={d.deviceKey} d={d} onConfirm={confirmClaim} onRevoke={revoke} />)}
+                </>}
               {persons.map(p => {
-                const live = byPerson(p.id).filter(d => !d.revokedAt)
+                const live = byPerson(p.id).filter(d => !d.revokedAt && !claimMismatch(d))
                 const revoked = byPerson(p.id).filter(d => d.revokedAt)
                 const on = live.filter(d => d.online).length
                 const isOpen = open[p.id]
@@ -272,11 +285,11 @@ function AccessPanel ({ state, refresh, toast, online }) {
                         : <button className='ghost small danger' onClick={e => { e.stopPropagation(); deletePerson(p) }}>Delete</button>}
                     </div>
                     <div className={'devices-sub' + (isOpen ? ' open' : '')}>
-                      {live.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} />)}
+                      {live.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} />)}
                       {revoked.length > 0 &&
                         <Collapse open={showRevoked}>
                           <div className='revoked-stack'>
-                            {revoked.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} />)}
+                            {revoked.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} />)}
                           </div>
                         </Collapse>}
                     </div>
@@ -286,11 +299,11 @@ function AccessPanel ({ state, refresh, toast, online }) {
               {(unassigned.length || revokedLoose.length) ?
                 <>
                   <div className='group-h'>Unassigned</div>
-                  {unassigned.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onAssign={assign} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} loose />)}
+                  {unassigned.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onAssign={assign} onRevoke={revoke} onDelete={deleteDevice} loose />)}
                   {revokedLoose.length > 0 &&
                     <Collapse open={showRevoked}>
                       <div className='revoked-stack'>
-                        {revokedLoose.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} loose />)}
+                        {revokedLoose.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} loose />)}
                       </div>
                     </Collapse>}
                 </> : null}
@@ -309,10 +322,9 @@ function AccessPanel ({ state, refresh, toast, online }) {
   )
 }
 
-function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onConfirm, loose }) {
-  const holder = persons && persons.find(p => p.id === d.personId)
-  const matches = holder && d.claimedUser && holder.name.toLowerCase() === d.claimedUser.toLowerCase()
-  const showClaim = !d.revokedAt && d.claimedUser && !matches
+// Every device row is exactly two lines (name + status) - no claim chip. A device
+// with an unconfirmed claim is handled by PendingCard instead (see AccessPanel).
+function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, loose }) {
   return (
     <div className='dev'>
       <div className='drow'>
@@ -321,10 +333,6 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onConfirm, loose
           <div className='name'>{d.label}{d.revokedAt && <span className='badge'>revoked</span>}</div>
           <div className={'sub' + (d.revokedAt ? ' rev' : '')}>
             <span>{d.revokedAt ? `Revoked ${ago(d.revokedAt)}` : (d.online ? 'Connected' : 'Last seen ' + ago(d.lastSeenAt))}</span>
-            {showClaim &&
-              <button className='claimchip' title={`Confirm this device belongs to ${d.claimedUser}`} onClick={() => onConfirm(d)}>
-                Claims {d.claimedUser}
-              </button>}
           </div>
         </div>
         {onAssign && !d.revokedAt &&
@@ -335,6 +343,24 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onConfirm, loose
         {d.revokedAt
           ? <button className='ghost small danger' onClick={() => onDelete(d)}>Delete</button>
           : <button className='ghost small danger' onClick={() => onRevoke(d)}>Revoke</button>}
+      </div>
+    </div>
+  )
+}
+
+// A device claiming an identity, given room to be read and acted on. Confirm and
+// Revoke are equal-width; Confirm is direct, Revoke double-checks.
+function PendingCard ({ d, onConfirm, onRevoke }) {
+  return (
+    <div className='pending'>
+      <div className='pend-top'>
+        <span className='nm'>{d.label}</span>
+        <span className='pend-st'><span className={'live' + (d.online ? '' : ' off')} aria-hidden='true' />{d.online ? 'Connected' : 'Last seen ' + ago(d.lastSeenAt)}</span>
+      </div>
+      <div className='pend-claim'>Claims to be <b>{d.claimedUser}</b></div>
+      <div className='pend-acts'>
+        <button onClick={() => onConfirm(d)}>Confirm</button>
+        <button className='ghost danger' onClick={() => onRevoke(d)}>Revoke</button>
       </div>
     </div>
   )
@@ -580,7 +606,7 @@ function SupportModal ({ onClose }) {
 
         {qr ? <img className='qr' src={qr} alt='Donation QR code' /> : <div className='empty'>Generating…</div>}
 
-        <div className='hint center'>{rail.caption}</div>
+        <div className='donate-cap'>{rail.caption}</div>
         <div className='key addr'>{rail.value}</div>
         <div className='donate-actions'>
           <button className='ghost' onClick={copy}>{copied ? <><CheckCircle size={15} weight='fill' /> Copied</> : <><Copy size={15} /> Copy</>}</button>
