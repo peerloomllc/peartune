@@ -30,6 +30,8 @@ import * as FileSystem from 'expo-file-system/legacy'
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const bundle = require('../assets/bare-universal.bundle')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const { reindexAfterMove, reindexAfterRemove } = require('./queue-index')
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { decideStarve } = require('./starve')
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void }
@@ -296,6 +298,51 @@ export default function App () {
     } catch (e: any) {
       toWeb('play:error', { error: e?.message ?? String(e) })
     }
+  }
+
+  // Reorder the queue: move the track at `from` to `to`. ExoPlayer's own moveMediaItem
+  // (via the patch) keeps the current track playing and preserves gapless; we mirror the
+  // move in queueRef and slide indexRef so the now-playing highlight follows the TRACK,
+  // not the slot (reindexAfterMove matches what ExoPlayer does to currentMediaItemIndex).
+  // Returns the new {items,index} so the UI updates without a round-trip.
+  function queueMove ({ from, to }: any) {
+    const f = Number(from); const t = Number(to)
+    const q = queueRef.current
+    if (!Number.isInteger(f) || !Number.isInteger(t) ||
+        f < 0 || t < 0 || f >= q.length || t >= q.length || f === t) {
+      return { items: q, index: indexRef.current }
+    }
+    px()?.moveQueueItem(f, t)
+    const [moved] = q.splice(f, 1)
+    q.splice(t, 0, moved)
+    indexRef.current = reindexAfterMove(indexRef.current, f, t)
+    persistQueue(true)
+    return { items: queueRef.current, index: indexRef.current }
+  }
+
+  // Remove one track. Removing the LAST remaining track empties the player - that is a
+  // stop(), not a queue edit. Removing the CURRENT track lets ExoPlayer advance to the
+  // next (the status tick then resyncs indexRef from currentQueueIndex); we set indexRef
+  // optimistically here so the list updates immediately.
+  function queueRemove ({ index }: any) {
+    const i = Number(index)
+    const q = queueRef.current
+    if (!Number.isInteger(i) || i < 0 || i >= q.length) {
+      return { items: q, index: indexRef.current }
+    }
+    if (q.length === 1) { stop(); return { items: [], index: 0 } }
+    const wasCurrent = i === indexRef.current
+    px()?.removeQueueItem(i)
+    const len = q.length
+    q.splice(i, 1)
+    indexRef.current = reindexAfterRemove(indexRef.current, i, len)
+    // Removing the CURRENT track: ExoPlayer slides the next one into this slot, so the
+    // index is UNCHANGED and the status listener's index-change check never fires -
+    // update the now-playing (mini-player + lock screen) to the new track explicitly.
+    // (No seek here, so this is the safe kind of announce - unlike playIndex's.)
+    if (wasCurrent) announce(indexRef.current)
+    persistQueue(true)
+    return { items: queueRef.current, index: indexRef.current }
   }
 
   function toggle () {
@@ -642,6 +689,12 @@ export default function App () {
         items: queueRef.current,
         index: indexRef.current
       }),
+
+      // Edit the queue in place: reorder (drag) or remove a track. Both mirror
+      // ExoPlayer's own move/remove (via the patch) so the current track keeps
+      // playing, and both return the new {items,index} so the UI reflects it at once.
+      queueMove: () => queueMove(msg.args),
+      queueRemove: () => queueRemove(msg.args),
 
       // Jump straight to a track in the queue. seekToQueueIndex is ExoPlayer's own
       // (via the patch), so this respects the shuffled order rather than fighting
