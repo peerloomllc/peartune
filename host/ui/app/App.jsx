@@ -493,13 +493,13 @@ function DonationSheet ({ onClose }) {
         {tab === 'btc'
           ? <>
               <h2>Lightning address</h2>
-              <div className='key'>{DONATE.lightning}</div>
+              <div className='key addr'>{DONATE.lightning}</div>
               <div className='btnrow'>
                 <button className='sm' onClick={() => copy('ln', DONATE.lightning)}>{copied === 'ln' ? 'Copied' : <><Copy size={14} /> Copy</>}</button>
-                <button className='sm' onClick={() => window.open(DONATE.strikeUrl, '_blank', 'noopener,noreferrer')}><ArrowSquareOut size={14} /> Pay in a browser</button>
+                <a className='btn primary' href={DONATE.strikeUrl} target='_blank' rel='noopener noreferrer'><ArrowSquareOut size={14} /> Pay in a browser</a>
               </div>
               <h2><CurrencyBtc size={13} weight='bold' style={{ verticalAlign: '-2px' }} /> On-chain Bitcoin</h2>
-              <div className='key'>{DONATE.onchain}</div>
+              <div className='key addr'>{DONATE.onchain}</div>
               <div className='btnrow'>
                 <button className='sm' onClick={() => copy('btc', DONATE.onchain)}>{copied === 'btc' ? 'Copied' : <><Copy size={14} /> Copy</>}</button>
               </div>
@@ -509,7 +509,7 @@ function DonationSheet ({ onClose }) {
               <div className='key'>{DONATE.bmcUrl}</div>
               <div className='btnrow'>
                 <button className='sm' onClick={() => copy('bmc', DONATE.bmcUrl)}>{copied === 'bmc' ? 'Copied' : <><Copy size={14} /> Copy</>}</button>
-                <button className='sm primary' onClick={() => window.open(DONATE.bmcUrl, '_blank', 'noopener,noreferrer')}><ArrowSquareOut size={14} /> Open</button>
+                <a className='btn primary' href={DONATE.bmcUrl} target='_blank' rel='noopener noreferrer'><ArrowSquareOut size={14} /> Open</a>
               </div>
             </>}
 
