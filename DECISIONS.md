@@ -2,6 +2,55 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-15 - The dashboard is a BUILT React app, not a hand-written HTML string
+Tier: T1 (UI rewrite; NO wire change, NO persisted-shape change, NO auth-model change -
+the same HTTP API, served differently). The control plane is security-relevant, so the
+invariants that made the old page safe are pinned, below.
+Context: host/ui/page.js was ONE 700-line hand-written HTML template literal that was
+the operator control plane (pairing QR, revoke, per-person grants, source picker). It
+had already produced, from its shape alone, a stored XSS (device labels concatenated
+into innerHTML) and two syntax-in-a-string bugs invisible to require() (a backtick in a
+comment, a duplicate const). The TODO named the rewrite a milestone: "an app, not a
+dashboard." Tim asked for an app feel, everything on one screen without scrolling, the
+phone app's look, and a Support Development page like the PearCircle seeder's.
+Choice: a real React app under host/ui/app/ (main/App/styles/theme/api), bundled by
+esbuild and INLINED into one self-contained host/ui/dashboard.html
+(scripts/build-dashboard.mjs, npm run build:dashboard, in the verify gate). Layout is a
+SINGLE control panel (Tim's pick over tabs): a header with live stats, a pairing panel,
+a people-first Access panel (persons expand to their devices; unassigned/claimed devices
+in their own group), a music-source panel (picker + folder browser + dirty-guard), and a
+Support sheet. It reuses the phone app's exact theme tokens and Manrope font (imports
+src/ui/fonts.js) so the two read as one product.
+Why a build-time artifact and not a runtime dep: React/esbuild/qrcode are ROOT
+devDependencies and NONE enter the host image. The image's Dockerfile copies host/ with
+no build step, so the built dashboard.html is COMMITTED (as page.js was) and served as
+one string - host/package.json stays the eleven server packages it is (DECISIONS
+2026-07-14 "the host image gets its own package.json"). login.js stays a small
+hand-written string (still guarded by the template-literal parse test).
+Security invariants PRESERVED (this is why the tier note matters):
+- XSS: React escapes every interpolated string by default, so the device label / user
+  claim cannot execute. The class of bug the old page kept producing is gone. A test now
+  asserts dangerouslySetInnerHTML appears NOWHERE in the dashboard source.
+- The auth gate (host/ui/auth.js), the fail-closed requireSafeBind, and every JSON
+  endpoint are UNCHANGED. The rewrite is client-side only.
+- The folder browser still renders filesystem names as escaped JSX (was hand-built DOM
+  nodes for the same reason).
+- The source card's dirty-guard is kept: once the operator touches it, the 3s poll no
+  longer clobbers the in-progress edit.
+- Clipboard uses an execCommand fallback, because the dashboard is served over a
+  non-secure origin (Umbrel proxy / LAN) where navigator.clipboard does not exist -
+  the same fix the seeder uses.
+Support page: the seeder's two-rail donation UI (⚡ BTC ⚡ / 💲 USD 💲 tabs, a QR per
+rail, copy buttons), using PearTune's own suite addresses (Strike Lightning, on-chain
+BTC, Buy Me a Coffee) - rendered entirely client-side, no phone-home.
+Verify: 210 tests green (two page.js-string tests rewritten to the new architecture);
+the built dashboard boots and serves on a live host (GET /, /api/state, /api/pair/start
+all correct against the fixture library); a headless react-dom/server render of App
+throws nothing. REMAINING manual check: open the dashboard in a browser and eyeball the
+single-screen layout + the Support sheet (a screenshot cannot be driven here).
+Rollback: revert the branch; page.js returns from git history and server.js requires it
+again.
+
 ## 2026-07-15 - Offline revoke is a LEASE, not a purge-on-reconnect (the distinction is unreliable)
 Tier: T3 (security semantics of revoke vs. offline copies). Proposal:
 2026-07-15-offline-pinned-cache (this supersedes its "purge on refused reconnect" mechanism).
