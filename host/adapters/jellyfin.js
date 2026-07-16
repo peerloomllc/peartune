@@ -238,6 +238,19 @@ class JellyfinAdapter {
       Limit: 0 // we want the count, not the library
     })
     this._counts = body.TotalRecordCount ?? 0
+
+    // Album + artist totals for the dashboard, via the same Limit:0/TotalRecordCount
+    // trick (no library fetched). Best-effort - a hiccup here leaves the total null
+    // (shown as 0) rather than failing the scan.
+    const albums = await this._call('/Items', {
+      userId: this.userId, IncludeItemTypes: 'MusicAlbum', Recursive: true, Limit: 0
+    }).catch(() => null)
+    this._albums = albums?.TotalRecordCount ?? null
+    const artists = await this._call('/Artists/AlbumArtists', {
+      userId: this.userId, Recursive: true, Limit: 0
+    }).catch(() => null)
+    this._artists = artists?.TotalRecordCount ?? null
+
     this.scannedAt = Date.now()
     return this._counts
   }
@@ -261,8 +274,8 @@ class JellyfinAdapter {
       sourceName: this._serverName || 'Jellyfin',
       root: this.base,
       tracks: this._counts ?? 0,
-      albums: 0,
-      artists: 0,
+      albums: this._albums ?? 0,
+      artists: this._artists ?? 0,
       scannedAt: this.scannedAt
     }
   }

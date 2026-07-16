@@ -10,6 +10,7 @@
 // deadlocked. See host/pair.js for why the rendezvous was unnecessary here.
 
 const path = require('path')
+const fs = require('fs')
 const HyperDHT = require('hyperdht')
 const Corestore = require('corestore')
 const Hyperbee = require('hyperbee')
@@ -30,7 +31,10 @@ class PearTuneHost {
   constructor ({ dataDir, musicDir, libraryName = 'My Library', subsonic = null, dht = null, bootstrap = null, log = () => {} }) {
     this.dataDir = path.resolve(dataDir)
     this.musicDir = musicDir
-    this.libraryName = libraryName
+    // A persisted operator rename (library.json) wins over the env/CLI default, so the
+    // name set in the dashboard survives a restart even though PEARTUNE_NAME is still
+    // set - the same precedence the source config uses (host/source.js).
+    this.libraryName = this._readLibraryName() || libraryName
     this.log = log
 
     this.identity = createIdentity(this.dataDir)
@@ -112,8 +116,9 @@ class PearTuneHost {
     this.source = this.sources.active()
     this.sourceError = null
 
+    const st = await next.stats().catch(() => ({}))
     this.log('host:source-changed', { source: cfg.kind, tracks })
-    return { kind: cfg.kind, tracks }
+    return { kind: cfg.kind, tracks, albums: st.albums ?? 0, artists: st.artists ?? 0 }
   }
 
   // Does this config actually work? Used by the dashboard's "Test" button, so an
@@ -134,8 +139,26 @@ class PearTuneHost {
   async rescan () {
     const tracks = await this.adapter.scan()
     this.sourceError = null
+    const st = await this.adapter.stats().catch(() => ({}))
     this.log('host:rescanned', { source: this.adapter.kind, tracks })
-    return { kind: this.adapter.kind, tracks }
+    return { kind: this.adapter.kind, tracks, albums: st.albums ?? 0, artists: st.artists ?? 0 }
+  }
+
+  // The operator's library name. Persisted to library.json in the data dir so it
+  // survives a restart (mirrors host/source.js). Sanitised the same way device/person
+  // names are (trim, cap 64, strip control chars) - it is shown on the dashboard and
+  // sent to a pairing device.
+  _libraryFile () { return path.join(this.dataDir, 'library.json') }
+  _readLibraryName () {
+    try { return JSON.parse(fs.readFileSync(this._libraryFile(), 'utf8')).name || null } catch { return null }
+  }
+  setLibraryName (name) {
+    const clean = String(name == null ? '' : name).replace(/[\u0000-\u001f]/g, '').trim().slice(0, 64)
+    if (!clean) throw new Error('library name required')
+    fs.mkdirSync(this.dataDir, { recursive: true })
+    fs.writeFileSync(this._libraryFile(), JSON.stringify({ name: clean }, null, 2))
+    this.libraryName = clean
+    return clean
   }
 
   get sourceView () {

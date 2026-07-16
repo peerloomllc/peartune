@@ -140,7 +140,9 @@ a { color: var(--primary-strong); }
 .person { border-top: 1px solid var(--border); }
 .person:first-child { border-top: 0; }
 .prow { display: flex; align-items: center; gap: 11px; padding: 12px 4px; cursor: pointer; }
+.prow.flat { cursor: default; } /* a person with no devices can't expand */
 .prow .caret { color: var(--subtle); flex: 0 0 auto; transition: transform .2s; }
+.prow .caret.hidden { visibility: hidden; } /* keep the row's alignment, hide the toggle */
 .prow .caret.open { transform: rotate(90deg); }
 .who { flex: 1; min-width: 0; }
 .name { font-weight: 500; font-size: 14.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -168,7 +170,7 @@ a { color: var(--primary-strong); }
 /* expand/collapse: always rendered, animated via max-height + opacity so the
    caret rotation has a matching reveal. Indented under a hierarchy rail so a
    person's devices clearly read as a subset of that person. */
-.devices-sub { margin: 4px 0 0 22px; padding-left: 14px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 8px; max-height: 0; opacity: 0; overflow: hidden; transition: max-height .32s cubic-bezier(.4,0,.2,1), opacity .22s ease, padding-bottom .32s; }
+.devices-sub { margin: 4px 0 0 26px; display: flex; flex-direction: column; gap: 8px; max-height: 0; opacity: 0; overflow: hidden; transition: max-height .32s cubic-bezier(.4,0,.2,1), opacity .22s ease, padding-bottom .32s; }
 .devices-sub.open { max-height: 1400px; opacity: 1; padding-bottom: 10px; }
 /* each device is its own subtle card, so several under one person stay distinct. */
 .devices-sub .dev { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; }

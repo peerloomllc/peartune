@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   MusicNotes, UsersThree, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
   CaretRight, Plus, X, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
-  Lightning, CheckCircle, Folder, CaretLeft
+  Lightning, CheckCircle, Folder, CaretLeft, PencilSimple
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
 import { api, copyText, ago, DONATE } from './api'
@@ -124,6 +124,7 @@ export default function App () {
 
       {modal === 'pair' && <PairModal onClose={() => setModal(null)} toast={toast} />}
       {modal === 'support' && <SupportModal onClose={() => setModal(null)} />}
+      {modal === 'library' && <LibraryModal state={state} onClose={() => setModal(null)} onSaved={refresh} toast={toast} />}
       {note && <div className={'toast' + (note.bad ? ' err' : '')}>{note.msg}</div>}
       <ConfirmHost />
     </div>
@@ -166,6 +167,7 @@ function TopBar ({ state, isDark, onTheme, onOpen }) {
           <button className='iconbtn' onClick={() => setMenu(v => !v)} aria-label='Menu' aria-expanded={menu}><GearSix size={17} /></button>
           {menu &&
             <div className='menu' role='menu'>
+              <button onClick={() => { setMenu(false); onOpen('library') }}><PencilSimple size={16} /> Library name</button>
               <button onClick={() => { setMenu(false); onOpen('support') }}><Heart size={16} /> Support Development</button>
               <div className='sep' />
               <button onClick={() => { setMenu(false); logout() }}><SignOut size={16} /> Log out</button>
@@ -270,11 +272,12 @@ function AccessPanel ({ state, refresh, toast, online }) {
                 const live = byPerson(p.id).filter(d => !d.revokedAt && !claimMismatch(d))
                 const revoked = byPerson(p.id).filter(d => d.revokedAt)
                 const on = live.filter(d => d.online).length
-                const isOpen = open[p.id]
+                const expandable = live.length + revoked.length > 0
+                const isOpen = expandable && open[p.id]
                 return (
                   <div className='person' key={p.id}>
-                    <div className='prow' onClick={() => setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
-                      <CaretRight size={14} weight='bold' className={'caret' + (isOpen ? ' open' : '')} />
+                    <div className={'prow' + (expandable ? '' : ' flat')} onClick={() => expandable && setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
+                      <CaretRight size={14} weight='bold' className={'caret' + (isOpen ? ' open' : '') + (expandable ? '' : ' hidden')} />
                       <span className={'live' + (on ? '' : ' off')} aria-hidden='true' />
                       <div className='who'>
                         <div className='name'>{p.name}</div>
@@ -397,6 +400,14 @@ function SourcePanel ({ state, refresh, toast }) {
   const pick = k => { setKind(k); touch(); setBrowse(null) }
   const cancel = () => { setDirty(false); setBrowse(null); refresh() }
   const tracks = n => `${(n || 0).toLocaleString()} track${n === 1 ? '' : 's'}`
+  // tracks, plus albums/artists when the source reports them (folder always; Subsonic
+  // and Jellyfin/Emby after this change; a subset server may still omit albums).
+  const summary = r => {
+    const parts = [tracks(r.tracks)]
+    if (r.albums) parts.push(`${r.albums.toLocaleString()} album${r.albums === 1 ? '' : 's'}`)
+    if (r.artists) parts.push(`${r.artists.toLocaleString()} artist${r.artists === 1 ? '' : 's'}`)
+    return parts.join(' · ')
+  }
 
   const form = () => {
     const c = cfg[kind] || {}
@@ -425,7 +436,7 @@ function SourcePanel ({ state, refresh, toast }) {
     setDirty(false); setBrowse(null)
     await refresh()
     setBusy(null)
-    notify('Music source saved', <>The music source has been updated. <span className='hl'>{tracks(r.tracks)}</span> are now available to your devices.</>)
+    notify('Music source saved', <>The music source has been updated. <span className='hl'>{summary(r)}</span> are now available to your devices.</>)
   }
   const rescan = async () => {
     setBusy('rescan')
@@ -433,7 +444,7 @@ function SourcePanel ({ state, refresh, toast }) {
     await refresh()
     setBusy(null)
     if (!r.ok) return notify('Rescan failed', r.error || 'The library could not be rescanned.')
-    notify('Rescan complete', <>The library was rescanned and now contains <span className='hl'>{tracks(r.tracks)}</span>.</>)
+    notify('Rescan complete', <>The library was rescanned and now contains <span className='hl'>{summary(r)}</span>.</>)
   }
   const openBrowse = async path => {
     const start = path || (cfg.folder && cfg.folder.root) || '/'
@@ -570,6 +581,33 @@ function PairModal ({ onClose, toast }) {
             <div className='key addr'>{qr.link}</div>
             <button className='ghost' onClick={stop}>Cancel</button>
           </div>}
+    </Modal>
+  )
+}
+
+// Rename the library. Persisted host-side; also what a device sees when it pairs.
+function LibraryModal ({ state, onClose, onSaved, toast }) {
+  const [name, setName] = useState(state.libraryName || '')
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    const clean = name.trim()
+    if (!clean) return
+    setBusy(true)
+    const r = await api('/api/library', { name: clean })
+    setBusy(false)
+    if (!r.ok) return toast('Failed: ' + (r.error || 'could not rename the library'), true)
+    onSaved()
+    toast('Library renamed.')
+    onClose()
+  }
+  return (
+    <Modal title='Library Name' onClose={onClose}>
+      <div className='stack'>
+        <p className='hint'>Shown on this dashboard, and to a device when it pairs.</p>
+        <input value={name} maxLength={64} placeholder='My Library' autoFocus
+          onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && save()} />
+        <button className='block' onClick={save} disabled={busy || !name.trim()}>{busy ? 'Saving…' : 'Save'}</button>
+      </div>
     </Modal>
   )
 }
