@@ -2597,6 +2597,13 @@ function fmt (ms) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
+// Human bytes: MB up to a gig, then GB. Enough precision to watch a cache fill.
+function fmtBytes (n) {
+  if (!n) return '0 MB'
+  const mb = n / (1024 * 1024)
+  return mb >= 1024 ? `${(mb / 1024).toFixed(mb / 1024 >= 10 ? 0 : 1)} GB` : `${Math.round(mb)} MB`
+}
+
 // --- settings ----------------------------------------------------------------
 
 const QUALITIES = [
@@ -2607,12 +2614,25 @@ const QUALITIES = [
   ['128', '128k']
 ]
 
+const CACHE_CAPS = [
+  [512 * 1024 * 1024, '512 MB'],
+  [1024 * 1024 * 1024, '1 GB'],
+  [2 * 1024 * 1024 * 1024, '2 GB'],
+  [0, 'Unlimited']
+]
+
 function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [copied, setCopied] = useState(false)
   const [dev, setDev] = useState(null)
   const [usr, setUsr] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [cache, setCache] = useState(null) // { bytes, count, cap }
+
+  useEffect(() => { call('cacheStats').then(setCache).catch(() => {}) }, [])
+  const cap = cache?.cap ?? (state.settings?.cacheCap ?? 0)
+  const setCap = async (bytes) => { haptic('light'); try { setCache(await call('setCacheCap', { bytes })) } catch {} }
+  const clearCache = async () => { haptic('warn'); try { setCache(await call('clearCache')) } catch {} }
 
   // null means "not edited yet" - fall back to what the host told us. Using '' as
   // the initial value instead would silently clear a name the moment identity
@@ -2678,6 +2698,33 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
               ? 'Always stream the original file. Best quality, most data - a FLAC album is around a gigabyte.'
               : `Always stream at ${quality}k. Saves data everywhere, at some cost to quality.`}
         </div>
+      </div>
+
+      <div className='card'>
+        <h3>Offline storage</h3>
+        <div className='desc'>
+          Tracks you play are kept on this phone so they play again with no connection;
+          the oldest clear out to stay under this size.
+        </div>
+        <div className='row'>
+          <div><div className='label'>Using</div></div>
+          <span className='val'>
+            {fmtBytes(cache?.bytes || 0)}{cap ? ` / ${fmtBytes(cap)}` : ''}
+            {cache?.count ? ` · ${cache.count} track${cache.count === 1 ? '' : 's'}` : ''}
+          </span>
+        </div>
+        <div className='seg scroll' style={{ marginTop: '.5rem' }}>
+          {CACHE_CAPS.map(([b, l]) => (
+            <button key={l} className={cap === b ? 'on' : ''} aria-pressed={cap === b} onClick={() => setCap(b)}>{l}</button>
+          ))}
+        </div>
+        <button
+          className='wide'
+          style={{ marginTop: '.6rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '.4rem' }}
+          onClick={clearCache} disabled={!cache?.count}
+        >
+          <Trash size={16} weight='bold' /> Clear cache
+        </button>
       </div>
 
       <div className='card'>

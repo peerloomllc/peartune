@@ -2,6 +2,38 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-15 - Offline revoke is a LEASE, not a purge-on-reconnect (the distinction is unreliable)
+Tier: T3 (security semantics of revoke vs. offline copies). Proposal:
+2026-07-15-offline-pinned-cache (this supersedes its "purge on refused reconnect" mechanism).
+Context: Phase 5B lets a phone keep downloaded audio for offline playback, which relaxes
+"revoke stops the music". Tim's chosen bound (AskUserQuestion 2026-07-15) was "persist, but
+purge the moment a revoked device reconnects and the host refuses it" - keeping the guarantee
+that a device, once online, loses its downloads. The plan relied on telling a REFUSED connect
+(host up, firewall denied = revoked) from an UNREACHABLE one (timeout = server merely off),
+reusing the signal pair() uses.
+Finding (on hardware): the signal does NOT hold. With the host container STOPPED, the phone's
+reconnect closed exactly like a firewall refusal - `conn.once('close')` fires for BOTH cases,
+and the timeout branch almost never wins. So a purge-on-refused-reconnect would DELETE a
+legitimate user's downloads whenever their server was simply off. That is the exact failure
+the proposal warned about. Root cause: at the connection layer a revoke and a dead host are
+indistinguishable (both just close); the client cannot tell them apart without host help.
+Choice (Tim, 2026-07-15): a client-only LEASE. Every successful connect stamps `lastAuth`;
+cached/downloaded audio is served from disk only while `now - lastAuth < 14 days`. A revoked
+device never re-authorizes, so its downloads go dark after the grace; a device whose server is
+off re-authorizes the instant it is back, so it never loses anything. Files are NOT deleted on
+expiry - re-pairing (a fresh authorization) makes them playable again. UNPAIR remains a
+deliberate, reliable purge (it wipes audio + cached state + the lease). The reconnect-refusal
+purge is removed entirely.
+Alternatives: (a) a host "you're revoked" signal (admit a revoked device to a tiny channel,
+tell it, then close) - reliable instant purge, but softens the firewall-denies-at-connect model
+and is more T3 host surface; deferred, revisit if instant claw-back matters. (b) keep trying to
+distinguish refused vs. unreachable - rejected, proven unreliable.
+Consequences: a revoked device may play its existing downloads offline for up to 14 days
+(bounded, and it can capture the current stream anyway - same reasoning as graceful-reconnect
+2026-07-14). "Revoke cuts all NEW access within a second" is UNCHANGED (browse / next uncached
+track / art / new download denied immediately). The relaxation is only for already-downloaded
+bytes, now time-boxed instead of promised-instant.
+
 ## 2026-07-15 - Emby is a SHIM on the Jellyfin adapter, not a new source kind
 Tier: T1 (no wire change, no new persisted kind/field, no migration)
 Context: the compatibility roadmap ranked Emby second (Family 2). Emby is in the Umbrel
