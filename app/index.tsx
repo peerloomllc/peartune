@@ -31,6 +31,8 @@ import * as FileSystem from 'expo-file-system/legacy'
 const bundle = require('../assets/bare-universal.bundle')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { reindexAfterMove, reindexAfterRemove } = require('./queue-index')
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { decideStarve } = require('./starve')
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void }
 
@@ -156,19 +158,22 @@ export default function App () {
           persistQueue(true) // a track advanced - save the new index right away
         }
 
-        // STARVATION. We are off the wire (dropped) and ExoPlayer is buffering -
-        // waiting for bytes it cannot get. On a network switch the reconnect lands
-        // and this resolves; on a revoke it never will. `isBuffering` is what tells a
-        // starve apart from a user PAUSE (a pause is not buffering). If the position
-        // stays frozen while buffering-and-dropped past the grace window, the buffer
-        // has run dry and we cannot get back in - end it.
+        // STARVATION. A drop is not a stop, so we kept the buffer playing - but a
+        // revoked device whose buffer runs dry (or a player that errors out to idle
+        // waiting for bytes it cannot get) must end cleanly, not freeze. decideStarve
+        // owns that call and is unit-tested per branch (app/starve.js, test/starve).
         const posMs = Math.round((s.currentTime ?? 0) * 1000)
-        if (dropped.current && s.isBuffering) {
-          if (posMs !== starve.current.pos) starve.current = { pos: posMs, at: Date.now() }
-          else if (Date.now() - starve.current.at > STARVE_MS) { onStarved(); return }
-        } else {
-          starve.current = { pos: -1, at: Date.now() }
-        }
+        const d = decideStarve({
+          dropped: dropped.current,
+          playbackState: s.playbackState,
+          isBuffering: !!s.isBuffering,
+          positionMs: posMs,
+          now: Date.now(),
+          starve: starve.current,
+          graceMs: STARVE_MS
+        })
+        starve.current = d.starve
+        if (d.starved) { onStarved(d.reason); return }
 
         // The playlist ran out.
         if (s.didJustFinish && indexRef.current >= queueRef.current.length - 1) stop()
@@ -427,7 +432,8 @@ export default function App () {
   // connection (NOT necessarily a revoke: from here a revoke and a tunnel look the
   // same, and only a denied reconnect - which the worklet reports separately - would
   // justify saying "revoked"). DECISIONS 2026-07-14.
-  function onStarved () {
+  function onStarved (reason?: string) {
+    console.warn('[peartune] playback lost while off the wire, reason:', reason || 'unknown')
     toWeb('play:lost', {})
     stop()
   }

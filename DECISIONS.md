@@ -38,6 +38,40 @@ Verify: 220 tests; on the TCL, reorder (highlight follows the track), remove non
 (badge drops), remove current paused/playing (advances, mini-player updates, keeps playing),
 and force-stop -> relaunch restored the edited queue exactly.
 
+## 2026-07-16 - A starved player must stop on IDLE, not only on a buffering-stall
+Tier: T1 (client behavior; refines the 2026-07-14 graceful-reconnect T3 decision, no wire
+or host change). Branch: fix/revoke-starve-clean-stop.
+Context: graceful-reconnect (2026-07-14) made "a drop is not a stop" - the shell keeps the
+buffer playing on host:disconnected and lets the player's fate decide: a switch reconnects,
+a revoke starves. The starve was caught by ONE watchdog: dropped && isBuffering with the
+position frozen past a 15s grace. That path was flagged as "never observed firing", and on
+inspection it was worse than untested - it was broken for the case it exists to handle.
+Finding (code + hardware): when a starved track cannot get bytes over a dead/revoked
+connection, ExoPlayer exhausts its bounded retries and falls back to STATE_IDLE. expo-audio
+registers NO onPlayerError listener, so a fatal error reaches JS ONLY as a single
+`playbackState:'idle'` status update, with isBuffering=false. The old watchdog therefore
+(a) never caught the idle terminal state (it keys on isBuffering, and RESETS its window on a
+non-buffering update), and (b) could not rely on its 15s timeout either, because the periodic
+status poll that would re-check the window is gated on `if(playing)` in expo-audio's
+AudioPlayer.kt and goes silent the instant the player stops playing. Net: the player froze on
+"buffering…" indefinitely instead of stopping.
+Choice: extract the decision into a pure, unit-tested `decideStarve()` (app/starve.js,
+test/starve.test.js - branch-per-test, the same discipline as host/gate.js's decide()) and add
+a TERMINAL branch: `dropped && playbackState==='idle' -> starved`. The buffering-stall timeout
+stays as a backstop for a source that hangs in BUFFERING rather than erroring to idle. onStarved
+still fires play:lost + stop() (clear player, wipe queue), so a starve ends cleanly.
+Why this is still just T1: revoke's guarantee is UNCHANGED - the host already cuts all NEW
+access at connect time (killed live conn + "host refused" on reconnect, both re-confirmed on
+hardware); this only fixes what the CLIENT does when its own buffer runs dry, turning a frozen
+player into a clean stop. It does not let a revoked device reach anything new.
+Verify: 220 tests green. On the TCL: revoked mid-play, skipped to an uncached track over the
+dead connection; the MediaSession was destroyed the instant ExoPlayer's retries exhausted
+(coincident with the last shim:stream-failed), NOT 15s earlier at the stall-timeout - proving
+the idle branch is what stopped it. The player cleared cleanly (mini-player + queue gone).
+Aside confirmed while testing: re-pairing a revoked device requires deleting its host tombstone
+first (/api/device/delete) - a revoked grant is denied even inside a pairing window, which is
+the fail-closed model working (DECISIONS 2026-07-14 dashboard-auth / grants).
+
 ## 2026-07-15 - The dashboard is a BUILT React app, not a hand-written HTML string
 Tier: T1 (UI rewrite; NO wire change, NO persisted-shape change, NO auth-model change -
 the same HTTP API, served differently). The control plane is security-relevant, so the
