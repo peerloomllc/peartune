@@ -368,6 +368,13 @@ button.icon.dens {
 .seg.scroll::-webkit-scrollbar { display: none; }
 .seg.scroll button { flex: 0 0 auto; }
 
+/* Icon-first segmented control (the You tab): every option is an icon, and the ACTIVE
+   one also shows its label and grows to fill. The rest collapse to their icon, so four
+   options fit one row without the sideways scroll four full labels needed. */
+.seg.icons button { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: .4rem; }
+.seg.icons button.on { flex: 1 1 auto; }
+.seg.icons button svg { flex: none; }
+
 /* --- the dock: player over navbar ---------------------------------------- */
 .dock {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
