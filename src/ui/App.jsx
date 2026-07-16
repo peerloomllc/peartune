@@ -18,7 +18,7 @@ import {
   ArrowCounterClockwise, ArrowClockwise, Heart, CurrencyBtc, ShareNetwork,
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
-  PencilSimple, DotsSixVertical
+  PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -96,12 +96,16 @@ export default function App () {
   const [serverPls, setServerPls] = useState(null) // the source's OWN playlists (read-only, v2)
   const [addingTo, setAddingTo] = useState(null) // an item pending "add to playlist" (the picker)
   const [naming, setNaming] = useState(false) // the "new playlist" name prompt
+  const [pinned, setPinned] = useState(() => new Set()) // pinned (downloaded) album ids
+  const [pinning, setPinning] = useState({}) // albumId -> { done, total } while downloading
+  const [downloads, setDownloads] = useState(null) // the Downloads view: [{ id, name, ... }]
 
   useEffect(() => {
     call('init')
       .then((s) => {
         setState({ ...s, loading: false })
         if (s.settings?.density) setDensity(String(s.settings.density))
+        loadPinned() // pins are local - available even offline
         if (s.connected) { loadAlbums(0); loadSource(); loadFavs(); loadContinue(); loadPlaylists() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
@@ -119,6 +123,19 @@ export default function App () {
       // once, without claiming "revoked" (from here it is indistinguishable from a
       // tunnel - see the host:disconnected note below).
       on('play:lost', () => toast('Lost the connection to your library.', true)),
+      // Album downloads (phase 5C): live progress, then settle the pinned set + Downloads.
+      on('pin:progress', (d) => setPinning(p => ({ ...p, [d.albumId]: { done: d.done, total: d.total } }))),
+      on('pin:done', (d) => {
+        setPinning(p => { const n = { ...p }; delete n[d.albumId]; return n })
+        setPinned(s => new Set(s).add(d.albumId))
+        loadDownloads(true)
+        haptic('success')
+      }),
+      on('pin:error', (d) => {
+        setPinning(p => { const n = { ...p }; delete n[d.albumId]; return n })
+        haptic('warn'); toast(d.err || 'Download failed', true)
+        loadDownloads(true)
+      }),
       // The link died. Usually this is just Android suspending us in the
       // background, so do NOT accuse the server of revoking anyone - we cannot
       // tell the difference from here, and "your access may have been revoked" is
@@ -134,6 +151,9 @@ export default function App () {
       on('host:connected', (d) => {
         setState(s => ({ ...s, connected: true, host: { ...s.host, ...d } }))
         setError(null)
+        // init connects in the BACKGROUND now, so this event - not init - is what kicks
+        // off the first library load, and refreshes it on every reconnect.
+        loadAlbums(0)
         loadIdentity()
         loadSource()
         loadFavs()
@@ -313,7 +333,8 @@ export default function App () {
   // no favorites support has only Most Played, so fall through to it rather than land
   // on an empty, unswitchable Favorites list.
   const openYou = (v) => {
-    if (v === 'playlists') showPlaylists()
+    if (v === 'downloads') showDownloads()
+    else if (v === 'playlists') showPlaylists()
     else if (v === 'top' || !favSupported) showMostPlayed()
     else showFavorites()
   }
@@ -551,6 +572,46 @@ export default function App () {
       await call('deletePlaylist', { id })
       setPlaylists(ps => (ps || []).filter(p => p.id !== id))
     } catch (e) { haptic('warn'); toast(e.message, true) }
+  }
+
+  // --- downloads / pinned albums (milestone 3, phase 5C) ----------------------
+  async function loadPinned () {
+    try { setPinned(new Set((await call('pinnedAlbums')).ids || [])) } catch {}
+  }
+  async function loadDownloads (force) {
+    if (downloads && !force) return
+    try { setDownloads((await call('downloads')).items || []) } catch { setDownloads(d => d || []) }
+  }
+  async function showDownloads (force) {
+    setYouView('downloads')
+    await loadDownloads(force)
+  }
+  // Pin (download) an album. Progress arrives via pin:progress events; this just kicks it
+  // off and reflects the optimistic "downloading" state.
+  async function pinAlbum (albumId) {
+    haptic('light')
+    setPinning(p => ({ ...p, [albumId]: { done: 0, total: 0 } }))
+    try {
+      await call('pinAlbum', { albumId })
+    } catch (e) {
+      setPinning(p => { const n = { ...p }; delete n[albumId]; return n })
+      haptic('warn'); toast(e.message, true)
+    }
+  }
+  function unpinAlbum (albumId) {
+    setConfirming({
+      title: 'Remove download?',
+      body: 'The offline copy is deleted from this phone. The album stays in your library.',
+      danger: true,
+      yes: 'Remove',
+      onYes: async () => {
+        try {
+          await call('unpinAlbum', { albumId })
+          setPinned(s => { const n = new Set(s); n.delete(albumId); return n })
+          setDownloads(d => (d ? d.filter(x => x.id !== albumId) : d))
+        } catch (e) { haptic('warn'); toast(e.message, true) }
+      }
+    })
   }
 
   const promptNewPlaylist = () => setNaming(true)
@@ -853,6 +914,16 @@ export default function App () {
         id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom}
         onPlayAll={playAll} onQueue={enqueue} onViewArt={viewArt}
         favs={favs} onFav={favSupported ? onFav : null}
+        pinned={pinned.has(top.id)} pinning={pinning[top.id]}
+        onPin={() => pinAlbum(top.id)} onUnpin={() => unpinAlbum(top.id)}
+      />
+    )
+  } else if (top?.type === 'download') {
+    screen = (
+      <DownloadScreen
+        id={top.id} name={top.name} now={now} onBack={pop}
+        onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
+        onUnpin={() => unpinAlbum(top.id)}
       />
     )
   } else if (top?.type === 'artist') {
@@ -894,8 +965,10 @@ export default function App () {
         favs={favs} onFav={favSupported ? onFav : null}
         playlists={playlists} plSupported={plSupported}
         serverPls={serverPls} sourceName={sourceText(state)}
+        downloads={downloads}
         onOpenPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name })}
         onOpenServerPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name, server: true })}
+        onOpenDownload={(dl) => push({ type: 'download', id: dl.id, name: dl.name })}
         onNewPlaylist={promptNewPlaylist}
         onPlay={playFrom} onLong={setMenu}
         onOpenAlbum={(id) => push({ type: 'album', id })}
@@ -1553,8 +1626,8 @@ function FavEmpty () {
 function You ({
   state, density, now, youView, onYouView,
   favSupported, favItems, mostPlayed, favs, onFav,
-  playlists, plSupported, serverPls, sourceName,
-  onOpenPlaylist, onOpenServerPlaylist, onNewPlaylist,
+  playlists, plSupported, serverPls, sourceName, downloads,
+  onOpenPlaylist, onOpenServerPlaylist, onOpenDownload, onNewPlaylist,
   onPlay, onLong, onOpenAlbum, onOpenArtist
 }) {
   const D = densityOf(density)
@@ -1567,12 +1640,12 @@ function You ({
     <div className='app'>
       <header>
         <h1>You</h1>
-        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists, serverPls })}</p>
+        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists, serverPls, downloads })}</p>
       </header>
 
       <div className='sticky'>
         <div className='pickrow'>
-          <div className='seg'>
+          <div className='seg scroll'>
             {favSupported && (
               <button className={view === 'favorites' ? 'on' : ''} onClick={() => onYouView('favorites')}>Favorites</button>
             )}
@@ -1580,6 +1653,7 @@ function You ({
             {plSupported && (
               <button className={view === 'playlists' ? 'on' : ''} onClick={() => onYouView('playlists')}>Playlists</button>
             )}
+            <button className={view === 'downloads' ? 'on' : ''} onClick={() => onYouView('downloads')}>Downloads</button>
           </div>
         </div>
       </div>
@@ -1596,6 +1670,8 @@ function You ({
               playlists={playlists} serverPls={serverPls} sourceName={sourceName}
               onOpen={onOpenPlaylist} onOpenServer={onOpenServerPlaylist} onNew={onNewPlaylist}
             />
+          : view === 'downloads'
+            ? <DownloadsView downloads={downloads} d={D} onOpen={onOpenDownload} />
           : (mostPlayed
               ? (mostPlayed.items.length
                   ? (
@@ -1615,8 +1691,12 @@ function You ({
   )
 }
 
-function youCount (view, { favItems, mostPlayed, playlists, serverPls }) {
+function youCount (view, { favItems, mostPlayed, playlists, serverPls, downloads }) {
   if (view === 'top') return mostPlayed ? `${mostPlayed.items.length} most played` : 'Loading…'
+  if (view === 'downloads') {
+    if (!downloads) return 'Loading downloads…'
+    return `${downloads.length} download${downloads.length === 1 ? '' : 's'}`
+  }
   if (view === 'playlists') {
     if (!playlists) return 'Loading playlists…'
     const n = playlists.length + (serverPls?.length || 0)
@@ -1697,6 +1777,98 @@ function PlaylistRows ({ items, onOpen, server }) {
   )
 }
 
+// The Downloads view (phase 5C): albums pinned for offline, as a cover grid. Works with
+// no connection - the list comes from the local pin registry. Tapping opens the offline
+// album detail (DownloadScreen). Covers may fall back to a placeholder offline (art is not
+// cached in v1).
+function DownloadsView ({ downloads, d, onOpen }) {
+  if (!downloads) return <SkeletonGrid d={d} />
+  if (!downloads.length) return <DownloadsEmpty />
+  const list = d.cols === 1
+  return (
+    <div className={'grid' + (list ? ' aslist' : '')} style={{ '--cols': d.cols }}>
+      {downloads.map(a => (
+        <Tile key={a.id} className='album' onPress={() => onOpen(a)}>
+          <Cover src={a.art} />
+          <div className='meta'>
+            <div className='t sm'>{a.name}</div>
+            <div className='muted sm sub'>
+              {[a.artist, a.count ? `${a.count} track${a.count === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ')}
+            </div>
+          </div>
+          {a.complete === false && <span className='dlbadge'>Downloading…</span>}
+        </Tile>
+      ))}
+    </div>
+  )
+}
+
+function DownloadsEmpty () {
+  return (
+    <div className='blank'>
+      <DownloadSimple size={40} weight='thin' />
+      <h2>No downloads yet</h2>
+      <p className='muted sm'>
+        Open an album and tap Download to keep it on this phone. Downloads play with no
+        connection - on a plane, on the subway, anywhere.
+      </p>
+    </div>
+  )
+}
+
+// A downloaded album's own screen, sourced entirely from the local pin registry - so it
+// renders and plays with NO connection, even from a cold launch. The shim serves each
+// track from disk.
+function DownloadScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onUnpin }) {
+  const [dl, setDl] = useState(null)
+  const [err, setErr] = useState(null)
+  useEffect(() => {
+    let live = true
+    call('downloadDetail', { albumId: id })
+      .then(d => { if (live) setDl(d || false) })
+      .catch(e => { if (live) setErr(e.message) })
+    return () => { live = false }
+  }, [id])
+
+  const tracks = dl?.tracks || []
+  return (
+    <div className='app'>
+      <Back onClick={onBack} />
+      {err && <div className='error'>{err}</div>}
+      {dl === null && !err && <p className='muted center-p'>Loading…</p>}
+      {dl === false && <p className='muted center-p'>This download is gone.</p>}
+      {dl && (
+        <>
+          <div className='albumhead'>
+            <Cover src={dl.art} big />
+            <div className='headmeta'>
+              <h1>{dl.name || name}</h1>
+              <p className='muted sm'>
+                {[dl.artist, `${tracks.length} track${tracks.length === 1 ? '' : 's'}`, 'Downloaded'].filter(Boolean).join(' · ')}
+              </p>
+            </div>
+          </div>
+          {tracks.length > 0 && (
+            <Actions
+              onPlay={() => onPlayAll(tracks)}
+              onShuffle={() => onPlayAll(tracks, { shuffled: true })}
+              onQueue={() => onQueue(tracks)}
+            />
+          )}
+          <button className='dlremove' onClick={onUnpin}>
+            <Trash size={16} weight='bold' /> Remove download
+          </button>
+          <ul className='tracks'>
+            {tracks.map(t => (
+              <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo />
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  )
+}
+
 // The Favorites view: favorited artists, albums and songs, each in its own section
 // (only the non-empty ones show). Reuses the same grids and rows as the rest of the
 // library; songs carry a heart to un-favorite inline.
@@ -1768,6 +1940,33 @@ function FavHeart ({ on, onToggle, label }) {
     >
       <Heart size={20} weight={on ? 'fill' : 'regular'} />
       <span>{on ? 'Favorited' : 'Favorite'}</span>
+    </button>
+  )
+}
+
+// Download / Downloaded / Downloading, in the same pill as the favorite heart. While a
+// download runs it shows a spinner and the track count; tapping a finished one removes it.
+function DownloadButton ({ pinned, pinning, onPin, onUnpin }) {
+  if (pinning) {
+    return (
+      <button className='favhead' disabled aria-label='Downloading'>
+        <CircleNotch size={18} weight='bold' className='spin' />
+        <span>{pinning.total ? `${pinning.done}/${pinning.total}` : 'Downloading…'}</span>
+      </button>
+    )
+  }
+  if (pinned) {
+    return (
+      <button className='favhead on' onClick={onUnpin} aria-label='Remove download'>
+        <CheckCircle size={20} weight='fill' />
+        <span>Downloaded</span>
+      </button>
+    )
+  }
+  return (
+    <button className='favhead' onClick={onPin} aria-label='Download album'>
+      <DownloadSimple size={20} weight='bold' />
+      <span>Download</span>
     </button>
   )
 }
@@ -2028,7 +2227,7 @@ function Cover ({ src, big, sm, artist }) {
 
 // Each drill-down fetches its own data from its id, so the nav stack holds nothing
 // but ids and popping back never has to restore anything.
-function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt, favs, onFav }) {
+function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt, favs, onFav, pinned, pinning, onPin, onUnpin }) {
   const [album, setAlbum] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -2077,7 +2276,10 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
         <div className='headmeta'>
           <h1>{album.name}</h1>
           <p className='muted sm'>{[album.artist, album.year].filter(Boolean).join(' · ')}</p>
-          {onFav && <FavHeart on={favs?.album?.has(album.id)} onToggle={() => onFav('album', album)} label='album' />}
+          <div className='headacts'>
+            {onFav && <FavHeart on={favs?.album?.has(album.id)} onToggle={() => onFav('album', album)} label='album' />}
+            {onPin && <DownloadButton pinned={pinned} pinning={pinning} onPin={onPin} onUnpin={onUnpin} />}
+          </div>
         </div>
       </div>
 
@@ -2633,6 +2835,8 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
   const cap = cache?.cap ?? (state.settings?.cacheCap ?? 0)
   const setCap = async (bytes) => { haptic('light'); try { setCache(await call('setCacheCap', { bytes })) } catch {} }
   const clearCache = async () => { haptic('warn'); try { setCache(await call('clearCache')) } catch {} }
+  const [cellular, setCellular] = useState(state.settings?.downloadCellular ?? false)
+  const toggleCellular = async () => { const on = !cellular; haptic('light'); setCellular(on); try { await call('setDownloadCellular', { on }) } catch {} }
 
   // null means "not edited yet" - fall back to what the host told us. Using '' as
   // the initial value instead would silently clear a name the moment identity
@@ -2725,6 +2929,15 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
         >
           <Trash size={16} weight='bold' /> Clear cache
         </button>
+        <div className='row' style={{ marginTop: '.4rem' }}>
+          <div>
+            <div className='label'>Download over cellular</div>
+            <div className='desc'>Off by default — a downloaded album can be hundreds of MB.</div>
+          </div>
+          <button className={'toggle' + (cellular ? ' on' : '')} role='switch' aria-checked={cellular} onClick={toggleCellular}>
+            {cellular ? 'On' : 'Off'}
+          </button>
+        </div>
       </div>
 
       <div className='card'>
