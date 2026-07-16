@@ -69,6 +69,17 @@ class AudioCache {
     if (e) { e.lastPlayed = Date.now(); this._save() }
   }
 
+  // Mark a cached track pinned (an explicit download, protected from LRU eviction) or
+  // un-pinned (it becomes an ordinary LRU entry again). No-op if not cached.
+  setPinned (id, on) {
+    const e = this.index[id]
+    if (!e) return false
+    e.pinned = !!on
+    this._save()
+    return true
+  }
+  isPinned (id) { return !!(this.index[id] && this.index[id].pinned) }
+
   // A write-through sink for ONE full track. Bytes are written to a `.part` file while
   // they also stream to the player; commit() finalizes only if the whole track arrived
   // (a skip mid-download aborts, so a partial file is never marked complete).

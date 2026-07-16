@@ -231,6 +231,32 @@ ul.tracks.editing li.editrow { gap: .5rem; background: var(--color-surface-base)
 /* A picked-playlist row in the add-to-playlist sheet: name left, count right. */
 .sheet .acts button.plpick { justify-content: space-between; }
 
+/* --- downloads / pinning (phase 5C) ---------------------------------------- */
+/* The favorite + download pills sit on one wrapping row under the album title. */
+.headacts { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .7rem; }
+.headacts .favhead { margin-top: 0; }
+/* "Downloading…" badge on an in-progress cover in the Downloads grid. */
+.dlbadge {
+  position: absolute; left: .4rem; bottom: 3.2rem; z-index: 2;
+  padding: .15rem .5rem; border-radius: 9999px; font-size: .7rem; font-weight: 600;
+  background: color-mix(in srgb, var(--color-primary) 88%, transparent);
+  color: var(--color-text-on-primary);
+}
+/* "Remove download" on the offline album detail. */
+.dlremove {
+  display: inline-flex; align-items: center; gap: .4rem; margin: 0 0 1rem;
+  background: transparent; border: 1px solid var(--color-border); color: var(--color-error);
+  font-size: .85rem;
+}
+/* A small On/Off pill toggle (download-over-cellular). */
+.toggle {
+  flex: none; min-width: 3.4rem; padding: .4rem .9rem; border-radius: 9999px;
+  font-size: .82rem; font-weight: 600;
+  background: var(--color-surface-input); border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+}
+.toggle.on { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-text-on-primary); }
+
 .scanner { position: relative; min-height: 100vh; background: #000; }
 .scanner video { width: 100%; height: 100vh; object-fit: cover; }
 .overlay {

@@ -21,7 +21,7 @@ const z32 = require('z32')
 const hcrypto = require('hypercore-crypto')
 
 const { PearTuneClient } = require('../client')
-const { createAudioShim } = require('../worklet/shim')
+const { createAudioShim, mimeFor } = require('../worklet/shim')
 const { streamParams } = require('../worklet/quality')
 const { isPairLink } = require('../protocol/link')
 const { coalesce, clientCall } = require('../worklet/outbox')
@@ -56,8 +56,16 @@ const DEFAULT_CACHE_CAP = 1024 * 1024 * 1024 // 1 GB
 // fresh authorization) makes them playable again.
 const LEASE_FILE = path.join(DATA_DIR, 'lease.json')
 const LEASE_GRACE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
+// The PINNED-ALBUM registry (milestone 3, phase 5C): what the user explicitly downloaded,
+// separate from the auto-LRU cache. Maps albumId -> { id, name, artist, coverId, trackIds,
+// addedAt, complete }. The bytes live in the audio cache (marked pinned); this is the
+// human-facing list the Downloads view shows and unpins.
+const PINS_FILE = path.join(DATA_DIR, 'pins.json')
 
-const DEFAULT_SETTINGS = { theme: 'system', deviceName: '', userName: '', streamQuality: 'auto', cacheCap: DEFAULT_CACHE_CAP }
+const DEFAULT_SETTINGS = {
+  theme: 'system', deviceName: '', userName: '', streamQuality: 'auto',
+  cacheCap: DEFAULT_CACHE_CAP, downloadCellular: false
+}
 
 // What the network is right now, as reported by the shell (expo-network). Default
 // 'wifi' - the safe assumption, because wifi means original quality, i.e. no surprise
@@ -260,12 +268,26 @@ function leaseValid () {
   return la > 0 && (Date.now() - la) < LEASE_GRACE_MS
 }
 
-// Wipe every local copy: downloaded audio, cached favorites/playlists, unsent writes, and
-// the lease. Used on UNPAIR (a deliberate, reliable purge point) - NOT on a reconnect
-// failure, which cannot tell a revoke from a server that is simply off.
+// --- pinned-album registry (phase 5C) ---------------------------------------
+function loadPins () {
+  try {
+    const o = JSON.parse(fs.readFileSync(PINS_FILE, 'utf8'))
+    return o && typeof o === 'object' ? o : {}
+  } catch {
+    return {}
+  }
+}
+function savePins (pins) {
+  fs.mkdirSync(DATA_DIR, { recursive: true })
+  fs.writeFileSync(PINS_FILE, JSON.stringify(pins))
+}
+
+// Wipe every local copy: downloaded audio, cached favorites/playlists, unsent writes, the
+// lease, and the pin registry. Used on UNPAIR (a deliberate, reliable purge point) - NOT on
+// a reconnect failure, which cannot tell a revoke from a server that is simply off.
 function purgeAll () {
   try { audioCache.clear() } catch {}
-  for (const f of [FAVORITES_FILE, PLAYLISTS_FILE, OUTBOX_FILE, LEASE_FILE]) { try { fs.unlinkSync(f) } catch {} }
+  for (const f of [FAVORITES_FILE, PLAYLISTS_FILE, OUTBOX_FILE, LEASE_FILE, PINS_FILE]) { try { fs.unlinkSync(f) } catch {} }
   outbox = []
   log('local:purged')
 }
@@ -416,15 +438,15 @@ const methods = {
       await ensureShim()
       state.shimPort = shimPort
       state.artBase = shim.artBase()
-      try {
-        await connectTo(host)
-        state.connected = true
-      } catch (e) {
+      // Connect in the BACKGROUND. The connect can take up to the timeout when the host
+      // is unreachable, and blocking init on it would leave a cold launch stuck on
+      // "Starting…" for 20s - unbearable, and pointless when the useful surfaces
+      // (Downloads, Settings) are all local. host:connected updates the UI when it lands;
+      // a failure just leaves us in the normal "not connected" state.
+      connectTo(host).catch((e) => {
         log('init:connect-failed', { err: e.message })
-        // Paired but unreachable is a normal state, not an error: the Umbrel may
-        // simply be off. The UI says so rather than pretending we never paired.
-        state.error = e.message
-      }
+        emit('host:disconnected', { hostKey: host.hostKey })
+      })
     }
     return state
   },
@@ -877,6 +899,118 @@ const methods = {
     saveSettings(s)
     audioCache.setCap(cap) // may evict immediately if the new cap is smaller
     return { bytes: audioCache.totalBytes(), count: audioCache.count(), cap }
+  },
+
+  // --- pinned albums / Downloads (milestone 3, phase 5C) ----------------------
+  //
+  // Download an album for offline: fetch its tracks, pull each in full, and mark them
+  // pinned so LRU eviction never touches them. Already-cached tracks are reused (a replay
+  // that filled the LRU counts), and a retry after an interruption skips what is done -
+  // so it is resumable at the track grain. Progress is emitted per track.
+  async pinAlbum ({ albumId }) {
+    const s = loadSettings()
+    if (networkType === 'cellular' && !s.downloadCellular) {
+      throw new Error('Downloads are off on cellular. Turn on "Download over cellular" in Settings, or join Wi-Fi.')
+    }
+    await ensureConnected()
+    const album = await client.get({ id: albumId, type: 'album' })
+    if (!album) throw new Error('That album is not available.')
+    const tracks = album.tracks || []
+    // Store the track METADATA, not just ids - so a downloaded album renders and plays
+    // with no host (the whole point of a download). Art falls back to the album cover.
+    const meta = tracks.map(t => ({
+      id: t.id, title: t.title, artist: t.artist || null, album: t.album || album.name,
+      track: t.track ?? null, durationMs: t.durationMs ?? null,
+      coverId: t.coverId || album.coverId || album.coverArt || null,
+      suffix: t.suffix || null, size: t.size || 0
+    }))
+
+    const pins = loadPins()
+    pins[albumId] = {
+      id: albumId, name: album.name, artist: album.artist || null,
+      coverId: album.coverId || album.coverArt || null,
+      tracks: meta, addedAt: Date.now(), complete: false
+    }
+    savePins(pins)
+    emit('pin:progress', { albumId, done: 0, total: tracks.length })
+
+    let done = 0
+    for (const t of tracks) {
+      try {
+        if (!audioCache.has(t.id)) {
+          const mime = mimeFor(t.suffix ? 'a.' + t.suffix : (t.path || t.title || ''))
+          const sink = audioCache.createSink(t.id, { mime, size: t.size })
+          await client.streamTo({ trackId: t.id }, (chunk) => sink.write(chunk))
+          if (!await sink.commit()) throw new Error('incomplete download')
+        }
+        audioCache.setPinned(t.id, true)
+      } catch (e) {
+        log('pin:track-failed', { err: e?.message })
+        emit('pin:error', { albumId, err: e?.message })
+        throw e // leave what completed; the album stays incomplete and a retry resumes
+      }
+      emit('pin:progress', { albumId, done: ++done, total: tracks.length })
+    }
+    const p = loadPins()
+    if (p[albumId]) { p[albumId].complete = true; savePins(p) }
+    emit('pin:done', { albumId })
+    log('pin:album', { count: tracks.length })
+    return { ok: true, count: tracks.length }
+  },
+
+  async unpinAlbum ({ albumId }) {
+    const pins = loadPins()
+    const p = pins[albumId]
+    if (p) {
+      delete pins[albumId]
+      for (const tid of (p.tracks || []).map(t => t.id)) {
+        // Free the bytes unless another pinned album still needs them (shared tracks are
+        // rare, but source-scoped ids can overlap on compilations).
+        const neededElsewhere = Object.values(pins).some(o => (o.tracks || []).some(t => t.id === tid))
+        if (!neededElsewhere) audioCache.remove(tid)
+      }
+      savePins(pins)
+      log('unpin:album', { albumId })
+    }
+    return { ok: true }
+  },
+
+  // The Downloads list: the pinned albums, newest first, resolved for rendering.
+  downloads () {
+    const pins = loadPins()
+    const items = Object.values(pins)
+      .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0))
+      .map(p => ({
+        id: p.id, name: p.name, artist: p.artist, count: (p.tracks || []).length,
+        complete: p.complete !== false, ...withArt({ coverId: p.coverId })
+      }))
+    return { items }
+  },
+
+  // One downloaded album, straight from the pin registry (no host) - so it renders and
+  // plays offline, from a cold launch. Tracks carry loopback art URLs; the shim serves
+  // the audio from disk.
+  downloadDetail ({ albumId }) {
+    const p = loadPins()[albumId]
+    if (!p) return null
+    return {
+      id: p.id, name: p.name, artist: p.artist, coverId: p.coverId,
+      art: p.coverId && shim ? shim.artUrlFor(p.coverId) : null,
+      complete: p.complete !== false,
+      tracks: (p.tracks || []).map(withArt)
+    }
+  },
+
+  // The set of pinned album ids, so an album screen can show Download vs Downloaded.
+  pinnedAlbums () {
+    return { ids: Object.keys(loadPins()) }
+  },
+
+  setDownloadCellular ({ on }) {
+    const s = loadSettings()
+    s.downloadCellular = !!on
+    saveSettings(s)
+    return { downloadCellular: s.downloadCellular }
   },
 
   // Unpair. Forgets the host and drops the connection.

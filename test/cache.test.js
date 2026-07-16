@@ -101,6 +101,26 @@ test('committing over the cap evicts the oldest, and the file is really gone', a
   assert.ok(cache.totalBytes() <= 2500)
 })
 
+test('setPinned protects a track from eviction; unpinning makes it LRU again', async (t) => {
+  const cache = new AudioCache({ dir: await dir(t), cap: 2500 })
+  await put(cache, 'pinned', Buffer.alloc(1000))
+  cache.setPinned('pinned', true)
+  await put(cache, 'a', Buffer.alloc(1000)); cache.touch('a')
+  await put(cache, 'b', Buffer.alloc(1000)) // LRU bucket is a+b=2000 <= 2500, no eviction; pinned's 1000 ignored
+  assert.equal(cache.has('pinned'), true)
+  assert.equal(cache.isPinned('pinned'), true)
+
+  // Push the LRU bucket over the cap: pinned must never be the one to go.
+  await put(cache, 'c', Buffer.alloc(1000)) // LRU now a,b,c = 3000 > 2500 -> evict oldest LRU (a)
+  assert.equal(cache.has('pinned'), true, 'pinned survives')
+  assert.equal(cache.has('a'), false, 'oldest LRU evicted instead')
+
+  // Unpinning makes it evictable; a small cap now claims it.
+  cache.setPinned('pinned', false)
+  cache.setCap(500)
+  assert.equal(cache.isPinned('pinned'), false)
+})
+
 test('the index survives a reopen (it is on disk)', async (t) => {
   const d = await dir(t)
   const c1 = new AudioCache({ dir: d })
