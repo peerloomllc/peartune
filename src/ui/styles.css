@@ -558,6 +558,25 @@ button.wide { width: 100%; }
   padding: 0 1rem 1rem; display: flex; flex-direction: column; gap: .6rem;
   color: var(--color-text-secondary); font-size: .875rem; line-height: 1.5;
 }
+/* Settings sections hold controls (inputs, pickers), not short About blurbs, so
+   they need more room than the 640px About cap. */
+.settings-acc .acc .body.open { max-height: 1000px; }
+
+/* Vertical option picker (streaming quality, cache cap): every choice visible with
+   no horizontal scroll, each a tappable row with a check on the selected one. */
+.optlist { display: flex; flex-direction: column; margin: .1rem 0; }
+.optlist .opt {
+  display: flex; align-items: center; justify-content: space-between; gap: .6rem;
+  width: 100%; text-align: left; background: none; border: none;
+  border-top: 1px solid var(--color-divider); border-radius: 0;
+  padding: .7rem .1rem; color: var(--color-text-primary);
+}
+.optlist .opt:first-child { border-top: 0; }
+.optlist .opt-main { display: flex; flex-direction: column; gap: .12rem; min-width: 0; }
+.optlist .opt-name { color: var(--color-text-primary); font-weight: 500; }
+.optlist .opt.on .opt-name { color: var(--color-primary); }
+.optlist .opt-desc { font-size: .78rem; color: var(--color-text-muted); }
+.optlist .opt svg { color: var(--color-primary); flex: none; }
 .wordmark { text-align: center; margin: .5rem 0 1rem; }
 .wordmark .name { font-size: 1.35rem; font-weight: 600; letter-spacing: -.01em; }
 .wordmark .name .tune { color: var(--color-primary); }

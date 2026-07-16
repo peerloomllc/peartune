@@ -18,7 +18,8 @@ import {
   ArrowCounterClockwise, ArrowClockwise, Heart, CurrencyBtc, ShareNetwork,
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
-  PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch
+  PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
+  Palette, SpeakerHigh, Key
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -2809,19 +2810,41 @@ function fmtBytes (n) {
 // --- settings ----------------------------------------------------------------
 
 const QUALITIES = [
-  ['auto', 'Auto'],
-  ['original', 'Original'],
-  ['320', '320k'],
-  ['192', '192k'],
-  ['128', '128k']
+  { value: 'auto', label: 'Auto', desc: 'Full quality on Wi-Fi, a smaller stream on cellular' },
+  { value: 'original', label: 'Original', desc: 'Always the original file — best quality, ~1 GB an album' },
+  { value: '320', label: '320 kbps', desc: 'High quality, less data everywhere' },
+  { value: '192', label: '192 kbps', desc: 'Good quality, saves more data' },
+  { value: '128', label: '128 kbps', desc: 'Lowest quality, least data' }
 ]
 
 const CACHE_CAPS = [
-  [512 * 1024 * 1024, '512 MB'],
-  [1024 * 1024 * 1024, '1 GB'],
-  [2 * 1024 * 1024 * 1024, '2 GB'],
-  [0, 'Unlimited']
+  { value: 512 * 1024 * 1024, label: '512 MB' },
+  { value: 1024 * 1024 * 1024, label: '1 GB' },
+  { value: 2 * 1024 * 1024 * 1024, label: '2 GB' },
+  { value: 0, label: 'Unlimited', desc: 'Keep every played track' }
 ]
+
+// A vertical radio-style picker: every choice visible (no horizontal scroll), each
+// with a name + optional one-line descriptor, a check on the selected one.
+function OptionList ({ options, value, onChange }) {
+  return (
+    <div className='optlist'>
+      {options.map(o => (
+        <button
+          key={String(o.value)} className={'opt' + (value === o.value ? ' on' : '')}
+          aria-pressed={value === o.value}
+          onClick={() => { haptic('light'); onChange(o.value) }}
+        >
+          <span className='opt-main'>
+            <span className='opt-name'>{o.label}</span>
+            {o.desc && <span className='opt-desc'>{o.desc}</span>}
+          </span>
+          {value === o.value && <CheckCircle size={19} weight='fill' />}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality }) {
   const quality = state.settings?.streamQuality || 'auto'
@@ -2867,180 +2890,161 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
     setTimeout(() => setCopied(false), 1500)
   }
 
+  const [open, setOpen] = useState(null)
+  const toggle = (id) => setOpen(o => (o === id ? null : id))
+
   return (
     <div className='app'>
       <header><h1>Settings</h1></header>
 
-      <div className='card'>
-        <h3>Appearance</h3>
-        <div className='seg'>
-          {[['dark', 'Dark'], ['light', 'Light'], ['system', 'System']].map(([k, l]) => (
-            <button
-              key={k} className={themePref === k ? 'on' : ''}
-              aria-pressed={themePref === k}
-              onClick={() => { haptic('light'); onTheme(k) }}
-            >{l}</button>
-          ))}
-        </div>
-      </div>
-
-      <div className='card'>
-        <h3>Streaming quality</h3>
-        <div className='seg scroll'>
-          {QUALITIES.map(([k, l]) => (
-            <button
-              key={k} className={quality === k ? 'on' : ''}
-              aria-pressed={quality === k}
-              onClick={() => onQuality(k)}
-            >{l}</button>
-          ))}
-        </div>
-        <div className='desc' style={{ marginTop: '.6rem' }}>
-          {quality === 'auto'
-            ? 'Full quality on Wi-Fi; a smaller stream on cellular to save data. Your server does the converting.'
-            : quality === 'original'
-              ? 'Always stream the original file. Best quality, most data - a FLAC album is around a gigabyte.'
-              : `Always stream at ${quality}k. Saves data everywhere, at some cost to quality.`}
-        </div>
-      </div>
-
-      <div className='card'>
-        <h3>Offline storage</h3>
-        <div className='desc'>
-          Tracks you play are kept on this phone so they play again with no connection;
-          the oldest clear out to stay under this size.
-        </div>
-        <div className='row'>
-          <div><div className='label'>Using</div></div>
-          <span className='val'>
-            {fmtBytes(cache?.bytes || 0)}{cap ? ` / ${fmtBytes(cap)}` : ''}
-            {cache?.count ? ` · ${cache.count} track${cache.count === 1 ? '' : 's'}` : ''}
-          </span>
-        </div>
-        <div className='seg scroll' style={{ marginTop: '.5rem' }}>
-          {CACHE_CAPS.map(([b, l]) => (
-            <button key={l} className={cap === b ? 'on' : ''} aria-pressed={cap === b} onClick={() => setCap(b)}>{l}</button>
-          ))}
-        </div>
-        <button
-          className='wide'
-          style={{ marginTop: '.6rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '.4rem' }}
-          onClick={clearCache} disabled={!cache?.count}
-        >
-          <Trash size={16} weight='bold' /> Clear cache
-        </button>
-        <div className='row' style={{ marginTop: '.4rem' }}>
-          <div>
-            <div className='label'>Download over cellular</div>
-            <div className='desc'>Off by default — a downloaded album can be hundreds of MB.</div>
+      <div className='settings-acc'>
+        <Section id='appearance' title='Appearance' Icon={Palette} open={open === 'appearance'} onToggle={toggle}>
+          <div className='seg'>
+            {[['dark', 'Dark'], ['light', 'Light'], ['system', 'System']].map(([k, l]) => (
+              <button
+                key={k} className={themePref === k ? 'on' : ''}
+                aria-pressed={themePref === k}
+                onClick={() => { haptic('light'); onTheme(k) }}
+              >{l}</button>
+            ))}
           </div>
-          <button className={'toggle' + (cellular ? ' on' : '')} role='switch' aria-checked={cellular} onClick={toggleCellular}>
-            {cellular ? 'On' : 'Off'}
-          </button>
-        </div>
-      </div>
+        </Section>
 
-      <div className='card'>
-        <h3>You and this device</h3>
-        <div className='desc'>
-          This is what the person running the server sees on their dashboard - it is
-          how they tell your phone apart from everyone else's.
-        </div>
+        <Section id='quality' title='Streaming quality' Icon={SpeakerHigh} open={open === 'quality'} onToggle={toggle}>
+          <OptionList options={QUALITIES} value={quality} onChange={onQuality} />
+        </Section>
 
-        <label className='flabel muted sm'>Device name</label>
-        <input
-          value={deviceName}
-          onChange={e => setDev(e.target.value)}
-          placeholder="Tim's Pixel"
-          maxLength={64}
-          disabled={!state.connected}
-        />
-
-        <label className='flabel muted sm'>Your name</label>
-        <input
-          value={userName}
-          onChange={e => setUsr(e.target.value)}
-          placeholder='Tim'
-          maxLength={64}
-          disabled={!state.connected}
-        />
-
-        {/* A claim grants nothing until the operator confirms it. Saying so is more
-            honest than a green tick that means "we told them". */}
-        {ident?.userName && (
+        <Section id='storage' title='Offline storage' Icon={DownloadSimple} open={open === 'storage'} onToggle={toggle}>
           <div className='desc'>
-            {ident.confirmed
-              ? `Your server has confirmed this device belongs to ${ident.userName}.`
-              : ident.belongsTo
-                ? `Your server still has this device down as ${ident.belongsTo}. It is waiting to confirm you are ${ident.userName} - only the person running it can move a device to someone else.`
-                : `Waiting for your server to confirm you are ${ident.userName}. Until then this is only a label.`}
+            Tracks you play are kept on this phone so they play again with no connection;
+            the oldest clear out to stay under this size.
           </div>
-        )}
-
-        <div className='btnrow'>
+          <div className='row'>
+            <div><div className='label'>Using</div></div>
+            <span className='val'>
+              {fmtBytes(cache?.bytes || 0)}{cap ? ` / ${fmtBytes(cap)}` : ''}
+              {cache?.count ? ` · ${cache.count} track${cache.count === 1 ? '' : 's'}` : ''}
+            </span>
+          </div>
+          <div className='label' style={{ marginTop: '.5rem' }}>Keep up to</div>
+          <OptionList options={CACHE_CAPS} value={cap} onChange={setCap} />
           <button
-            className='primary'
-            onClick={save}
-            disabled={!dirty || saving || !state.connected}
+            className='wide'
+            style={{ marginTop: '.5rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '.4rem' }}
+            onClick={clearCache} disabled={!cache?.count}
           >
-            {saving ? 'Saving…' : 'Save'}
+            <Trash size={16} weight='bold' /> Clear cache
           </button>
-        </div>
+          <div className='row' style={{ marginTop: '.4rem' }}>
+            <div>
+              <div className='label'>Download over cellular</div>
+              <div className='desc'>Off by default — a downloaded album can be hundreds of MB.</div>
+            </div>
+            <button className={'toggle' + (cellular ? ' on' : '')} role='switch' aria-checked={cellular} onClick={toggleCellular}>
+              {cellular ? 'On' : 'Off'}
+            </button>
+          </div>
+        </Section>
 
-        {ident && ident.supported === false && (
+        <Section id='you' title='You and this device' Icon={UsersThree} open={open === 'you'} onToggle={toggle}>
           <div className='desc'>
-            Your server is running an older PearTune and cannot be told about names
-            yet. Update it, or re-pair to set the device name.
+            This is what the person running the server sees on their dashboard - it is
+            how they tell your phone apart from everyone else's.
           </div>
-        )}
-      </div>
 
-      <div className='card'>
-        <h3>Library</h3>
-        <div className='row'>
-          <div>
-            <div className='label'>{state.host?.libraryName || 'Library'}</div>
-            <div className='desc'>{state.connected ? 'Connected' : 'Not connected'}</div>
+          <label className='flabel muted sm'>Device name</label>
+          <input
+            value={deviceName}
+            onChange={e => setDev(e.target.value)}
+            placeholder="Tim's Pixel"
+            maxLength={64}
+            disabled={!state.connected}
+          />
+
+          <label className='flabel muted sm'>Your name</label>
+          <input
+            value={userName}
+            onChange={e => setUsr(e.target.value)}
+            placeholder='Tim'
+            maxLength={64}
+            disabled={!state.connected}
+          />
+
+          {/* A claim grants nothing until the operator confirms it. Saying so is more
+              honest than a green tick that means "we told them". */}
+          {ident?.userName && (
+            <div className='desc'>
+              {ident.confirmed
+                ? `Your server has confirmed this device belongs to ${ident.userName}.`
+                : ident.belongsTo
+                  ? `Your server still has this device down as ${ident.belongsTo}. It is waiting to confirm you are ${ident.userName} - only the person running it can move a device to someone else.`
+                  : `Waiting for your server to confirm you are ${ident.userName}. Until then this is only a label.`}
+            </div>
+          )}
+
+          <div className='btnrow'>
+            <button
+              className='primary'
+              onClick={save}
+              disabled={!dirty || saving || !state.connected}
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
           </div>
-          <span className='val' style={{ color: state.connected ? 'var(--color-primary)' : undefined }}>
-            {state.connected ? '●' : '○'}
-          </span>
-        </div>
-        {sourceText(state) && (
+
+          {ident && ident.supported === false && (
+            <div className='desc'>
+              Your server is running an older PearTune and cannot be told about names
+              yet. Update it, or re-pair to set the device name.
+            </div>
+          )}
+        </Section>
+
+        <Section id='library' title='Library' Icon={MusicNotesSimple} open={open === 'library'} onToggle={toggle}>
           <div className='row'>
             <div>
-              <div className='label'>Source</div>
+              <div className='label'>{state.host?.libraryName || 'Library'}</div>
+              <div className='desc'>{state.connected ? 'Connected' : 'Not connected'}</div>
+            </div>
+            <span className='val' style={{ color: state.connected ? 'var(--color-primary)' : undefined }}>
+              {state.connected ? '●' : '○'}
+            </span>
+          </div>
+          {sourceText(state) && (
+            <div className='row'>
+              <div>
+                <div className='label'>Source</div>
+                <div className='desc'>
+                  Where this library comes from. Your server's operator chooses it; you
+                  see whatever they point it at.
+                </div>
+              </div>
+              <span className='val'>{sourceText(state)}</span>
+            </div>
+          )}
+          <div className='row'>
+            <div>
+              <div className='label'>Unpair</div>
               <div className='desc'>
-                Where this library comes from. Your server's operator chooses it; you
-                see whatever they point it at.
+                Forget this library. You will need a new pairing code to reconnect.
               </div>
             </div>
-            <span className='val'>{sourceText(state)}</span>
+            <button className='danger' onClick={onUnpair}>Unpair</button>
           </div>
-        )}
-        <div className='row'>
-          <div>
-            <div className='label'>Unpair</div>
-            <div className='desc'>
-              Forget this library. You will need a new pairing code to reconnect.
-            </div>
-          </div>
-          <button className='danger' onClick={onUnpair}>Unpair</button>
-        </div>
-      </div>
+        </Section>
 
-      <div className='card'>
-        <h3>This device</h3>
-        <div className='desc'>
-          The key the server knows this phone by. It is the row to look for in the
-          PearTune dashboard when deciding what to revoke.
-        </div>
-        <div className='key'>{state.deviceKeyZ32 || state.deviceKey}</div>
-        <div className='btnrow'>
-          <button onClick={copyKey}>
-            <Copy size={15} /> {copied ? 'Copied' : 'Copy key'}
-          </button>
-        </div>
+        <Section id='device' title='Device key' Icon={Key} open={open === 'device'} onToggle={toggle}>
+          <div className='desc'>
+            The key the server knows this phone by. It is the row to look for in the
+            PearTune dashboard when deciding what to revoke.
+          </div>
+          <div className='key'>{state.deviceKeyZ32 || state.deviceKey}</div>
+          <div className='btnrow'>
+            <button onClick={copyKey}>
+              <Copy size={15} /> {copied ? 'Copied' : 'Copy key'}
+            </button>
+          </div>
+        </Section>
       </div>
 
       <div className='version'>v{APP_VERSION}</div>
