@@ -144,6 +144,17 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         }
       }
 
+      // Rename the library. Persisted host-side (library.json); shown on the dashboard
+      // and sent to a pairing device. The host sanitizes the name.
+      if (req.method === 'POST' && url.pathname === '/api/library') {
+        const { name } = await readBody(req)
+        try {
+          return json(res, 200, { ok: true, libraryName: host.setLibraryName(name) })
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
       // A folder has no scanner watching it: copy an album onto the NAS and the host
       // does not know until somebody says so.
       if (req.method === 'POST' && url.pathname === '/api/source/rescan') {

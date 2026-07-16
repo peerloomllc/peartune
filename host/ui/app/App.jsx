@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   MusicNotes, UsersThree, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
   CaretRight, Plus, X, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
-  Lightning, CheckCircle, Folder, CaretLeft
+  Lightning, CheckCircle, Folder, CaretLeft, Wrench
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
 import { api, copyText, ago, DONATE } from './api'
@@ -124,6 +124,7 @@ export default function App () {
 
       {modal === 'pair' && <PairModal onClose={() => setModal(null)} toast={toast} />}
       {modal === 'support' && <SupportModal onClose={() => setModal(null)} />}
+      {modal === 'maintenance' && <MaintenanceModal state={state} onClose={() => setModal(null)} onSaved={refresh} toast={toast} />}
       {note && <div className={'toast' + (note.bad ? ' err' : '')}>{note.msg}</div>}
       <ConfirmHost />
     </div>
@@ -154,11 +155,11 @@ function TopBar ({ state, isDark, onTheme, onOpen }) {
           <div className='brand-sub'>{state.libraryName || 'Your music, anywhere'}</div>
         </div>
       </div>
+      <span className='pill' title={sourceOk ? 'Music source' : state.sourceError}>
+        <span className={'dot ' + (sourceOk ? 'good' : 'bad')} />
+        {st.source ? titleCase(st.source) : 'No source'}
+      </span>
       <div className='topbar-right'>
-        <span className='pill' title={sourceOk ? 'Music source' : state.sourceError}>
-          <span className={'dot ' + (sourceOk ? 'good' : 'bad')} />
-          {st.source ? titleCase(st.source) : 'No source'}
-        </span>
         <button className='iconbtn' onClick={onTheme} aria-label='Toggle theme' title={isDark ? 'Switch to light' : 'Switch to dark'}>
           {isDark ? <Sun size={17} /> : <Moon size={17} />}
         </button>
@@ -166,6 +167,7 @@ function TopBar ({ state, isDark, onTheme, onOpen }) {
           <button className='iconbtn' onClick={() => setMenu(v => !v)} aria-label='Menu' aria-expanded={menu}><GearSix size={17} /></button>
           {menu &&
             <div className='menu' role='menu'>
+              <button onClick={() => { setMenu(false); onOpen('maintenance') }}><Wrench size={16} /> Maintenance</button>
               <button onClick={() => { setMenu(false); onOpen('support') }}><Heart size={16} /> Support Development</button>
               <div className='sep' />
               <button onClick={() => { setMenu(false); logout() }}><SignOut size={16} /> Log out</button>
@@ -199,9 +201,19 @@ function AccessPanel ({ state, refresh, toast, online }) {
   const [pname, setPname] = useState('')
 
   const persons = (state.persons || []).filter(p => !p.revokedAt)
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
   const devices = state.devices || []
   const byPerson = id => devices.filter(d => d.personId === id)
-  const unassigned = devices.filter(d => !d.personId && !d.revokedAt)
+  // A device is "pending" when it claims an identity that isn't (yet) its confirmed
+  // person. Pending devices are surfaced in their own Needs-confirmation card and
+  // pulled out of the normal lists, so every device row stays uniform.
+  const claimMismatch = d => {
+    if (d.revokedAt || !d.claimedUser) return false
+    const holder = persons.find(p => p.id === d.personId)
+    return !holder || holder.name.toLowerCase() !== d.claimedUser.toLowerCase()
+  }
+  const pending = devices.filter(claimMismatch)
+  const unassigned = devices.filter(d => !d.personId && !d.revokedAt && !claimMismatch(d))
   const revokedLoose = devices.filter(d => !d.personId && d.revokedAt)
   const revokedCount = devices.filter(d => d.revokedAt).length
 
@@ -235,13 +247,12 @@ function AccessPanel ({ state, refresh, toast, online }) {
     if (!await askConfirm({ title: `Delete "${d.label}"?`, message: 'Access is already revoked and stays revoked. This only removes the record; the device would have to pair again to return.', confirmLabel: 'Delete' })) return
     mutate('/api/device/delete', { deviceKey: d.deviceKey }, () => `Deleted ${d.label}.`)
   }
-  const confirmClaim = async d => {
-    if (!await askConfirm({ title: `Confirm ${d.label} belongs to ${d.claimedUser}?`, message: 'They will be created if new, and you can then revoke all of their devices in one click.', confirmLabel: 'Confirm' })) return
-    mutate('/api/person/confirm', { deviceKey: d.deviceKey }, r => `${d.label} now belongs to ${r.person.name}.`)
-  }
+  // Confirm is direct: the Needs-confirmation card already shows the claim in full,
+  // so a second dialog would be redundant. (Revoke still double-checks - it's destructive.)
+  const confirmClaim = d => mutate('/api/person/confirm', { deviceKey: d.deviceKey }, r => `${d.label} now belongs to ${r.person.name}.`)
   const assign = (d, personId) => mutate('/api/assign', { deviceKey: d.deviceKey, personId: personId || null })
 
-  const empty = !persons.length && !unassigned.length && !(showRevoked && revokedCount)
+  const empty = !persons.length && !unassigned.length && !pending.length && !(showRevoked && revokedCount)
 
   return (
     <div className='panel grow'>
@@ -253,15 +264,21 @@ function AccessPanel ({ state, refresh, toast, online }) {
         {empty
           ? <div className='empty'><strong>No devices paired yet.</strong><br />Use “Pair a device” below to add one.</div>
           : <>
+              {pending.length > 0 &&
+                <>
+                  <div className='pend-hdr'>⚑ Needs confirmation</div>
+                  {pending.map(d => <PendingCard key={d.deviceKey} d={d} onConfirm={confirmClaim} onRevoke={revoke} />)}
+                </>}
               {persons.map(p => {
-                const live = byPerson(p.id).filter(d => !d.revokedAt)
+                const live = byPerson(p.id).filter(d => !d.revokedAt && !claimMismatch(d))
                 const revoked = byPerson(p.id).filter(d => d.revokedAt)
                 const on = live.filter(d => d.online).length
-                const isOpen = open[p.id]
+                const expandable = live.length + revoked.length > 0
+                const isOpen = expandable && open[p.id]
                 return (
                   <div className='person' key={p.id}>
-                    <div className='prow' onClick={() => setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
-                      <CaretRight size={14} weight='bold' className={'caret' + (isOpen ? ' open' : '')} />
+                    <div className={'prow' + (expandable ? '' : ' flat')} onClick={() => expandable && setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
+                      <CaretRight size={14} weight='bold' className={'caret' + (isOpen ? ' open' : '') + (expandable ? '' : ' hidden')} />
                       <span className={'live' + (on ? '' : ' off')} aria-hidden='true' />
                       <div className='who'>
                         <div className='name'>{p.name}</div>
@@ -272,11 +289,11 @@ function AccessPanel ({ state, refresh, toast, online }) {
                         : <button className='ghost small danger' onClick={e => { e.stopPropagation(); deletePerson(p) }}>Delete</button>}
                     </div>
                     <div className={'devices-sub' + (isOpen ? ' open' : '')}>
-                      {live.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} />)}
+                      {live.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} />)}
                       {revoked.length > 0 &&
                         <Collapse open={showRevoked}>
                           <div className='revoked-stack'>
-                            {revoked.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} />)}
+                            {revoked.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} />)}
                           </div>
                         </Collapse>}
                     </div>
@@ -286,11 +303,11 @@ function AccessPanel ({ state, refresh, toast, online }) {
               {(unassigned.length || revokedLoose.length) ?
                 <>
                   <div className='group-h'>Unassigned</div>
-                  {unassigned.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onAssign={assign} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} loose />)}
+                  {unassigned.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onAssign={assign} onRevoke={revoke} onDelete={deleteDevice} loose />)}
                   {revokedLoose.length > 0 &&
                     <Collapse open={showRevoked}>
                       <div className='revoked-stack'>
-                        {revokedLoose.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} loose />)}
+                        {revokedLoose.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} loose />)}
                       </div>
                     </Collapse>}
                 </> : null}
@@ -309,10 +326,9 @@ function AccessPanel ({ state, refresh, toast, online }) {
   )
 }
 
-function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onConfirm, loose }) {
-  const holder = persons && persons.find(p => p.id === d.personId)
-  const matches = holder && d.claimedUser && holder.name.toLowerCase() === d.claimedUser.toLowerCase()
-  const showClaim = !d.revokedAt && d.claimedUser && !matches
+// Every device row is exactly two lines (name + status) - no claim chip. A device
+// with an unconfirmed claim is handled by PendingCard instead (see AccessPanel).
+function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, loose }) {
   return (
     <div className='dev'>
       <div className='drow'>
@@ -321,10 +337,6 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onConfirm, loose
           <div className='name'>{d.label}{d.revokedAt && <span className='badge'>revoked</span>}</div>
           <div className={'sub' + (d.revokedAt ? ' rev' : '')}>
             <span>{d.revokedAt ? `Revoked ${ago(d.revokedAt)}` : (d.online ? 'Connected' : 'Last seen ' + ago(d.lastSeenAt))}</span>
-            {showClaim &&
-              <button className='claimchip' title={`Confirm this device belongs to ${d.claimedUser}`} onClick={() => onConfirm(d)}>
-                Claims {d.claimedUser}
-              </button>}
           </div>
         </div>
         {onAssign && !d.revokedAt &&
@@ -335,6 +347,24 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onConfirm, loose
         {d.revokedAt
           ? <button className='ghost small danger' onClick={() => onDelete(d)}>Delete</button>
           : <button className='ghost small danger' onClick={() => onRevoke(d)}>Revoke</button>}
+      </div>
+    </div>
+  )
+}
+
+// A device claiming an identity, given room to be read and acted on. Confirm and
+// Revoke are equal-width; Confirm is direct, Revoke double-checks.
+function PendingCard ({ d, onConfirm, onRevoke }) {
+  return (
+    <div className='pending'>
+      <div className='pend-top'>
+        <span className='nm'>{d.label}</span>
+        <span className='pend-st'><span className={'live' + (d.online ? '' : ' off')} aria-hidden='true' />{d.online ? 'Connected' : 'Last seen ' + ago(d.lastSeenAt)}</span>
+      </div>
+      <div className='pend-claim'>Claims to be <b>{d.claimedUser}</b></div>
+      <div className='pend-acts'>
+        <button onClick={() => onConfirm(d)}>Confirm</button>
+        <button className='ghost danger' onClick={() => onRevoke(d)}>Revoke</button>
       </div>
     </div>
   )
@@ -371,6 +401,14 @@ function SourcePanel ({ state, refresh, toast }) {
   const pick = k => { setKind(k); touch(); setBrowse(null) }
   const cancel = () => { setDirty(false); setBrowse(null); refresh() }
   const tracks = n => `${(n || 0).toLocaleString()} track${n === 1 ? '' : 's'}`
+  // tracks, plus albums/artists when the source reports them (folder always; Subsonic
+  // and Jellyfin/Emby after this change; a subset server may still omit albums).
+  const summary = r => {
+    const parts = [tracks(r.tracks)]
+    if (r.albums) parts.push(`${r.albums.toLocaleString()} album${r.albums === 1 ? '' : 's'}`)
+    if (r.artists) parts.push(`${r.artists.toLocaleString()} artist${r.artists === 1 ? '' : 's'}`)
+    return parts.join(' · ')
+  }
 
   const form = () => {
     const c = cfg[kind] || {}
@@ -399,7 +437,7 @@ function SourcePanel ({ state, refresh, toast }) {
     setDirty(false); setBrowse(null)
     await refresh()
     setBusy(null)
-    notify('Music source saved', <>The music source has been updated. <span className='hl'>{tracks(r.tracks)}</span> are now available to your devices.</>)
+    notify('Music source saved', <>The music source has been updated. <span className='hl'>{summary(r)}</span> are now available to your devices.</>)
   }
   const rescan = async () => {
     setBusy('rescan')
@@ -407,7 +445,7 @@ function SourcePanel ({ state, refresh, toast }) {
     await refresh()
     setBusy(null)
     if (!r.ok) return notify('Rescan failed', r.error || 'The library could not be rescanned.')
-    notify('Rescan complete', <>The library was rescanned and now contains <span className='hl'>{tracks(r.tracks)}</span>.</>)
+    notify('Rescan complete', <>The library was rescanned and now contains <span className='hl'>{summary(r)}</span>.</>)
   }
   const openBrowse = async path => {
     const start = path || (cfg.folder && cfg.folder.root) || '/'
@@ -548,6 +586,44 @@ function PairModal ({ onClose, toast }) {
   )
 }
 
+// Operator maintenance. A sectioned modal - Library name is the first section;
+// more (guest grants, listening history, danger zone, …) can be added as siblings
+// without reshaping this.
+function MaintenanceModal ({ state, onClose, onSaved, toast }) {
+  return (
+    <Modal title='Maintenance' onClose={onClose}>
+      <div className='maint'>
+        <LibraryNameSection state={state} onSaved={onSaved} toast={toast} />
+      </div>
+    </Modal>
+  )
+}
+
+function LibraryNameSection ({ state, onSaved, toast }) {
+  const [name, setName] = useState(state.libraryName || '')
+  const [busy, setBusy] = useState(false)
+  const dirty = name.trim() !== (state.libraryName || '')
+  const save = async () => {
+    const clean = name.trim()
+    if (!clean) return
+    setBusy(true)
+    const r = await api('/api/library', { name: clean })
+    setBusy(false)
+    if (!r.ok) return toast('Failed: ' + (r.error || 'could not rename the library'), true)
+    onSaved()
+    toast('Library renamed.')
+  }
+  return (
+    <section className='maint-section'>
+      <h4>Library name</h4>
+      <p className='hint'>Shown on this dashboard, and to a device when it pairs.</p>
+      <input value={name} maxLength={64} placeholder='My Library'
+        onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && dirty && save()} />
+      <button className='block' style={{ marginTop: 10 }} onClick={save} disabled={busy || !name.trim() || !dirty}>{busy ? 'Saving…' : 'Save'}</button>
+    </section>
+  )
+}
+
 // Three no-account rails (Lightning, on-chain BTC, USD/card), one QR each,
 // rendered entirely client-side. Same addresses as the phone app.
 const RAILS = {
@@ -580,7 +656,7 @@ function SupportModal ({ onClose }) {
 
         {qr ? <img className='qr' src={qr} alt='Donation QR code' /> : <div className='empty'>Generating…</div>}
 
-        <div className='hint center'>{rail.caption}</div>
+        <div className='donate-cap'>{rail.caption}</div>
         <div className='key addr'>{rail.value}</div>
         <div className='donate-actions'>
           <button className='ghost' onClick={copy}>{copied ? <><CheckCircle size={15} weight='fill' /> Copied</> : <><Copy size={15} /> Copy</>}</button>

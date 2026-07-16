@@ -46,7 +46,8 @@
 }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; }
+/* Never scroll sideways, on any screen size. */
+html, body { height: 100%; overflow-x: hidden; max-width: 100%; }
 body {
   margin: 0; background: var(--bg); background-image: var(--bg-accent);
   background-attachment: fixed; color: var(--text);
@@ -75,12 +76,13 @@ a { color: var(--primary-strong); }
 .brand-name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
 .brand-name span { color: var(--primary); }
 .brand-sub { color: var(--subtle); font-size: 12px; white-space: nowrap; }
-.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
 
 .pill {
   display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted);
   background: var(--surface); border: 1px solid var(--border); padding: 5px 11px; border-radius: 999px;
   white-space: nowrap; max-width: 15rem; overflow: hidden; text-overflow: ellipsis;
+  margin-left: auto; /* pushes the pill + the icon group to the right on desktop */
 }
 .pill .v { color: var(--subtle); }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--subtle); }
@@ -100,8 +102,9 @@ a { color: var(--primary-strong); }
   box-shadow: var(--shadow); padding: 6px;
 }
 .menu button {
-  display: flex; align-items: center; gap: 10px; width: 100%; background: transparent; color: var(--text);
-  border: 0; text-align: left; padding: 9px 10px; border-radius: 8px; font-size: 13.5px; font-weight: 400; cursor: pointer;
+  display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%;
+  background: transparent; color: var(--text); border: 0; text-align: left; padding: 9px 10px;
+  border-radius: 8px; font-size: 13.5px; font-weight: 400; cursor: pointer;
 }
 .menu button:hover { background: var(--surface-hover); }
 .menu button svg { color: var(--muted); flex: 0 0 auto; }
@@ -117,7 +120,7 @@ a { color: var(--primary-strong); }
 
 /* stat rail */
 .stats { flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 15px 16px; box-shadow: var(--shadow); }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 15px 16px; box-shadow: var(--shadow); text-align: center; }
 .stat .num { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
 .stat.hero .num { color: var(--primary); }
 .stat .lbl { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
@@ -138,7 +141,9 @@ a { color: var(--primary-strong); }
 .person { border-top: 1px solid var(--border); }
 .person:first-child { border-top: 0; }
 .prow { display: flex; align-items: center; gap: 11px; padding: 12px 4px; cursor: pointer; }
+.prow.flat { cursor: default; } /* a person with no devices can't expand */
 .prow .caret { color: var(--subtle); flex: 0 0 auto; transition: transform .2s; }
+.prow .caret.hidden { visibility: hidden; } /* keep the row's alignment, hide the toggle */
 .prow .caret.open { transform: rotate(90deg); }
 .who { flex: 1; min-width: 0; }
 .name { font-weight: 500; font-size: 14.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -146,10 +151,17 @@ a { color: var(--primary-strong); }
 .sub { color: var(--muted); font-size: 12.5px; margin-top: 1px; display: flex; align-items: center; gap: 7px; min-width: 0; }
 .sub > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub.rev { color: var(--warn); }
-/* Pending identity claim: a compact amber pill on the status line (keeps every
-   device row the same two-line height) that opens the confirm modal. */
-.claimchip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; padding: 1px 9px; font-size: 11px; font-weight: 500; border-radius: 999px; cursor: pointer; color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
-.claimchip:hover { background: color-mix(in srgb, var(--warn) 28%, transparent); filter: none; }
+/* Needs-confirmation: a pending claim gets its own roomy card at the top of the
+   list, so device rows stay uniform and the claim has space to be read + acted on. */
+.pend-hdr { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--warn); font-weight: 700; margin: 2px 2px 8px; }
+.pending { background: color-mix(in srgb, var(--warn) 8%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); border-radius: 12px; padding: 11px 12px; margin-bottom: 10px; }
+.pend-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pend-top .nm { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pend-st { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.pend-claim { font-size: 13px; color: var(--muted); margin-top: 3px; }
+.pend-claim b { color: var(--warn); font-weight: 700; }
+.pend-acts { display: flex; gap: 8px; margin-top: 11px; }
+.pend-acts button { flex: 1 1 0; }
 .live { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: var(--primary); box-shadow: 0 0 0 0 var(--glow); animation: beat 2.4s ease-in-out infinite; }
 .live.off { background: var(--subtle); box-shadow: none; animation: none; }
 .live.rev { background: var(--warn); box-shadow: none; animation: none; }
@@ -159,7 +171,7 @@ a { color: var(--primary-strong); }
 /* expand/collapse: always rendered, animated via max-height + opacity so the
    caret rotation has a matching reveal. Indented under a hierarchy rail so a
    person's devices clearly read as a subset of that person. */
-.devices-sub { margin: 4px 0 0 22px; padding-left: 14px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 8px; max-height: 0; opacity: 0; overflow: hidden; transition: max-height .32s cubic-bezier(.4,0,.2,1), opacity .22s ease, padding-bottom .32s; }
+.devices-sub { margin: 4px 0 0 26px; display: flex; flex-direction: column; gap: 8px; max-height: 0; opacity: 0; overflow: hidden; transition: max-height .32s cubic-bezier(.4,0,.2,1), opacity .22s ease, padding-bottom .32s; }
 .devices-sub.open { max-height: 1400px; opacity: 1; padding-bottom: 10px; }
 /* each device is its own subtle card, so several under one person stay distinct. */
 .devices-sub .dev { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; }
@@ -178,7 +190,7 @@ a { color: var(--primary-strong); }
 
 /* ---- music source panel --------------------------------------------------- */
 .seg { display: flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px; gap: 2px; margin-bottom: 12px; }
-.seg button { flex: 1; white-space: nowrap; border: none; background: transparent; color: var(--muted); border-radius: 999px; padding: 7px 12px; font-size: 12.5px; font-weight: 500; }
+.seg button { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: none; background: transparent; color: var(--muted); border-radius: 999px; padding: 7px 8px; font-size: 12.5px; font-weight: 500; }
 .seg button.on { background: var(--primary); color: var(--on-primary); }
 label { display: block; margin: 10px 0 4px; color: var(--subtle); font-size: 12px; }
 .pick { display: flex; gap: 8px; align-items: center; }
@@ -258,10 +270,13 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .stack.center { align-items: center; text-align: center; }
 .qr { width: 216px; height: 216px; background: #fff; border-radius: 12px; padding: 10px; }
 .tabs { display: flex; gap: 8px; margin-bottom: 14px; width: 100%; }
-.tabs button { flex: 1; padding: 9px 6px; font-size: 13px; gap: 5px; }
-/* donation buttons: one full-width Copy, or Copy + Open split evenly */
+.tabs button { flex: 1 1 0; min-width: 0; padding: 9px 4px; font-size: 12.5px; gap: 5px; white-space: nowrap; }
+/* Reserved caption height so the sheet stays the same size across Lightning /
+   On-chain / USD (their captions differ in length). */
+.donate-cap { color: var(--muted); font-size: 12.5px; line-height: 1.45; text-align: center; min-height: 36px; display: flex; align-items: center; justify-content: center; }
+/* donation buttons: one full-width Copy, or Copy + Open split evenly - always one row */
 .donate-actions { display: flex; gap: 8px; width: 100%; margin-top: 2px; }
-.donate-actions > * { flex: 1; }
+.donate-actions > * { flex: 1 1 0; min-width: 0; }
 .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--muted); word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; width: 100%; text-align: center; }
 .key.addr { white-space: nowrap; overflow-x: auto; font-size: 11.5px; word-break: normal; }
 .btnrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
@@ -269,6 +284,15 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; gap:
 a.btn.ghost { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
 a.btn:hover { filter: brightness(1.06); }
 h4 { margin: 4px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--subtle); font-weight: 600; }
+
+/* Maintenance modal: stacked sections, divided, so more can be added later. */
+.maint { display: flex; flex-direction: column; }
+.maint-section { padding: 0 0 18px; }
+.maint-section + .maint-section { border-top: 1px solid var(--border); padding-top: 18px; }
+.maint-section:last-child { padding-bottom: 2px; }
+.maint-section h4 { margin: 0 0 5px; }
+.maint-section .hint { margin: 0 0 10px; }
+.maint-section input { margin: 0; }
 
 /* themed confirm / notify popup — centered title + message */
 .modal.confirm { max-width: 400px; text-align: center; }
@@ -304,12 +328,38 @@ button.destructive { background: var(--bad); color: #fff; }
 /* ---- mobile --------------------------------------------------------------- */
 @media (max-width: 620px) {
   .app { padding: 0 12px; }
-  .topbar { flex-wrap: wrap; gap: 8px; padding: 12px 0 10px; }
+
+  /* Top bar: brand + icons on row 1, the source pill on its own row below. */
+  .topbar { flex-wrap: wrap; gap: 8px; padding: calc(10px + env(safe-area-inset-top)) 0 8px; }
   .brand-sub { display: none; }
+  .topbar-right { order: 1; margin-left: auto; }
+  .pill { order: 2; flex-basis: 100%; margin-left: 0; max-width: none; justify-content: flex-start; }
+
+  /* Bigger touch targets. */
+  .iconbtn { width: 40px; height: 40px; }
+
+  /* ONE scroll: EVERY panel takes its natural height (not just .grow) and the whole
+     .main scrolls. Without this the non-grow Music source panel gets flex-compressed
+     and, because .panel has overflow:hidden, its lower fields are clipped when you
+     pick Subsonic/Jellyfin (the taller forms). The top bar + action bar stay pinned. */
+  .panel, .panel.grow { flex: 0 0 auto; }
+  .list { overflow: visible; }
+  /* The folder browser's list is a fixed 244px on desktop; on a phone that can push
+     the bottom-sheet taller than the screen, so cap it to the viewport. */
+  .fb-list { height: auto; max-height: 40vh; min-height: 160px; }
+
   .stats { gap: 8px; }
   .stat { padding: 12px; }
   .stat .num { font-size: 22px; }
+
+  /* Action bar sits above the home indicator. */
+  .actionbar { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+
+  /* Modals become full-width bottom sheets; the extra bottom padding keeps their
+     last button clear of the Android nav bar / gesture area. */
   .overlay { padding: 0; align-items: flex-end; }
-  .modal { max-width: none; border-radius: 18px 18px 0 0; max-height: 92dvh; }
+  .modal { max-width: none; border-radius: 18px 18px 0 0; max-height: 92dvh; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+  .tabs button { font-size: 12px; padding: 9px 3px; }
+
   .prow { flex-wrap: wrap; }
 }

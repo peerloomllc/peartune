@@ -188,7 +188,34 @@ class SubsonicAdapter {
     const sr = await this._call('getScanStatus').catch(() => null)
     this.scannedAt = Date.now()
     this._counts = sr?.scanStatus?.count ?? null
+    // Album/artist totals for the dashboard. getScanStatus only reports tracks, so
+    // count them the same way the app's tabs list them. Best-effort: a subset server
+    // missing an endpoint just leaves that total null (shown as 0), never fails scan.
+    this._artists = await this._countArtists().catch(() => null)
+    this._albums = await this._countAlbums().catch(() => null)
     return this._counts ?? 0
+  }
+
+  // getArtists returns every artist in one call (index buckets); count them.
+  async _countArtists () {
+    const sr = await this._optional('getArtists')
+    if (!sr) return null
+    return (sr.artists?.index || []).reduce((n, i) => n + (i.artist?.length || 0), 0)
+  }
+
+  // getAlbumList2 has no total, so walk it a page at a time (500 is the Subsonic max).
+  // A typical library is one page; the guard stops a runaway.
+  async _countAlbums () {
+    let total = 0, offset = 0
+    const size = 500
+    for (let page = 0; page < 200; page++) {
+      const sr = await this._call('getAlbumList2', { type: 'alphabeticalByName', size, offset })
+      const list = sr.albumList2?.album || []
+      total += list.length
+      if (list.length < size) break
+      offset += size
+    }
+    return total
   }
 
   // "Does this work?", for the dashboard's Test button. For Navidrome that is the
@@ -212,8 +239,8 @@ class SubsonicAdapter {
       sourceName: subsonicName(this.serverType),
       root: this.base,
       tracks,
-      albums: 0,
-      artists: 0,
+      albums: this._albums ?? 0,
+      artists: this._artists ?? 0,
       scannedAt: this.scannedAt
     }
   }
