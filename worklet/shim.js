@@ -71,7 +71,7 @@ function parseRange (header, size) {
 // to transcode. The worklet owns the policy (a Settings choice, and later the network
 // type); the shim just asks it at the moment a track is requested, so a change takes
 // effect on the next track without rebuilding anything.
-function createAudioShim ({ client, log = () => {}, ensure = async () => {}, quality = () => null, cache = null, leaseOk = () => true }) {
+function createAudioShim ({ client, log = () => {}, ensure = async () => {}, quality = () => null, cache = null, artStore = null, leaseOk = () => true }) {
   const meta = new Map() // trackId -> { size, mime }
 
   // The client is REPLACEABLE, and the indirection is the point. On a reconnect
@@ -216,6 +216,26 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
     // screen, or a 1200px image behind every tile in the grid.
     const key = coverId + ':' + size
     try {
+      // DISK FIRST for a downloaded cover, at the size the Downloads views request
+      // (DEFAULT_ART_SIZE). Serves offline with NO wait - the live path below blocks on
+      // ensure(), which offline hangs until a connect timeout, so a fallback there loads
+      // the cover minutes late or never. Skips a P2P round-trip online too. Gated by the
+      // lease exactly like cached audio, so a revoked/long-offline device goes dark. Only
+      // this one size hits disk, so the library grid (120/350/500) keeps its exact-size,
+      // freshly-fetched art.
+      if (artStore && size === DEFAULT_ART_SIZE && leaseOk()) {
+        const disk = artStore.get(coverId)
+        if (disk && disk.length) {
+          res.writeHead(200, {
+            'content-type': 'image/jpeg',
+            'content-length': String(disk.length),
+            'cache-control': 'max-age=86400'
+          })
+          log('art:hit', { cover: String(coverId).slice(0, 12) })
+          return res.end(disk)
+        }
+      }
+
       let buf = artCache.get(key)
 
       if (!buf) {
@@ -327,4 +347,4 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
   }
 }
 
-module.exports = { createAudioShim, mimeFor }
+module.exports = { createAudioShim, mimeFor, DEFAULT_ART_SIZE }
