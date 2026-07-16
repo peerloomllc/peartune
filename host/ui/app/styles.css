@@ -120,7 +120,7 @@ a { color: var(--primary-strong); }
 
 /* stat rail */
 .stats { flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 15px 16px; box-shadow: var(--shadow); }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 15px 16px; box-shadow: var(--shadow); text-align: center; }
 .stat .num { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
 .stat.hero .num { color: var(--primary); }
 .stat .lbl { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
