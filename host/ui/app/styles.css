@@ -46,7 +46,8 @@
 }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; }
+/* Never scroll sideways, on any screen size. */
+html, body { height: 100%; overflow-x: hidden; max-width: 100%; }
 body {
   margin: 0; background: var(--bg); background-image: var(--bg-accent);
   background-attachment: fixed; color: var(--text);
@@ -186,7 +187,7 @@ a { color: var(--primary-strong); }
 
 /* ---- music source panel --------------------------------------------------- */
 .seg { display: flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px; gap: 2px; margin-bottom: 12px; }
-.seg button { flex: 1; white-space: nowrap; border: none; background: transparent; color: var(--muted); border-radius: 999px; padding: 7px 12px; font-size: 12.5px; font-weight: 500; }
+.seg button { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: none; background: transparent; color: var(--muted); border-radius: 999px; padding: 7px 8px; font-size: 12.5px; font-weight: 500; }
 .seg button.on { background: var(--primary); color: var(--on-primary); }
 label { display: block; margin: 10px 0 4px; color: var(--subtle); font-size: 12px; }
 .pick { display: flex; gap: 8px; align-items: center; }
@@ -325,11 +326,15 @@ button.destructive { background: var(--bad); color: #fff; }
   /* Bigger touch targets. */
   .iconbtn { width: 40px; height: 40px; }
 
-  /* ONE scroll: panels grow to their content and the whole .main scrolls, instead
-     of a growing panel with its own inner scroll (which fights touch scrolling).
-     The top bar and action bar stay pinned via the flex shell. */
-  .panel.grow { flex: 0 0 auto; }
+  /* ONE scroll: EVERY panel takes its natural height (not just .grow) and the whole
+     .main scrolls. Without this the non-grow Music source panel gets flex-compressed
+     and, because .panel has overflow:hidden, its lower fields are clipped when you
+     pick Subsonic/Jellyfin (the taller forms). The top bar + action bar stay pinned. */
+  .panel, .panel.grow { flex: 0 0 auto; }
   .list { overflow: visible; }
+  /* The folder browser's list is a fixed 244px on desktop; on a phone that can push
+     the bottom-sheet taller than the screen, so cap it to the viewport. */
+  .fb-list { height: auto; max-height: 40vh; min-height: 160px; }
 
   .stats { gap: 8px; }
   .stat { padding: 12px; }
@@ -338,9 +343,10 @@ button.destructive { background: var(--bad); color: #fff; }
   /* Action bar sits above the home indicator. */
   .actionbar { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
 
-  /* Modals become full-width bottom sheets. */
+  /* Modals become full-width bottom sheets; the extra bottom padding keeps their
+     last button clear of the Android nav bar / gesture area. */
   .overlay { padding: 0; align-items: flex-end; }
-  .modal { max-width: none; border-radius: 18px 18px 0 0; max-height: 92dvh; }
+  .modal { max-width: none; border-radius: 18px 18px 0 0; max-height: 92dvh; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
   .tabs button { font-size: 12px; padding: 9px 3px; }
 
   .prow { flex-wrap: wrap; }
