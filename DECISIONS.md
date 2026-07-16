@@ -2,6 +2,42 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-16 - Queue reorder/remove uses ExoPlayer's own move/remove, and the patch got cleaned
+Tier: T2 (native expo-audio patch surface + a UI edit mode; no wire change). Branch:
+feature/queue-reorder-remove.
+Context: the queue became a persistent, first-class tab (PR #29), so "see it but can't edit
+it" was the obvious gap. TODO flagged it needing "the same kind of patch as addQueueSources".
+Choice: two new Functions on the expo-audio patch - moveQueueItem(from,to) and
+removeQueueItem(index) - wrapping ExoPlayer's OWN moveMediaItem / removeMediaItem. NOT a
+rebuild via setQueueSources: re-handing the whole playlist would restart the current track and
+break gapless, which is the exact trap the addQueueSources comment already warns about. The
+shell mirrors the move/remove in queueRef and fixes indexRef with a pure, unit-tested helper
+(app/queue-index.js, cross-checked against a brute-force array move for every position).
+Three subtleties, each a bug caught in build/test/hardware:
+- currentMediaItemIndex SHIFTS WITHOUT a transition. Moving/removing an item across the
+  current one changes its index but not which track it is, so ExoPlayer fires no
+  onMediaItemTransition and the JS `currentQueueIndex` mirror would go stale. The native
+  Functions re-sync it (= ref.currentMediaItemIndex) on the main thread, where reading the
+  player is safe.
+- Removing the CURRENT track needs an explicit announce(). ExoPlayer slides the next track
+  into the same slot, so the index is UNCHANGED - the status listener's "index changed?" check
+  never fires, and the mini-player/lock-screen would keep showing the REMOVED track. The shell
+  now announces the new current explicitly on a current-track removal (verified on hardware:
+  removed the playing track, mini-player advanced AND playback continued - no audio-focus loss,
+  because there is no seek here, unlike playIndex's documented announce trap).
+- The navbar badge reads status.queueLength, which only refreshes on a play-status tick - so a
+  remove while PAUSED left it stale. The UI now updates it from the removed-queue length at
+  once, the same fix the play:queued handler uses.
+Also: patch-package REGENERATED the patch SOURCE-ONLY (--exclude 'android/build/'), dropping
+479KB of committed build-output artifacts (763 of the old patch's 767 file-diffs were dex/class
+noise; the real content is 3 .kt + expo-module.config.json). The source-build-forcing is the
+`publication` block removed from expo-module.config.json - kept. This directly pays down the
+"the patch is fragile" rot-risk. Re-verified: gradle built from source and the dex contains
+moveQueueItem + setQueueSources (media3 has neither), proving the Kotlin compiled, not a stale AAR.
+Verify: 220 tests; on the TCL, reorder (highlight follows the track), remove non-current
+(badge drops), remove current paused/playing (advances, mini-player updates, keeps playing),
+and force-stop -> relaunch restored the edited queue exactly.
+
 ## 2026-07-15 - The dashboard is a BUILT React app, not a hand-written HTML string
 Tier: T1 (UI rewrite; NO wire change, NO persisted-shape change, NO auth-model change -
 the same HTTP API, served differently). The control plane is security-relevant, so the

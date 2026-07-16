@@ -834,6 +834,36 @@ export default function App () {
     setQueue({ items: [], index: 0 })
   }
 
+  // Reorder the queue. Update the visible list optimistically (so the row does not snap
+  // back while the round-trip lands), then reconcile with the shell's authoritative
+  // {items,index} - it owns ExoPlayer's order. The current track is tracked by identity
+  // so its highlight follows the move without re-deriving the index math the shell owns.
+  async function moveInQueue (from, to) {
+    setQueue(qs => {
+      if (!qs) return qs
+      const list = qs.items.slice()
+      const curId = list[qs.index]?.id
+      const [m] = list.splice(from, 1)
+      list.splice(to, 0, m)
+      const at = curId != null ? list.findIndex(t => t.id === curId) : qs.index
+      return { items: list, index: at < 0 ? qs.index : at }
+    })
+    try { setQueue(await call('queueMove', { from, to })) } catch (e) { setError(e.message); loadQueue() }
+  }
+
+  // Remove one track. The shell returns the new {items,index}; if that empties the queue
+  // it also stopped playback (play:stopped clears the now-playing UI).
+  async function removeFromQueue (i) {
+    haptic('light')
+    try {
+      const res = await call('queueRemove', { index: i })
+      setQueue(res)
+      // Keep the navbar badge honest now, not on the next status tick (which may be a
+      // while off when paused) - same reason the play:queued handler does it.
+      setStatus(s => (s ? { ...s, queueLength: res.items.length } : s))
+    } catch (e) { setError(e.message); loadQueue() }
+  }
+
   // The long-press menu holds an ID, not tracks: a grid of 60 albums has not
   // fetched anybody's track list, and it should not, just in case someone might
   // long-press one. The tracks are fetched when an action is actually chosen.
@@ -990,6 +1020,8 @@ export default function App () {
         items={queue?.items || []}
         index={queue?.index ?? 0}
         onJump={jumpTo}
+        onMove={moveInQueue}
+        onRemove={removeFromQueue}
         onClear={clearQueue}
       />
     )
@@ -1185,7 +1217,10 @@ function usePress (onPress, onLongPress) {
 // owns the shuffled order). A copy kept in the UI would drift the moment shuffle is
 // on or a track auto-advances - so this screen ASKS, every time it is opened and
 // every time the track changes.
-function QueueScreen ({ items, index, onJump, onClear }) {
+function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
+  const [editing, setEditing] = useState(false)
+  const [drag, setDrag] = useState(null)
+
   if (!items.length) {
     return (
       <div className='app'>
@@ -1204,36 +1239,115 @@ function QueueScreen ({ items, index, onJump, onClear }) {
 
   const left = items.length - index - 1
 
+  // Drag reorder, the same mechanism as PlaylistScreen: the grip captures the pointer
+  // (touch-action:none in CSS stops the page scrolling under the finger), the lifted row
+  // follows it, the others slide by one to open a gap, and a highlight marks the drop
+  // slot. Rows keep their DOM order and move with transforms, so nothing remounts mid-drag.
+  const dragStart = (i) => (e) => {
+    const li = e.currentTarget.closest('li')
+    const h = li?.offsetHeight || 64
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+    haptic('medium')
+    setDrag({ from: i, dy: 0, insertAt: i, rowH: h, y0: e.clientY })
+  }
+  const dragMove = (e) => {
+    setDrag(d => {
+      if (!d) return d
+      const dy = e.clientY - d.y0
+      const insertAt = Math.max(0, Math.min(items.length - 1, d.from + Math.round(dy / d.rowH)))
+      if (insertAt !== d.insertAt) { try { haptic('light') } catch {} }
+      return { ...d, dy, insertAt }
+    })
+  }
+  const dragEnd = () => {
+    setDrag(d => { if (d && d.from !== d.insertAt) onMove(d.from, d.insertAt); return null })
+  }
+  const rowShift = (i) => {
+    if (!drag) return 0
+    if (i === drag.from) return drag.dy
+    if (drag.from < drag.insertAt && i > drag.from && i <= drag.insertAt) return -drag.rowH
+    if (drag.from > drag.insertAt && i >= drag.insertAt && i < drag.from) return drag.rowH
+    return 0
+  }
+
+  const toggleEdit = () => { haptic('light'); setDrag(null); setEditing(e => !e) }
+  const rowClass = (i) => (i === index ? 'on' : (i < index ? 'played' : ''))
+  const sub = (t) => [t.artist, t.album].filter(Boolean).join(' · ')
+
   return (
     <div className='app'>
       <header>
-        <h1>Queue</h1>
+        <div className='pltitlerow'>
+          <h1>Queue</h1>
+          <div className='plheadacts'>
+            <button
+              className={'plicon' + (editing ? ' on' : '')}
+              aria-label={editing ? 'Done editing' : 'Edit queue'}
+              onClick={toggleEdit}
+            >
+              <PencilSimple size={20} weight={editing ? 'fill' : 'regular'} />
+            </button>
+          </div>
+        </div>
         <p className='muted sm'>
           {items.length} {items.length === 1 ? 'track' : 'tracks'}
           {left > 0 ? ` · ${left} still to play` : ' · last track'}
         </p>
       </header>
 
-      <ul className='tracks queuelist'>
-        {items.map((t, i) => (
-          <li
-            key={`${t.id}:${i}`}
-            className={i === index ? 'on' : (i < index ? 'played' : '')}
-            onClick={() => onJump(i)}
-          >
-            <Cover src={t.art} sm />
-            <div className='meta'>
-              <div className='t'>{t.title}</div>
-              <div className='muted sm sub'>
-                {[t.artist, t.album].filter(Boolean).join(' · ')}
-              </div>
-            </div>
-            {i === index
-              ? <Play size={14} weight='fill' className='cur' />
-              : <span className='muted sm dur'>{t.durationMs ? fmt(t.durationMs) : ''}</span>}
-          </li>
-        ))}
-      </ul>
+      {editing
+        ? (
+          <ul className='tracks editing' style={drag ? { '--rowh': drag.rowH + 'px' } : undefined}>
+            {drag && (
+              <li className='drophl' aria-hidden style={{ top: drag.insertAt * drag.rowH + 'px', height: drag.rowH + 'px' }} />
+            )}
+            {items.map((t, i) => {
+              const lifted = drag && i === drag.from
+              return (
+                <li
+                  key={`${t.id}:${i}`}
+                  className={'editrow ' + rowClass(i) + (lifted ? ' lifted' : '')}
+                  style={{
+                    transform: `translateY(${rowShift(i)}px)` + (lifted ? ' scale(1.02)' : ''),
+                    transition: lifted ? 'none' : 'transform 180ms cubic-bezier(0.2,0,0,1)',
+                    zIndex: lifted ? 3 : 1
+                  }}
+                >
+                  <button
+                    className='plgrip' aria-label='Drag to reorder'
+                    onPointerDown={dragStart(i)} onPointerMove={dragMove}
+                    onPointerUp={dragEnd} onPointerCancel={dragEnd}
+                  >
+                    <DotsSixVertical size={20} weight='bold' />
+                  </button>
+                  <div className='meta'>
+                    <div className='t'>{t.title}</div>
+                    <div className='muted sm sub'>{sub(t)}</div>
+                  </div>
+                  <button className='rm' aria-label='Remove from queue' onClick={() => onRemove(i)}>
+                    <X size={17} weight='bold' />
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+          )
+        : (
+          <ul className='tracks queuelist'>
+            {items.map((t, i) => (
+              <li key={`${t.id}:${i}`} className={rowClass(i)} onClick={() => onJump(i)}>
+                <Cover src={t.art} sm />
+                <div className='meta'>
+                  <div className='t'>{t.title}</div>
+                  <div className='muted sm sub'>{sub(t)}</div>
+                </div>
+                {i === index
+                  ? <Play size={14} weight='fill' className='cur' />
+                  : <span className='muted sm dur'>{t.durationMs ? fmt(t.durationMs) : ''}</span>}
+              </li>
+            ))}
+          </ul>
+          )}
 
       {/* Honest label. There is no way to empty the queue without stopping the
           music: the queue IS what is playing. */}
