@@ -19,7 +19,7 @@ import {
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
-  Palette, SpeakerHigh, Key
+  Palette, SpeakerHigh, Key, ChartLineUp
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -1768,15 +1768,32 @@ function You ({
 
       <div className='sticky'>
         <div className='pickrow'>
-          <div className='seg scroll'>
+          {/* Icon-first picker: every view is an icon; the ACTIVE one also shows its label
+              and grows to fill, the rest collapse to their icon. Keeps all four (Favorites /
+              Most Played / Playlists / Downloads) on one row - four full labels overflowed and
+              forced a sideways scroll that clipped Downloads. aria-label carries the name for
+              the collapsed icons. */}
+          <div className='seg icons'>
             {favSupported && (
-              <button className={view === 'favorites' ? 'on' : ''} onClick={() => onYouView('favorites')}>Favorites</button>
+              <button className={view === 'favorites' ? 'on' : ''} aria-label='Favorites' onClick={() => onYouView('favorites')}>
+                <Heart size={17} weight={view === 'favorites' ? 'fill' : 'regular'} />
+                {view === 'favorites' && <span>Favorites</span>}
+              </button>
             )}
-            <button className={view === 'top' ? 'on' : ''} onClick={() => onYouView('top')}>Most Played</button>
+            <button className={view === 'top' ? 'on' : ''} aria-label='Most Played' onClick={() => onYouView('top')}>
+              <ChartLineUp size={17} weight={view === 'top' ? 'fill' : 'regular'} />
+              {view === 'top' && <span>Most Played</span>}
+            </button>
             {plSupported && (
-              <button className={view === 'playlists' ? 'on' : ''} onClick={() => onYouView('playlists')}>Playlists</button>
+              <button className={view === 'playlists' ? 'on' : ''} aria-label='Playlists' onClick={() => onYouView('playlists')}>
+                <PlaylistIcon size={17} weight={view === 'playlists' ? 'fill' : 'regular'} />
+                {view === 'playlists' && <span>Playlists</span>}
+              </button>
             )}
-            <button className={view === 'downloads' ? 'on' : ''} onClick={() => onYouView('downloads')}>Downloads</button>
+            <button className={view === 'downloads' ? 'on' : ''} aria-label='Downloads' onClick={() => onYouView('downloads')}>
+              <DownloadSimple size={17} weight={view === 'downloads' ? 'fill' : 'regular'} />
+              {view === 'downloads' && <span>Downloads</span>}
+            </button>
           </div>
         </div>
       </div>

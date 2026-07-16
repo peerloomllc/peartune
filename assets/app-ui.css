@@ -741,6 +741,19 @@ button.icon.dens {
 .seg.scroll button {
   flex: 0 0 auto;
 }
+.seg.icons button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .4rem;
+}
+.seg.icons button.on {
+  flex: 1 1 auto;
+}
+.seg.icons button svg {
+  flex: none;
+}
 .dock {
   position: fixed;
   left: 0;

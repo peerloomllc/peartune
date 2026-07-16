@@ -2,6 +2,23 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-16 - The You picker is icon-first: the active view shows its label, the rest are icons
+Tier: T1 (UI only). Branch: fix/you-picker-icon-pills.
+Context: the You sub-picker grew to four pills (Favorites / Most Played / Playlists /
+Downloads) and, on a full-featured host, overflowed the row - the `.seg.scroll` clipped
+"Downloads" and made you scroll a segmented control sideways (Tim reported it).
+First cut (rejected): move Downloads to a download-icon button in the You HEADER. It fixed
+the crowding but the header icon offset the centered "You" title - Tim did not want the
+title pulled off-centre.
+Choice: keep all four as peers, but make the picker ICON-FIRST (`.seg.icons`). Every option
+is an icon; the ACTIVE one also shows its label and grows to fill (flex:1), the others
+collapse to just their icon (flex:0 0 auto). Four options now fit one row with no scroll, and
+the header stays centered. Icons: Heart / ChartLineUp / Playlist / DownloadSimple; each button
+carries an aria-label so the collapsed icons stay accessible. The active fills to the same
+edge whichever it is, so nothing offsets the page header.
+Verified on the TCL: all four fit one row; tapping each expands it to icon+label and collapses
+the rest; the "You" title stays centered.
+
 ## 2026-07-16 - Queue reorder/remove uses ExoPlayer's own move/remove, and the patch got cleaned
 Tier: T2 (native expo-audio patch surface + a UI edit mode; no wire change). Branch:
 feature/queue-reorder-remove.
