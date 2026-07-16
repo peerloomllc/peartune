@@ -64,6 +64,12 @@ export default function App () {
   const player = useRef<AudioPlayer | null>(null)
   const queueRef = useRef<any[]>([])
   const indexRef = useRef(0)
+  // Mirrored so the persisted queue snapshot can carry them (ExoPlayer owns the
+  // live modes; we only need the last-set values for restore).
+  const shuffleRef = useRef(false)
+  const repeatRef = useRef(0)
+  const posRef = useRef(0) // last known position (ms), from the status listener
+  const lastPersist = useRef(0) // throttle disk writes from the frequent status listener
   const netSub = useRef<{ remove: () => void } | null>(null)
   // Are we currently disconnected from the host? On a drop we do NOT tear the
   // player down (a network switch and a revoke look identical here) - we keep the
@@ -145,6 +151,7 @@ export default function App () {
         if (i !== indexRef.current) {
           indexRef.current = i
           announce(i)
+          persistQueue(true) // a track advanced - save the new index right away
         }
 
         // STARVATION. We are off the wire (dropped) and ExoPlayer is buffering -
@@ -172,6 +179,9 @@ export default function App () {
           index: indexRef.current,
           queueLength: queueRef.current.length
         })
+
+        posRef.current = posMs
+        persistQueue() // throttled: keeps the saved position roughly current
       })
     }
 
@@ -211,6 +221,22 @@ export default function App () {
     })
   }
 
+  // Snapshot the queue to disk (via the worklet) so a relaunch can restore it.
+  // Throttled, because the status listener fires several times a second; `force`
+  // bypasses it for structural changes (play / enqueue / index advance / mode).
+  function persistQueue (force = false) {
+    const t = Date.now()
+    if (!force && t - lastPersist.current < 4000) return
+    lastPersist.current = t
+    call('saveQueueState', {
+      items: queueRef.current,
+      index: indexRef.current,
+      positionMs: posRef.current,
+      shuffle: shuffleRef.current,
+      repeat: repeatRef.current
+    }).catch(() => {})
+  }
+
   async function play ({ queue, index = 0 }: any) {
     const q = Array.isArray(queue) ? queue : []
     queueRef.current = q
@@ -229,6 +255,7 @@ export default function App () {
       const p = await ensurePlayer(urls, index)
       announce(index)
       p.play()
+      persistQueue(true)
     } catch (e: any) {
       // A revoked device lands here: the loopback stream broke because the P2P
       // connection under it was destroyed.
@@ -259,6 +286,7 @@ export default function App () {
       }
       queueRef.current = [...queueRef.current, ...q]
       px()?.addQueueSources(urls.map((uri) => ({ uri })))
+      persistQueue(true)
       toWeb('play:queued', { count: q.length, queueLength: queueRef.current.length })
     } catch (e: any) {
       toWeb('play:error', { error: e?.message ?? String(e) })
@@ -296,12 +324,16 @@ export default function App () {
   // playlist to the player, which restarts buffering and breaks gapless.
   function setShuffle (on: boolean) {
     px()?.setShuffle(on)
+    shuffleRef.current = on
+    persistQueue(true)
     toWeb('play:mode', { shuffle: on })
   }
 
   // 0 = off, 1 = repeat one, 2 = repeat all.
   function setRepeat (mode: number) {
     px()?.setRepeatMode(mode)
+    repeatRef.current = mode
+    persistQueue(true)
     toWeb('play:mode', { repeat: mode })
   }
 
@@ -357,7 +389,61 @@ export default function App () {
     stopPlayer()
     queueRef.current = []
     indexRef.current = 0
+    posRef.current = 0
+    call('clearQueueState').catch(() => {}) // stop discards the queue, so forget it
     toWeb('play:stopped', {})
+  }
+
+  // Restore the saved queue on launch, PAUSED, seeked to where you were - the strong
+  // "continue where you left off" (the whole session, which is why it earns a media
+  // notification, unlike a single track). It is the play() flow MINUS p.play(), plus a
+  // seek and re-applied shuffle/repeat. URLs are re-resolved from IDs because the shim
+  // port changes each launch. No-op if something is already playing, or if offline and
+  // a track's URL cannot be resolved.
+  async function restoreQueue () {
+    if (player.current) return { restored: false } // don't clobber active playback
+    let saved: any
+    try {
+      saved = await call('loadQueueState')
+    } catch { return { restored: false } }
+    const q = Array.isArray(saved?.items) ? saved.items : []
+    if (!q.length) return { restored: false }
+
+    try {
+      const index = Math.min(Math.max(0, Number(saved.index) || 0), q.length - 1)
+      const urls: string[] = []
+      let port: number | null = null
+      for (const t of q) {
+        const r: any = await call('urlFor', { trackId: t.id })
+        urls.push(r.url)
+        if (r.port) port = r.port
+      }
+      if (player.current) return { restored: false } // a play() raced us while resolving
+
+      // The persisted art URLs carry the OLD shim port (it changes each launch), so
+      // rewrite them to the current one - otherwise the mini-player + lock-screen art
+      // 404 on the dead port.
+      if (port) {
+        const fix = (u: any) => (typeof u === 'string' ? u.replace(/(127\.0\.0\.1:)\d+/, `$1${port}`) : u)
+        for (const t of q) { t.art = fix(t.art); t.artFull = fix(t.artFull) }
+      }
+
+      queueRef.current = q
+      indexRef.current = index
+      shuffleRef.current = !!saved.shuffle
+      repeatRef.current = Number(saved.repeat) || 0
+
+      const p = await ensurePlayer(urls, index)
+      px()?.setShuffle(shuffleRef.current)
+      px()?.setRepeatMode(repeatRef.current)
+      announce(index) // shows the now-playing (paused) + the lock-screen session
+      if (saved.positionMs) p.seekTo(Math.max(0, saved.positionMs / 1000))
+      toWeb('play:mode', { shuffle: shuffleRef.current, repeat: repeatRef.current })
+      // Deliberately NO p.play() - it comes up paused.
+      return { restored: true, index, queueLength: q.length }
+    } catch {
+      return { restored: false }
+    }
   }
 
   // --- boot ----------------------------------------------------------------
@@ -573,6 +659,7 @@ export default function App () {
       next,
       prev,
       stop,
+      restore: () => restoreQueue(),
       seekBy: () => seekBy(msg.args.seconds ?? SEEK_STEP),
       seekTo: () => seekTo(msg.args.ms ?? 0),
       shuffle: () => setShuffle(!!msg.args.on),
