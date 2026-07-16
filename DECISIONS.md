@@ -2,6 +2,32 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-16 - Downloaded-album covers are cached on disk and served DISK-FIRST, not as a fallback
+Tier: T1 (client-only; new on-disk store + one shim read path; no wire change, lease semantics
+unchanged). Branch: feature/offline-album-art.
+Context: milestone-3 phase 5C made a downloaded album PLAY offline (audio written through to
+disk), but its COVER still came from a live fetch - so an offline Downloads list showed
+placeholders. The last visible loose end of the offline story.
+Choice: persist each downloaded album's cover bytes to disk (worklet/art-cache.js, an ArtStore
+keyed by coverId - small, no LRU, bounded by the pinned-album list). pinAlbum fetches the
+DISTINCT coverIds (album + tracks; usually one) best-effort at download time - a cover that
+fails to fetch never fails the download. The shim serves this store, LEASE-GATED exactly like
+cached audio (a revoked/long-offline device's covers go dark with its audio).
+The subtlety, caught on hardware: serve DISK-FIRST, not as a catch-block fallback after the
+live fetch. The first cut fell back to disk only in serveArt's catch - but offline that catch
+is reached only AFTER `await ensure()` blocks on a connect timeout, so the cover loaded minutes
+late or never (verified: placeholder + no art:hit, then art:hit once disk-first landed). Disk
+is checked BEFORE ensure(), so offline it serves instantly.
+Scoped to ONE size (DEFAULT_ART_SIZE, the size the Downloads views request): only that size
+hits disk, so the online library grid (120/350/500) still fetches exact-size art, and there is
+no quality regression while browsing. Store size and serve size share the exported constant so
+they cannot drift. A full-screen 1200 viewer offline still shows the placeholder - acceptable
+v1 (Downloads shows the cover, which was the ask). unpinAlbum frees the covers unless another
+pin still shows them; UNPAIR (purgeAll) clears the whole store.
+Verify: 239 tests (9 for ArtStore, incl. persistence + slash-in-coverId safety). On the TCL:
+downloaded 2020 AD, wifi OFF, force-stop, cold launch - the Downloads list AND the detail
+header showed the real cover (art:hit served from disk), where before both were placeholders.
+
 ## 2026-07-16 - Queue reorder/remove uses ExoPlayer's own move/remove, and the patch got cleaned
 Tier: T2 (native expo-audio patch surface + a UI edit mode; no wire change). Branch:
 feature/queue-reorder-remove.

@@ -21,11 +21,12 @@ const z32 = require('z32')
 const hcrypto = require('hypercore-crypto')
 
 const { PearTuneClient } = require('../client')
-const { createAudioShim, mimeFor } = require('../worklet/shim')
+const { createAudioShim, mimeFor, DEFAULT_ART_SIZE } = require('../worklet/shim')
 const { streamParams } = require('../worklet/quality')
 const { isPairLink } = require('../protocol/link')
 const { coalesce, clientCall } = require('../worklet/outbox')
 const { AudioCache } = require('../worklet/cache')
+const { ArtStore } = require('../worklet/art-cache')
 
 const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
 const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
@@ -50,6 +51,7 @@ const OUTBOX_FILE = path.join(DATA_DIR, 'outbox.json')
 // The on-disk AUDIO cache: tracks played to the end, kept for offline playback and
 // evicted oldest-first under a size cap (milestone 3, phase 5B).
 const AUDIO_DIR = path.join(DATA_DIR, 'audio')
+const ART_DIR = path.join(DATA_DIR, 'art')
 const DEFAULT_CACHE_CAP = 1024 * 1024 * 1024 // 1 GB
 // The offline LEASE (milestone 3, phase 5B). A stopped host and a revoke look identical
 // at the connection layer (both just close), so we cannot safely purge on a refused
@@ -209,6 +211,10 @@ const audioCache = new AudioCache({
   log
 })
 
+// Persistent covers for downloaded albums, so Downloads shows real art offline. Small,
+// bounded by the pinned albums; the shim reads it as an offline fallback (lease-gated).
+const artStore = new ArtStore({ dir: ART_DIR })
+
 function loadOutbox () {
   try {
     const o = JSON.parse(fs.readFileSync(OUTBOX_FILE, 'utf8'))
@@ -292,6 +298,7 @@ function savePins (pins) {
 // a reconnect failure, which cannot tell a revoke from a server that is simply off.
 function purgeAll () {
   try { audioCache.clear() } catch {}
+  try { artStore.clear() } catch {}
   for (const f of [FAVORITES_FILE, PLAYLISTS_FILE, OUTBOX_FILE, LEASE_FILE, PINS_FILE]) { try { fs.unlinkSync(f) } catch {} }
   outbox = []
   log('local:purged')
@@ -321,6 +328,7 @@ async function ensureShim () {
     // to the next track without rebuilding the shim.
     quality: () => streamParams(loadSettings(), networkType),
     cache: audioCache,
+    artStore,
     // The lease gate: a cached track is only served from disk while authorization is
     // fresh. Expired (a revoked or long-offline device) falls through to the live path.
     leaseOk: leaseValid
@@ -980,6 +988,24 @@ const methods = {
       }
       emit('pin:progress', { albumId, done: ++done, total: tracks.length })
     }
+
+    // Cache the COVERS too, so the download shows its real art offline instead of a
+    // placeholder. Best-effort and purely cosmetic: a cover that fails to fetch never
+    // fails the download. Distinct coverIds only (album + tracks, usually just one),
+    // fetched at the size the Downloads views request.
+    const covers = new Set()
+    if (album.coverId || album.coverArt) covers.add(album.coverId || album.coverArt)
+    for (const m of meta) if (m.coverId) covers.add(m.coverId)
+    for (const coverId of covers) {
+      if (artStore.has(coverId)) continue
+      try {
+        // Store at the size the shim serves from disk (DEFAULT_ART_SIZE) so the two stay
+        // in lockstep - that is the size the Downloads views request.
+        const buf = await client.art({ coverId, size: DEFAULT_ART_SIZE })
+        artStore.put(coverId, buf)
+      } catch (e) { log('pin:art-failed', { err: e?.message }) }
+    }
+
     const p = loadPins()
     if (p[albumId]) { p[albumId].complete = true; savePins(p) }
     emit('pin:done', { albumId })
@@ -997,6 +1023,15 @@ const methods = {
         // rare, but source-scoped ids can overlap on compilations).
         const neededElsewhere = Object.values(pins).some(o => (o.tracks || []).some(t => t.id === tid))
         if (!neededElsewhere) audioCache.remove(tid)
+      }
+      // Free this album's covers too, unless another pinned album still shows them.
+      const covers = new Set()
+      if (p.coverId) covers.add(p.coverId)
+      for (const t of (p.tracks || [])) if (t.coverId) covers.add(t.coverId)
+      for (const coverId of covers) {
+        const stillUsed = Object.values(pins).some(o =>
+          o.coverId === coverId || (o.tracks || []).some(t => t.coverId === coverId))
+        if (!stillUsed) artStore.remove(coverId)
       }
       savePins(pins)
       log('unpin:album', { albumId })
