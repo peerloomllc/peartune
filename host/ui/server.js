@@ -17,10 +17,19 @@
 // window that grants a stranger the whole library; rename people.
 
 const http = require('http')
+const fs = require('fs')
+const path = require('path')
 const QRCode = require('qrcode')
 const z32 = require('z32')
 
-const PAGE = require('./page')
+// The dashboard is a BUILT React app (host/ui/app/, bundled by
+// scripts/build-dashboard.mjs into one self-contained HTML string). It replaced
+// host/ui/page.js, a 700-line hand-written template literal that was the control
+// plane and had produced a stored XSS and two syntax-in-a-string bugs. React
+// escapes by default, so that class of bug is gone. Read once at startup - the
+// file is committed and copied into the image, so this never touches disk per
+// request. The login page is still a small hand-written string (host/ui/login.js).
+const PAGE = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8')
 const LOGIN_PAGE = require('./login')
 const { createAuth, requireSafeBind } = require('./auth')
 const { browse } = require('../browse')

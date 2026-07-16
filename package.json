@@ -11,11 +11,12 @@
   "scripts": {
     "host": "node host/index.js",
     "test": "node --test test/*.test.js",
-    "verify": "node --test test/*.test.js && npm run build:ui && npm run build:bare",
+    "verify": "node --test test/*.test.js && npm run build:ui && npm run build:dashboard && npm run build:bare",
     "android": "expo run:android",
     "prebuild": "expo prebuild",
     "build:bare": "bare-pack --linked --defer fs --defer path src/bare.js -o assets/bare-universal.bundle",
     "build:ui": "node scripts/build-ui.mjs",
+    "build:dashboard": "node scripts/build-dashboard.mjs",
     "ios": "expo run:ios",
     "postinstall": "patch-package"
   },

@@ -9,6 +9,11 @@ assets/bare-ios.bundle
 assets/app-ui.bundle
 assets/index.html
 host/ui/build/
+# Intermediate esbuild outputs for the dashboard; host/ui/dashboard.html (the
+# inlined result) IS committed - the image's Dockerfile copies host/ with no
+# build step, so the served artifact must be in the tree.
+host/ui/app/.dashboard.bundle
+host/ui/app/.dashboard.css
 *.apk
 *.aab
 *.ipa
