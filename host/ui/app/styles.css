@@ -125,7 +125,7 @@ a { color: var(--primary-strong); }
 /* panels */
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; }
 .panel.grow { flex: 1 1 auto; min-height: 150px; }
-.panel-head { flex: 0 0 auto; display: flex; align-items: baseline; gap: 8px; padding: 14px 16px 10px; }
+.panel-head { flex: 0 0 auto; display: flex; align-items: baseline; justify-content: center; gap: 8px; padding: 14px 16px 10px; }
 .panel-head h2 { font-size: 12px; font-weight: 600; margin: 0; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .panel-head .count { color: var(--subtle); font-size: 12.5px; }
 .panel-body { padding: 4px 16px 14px; }
@@ -143,17 +143,32 @@ a { color: var(--primary-strong); }
 .who { flex: 1; min-width: 0; }
 .name { font-weight: 500; font-size: 14.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .name .id { color: var(--subtle); font-size: 11.5px; font-weight: 400; }
-.sub { color: var(--muted); font-size: 12.5px; margin-top: 1px; }
+.sub { color: var(--muted); font-size: 12.5px; margin-top: 1px; display: flex; align-items: center; gap: 7px; min-width: 0; }
+.sub > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub.rev { color: var(--warn); }
+/* Pending identity claim: a compact amber pill on the status line (keeps every
+   device row the same two-line height) that opens the confirm modal. */
+.claimchip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; padding: 1px 9px; font-size: 11px; font-weight: 500; border-radius: 999px; cursor: pointer; color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
+.claimchip:hover { background: color-mix(in srgb, var(--warn) 28%, transparent); filter: none; }
 .live { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: var(--primary); box-shadow: 0 0 0 0 var(--glow); animation: beat 2.4s ease-in-out infinite; }
 .live.off { background: var(--subtle); box-shadow: none; animation: none; }
 .live.rev { background: var(--warn); box-shadow: none; animation: none; }
 @keyframes beat { 0%, 100% { box-shadow: 0 0 0 0 var(--glow); } 50% { box-shadow: 0 0 0 6px transparent; } }
 @media (prefers-reduced-motion: reduce) { .live { animation: none; } }
 .badge { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 7px; border-radius: 999px; background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
-.devices-sub { padding: 0 0 8px 20px; display: flex; flex-direction: column; gap: 8px; }
+/* expand/collapse: always rendered, animated via max-height + opacity so the
+   caret rotation has a matching reveal. Indented under a hierarchy rail so a
+   person's devices clearly read as a subset of that person. */
+.devices-sub { margin: 4px 0 0 22px; padding-left: 14px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 8px; max-height: 0; opacity: 0; overflow: hidden; transition: max-height .32s cubic-bezier(.4,0,.2,1), opacity .22s ease, padding-bottom .32s; }
+.devices-sub.open { max-height: 1400px; opacity: 1; padding-bottom: 10px; }
+/* each device is its own subtle card, so several under one person stay distinct. */
+.devices-sub .dev { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; }
+
+/* reusable collapse (used for the revoked devices' show/hide fade) */
+.collapse { max-height: 0; opacity: 0; overflow: hidden; transition: max-height .32s cubic-bezier(.4,0,.2,1), opacity .22s ease; }
+.collapse.open { max-height: 1000px; opacity: 1; }
+.revoked-stack { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
 .drow { display: flex; align-items: center; gap: 10px; }
-.claim { margin-top: 4px; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .group-h { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--subtle); font-weight: 600; margin: 12px 4px 2px; }
 .addrow { display: flex; gap: 8px; padding: 12px 4px 4px; border-top: 1px solid var(--border); margin-top: 4px; }
 .addrow input { margin: 0; }
@@ -168,15 +183,35 @@ a { color: var(--primary-strong); }
 label { display: block; margin: 10px 0 4px; color: var(--subtle); font-size: 12px; }
 .pick { display: flex; gap: 8px; align-items: center; }
 .pick input { flex: 1; margin: 0; }
-.browse { margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface-2); }
-.browse .head { display: flex; gap: 8px; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-.browse ul { list-style: none; margin: 0; padding: 0; max-height: 13rem; overflow-y: auto; }
-.browse li { border-top: 1px solid var(--border); }
-.browse li:first-child { border-top: 0; }
-.browse li button { width: 100%; text-align: left; border: 0; border-radius: 0; background: transparent; color: var(--text); padding: 8px 10px; display: flex; justify-content: space-between; gap: 8px; }
-.browse li button:hover { background: var(--surface-hover); filter: none; }
-.browse .has { color: var(--primary); font-size: 11.5px; }
-.srcactions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+/* Folder browser (inside its modal). Fixed head + fixed-height list + fixed
+   bottom button, so navigating up/down never resizes the modal; only the list
+   contents fade as they swap. */
+.fb { display: flex; flex-direction: column; gap: 12px; }
+.fb-head { display: flex; align-items: center; gap: 8px; min-height: 20px; }
+.fb-path { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.fb-count { flex: 0 0 auto; color: var(--primary); font-size: 11.5px; }
+.fb-list { height: 244px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.fb-ul { list-style: none; margin: 0; padding: 0; animation: fadeIn .18s ease; }
+.fb-ul li { border-top: 1px solid var(--border); }
+.fb-ul li:first-child { border-top: 0; }
+.fb-ul li button { width: 100%; text-align: left; border: 0; border-radius: 0; background: transparent; color: var(--text); padding: 9px 11px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fb-ul li button:hover { background: var(--surface-hover); filter: none; }
+.fb-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fb-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-up { color: var(--muted); }
+.fb-has { flex: 0 0 auto; color: var(--primary); font-size: 11.5px; }
+.fb-empty { height: 100%; display: grid; place-items: center; color: var(--muted); font-size: 13px; animation: fadeIn .18s ease; }
+/* Reserve the tallest kind's height (Subsonic: URL + user + password + API key)
+   so switching source kind never resizes the panel. */
+.srcfields { min-height: 278px; }
+.srcactions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.srcactions button { width: 100%; }
+.srcmsg { text-align: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.srcmsg.ok { color: var(--good); }
+.srcmsg.bad { color: var(--bad); }
+/* min-height reserves the row whether or not the link is shown, so toggling
+   dirty never resizes the panel. */
+.srcdiscard { text-align: center; margin-top: 8px; min-height: 22px; }
 .msg-good { color: var(--good); font-size: 13px; }
 .msg-bad { color: var(--bad); font-size: 13px; }
 .hint { color: var(--muted); font-size: 13px; line-height: 1.5; }
@@ -215,32 +250,56 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .overlay { position: fixed; inset: 0; z-index: 50; background: #0009; backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; padding: 20px; animation: fade .15s ease; }
 @keyframes fade { from { opacity: 0; } }
 .modal { width: 100%; max-width: 420px; max-height: 88dvh; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); padding: 20px; }
-.modal-head { display: flex; align-items: center; margin-bottom: 14px; }
-.modal-head h3 { font-size: 16px; font-weight: 600; margin: 0; }
-.modal-head .iconbtn { margin-left: auto; }
+/* Title centered; close button pinned to the top-right corner. */
+.modal-head { position: relative; display: flex; align-items: center; justify-content: center; min-height: 34px; margin-bottom: 14px; }
+.modal-head h3 { font-size: 16px; font-weight: 600; margin: 0; text-align: center; }
+.modal-head .iconbtn { position: absolute; right: 0; top: 50%; transform: translateY(-50%); margin: 0; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .stack.center { align-items: center; text-align: center; }
 .qr { width: 216px; height: 216px; background: #fff; border-radius: 12px; padding: 10px; }
 .tabs { display: flex; gap: 8px; margin-bottom: 14px; width: 100%; }
-.tabs button { flex: 1; }
+.tabs button { flex: 1; padding: 9px 6px; font-size: 13px; gap: 5px; }
+/* donation buttons: one full-width Copy, or Copy + Open split evenly */
+.donate-actions { display: flex; gap: 8px; width: 100%; margin-top: 2px; }
+.donate-actions > * { flex: 1; }
 .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--muted); word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; width: 100%; text-align: center; }
 .key.addr { white-space: nowrap; overflow-x: auto; font-size: 11.5px; word-break: normal; }
 .btnrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
-a.btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; background: var(--primary); color: var(--on-primary); padding: 9px 15px; border-radius: 9px; font-size: 13.5px; font-weight: 500; cursor: pointer; }
+a.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none; background: var(--primary); color: var(--on-primary); padding: 9px 15px; border-radius: 9px; font-size: 13.5px; font-weight: 500; cursor: pointer; }
 a.btn.ghost { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
 a.btn:hover { filter: brightness(1.06); }
 h4 { margin: 4px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--subtle); font-weight: 600; }
 
-/* themed confirm */
-.modal.confirm { max-width: 400px; }
+/* themed confirm / notify popup — centered title + message */
+.modal.confirm { max-width: 400px; text-align: center; }
 .modal.confirm h3 { font-size: 16.5px; font-weight: 600; margin: 0 0 8px; }
-.modal.confirm .hint { margin: 0 0 20px; line-height: 1.5; white-space: pre-line; }
-.confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.modal.confirm .hint { margin: 0 0 20px; line-height: 1.55; white-space: pre-line; }
+.confirm-actions { display: flex; justify-content: center; gap: 10px; }
+/* two-button confirm (Cancel / Confirm): centered and equal width */
+.confirm-actions:not(.center) > button { flex: 1; }
 button.destructive { background: var(--bad); color: #fff; }
+/* the emphasized figure in a notify message (e.g. the track count) */
+.hl { color: var(--primary); font-weight: 700; }
 
 /* toast */
-.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 84px; z-index: 60; background: var(--surface-hover); color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 9px 15px; font-size: 13px; box-shadow: var(--shadow); max-width: 90vw; }
+.toast { position: fixed; left: 50%; bottom: 84px; z-index: 60; background: var(--surface-hover); color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 9px 15px; font-size: 13px; box-shadow: var(--shadow); max-width: 90vw; animation: toastRise .22s cubic-bezier(.2,.8,.2,1); }
 .toast.err { background: color-mix(in srgb, var(--bad) 90%, #000); color: #fff; border-color: var(--bad); }
+
+/* ---- appear animations ---------------------------------------------------- */
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes toastRise { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.toast { transform: translateX(-50%); }
+.menu { animation: rise .14s ease; transform-origin: top right; }
+.modal { animation: pop .18s cubic-bezier(.2,.8,.2,1); }
+.banner { animation: rise .2s ease; }
+.claim { animation: fadeIn .28s ease; }
+.srcdiscard button { animation: fadeIn .2s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
 
 /* ---- mobile --------------------------------------------------------------- */
 @media (max-width: 620px) {

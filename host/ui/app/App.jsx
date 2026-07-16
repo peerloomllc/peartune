@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   MusicNotes, UsersThree, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
-  CaretRight, Plus, X, Copy, ArrowSquareOut, CurrencyBtc, CheckCircle
+  CaretRight, Plus, X, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
+  Lightning, CheckCircle, Folder, CaretLeft
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
 import { api, copyText, ago, DONATE } from './api'
@@ -22,6 +23,21 @@ function askConfirm (opts) {
     _pushConfirm({ ...opts, resolve })
   })
 }
+// An informational popup (single button), themed like the confirm dialog. Used
+// for the outcome of Test / Save / Rescan instead of a line of loose green text.
+function notify (title, message) {
+  return askConfirm({ title, message, confirmLabel: 'Done', info: true })
+}
+
+// Capitalise the first letter of each word for display, leaving the rest as-is so
+// an already-cased or all-caps name is not mangled. The music source reports its
+// own name (often lower-case, e.g. "navidrome", "nextcloud music").
+const titleCase = s => String(s || '').replace(/\b\w/g, c => c.toUpperCase())
+
+// A height+fade collapse, always mounted so it animates BOTH ways (open and close).
+function Collapse ({ open, children }) {
+  return <div className={'collapse' + (open ? ' open' : '')}>{children}</div>
+}
 function ConfirmHost () {
   const [c, setC] = useState(null)
   useEffect(() => { _pushConfirm = setC; return () => { _pushConfirm = null } }, [])
@@ -38,8 +54,8 @@ function ConfirmHost () {
       <div className='modal confirm' role='alertdialog' aria-modal='true'>
         <h3>{c.title}</h3>
         {c.message && <p className='hint'>{c.message}</p>}
-        <div className='confirm-actions'>
-          <button className='ghost' onClick={() => close(false)}>{c.cancelLabel || 'Cancel'}</button>
+        <div className={'confirm-actions' + (c.info ? ' center' : '')}>
+          {!c.info && <button className='ghost' onClick={() => close(false)}>{c.cancelLabel || 'Cancel'}</button>}
           <button className={c.danger ? 'destructive' : ''} onClick={() => close(true)} autoFocus>{c.confirmLabel || 'Confirm'}</button>
         </div>
       </div>
@@ -135,13 +151,13 @@ function TopBar ({ state, isDark, onTheme, onOpen }) {
         <div className='brand-mark'><MusicNotes size={18} weight='fill' /></div>
         <div>
           <div className='brand-name'>Pear<span>Tune</span></div>
-          <div className='brand-sub'>{state.libraryName || 'your music, anywhere'}</div>
+          <div className='brand-sub'>{state.libraryName || 'Your music, anywhere'}</div>
         </div>
       </div>
       <div className='topbar-right'>
         <span className='pill' title={sourceOk ? 'Music source' : state.sourceError}>
           <span className={'dot ' + (sourceOk ? 'good' : 'bad')} />
-          {st.source || 'no source'}
+          {st.source ? titleCase(st.source) : 'No source'}
         </span>
         <button className='iconbtn' onClick={onTheme} aria-label='Toggle theme' title={isDark ? 'Switch to light' : 'Switch to dark'}>
           {isDark ? <Sun size={17} /> : <Moon size={17} />}
@@ -150,7 +166,7 @@ function TopBar ({ state, isDark, onTheme, onOpen }) {
           <button className='iconbtn' onClick={() => setMenu(v => !v)} aria-label='Menu' aria-expanded={menu}><GearSix size={17} /></button>
           {menu &&
             <div className='menu' role='menu'>
-              <button onClick={() => { setMenu(false); onOpen('support') }}><Heart size={16} /> Support development</button>
+              <button onClick={() => { setMenu(false); onOpen('support') }}><Heart size={16} /> Support Development</button>
               <div className='sep' />
               <button onClick={() => { setMenu(false); logout() }}><SignOut size={16} /> Log out</button>
             </div>}
@@ -167,7 +183,7 @@ function Identity ({ hostKey }) {
   const copy = async () => { if (await copyText(hostKey)) { setCopied(true); setTimeout(() => setCopied(false), 1200) } }
   return (
     <div className='identity' title={hostKey}>
-      <span className='subtle'>host</span>
+      <span className='subtle'>Host</span>
       <span className='mono'>{short}</span>
       <button className='iconbtn' style={{ width: 28, height: 28 }} onClick={copy} aria-label='Copy host key'>
         {copied ? <CheckCircle size={15} weight='fill' color='var(--good)' /> : <Copy size={14} />}
@@ -238,8 +254,8 @@ function AccessPanel ({ state, refresh, toast, online }) {
           ? <div className='empty'><strong>No devices paired yet.</strong><br />Use “Pair a device” below to add one.</div>
           : <>
               {persons.map(p => {
-                const theirs = byPerson(p).filter(d => !d.revokedAt || showRevoked)
-                const live = byPerson(p).filter(d => !d.revokedAt)
+                const live = byPerson(p.id).filter(d => !d.revokedAt)
+                const revoked = byPerson(p.id).filter(d => d.revokedAt)
                 const on = live.filter(d => d.online).length
                 const isOpen = open[p.id]
                 return (
@@ -255,18 +271,28 @@ function AccessPanel ({ state, refresh, toast, online }) {
                         ? <button className='ghost small danger' onClick={e => { e.stopPropagation(); revokePerson(p) }}>Revoke all</button>
                         : <button className='ghost small danger' onClick={e => { e.stopPropagation(); deletePerson(p) }}>Delete</button>}
                     </div>
-                    {isOpen &&
-                      <div className='devices-sub'>
-                        {theirs.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} />)}
-                      </div>}
+                    <div className={'devices-sub' + (isOpen ? ' open' : '')}>
+                      {live.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} />)}
+                      {revoked.length > 0 &&
+                        <Collapse open={showRevoked}>
+                          <div className='revoked-stack'>
+                            {revoked.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} />)}
+                          </div>
+                        </Collapse>}
+                    </div>
                   </div>
                 )
               })}
-              {(unassigned.length || (showRevoked && revokedLoose.length)) ?
+              {(unassigned.length || revokedLoose.length) ?
                 <>
                   <div className='group-h'>Unassigned</div>
                   {unassigned.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onAssign={assign} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} loose />)}
-                  {showRevoked && revokedLoose.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} loose />)}
+                  {revokedLoose.length > 0 &&
+                    <Collapse open={showRevoked}>
+                      <div className='revoked-stack'>
+                        {revokedLoose.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} onConfirm={confirmClaim} loose />)}
+                      </div>
+                    </Collapse>}
                 </> : null}
             </>}
       </div>
@@ -288,29 +314,28 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onConfirm, loose
   const matches = holder && d.claimedUser && holder.name.toLowerCase() === d.claimedUser.toLowerCase()
   const showClaim = !d.revokedAt && d.claimedUser && !matches
   return (
-    <div>
+    <div className='dev'>
       <div className='drow'>
         {loose && <span className={'live' + (d.revokedAt ? ' rev' : (d.online ? '' : ' off'))} aria-hidden='true' />}
         <div className='who'>
           <div className='name'>{d.label}{d.revokedAt && <span className='badge'>revoked</span>}</div>
-          {d.revokedAt
-            ? <div className='sub rev'>revoked {ago(d.revokedAt)}</div>
-            : <div className='sub'>{d.online ? 'connected' : 'last seen ' + ago(d.lastSeenAt)}</div>}
+          <div className={'sub' + (d.revokedAt ? ' rev' : '')}>
+            <span>{d.revokedAt ? `Revoked ${ago(d.revokedAt)}` : (d.online ? 'Connected' : 'Last seen ' + ago(d.lastSeenAt))}</span>
+            {showClaim &&
+              <button className='claimchip' title={`Confirm this device belongs to ${d.claimedUser}`} onClick={() => onConfirm(d)}>
+                Claims {d.claimedUser}
+              </button>}
+          </div>
         </div>
         {onAssign && !d.revokedAt &&
           <select className='assign' value={d.personId || ''} onChange={e => onAssign(d, e.target.value)}>
-            <option value=''>— unassigned —</option>
+            <option value=''>— Unassigned —</option>
             {(persons || []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>}
         {d.revokedAt
           ? <button className='ghost small danger' onClick={() => onDelete(d)}>Delete</button>
           : <button className='ghost small danger' onClick={() => onRevoke(d)}>Revoke</button>}
       </div>
-      {showClaim &&
-        <div className='claim'>
-          {holder ? 'now claims to be ' : 'claims to be '}<b>{d.claimedUser}</b>
-          <button className='small' onClick={() => onConfirm(d)}>Confirm</button>
-        </div>}
     </div>
   )
 }
@@ -325,7 +350,7 @@ function SourcePanel ({ state, refresh, toast }) {
   const [kind, setKind] = useState('folder')
   const [cfg, setCfg] = useState({})
   const [dirty, setDirty] = useState(false)
-  const [msg, setMsg] = useState(null)
+  const [busy, setBusy] = useState(null) // 'test' | 'save' | 'rescan' | null
   const [browse, setBrowse] = useState(null)
   const dirtyRef = useRef(false)
   dirtyRef.current = dirty
@@ -344,7 +369,8 @@ function SourcePanel ({ state, refresh, toast }) {
   const touch = () => setDirty(true)
   const set = (k, v) => { setCfg(c => ({ ...c, [kind]: { ...c[kind], [k]: v } })); touch() }
   const pick = k => { setKind(k); touch(); setBrowse(null) }
-  const cancel = () => { setDirty(false); setMsg(null); setBrowse(null); refresh() }
+  const cancel = () => { setDirty(false); setBrowse(null); refresh() }
+  const tracks = n => `${(n || 0).toLocaleString()} track${n === 1 ? '' : 's'}`
 
   const form = () => {
     const c = cfg[kind] || {}
@@ -355,32 +381,42 @@ function SourcePanel ({ state, refresh, toast }) {
     return out
   }
   const test = async () => {
-    setMsg({ text: 'testing…' })
+    setBusy('test')
     const r = await api('/api/source/test', form())
-    if (!r.ok) return setMsg({ text: r.error, ok: false })
-    setMsg(r.tracks ? { text: `works — ${r.tracks} tracks`, ok: true } : { text: 'reachable, but no music in there.', ok: false })
+    setBusy(null)
+    if (!r.ok) return notify('Connection failed', r.error || 'The music source could not be reached.')
+    notify(
+      r.tracks ? 'Connection successful' : 'No music found',
+      r.tracks
+        ? <>PearTune reached the music source and found <span className='hl'>{tracks(r.tracks)}</span>.</>
+        : 'The music source is reachable, but no tracks were found there. Check the folder path or the server credentials.'
+    )
   }
   const save = async () => {
-    setMsg({ text: 'saving…' })
+    setBusy('save')
     const r = await api('/api/source', form())
-    if (!r.ok) return setMsg({ text: r.error, ok: false })
+    if (!r.ok) { setBusy(null); return notify('Could not save the music source', r.error || 'The music source could not be saved.') }
     setDirty(false); setBrowse(null)
     await refresh()
-    setMsg({ text: `saved — ${r.tracks} tracks`, ok: true })
-    toast('Music source saved.')
+    setBusy(null)
+    notify('Music source saved', <>The music source has been updated. <span className='hl'>{tracks(r.tracks)}</span> are now available to your devices.</>)
   }
   const rescan = async () => {
-    setMsg({ text: 'rescanning…' })
+    setBusy('rescan')
     const r = await api('/api/source/rescan', {})
     await refresh()
-    setMsg(r.ok ? { text: `rescanned — ${r.tracks} tracks`, ok: true } : { text: r.error, ok: false })
+    setBusy(null)
+    if (!r.ok) return notify('Rescan failed', r.error || 'The library could not be rescanned.')
+    notify('Rescan complete', <>The library was rescanned and now contains <span className='hl'>{tracks(r.tracks)}</span>.</>)
   }
   const openBrowse = async path => {
-    setBrowse({ loading: true })
     const start = path || (cfg.folder && cfg.folder.root) || '/'
+    // Keep the path in the loading state so the modal's header does not flicker
+    // or resize while the next listing loads.
+    setBrowse(b => ({ loading: true, path: start, dirs: (b && b.dirs) || [], parent: b && b.parent }))
     let r = await api('/api/source/folders?path=' + encodeURIComponent(start))
     if (r.error) r = await api('/api/source/folders?path=/')
-    setBrowse(r.error ? { error: r.error } : r)
+    setBrowse(r.error ? { error: r.error, path: start } : r)
   }
 
   const c = cfg[kind] || {}
@@ -391,61 +427,75 @@ function SourcePanel ({ state, refresh, toast }) {
       <div className='panel-head'><h2><MusicNotes size={13} weight='bold' style={{ verticalAlign: '-2px', marginRight: 5 }} />Music source</h2></div>
       <div className='panel-body'>
         <div className='seg'>
+          <button className={kind === 'folder' ? 'on' : ''} onClick={() => pick('folder')}>Folder</button>
           <button className={kind === 'subsonic' ? 'on' : ''} onClick={() => pick('subsonic')}>Subsonic</button>
           <button className={kind === 'jellyfin' ? 'on' : ''} onClick={() => pick('jellyfin')}>Jellyfin / Emby</button>
-          <button className={kind === 'folder' ? 'on' : ''} onClick={() => pick('folder')}>Folder</button>
         </div>
 
-        {kind === 'folder'
-          ? <>
-              <label>Folder <span className='subtle'>— a path inside the PearTune container</span></label>
-              <div className='pick'>
-                <input value={c.root || ''} placeholder='/music' onChange={e => set('root', e.target.value)} />
-                <button className='ghost' onClick={() => openBrowse()}>Browse…</button>
-              </div>
-              {browse && <FolderBrowser browse={browse} onOpen={openBrowse} onUse={p => { set('root', p); setBrowse(null) }} />}
-            </>
-          : <>
-              <label>{server.label} URL</label>
-              <input value={c.url || ''} placeholder={server.placeholder} onChange={e => set('url', e.target.value)} />
-              <label>Username</label>
-              <input value={c.username || ''} placeholder='umbrel' onChange={e => set('username', e.target.value)} />
-              <label>Password</label>
-              <input type='password' placeholder={c.hasPassword ? 'unchanged' : 'password'} onChange={e => set('password', e.target.value)} />
-              {kind === 'subsonic' && <>
-                <label>API key <span className='subtle'>— optional; for servers that use one</span></label>
-                <input type='password' placeholder={c.hasApiKey ? 'unchanged' : 'leave blank to use username + password'} onChange={e => set('apiKey', e.target.value)} />
+        <div className='srcfields'>
+          {kind === 'folder'
+            ? <>
+                <label>Folder <span className='subtle'>— a path inside the PearTune container</span></label>
+                <div className='pick'>
+                  <input value={c.root || ''} placeholder='/music' onChange={e => set('root', e.target.value)} />
+                  <button className='ghost' onClick={() => openBrowse()}>Browse…</button>
+                </div>
+              </>
+            : <>
+                <label>{server.label} URL</label>
+                <input value={c.url || ''} placeholder={server.placeholder} onChange={e => set('url', e.target.value)} />
+                <label>Username</label>
+                <input value={c.username || ''} placeholder='umbrel' onChange={e => set('username', e.target.value)} />
+                <label>Password</label>
+                <input type='password' placeholder={c.hasPassword ? 'Unchanged' : 'Password'} onChange={e => set('password', e.target.value)} />
+                {kind === 'subsonic' && <>
+                  <label>API key <span className='subtle'>— optional; for servers that use one</span></label>
+                  <input type='password' placeholder={c.hasApiKey ? 'Unchanged' : 'Leave blank to use username and password'} onChange={e => set('apiKey', e.target.value)} />
+                </>}
               </>}
-            </>}
+        </div>
 
         <div className='srcactions'>
-          <button className='ghost small' onClick={test}>Test</button>
-          <button className='small' onClick={save}>Save</button>
-          <button className='ghost small' onClick={rescan}>Rescan</button>
-          {dirty && <button className='ghost small' onClick={cancel}>Cancel</button>}
-          {msg && <span className={msg.ok === true ? 'msg-good' : msg.ok === false ? 'msg-bad' : 'subtle'}>{msg.text}</span>}
+          <button className='ghost' onClick={test} disabled={!!busy}>{busy === 'test' ? 'Testing…' : 'Test'}</button>
+          <button onClick={save} disabled={!!busy}>{busy === 'save' ? 'Saving…' : 'Save'}</button>
+          <button className='ghost' onClick={rescan} disabled={!!busy}>{busy === 'rescan' ? 'Rescanning…' : 'Rescan'}</button>
         </div>
-        {dirty && <p className='hint warn' style={{ marginTop: 10 }}>Changing the source changes every track's identity, so play counts and resume positions from the old source will not follow. Nothing is deleted.</p>}
+        {/* Always rendered so its appearance/disappearance never resizes the panel. */}
+        <div className='srcdiscard'>{dirty && <button className='link' onClick={cancel}>Discard changes</button>}</div>
       </div>
+      {browse &&
+        <Modal title='Choose a Folder' onClose={() => setBrowse(null)}>
+          <FolderBrowser browse={browse} onOpen={openBrowse} onUse={p => { set('root', p); setBrowse(null) }} />
+        </Modal>}
     </div>
   )
 }
 
 function FolderBrowser ({ browse, onOpen, onUse }) {
-  if (browse.loading) return <div className='browse'><div className='empty' style={{ padding: '10px' }}>looking…</div></div>
-  if (browse.error) return <div className='browse'><div className='empty' style={{ padding: '10px' }}>{browse.error}</div></div>
+  const path = browse.path || '/'
+  const dirs = browse.dirs || []
   return (
-    <div className='browse'>
-      <div className='head'>
-        <code className='mono' style={{ fontSize: 12, color: 'var(--muted)' }}>{browse.path}{browse.here ? ` · ${browse.here} audio files` : ''}</code>
-        <button className='small' onClick={() => onUse(browse.path)}>Use this folder</button>
+    <div className='fb'>
+      <div className='fb-head'>
+        <span className='fb-path' title={path}>{path}</span>
+        {browse.here ? <span className='fb-count'>{browse.here} audio files</span> : null}
       </div>
-      <ul>
-        {browse.parent && <li><button onClick={() => onOpen(browse.parent)}>../</button></li>}
-        {(browse.dirs || []).map(d =>
-          <li key={d.path}><button onClick={() => onOpen(d.path)}><span>{d.name}/</span>{d.music && <span className='has'>music</span>}</button></li>)}
-        {!(browse.dirs || []).length && !browse.here && <li><div className='empty' style={{ padding: '10px' }}>nothing in here</div></li>}
-      </ul>
+      <div className='fb-list'>
+        {browse.error
+          ? <div className='fb-empty'>{browse.error}</div>
+          : browse.loading
+            ? <div className='fb-empty'>Looking…</div>
+            : <ul className='fb-ul' key={path}>
+                {browse.parent && <li><button onClick={() => onOpen(browse.parent)}><span className='fb-name'><CaretLeft size={15} className='fb-up' /><span>Up a level</span></span></button></li>}
+                {dirs.map(d =>
+                  <li key={d.path}><button onClick={() => onOpen(d.path)}>
+                    <span className='fb-name'><Folder size={16} weight={d.music ? 'fill' : 'regular'} className='fb-up' /><span>{d.name}</span></span>
+                    {d.music && <span className='fb-has'>music</span>}
+                  </button></li>)}
+                {!dirs.length && !browse.here && <li><div className='fb-empty' style={{ height: 'auto', padding: '16px' }}>Nothing in here</div></li>}
+              </ul>}
+      </div>
+      <button className='block' onClick={() => onUse(path)}>Choose this folder</button>
     </div>
   )
 }
@@ -482,7 +532,7 @@ function PairModal ({ onClose, toast }) {
   }
   const stop = async () => { await api('/api/pair/stop', {}); setQr(null); toast('Pairing window closed.') }
   return (
-    <Modal title='Pair a device' onClose={async () => { if (qr) await api('/api/pair/stop', {}); onClose() }}>
+    <Modal title='Pair a Device' onClose={async () => { if (qr) await api('/api/pair/stop', {}); onClose() }}>
       {!qr
         ? <div className='stack center'>
             <p className='hint center'>Opens a 5 minute window. Scan the code in PearTune on your phone.</p>
@@ -498,54 +548,44 @@ function PairModal ({ onClose, toast }) {
   )
 }
 
-// The seeder's donation panel, ported: two no-account rails (Bitcoin, USD/card),
-// a QR per rail, rendered entirely client-side. Same addresses as the phone app.
+// Three no-account rails (Lightning, on-chain BTC, USD/card), one QR each,
+// rendered entirely client-side. Same addresses as the phone app.
+const RAILS = {
+  ln: { value: DONATE.lightning, caption: 'Scan with any Lightning wallet (pick your own amount), or copy the address.' },
+  onchain: { value: DONATE.onchain, caption: 'On-chain Bitcoin — higher fees, so Lightning is cheaper for small tips.' },
+  usd: { value: DONATE.bmcUrl, caption: 'Scan to open Buy Me a Coffee, or open it here to pay by card.' }
+}
 function SupportModal ({ onClose }) {
-  const [tab, setTab] = useState('btc')
+  const [tab, setTab] = useState('ln')
   const [qr, setQr] = useState(null)
-  const [copied, setCopied] = useState(null)
-  const payload = tab === 'btc' ? DONATE.lightning : DONATE.bmcUrl
+  const [copied, setCopied] = useState(false)
+  const rail = RAILS[tab]
   useEffect(() => {
     let cancelled = false
-    setQr(null)
-    QRCode.toDataURL(payload, { width: 200, margin: 1, errorCorrectionLevel: 'M' })
+    setQr(null); setCopied(false)
+    QRCode.toDataURL(rail.value, { width: 220, margin: 1, errorCorrectionLevel: 'M' })
       .then(u => { if (!cancelled) setQr(u) }).catch(() => {})
     return () => { cancelled = true }
-  }, [payload])
-  const copy = async (what, value) => { if (await copyText(value)) { setCopied(what); setTimeout(() => setCopied(null), 1500) } }
+  }, [rail.value])
+  const copy = async () => { if (await copyText(rail.value)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }
   return (
-    <Modal title='Support development' onClose={onClose}>
+    <Modal title='Support Development' onClose={onClose}>
       <div className='stack center'>
-        <p className='hint center'>PearTune is free and open source. No accounts, no servers, no subscriptions — if it brings you value, a tip helps keep it free. Entirely optional.</p>
+        <p className='hint center'>No accounts, no servers, no subscriptions. If PearTune is useful to you, a tip helps keep it free — entirely optional.</p>
         <div className='tabs'>
-          <button className={tab === 'btc' ? '' : 'ghost'} onClick={() => setTab('btc')}>⚡ Bitcoin</button>
-          <button className={tab === 'usd' ? '' : 'ghost'} onClick={() => setTab('usd')}>💲 Card / USD</button>
+          <button className={tab === 'ln' ? '' : 'ghost'} onClick={() => setTab('ln')}><Lightning size={15} weight='fill' /> Lightning</button>
+          <button className={tab === 'onchain' ? '' : 'ghost'} onClick={() => setTab('onchain')}><CurrencyBtc size={15} weight='bold' /> On-chain</button>
+          <button className={tab === 'usd' ? '' : 'ghost'} onClick={() => setTab('usd')}><CurrencyDollar size={15} weight='bold' /> USD</button>
         </div>
-        {qr ? <img className='qr' src={qr} alt={tab === 'btc' ? 'Lightning QR' : 'Buy Me a Coffee QR'} /> : <div className='empty'>generating…</div>}
 
-        {tab === 'btc'
-          ? <>
-              <div className='hint center'>Scan with any Lightning wallet (pick your own amount), or copy the address.</div>
-              <h4>Lightning address</h4>
-              <div className='key addr'>{DONATE.lightning}</div>
-              <div className='btnrow'>
-                <button className='ghost small' onClick={() => copy('ln', DONATE.lightning)}>{copied === 'ln' ? 'Copied' : <><Copy size={14} /> Copy</>}</button>
-                <a className='btn small' href={DONATE.strikeUrl} target='_blank' rel='noopener noreferrer'><ArrowSquareOut size={14} /> Pay in a browser</a>
-              </div>
-              <h4><CurrencyBtc size={12} weight='bold' style={{ verticalAlign: '-1px' }} /> On-chain Bitcoin</h4>
-              <div className='key addr'>{DONATE.onchain}</div>
-              <div className='btnrow'>
-                <button className='ghost small' onClick={() => copy('btc', DONATE.onchain)}>{copied === 'btc' ? 'Copied' : <><Copy size={14} /> Copy</>}</button>
-              </div>
-            </>
-          : <>
-              <div className='hint center'>Scan to open Buy Me a Coffee, or open it here to pay by card.</div>
-              <div className='key addr'>{DONATE.bmcUrl}</div>
-              <div className='btnrow'>
-                <button className='ghost small' onClick={() => copy('bmc', DONATE.bmcUrl)}>{copied === 'bmc' ? 'Copied' : <><Copy size={14} /> Copy</>}</button>
-                <a className='btn small' href={DONATE.bmcUrl} target='_blank' rel='noopener noreferrer'><ArrowSquareOut size={14} /> Open</a>
-              </div>
-            </>}
+        {qr ? <img className='qr' src={qr} alt='Donation QR code' /> : <div className='empty'>Generating…</div>}
+
+        <div className='hint center'>{rail.caption}</div>
+        <div className='key addr'>{rail.value}</div>
+        <div className='donate-actions'>
+          <button className='ghost' onClick={copy}>{copied ? <><CheckCircle size={15} weight='fill' /> Copied</> : <><Copy size={15} /> Copy</>}</button>
+          {tab === 'usd' && <a className='btn' href={DONATE.bmcUrl} target='_blank' rel='noopener noreferrer'><ArrowSquareOut size={15} /> Open</a>}
+        </div>
       </div>
     </Modal>
   )

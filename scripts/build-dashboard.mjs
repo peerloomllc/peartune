@@ -34,7 +34,11 @@ const html = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PearTune host</title>
-  <style>html,body,#root{height:100%;margin:0;background:#14130f}</style>
+  <!-- Height/margin only. Do NOT hardcode a background here: #root has id
+       specificity, so a color here would override the theme tokens and strand the
+       page on one theme's background (that is exactly how light mode broke). The
+       stylesheet's body{background:var(--bg)} owns the background, per theme. -->
+  <style>html,body,#root{height:100%;margin:0}</style>
   <style>${css}</style>
 </head>
 <body>
