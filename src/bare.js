@@ -31,6 +31,11 @@ const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
 const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
 const HOSTS_FILE = path.join(DATA_DIR, 'hosts.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
+// The persisted PLAY QUEUE, so a force-stop or a relaunch does not lose it. Holds
+// track IDs + render metadata (the shell's toQueue shape) + index + position +
+// shuffle/repeat - NEVER the loopback URLs, which carry the shim's port and change
+// every launch. On boot the shell rebuilds the paused queue and re-resolves URLs.
+const QUEUE_FILE = path.join(DATA_DIR, 'queue.json')
 // A read-through cache of THIS device's favorite trackIds. The host is the source of
 // truth (host-as-hub); this only lets the hearts render instantly and offline. Writes
 // still go to the host (favorites need a connection in Phase 1).
@@ -616,6 +621,30 @@ const methods = {
 
   async setSettings (patch) {
     return saveSettings(patch || {})
+  },
+
+  // --- persisted play queue (restore on launch) -------------------------------
+  //
+  // The queue's source of truth lives in the RN shell (ExoPlayer's playlist). The
+  // shell snapshots it here on every change so a force-stop or relaunch can rebuild
+  // it, PAUSED, seeked to where you were. IDs + metadata only, never URLs.
+  async saveQueueState (snapshot) {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true })
+      fs.writeFileSync(QUEUE_FILE, JSON.stringify(snapshot || {}))
+    } catch {}
+    return { ok: true }
+  },
+  async loadQueueState () {
+    try {
+      return JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'))
+    } catch {
+      return null
+    }
+  },
+  async clearQueueState () {
+    try { fs.unlinkSync(QUEUE_FILE) } catch {}
+    return { ok: true }
   },
 
   // --- favorites (host-as-hub, milestone 3) -----------------------------------

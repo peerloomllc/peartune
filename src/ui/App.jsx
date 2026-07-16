@@ -107,6 +107,10 @@ export default function App () {
         setState({ ...s, loading: false })
         if (s.settings?.density) setDensity(String(s.settings.density))
         loadPinned() // pins are local - available even offline
+        // Restore the paused queue from the last session (the shell rebuilds it and
+        // emits play:started, which lights up the mini-player). Fire-and-forget: a
+        // cached queue restores offline; an uncached one waits for the connection.
+        call('restore').then(r => { if (r?.restored) setCont(null) }).catch(() => {})
         if (s.connected) { loadAlbums(0); loadSource(); loadFavs(); loadContinue(); loadPlaylists() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
@@ -1531,7 +1535,7 @@ function Library ({
 
       {/* Pick up where you left off. Only on the home view, and only when nothing is
           already playing (the parent nulls `cont` in that case). */}
-      {cont?.track && !searching && browse === 'albums' && (
+      {cont?.track && !now && !searching && browse === 'albums' && (
         <ContinueCard cont={cont} onPlay={onContinue} />
       )}
 
