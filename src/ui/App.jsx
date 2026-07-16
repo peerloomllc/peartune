@@ -121,6 +121,10 @@ export default function App () {
         countedRef.current = { trackId: d?.trackId, counted: false } // a fresh play to count
       }),
       on('play:status', setStatus),
+      // Add-to-queue grows the queue but does not touch playback, so no play:status
+      // follows - update the length the navbar badge reads from this event instead,
+      // or the badge stays stale until the next status tick.
+      on('play:queued', (d) => setStatus(s => ({ ...(s || {}), queueLength: d.queueLength }))),
       on('play:stopped', () => { setNow(null); setStatus(null); loadContinue() }),
       on('play:error', (d) => setError(d.error)),
       // The buffer ran dry while we were disconnected and could not get back in - a
