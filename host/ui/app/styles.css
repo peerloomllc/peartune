@@ -102,8 +102,9 @@ a { color: var(--primary-strong); }
   box-shadow: var(--shadow); padding: 6px;
 }
 .menu button {
-  display: flex; align-items: center; gap: 10px; width: 100%; background: transparent; color: var(--text);
-  border: 0; text-align: left; padding: 9px 10px; border-radius: 8px; font-size: 13.5px; font-weight: 400; cursor: pointer;
+  display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%;
+  background: transparent; color: var(--text); border: 0; text-align: left; padding: 9px 10px;
+  border-radius: 8px; font-size: 13.5px; font-weight: 400; cursor: pointer;
 }
 .menu button:hover { background: var(--surface-hover); }
 .menu button svg { color: var(--muted); flex: 0 0 auto; }
@@ -283,6 +284,15 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; gap:
 a.btn.ghost { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
 a.btn:hover { filter: brightness(1.06); }
 h4 { margin: 4px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--subtle); font-weight: 600; }
+
+/* Maintenance modal: stacked sections, divided, so more can be added later. */
+.maint { display: flex; flex-direction: column; }
+.maint-section { padding: 0 0 18px; }
+.maint-section + .maint-section { border-top: 1px solid var(--border); padding-top: 18px; }
+.maint-section:last-child { padding-bottom: 2px; }
+.maint-section h4 { margin: 0 0 5px; }
+.maint-section .hint { margin: 0 0 10px; }
+.maint-section input { margin: 0; }
 
 /* themed confirm / notify popup — centered title + message */
 .modal.confirm { max-width: 400px; text-align: center; }

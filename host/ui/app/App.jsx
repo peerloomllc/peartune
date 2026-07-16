@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   MusicNotes, UsersThree, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
   CaretRight, Plus, X, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
-  Lightning, CheckCircle, Folder, CaretLeft, PencilSimple
+  Lightning, CheckCircle, Folder, CaretLeft, Wrench
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
 import { api, copyText, ago, DONATE } from './api'
@@ -124,7 +124,7 @@ export default function App () {
 
       {modal === 'pair' && <PairModal onClose={() => setModal(null)} toast={toast} />}
       {modal === 'support' && <SupportModal onClose={() => setModal(null)} />}
-      {modal === 'library' && <LibraryModal state={state} onClose={() => setModal(null)} onSaved={refresh} toast={toast} />}
+      {modal === 'maintenance' && <MaintenanceModal state={state} onClose={() => setModal(null)} onSaved={refresh} toast={toast} />}
       {note && <div className={'toast' + (note.bad ? ' err' : '')}>{note.msg}</div>}
       <ConfirmHost />
     </div>
@@ -167,7 +167,7 @@ function TopBar ({ state, isDark, onTheme, onOpen }) {
           <button className='iconbtn' onClick={() => setMenu(v => !v)} aria-label='Menu' aria-expanded={menu}><GearSix size={17} /></button>
           {menu &&
             <div className='menu' role='menu'>
-              <button onClick={() => { setMenu(false); onOpen('library') }}><PencilSimple size={16} /> Library name</button>
+              <button onClick={() => { setMenu(false); onOpen('maintenance') }}><Wrench size={16} /> Maintenance</button>
               <button onClick={() => { setMenu(false); onOpen('support') }}><Heart size={16} /> Support Development</button>
               <div className='sep' />
               <button onClick={() => { setMenu(false); logout() }}><SignOut size={16} /> Log out</button>
@@ -201,6 +201,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
   const [pname, setPname] = useState('')
 
   const persons = (state.persons || []).filter(p => !p.revokedAt)
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
   const devices = state.devices || []
   const byPerson = id => devices.filter(d => d.personId === id)
   // A device is "pending" when it claims an identity that isn't (yet) its confirmed
@@ -585,10 +586,23 @@ function PairModal ({ onClose, toast }) {
   )
 }
 
-// Rename the library. Persisted host-side; also what a device sees when it pairs.
-function LibraryModal ({ state, onClose, onSaved, toast }) {
+// Operator maintenance. A sectioned modal - Library name is the first section;
+// more (guest grants, listening history, danger zone, …) can be added as siblings
+// without reshaping this.
+function MaintenanceModal ({ state, onClose, onSaved, toast }) {
+  return (
+    <Modal title='Maintenance' onClose={onClose}>
+      <div className='maint'>
+        <LibraryNameSection state={state} onSaved={onSaved} toast={toast} />
+      </div>
+    </Modal>
+  )
+}
+
+function LibraryNameSection ({ state, onSaved, toast }) {
   const [name, setName] = useState(state.libraryName || '')
   const [busy, setBusy] = useState(false)
+  const dirty = name.trim() !== (state.libraryName || '')
   const save = async () => {
     const clean = name.trim()
     if (!clean) return
@@ -598,17 +612,15 @@ function LibraryModal ({ state, onClose, onSaved, toast }) {
     if (!r.ok) return toast('Failed: ' + (r.error || 'could not rename the library'), true)
     onSaved()
     toast('Library renamed.')
-    onClose()
   }
   return (
-    <Modal title='Library Name' onClose={onClose}>
-      <div className='stack'>
-        <p className='hint'>Shown on this dashboard, and to a device when it pairs.</p>
-        <input value={name} maxLength={64} placeholder='My Library' autoFocus
-          onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && save()} />
-        <button className='block' onClick={save} disabled={busy || !name.trim()}>{busy ? 'Saving…' : 'Save'}</button>
-      </div>
-    </Modal>
+    <section className='maint-section'>
+      <h4>Library name</h4>
+      <p className='hint'>Shown on this dashboard, and to a device when it pairs.</p>
+      <input value={name} maxLength={64} placeholder='My Library'
+        onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && dirty && save()} />
+      <button className='block' style={{ marginTop: 10 }} onClick={save} disabled={busy || !name.trim() || !dirty}>{busy ? 'Saving…' : 'Save'}</button>
+    </section>
   )
 }
 
