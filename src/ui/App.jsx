@@ -1762,13 +1762,27 @@ function You ({
   return (
     <div className='app'>
       <header>
-        <h1>You</h1>
+        {/* Downloads lives in the header, not the picker: it is the offline MIRROR of the
+            library, a different kind of thing from the curation/history views below, and
+            pulling it out keeps the pill row to three that fit without scrolling. */}
+        <div className='pltitlerow'>
+          <h1>You</h1>
+          <div className='plheadacts'>
+            <button
+              className={'plicon' + (view === 'downloads' ? ' on' : '')}
+              aria-label='Downloads'
+              onClick={() => onYouView('downloads')}
+            >
+              <DownloadSimple size={20} weight={view === 'downloads' ? 'fill' : 'regular'} />
+            </button>
+          </div>
+        </div>
         <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists, serverPls, downloads })}</p>
       </header>
 
       <div className='sticky'>
         <div className='pickrow'>
-          <div className='seg scroll'>
+          <div className='seg'>
             {favSupported && (
               <button className={view === 'favorites' ? 'on' : ''} onClick={() => onYouView('favorites')}>Favorites</button>
             )}
@@ -1776,7 +1790,6 @@ function You ({
             {plSupported && (
               <button className={view === 'playlists' ? 'on' : ''} onClick={() => onYouView('playlists')}>Playlists</button>
             )}
-            <button className={view === 'downloads' ? 'on' : ''} onClick={() => onYouView('downloads')}>Downloads</button>
           </div>
         </div>
       </div>

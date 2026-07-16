@@ -2,6 +2,21 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-16 - Downloads is a HEADER action on the You tab, not a fourth picker pill
+Tier: T1 (UI only). Branch: fix/you-picker-downloads-header.
+Context: the You sub-picker grew to four pills (Favorites / Most Played / Playlists /
+Downloads) and, on a full-featured host, overflowed the row - the `.seg.scroll` clipped
+"Downloads" and made you scroll a segmented control sideways to find it (Tim reported it).
+Choice (Tim picked it from mockups): move Downloads OUT of the picker to a download-icon
+button in the You header. The picker drops to three pills on plain `.seg` (flex:1), which
+fit without scrolling exactly like the Library seg. The icon shows `.on` (filled) while the
+Downloads view is open; tapping a pill returns to it and clears the icon.
+Why this and not shorter labels / icon pills / two rows: Downloads is a different KIND of
+thing from the other three - it is the offline MIRROR of the library, not a
+curation/history lens on it - so giving it its own affordance is honest, not just a
+space-saver, and the header keeps it one tap away. Degrades cleanly: an old host with no
+favorites/playlists shows one or two pills, still fine. Verified on the TCL.
+
 ## 2026-07-16 - Queue reorder/remove uses ExoPlayer's own move/remove, and the patch got cleaned
 Tier: T2 (native expo-audio patch surface + a UI edit mode; no wire change). Branch:
 feature/queue-reorder-remove.
