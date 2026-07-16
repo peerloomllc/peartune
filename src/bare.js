@@ -25,6 +25,7 @@ const { createAudioShim } = require('../worklet/shim')
 const { streamParams } = require('../worklet/quality')
 const { isPairLink } = require('../protocol/link')
 const { coalesce, clientCall } = require('../worklet/outbox')
+const { AudioCache } = require('../worklet/cache')
 
 const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
 const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
@@ -41,8 +42,22 @@ const PLAYLISTS_FILE = path.join(DATA_DIR, 'playlists.json')
 // The offline write-queue: state writes (favorite / resume / count) made while the host
 // was unreachable, replayed in order on the next connect (milestone 3, phase 5).
 const OUTBOX_FILE = path.join(DATA_DIR, 'outbox.json')
+// The on-disk AUDIO cache: tracks played to the end, kept for offline playback and
+// evicted oldest-first under a size cap (milestone 3, phase 5B).
+const AUDIO_DIR = path.join(DATA_DIR, 'audio')
+const DEFAULT_CACHE_CAP = 1024 * 1024 * 1024 // 1 GB
+// The offline LEASE (milestone 3, phase 5B). A stopped host and a revoke look identical
+// at the connection layer (both just close), so we cannot safely purge on a refused
+// reconnect - a server that is merely OFF would lose your downloads (confirmed on
+// hardware). Instead: every successful connect stamps "last authorized"; cached audio
+// only plays while that stamp is within the grace window. A revoked device never
+// re-authorizes, so its downloads go dark after the grace; a device whose server is off
+// re-authorizes the moment it is back. Files are NOT deleted on expiry - re-pairing (a
+// fresh authorization) makes them playable again.
+const LEASE_FILE = path.join(DATA_DIR, 'lease.json')
+const LEASE_GRACE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 
-const DEFAULT_SETTINGS = { theme: 'system', deviceName: '', userName: '', streamQuality: 'auto' }
+const DEFAULT_SETTINGS = { theme: 'system', deviceName: '', userName: '', streamQuality: 'auto', cacheCap: DEFAULT_CACHE_CAP }
 
 // What the network is right now, as reported by the shell (expo-network). Default
 // 'wifi' - the safe assumption, because wifi means original quality, i.e. no surprise
@@ -173,6 +188,14 @@ function savePlaylistCache (items) {
 let outbox = loadOutbox()
 let flushing = false
 
+// The audio cache singleton. Its cap comes from settings (a Storage choice); the shim
+// writes tracks through it and serves them back, and a revoke purges it.
+const audioCache = new AudioCache({
+  dir: AUDIO_DIR,
+  cap: Number(loadSettings().cacheCap) || 0,
+  log
+})
+
 function loadOutbox () {
   try {
     const o = JSON.parse(fs.readFileSync(OUTBOX_FILE, 'utf8'))
@@ -219,6 +242,34 @@ async function flushOutbox () {
   }
 }
 
+// --- the offline lease (phase 5B) -------------------------------------------
+function loadLastAuth () {
+  try { return Number(JSON.parse(fs.readFileSync(LEASE_FILE, 'utf8')).lastAuth) || 0 } catch { return 0 }
+}
+function stampAuth () {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true })
+    fs.writeFileSync(LEASE_FILE, JSON.stringify({ lastAuth: Date.now() }))
+  } catch {}
+}
+// Cached audio plays only while the last successful authorization is inside the grace
+// window. This is what makes a revoked device eventually lose its downloads without ever
+// deleting a legitimate user's on a server hiccup.
+function leaseValid () {
+  const la = loadLastAuth()
+  return la > 0 && (Date.now() - la) < LEASE_GRACE_MS
+}
+
+// Wipe every local copy: downloaded audio, cached favorites/playlists, unsent writes, and
+// the lease. Used on UNPAIR (a deliberate, reliable purge point) - NOT on a reconnect
+// failure, which cannot tell a revoke from a server that is simply off.
+function purgeAll () {
+  try { audioCache.clear() } catch {}
+  for (const f of [FAVORITES_FILE, PLAYLISTS_FILE, OUTBOX_FILE, LEASE_FILE]) { try { fs.unlinkSync(f) } catch {} }
+  outbox = []
+  log('local:purged')
+}
+
 // --- connection -------------------------------------------------------------
 
 async function ensureClient () {
@@ -227,36 +278,43 @@ async function ensureClient () {
   return client
 }
 
+// The shim is created ONCE, on boot, independent of any connection - so a cached track
+// plays from disk even when we cannot reach the host (offline, or a cold launch on a
+// plane). It KEEPS ITS PORT for the life of the process: the player holds
+// http://127.0.0.1:<port>/t/<id> URLs, and a fresh port would strand a paused queue.
+// Its client is REPLACEABLE (null until the first connect); the cache-hit path never
+// touches it, and the live path calls ensure() first, which connects and sets it.
+async function ensureShim () {
+  if (shim) return shimPort
+  shim = createAudioShim({
+    client: null,
+    log,
+    ensure: ensureConnected,
+    // Read fresh each request so a Settings change (or a wifi->cellular flip) applies
+    // to the next track without rebuilding the shim.
+    quality: () => streamParams(loadSettings(), networkType),
+    cache: audioCache,
+    // The lease gate: a cached track is only served from disk while authorization is
+    // fresh. Expired (a revoked or long-offline device) falls through to the live path.
+    leaseOk: leaseValid
+  })
+  shimPort = await shim.listen()
+  return shimPort
+}
+
 async function connectTo (host) {
   await ensureClient()
   await client.connect({ hostKey: host.hostKey, libraryId: host.libraryId })
   currentHost = host
   connected = true
+  // A successful connect IS a fresh authorization - renew the offline lease.
+  stampAuth()
 
-  // The shim outlives any single connection, and is only pointed at the new
-  // client. It must KEEP ITS PORT: the player is holding
-  // http://127.0.0.1:<port>/t/<id> URLs for the whole queue, and a fresh shim gets
-  // a fresh port (it listens on 0), so a paused queue would resume into a dead
-  // socket. Playback still flows THROUGH the live connection, which is what makes
-  // a revoke stop the music.
-  if (!shim) {
-    // `ensure` is how the shim reaches back for a live connection. It matters for
-    // the one path the UI cannot help with: the phone is asleep, the queue is
-    // paused, the link has died, and the user presses play on their LOCK SCREEN.
-    // Nothing on our side is awake to notice - the request simply arrives on the
-    // loopback server, and it has to be able to fix the connection itself.
-    shim = createAudioShim({
-      client,
-      log,
-      ensure: ensureConnected,
-      // Read fresh each request so a Settings change (or a wifi->cellular flip) applies
-      // to the next track without rebuilding the shim.
-      quality: () => streamParams(loadSettings(), networkType)
-    })
-    shimPort = await shim.listen()
-  } else {
-    shim.setClient(client)
-  }
+  // Point the (already-listening) shim at the fresh client. Playback still flows
+  // THROUGH the live connection for anything not cached, which is what makes a revoke
+  // stop the music.
+  await ensureShim()
+  shim.setClient(client)
 
   // The connection is gone: revoked, or the host went away, or - by far the most
   // common - Android suspended this app in the background and the link timed out.
@@ -281,6 +339,7 @@ async function connectTo (host) {
 
   return { ...host, shimPort }
 }
+
 
 // Reconnect ON DEMAND, and only once.
 //
@@ -351,11 +410,15 @@ const methods = {
       connected: false
     }
     if (host) {
+      // Bring the shim up FIRST, so its port and art base exist (and cached tracks can
+      // play) even when the connect below fails - a cold launch offline still plays
+      // your downloads.
+      await ensureShim()
+      state.shimPort = shimPort
+      state.artBase = shim.artBase()
       try {
         await connectTo(host)
         state.connected = true
-        state.shimPort = shimPort
-        state.artBase = shim.artBase()
       } catch (e) {
         log('init:connect-failed', { err: e.message })
         // Paired but unreachable is a normal state, not an error: the Umbrel may
@@ -788,8 +851,32 @@ const methods = {
   // The URL the RN player hands to ExoPlayer. The audio never touches RN: the
   // player pulls it from the worklet's loopback server, which pulls it over P2P.
   async urlFor ({ trackId }) {
-    await ensureConnected()
+    await ensureShim()
+    // A cached track with a FRESH lease plays from disk with no connection; anything else
+    // (uncached, or an expired lease) needs the live stream, so revive the link - which
+    // re-authorizes and renews the lease.
+    if (!(audioCache.has(trackId) && leaseValid())) await ensureConnected()
     return { url: shim.urlFor(trackId), port: shimPort }
+  },
+
+  // --- storage / offline cache (milestone 3, phase 5B) ------------------------
+  cacheStats () {
+    return { bytes: audioCache.totalBytes(), count: audioCache.count(), cap: audioCache.cap }
+  },
+
+  clearCache () {
+    audioCache.clear()
+    log('cache:cleared')
+    return { bytes: 0, count: 0, cap: audioCache.cap }
+  },
+
+  setCacheCap ({ bytes }) {
+    const cap = Math.max(0, Number(bytes) || 0)
+    const s = loadSettings()
+    s.cacheCap = cap
+    saveSettings(s)
+    audioCache.setCap(cap) // may evict immediately if the new cap is smaller
+    return { bytes: audioCache.totalBytes(), count: audioCache.count(), cap }
   },
 
   // Unpair. Forgets the host and drops the connection.
@@ -803,6 +890,10 @@ const methods = {
     try {
       fs.unlinkSync(HOSTS_FILE)
     } catch {}
+
+    // Unpair is a deliberate goodbye: wipe every local copy (downloads, cached state,
+    // the lease). This is the reliable purge point a reconnect failure could never be.
+    purgeAll()
 
     // Close the shim's HTTP server, not just the reference. Dropping the
     // reference alone would leave the loopback port bound for the life of the

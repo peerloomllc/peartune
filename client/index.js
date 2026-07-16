@@ -14,6 +14,11 @@ const { parseLink } = require('../protocol/link')
 const { libraryId: deriveLibraryId } = require('../protocol/ids')
 const { ERR } = require('../protocol/constants')
 
+// How long to wait for a media connect before calling the host unreachable. A REFUSAL
+// (firewall deny) arrives much faster as a `close`; this only bounds the "no route to
+// the host at all" case so a doomed reconnect does not hang forever.
+const CONNECT_TIMEOUT = 20000
+
 class PearTuneClient {
   constructor ({ keyPair, dht = null, bootstrap = null, log = () => {} }) {
     this.keyPair = keyPair
@@ -100,7 +105,20 @@ class PearTuneClient {
 
     const conn = this.dht.connect(this.hostKey, { keyPair: this.keyPair })
     conn.on('error', () => {})
-    await conn.opened
+
+    // Tell a REFUSED connection (the host is up and its firewall denied us - revoked or
+    // ungranted; the conn closes right after the DHT reaches the host, exactly as pair()
+    // detects a closed pairing window) apart from an UNREACHABLE host (a timeout). The
+    // worklet uses e.code to decide whether a revoke should purge the offline cache -
+    // and must NEVER purge on a timeout (your server being off is not a revoke).
+    await new Promise((resolve, reject) => {
+      let settled = false
+      const done = (fn, arg) => { if (!settled) { settled = true; fn(arg) } }
+      const timer = setTimeout(() => { const e = new Error('connect timed out'); e.code = 'ETIMEDOUT'; done(reject, e) }, CONNECT_TIMEOUT)
+      if (timer.unref) timer.unref()
+      conn.once('close', () => { clearTimeout(timer); const e = new Error('host refused the connection'); e.code = 'EREFUSED'; done(reject, e) })
+      conn.opened.then(() => { clearTimeout(timer); done(resolve) }).catch((e) => { clearTimeout(timer); if (!e.code) e.code = 'EREFUSED'; done(reject, e) })
+    })
 
     this.conn = conn
     const mux = Protomux.from(conn)
