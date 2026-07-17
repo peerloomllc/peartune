@@ -403,3 +403,40 @@ test('default playback asks for RAW (original bytes), not a transcode', () => {
   const url = a._url('stream', { id: 'x', format: 'raw' })
   assert.ok(url.includes('format=raw'))
 })
+
+// --- sorting (albums can; songs cannot; degrade honestly) ------------------------
+
+test('stats advertises album sorts but NO song sort (search3 has no order)', async () => {
+  const a = make()
+  a._call = async () => ({})
+  const { sorts } = await a.stats()
+  assert.deepEqual(sorts.tracks.keys, [], 'no all-songs sort on Subsonic')
+  assert.deepEqual(sorts.albums.keys, ['name', 'artist', 'year'])
+  assert.deepEqual(sorts.artists.keys, [])
+})
+
+test('album sort maps to a getAlbumList2 type; year passes a full year range', async () => {
+  const a = make()
+  const seen = {}
+  a._call = async (method, params) => { seen[method] = params; return { albumList2: { album: [] } } }
+
+  await a.list({ type: 'albums', sort: 'artist' })
+  assert.equal(seen.getAlbumList2.type, 'alphabeticalByArtist')
+
+  await a.list({ type: 'albums', sort: 'year' })
+  assert.equal(seen.getAlbumList2.type, 'byYear')
+  assert.equal(seen.getAlbumList2.fromYear, 0)
+  assert.equal(seen.getAlbumList2.toYear, 9999)
+
+  await a.list({ type: 'albums' })
+  assert.equal(seen.getAlbumList2.type, 'alphabeticalByName', 'default is name order')
+})
+
+test('a song sort is silently ignored (search3 takes no order), not an error', async () => {
+  const a = make()
+  let params = null
+  a._call = async (method, p) => { params = p; return { searchResult3: { song: [{ id: 's1', title: 'x' }] } } }
+  await a.list({ type: 'tracks', sort: 'title', order: 'desc' })
+  assert.equal(params.query, '', 'still the empty-query all-songs call')
+  assert.equal('sort' in params, false, 'no sort leaks into the Subsonic request')
+})

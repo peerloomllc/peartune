@@ -350,3 +350,50 @@ test('a rescan while one is running is the SAME scan, not a second one', async (
   assert.equal(x, y)
   assert.equal((await a.stats()).tracks, 8, 'not doubled')
 })
+
+// --- sorting (folder holds the whole library in memory, so it sorts anything) -----
+
+const isSortedBy = (vals, order = 'asc') => {
+  const c = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { sensitivity: 'base', numeric: true })
+  for (let i = 1; i < vals.length; i++) {
+    const d = c(vals[i - 1], vals[i])
+    if (order === 'asc' ? d > 0 : d < 0) return false
+  }
+  return true
+}
+
+test('stats advertises the FULL sort set (folder can sort every field, both ways)', async () => {
+  const { FULL_SORTS } = require('../host/adapters/sort')
+  const a = await scanned()
+  assert.deepEqual((await a.stats()).sorts, FULL_SORTS)
+})
+
+test('tracks sort by title ascending, and desc is the reverse', async () => {
+  const a = await scanned()
+  const asc = (await a.list({ type: 'tracks', sort: 'title', order: 'asc' })).items.map(t => t.title)
+  assert.ok(isSortedBy(asc, 'asc'), 'titles ascending: ' + asc.join(', '))
+  const desc = (await a.list({ type: 'tracks', sort: 'title', order: 'desc' })).items.map(t => t.title)
+  assert.deepEqual(desc, [...asc].reverse())
+})
+
+test('albums sort by name; artists sort by name', async () => {
+  const a = await scanned()
+  const albums = (await a.list({ type: 'albums', sort: 'name' })).items.map(x => x.name)
+  assert.ok(isSortedBy(albums, 'asc'), 'album names ascending: ' + albums.join(', '))
+  const artists = (await a.list({ type: 'artists', sort: 'name', order: 'desc' })).items.map(x => x.name)
+  assert.ok(isSortedBy(artists, 'desc'), 'artist names descending: ' + artists.join(', '))
+})
+
+test('no sort param is the default (shelf) order, unchanged', async () => {
+  const a = await scanned()
+  const plain = (await a.list({ type: 'tracks' })).items.map(t => t.id)
+  const bogus = (await a.list({ type: 'tracks', sort: 'nonsense' })).items.map(t => t.id)
+  assert.deepEqual(bogus, plain, 'an unknown sort key falls through to the default order')
+})
+
+test('a sorted page is stable across repeated calls (the memo does not corrupt)', async () => {
+  const a = await scanned()
+  const one = (await a.list({ type: 'tracks', sort: 'year', order: 'desc' })).items.map(t => t.id)
+  const two = (await a.list({ type: 'tracks', sort: 'year', order: 'desc' })).items.map(t => t.id)
+  assert.deepEqual(one, two)
+})

@@ -19,7 +19,7 @@ import {
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
-  Palette, SpeakerHigh, Key, ChartLineUp
+  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -66,6 +66,12 @@ export default function App () {
   const [songs, setSongs] = useState(null)
   const [songCursor, setSongCursor] = useState(0)
   const [density, setDensity] = useState('2')
+  // Per-view sort choice: { albums:{key,order}, artists:{key,order}, songs:{key,order} }.
+  // Absent = the source's default (shelf) order. Which keys are OFFERED comes from the
+  // host's advertised capability (state.sorts), so a source that cannot sort a view
+  // (Subsonic songs) shows no control at all.
+  const [sort, setSort] = useState({})
+  const [display, setDisplay] = useState(false) // the layout + sort bottom sheet
   const [ident, setIdent] = useState(null) // device name + user claim
   const [query, setQuery] = useState('')
   const [results, setResults] = useState(null)
@@ -253,7 +259,7 @@ export default function App () {
       // sourceName is the server's OWN name for itself ("Nextcloud Music", "Gonic",
       // "Emby Server"); source is the coarse kind. Prefer the specific one, keep the
       // kind so an older host with no sourceName still gets a label.
-      setState(s => ({ ...s, source: st.source, sourceName: st.sourceName || null }))
+      setState(s => ({ ...s, source: st.source, sourceName: st.sourceName || null, sorts: st.sorts || null }))
     } catch {
       // Offline, or a host too old to answer: the indicator just stays hidden.
     }
@@ -369,9 +375,31 @@ export default function App () {
 
   // --- data ------------------------------------------------------------------
 
-  async function loadAlbums (from) {
+  // Which host capability key backs each browse view (the Songs view is 'tracks'
+  // server-side), and the {sort,order} params for a view's active choice - empty
+  // when none, so a call falls through to the source's default order.
+  const SORT_TYPE = { albums: 'albums', artists: 'artists', songs: 'tracks' }
+  function sortParams (view) {
+    const s = sort[view]
+    return s?.key ? { sort: s.key, order: s.order || 'asc' } : {}
+  }
+
+  // Change (or clear) the sort for a view and reload it from the top. The new params
+  // are passed straight into the loader rather than read back from state, because
+  // setSort has not committed yet when the reload fires.
+  function applySort (view, key, order) {
+    const entry = key ? { key, order: order || 'asc' } : null
+    setSort(s => ({ ...s, [view]: entry }))
+    const params = entry ? { sort: entry.key, order: entry.order } : {}
+    haptic('light')
+    if (view === 'albums') { setAlbums([]); setCursor(0); setAlbumsLoaded(false); loadAlbums(0, params) }
+    else if (view === 'artists') { setArtists(null); loadArtists(params) }
+    else if (view === 'songs') { setSongs(null); setSongCursor(0); loadSongs(0, params) }
+  }
+
+  async function loadAlbums (from, params) {
     try {
-      const page = await call('albums', { cursor: from, limit: 60 })
+      const page = await call('albums', { cursor: from, limit: 60, ...(params ?? sortParams('albums')) })
       setAlbums(a => (from ? [...a, ...page.items] : page.items))
       setCursor(page.nextCursor)
       setAlbumsLoaded(true)
@@ -407,24 +435,28 @@ export default function App () {
 
   // Artists load once, on the first visit: getArtists returns the whole index in
   // a single call, so unlike albums there is nothing to page.
-  async function showArtists (force) {
-    setBrowse('artists')
-    if (artists && !force) return
+  async function loadArtists (params) {
     try {
-      const page = await call('artists')
+      const page = await call('artists', { ...(params ?? sortParams('artists')) })
       setArtists(page.items)
     } catch (e) {
       setError(e.message)
     }
   }
 
+  async function showArtists (force) {
+    setBrowse('artists')
+    if (artists && !force) return
+    await loadArtists()
+  }
+
   // The Songs view. It exists because Navidrome answers an empty-query search3
   // with everything, PAGED - so this is a real list, not the album walk the old
   // code did (which could only ever reach the first page of albums, and is why
   // this view was dropped the first time round).
-  async function loadSongs (from) {
+  async function loadSongs (from, params) {
     try {
-      const page = await call('tracks', { cursor: from, limit: 100 })
+      const page = await call('tracks', { cursor: from, limit: 100, ...(params ?? sortParams('songs')) })
       setSongs(s => (from ? [...(s || []), ...page.items] : page.items))
       setSongCursor(page.nextCursor)
     } catch (e) {
@@ -647,20 +679,21 @@ export default function App () {
     const trackIds = tracks.map(t => t.id).filter(Boolean)
     if (!trackIds.length) { haptic('warn'); return toast('Nothing to add', true) }
     try {
-      await call('addToPlaylist', { id, trackIds })
+      const res = await call('addToPlaylist', { id, trackIds })
       await loadPlaylists(true)
       haptic('light')
-      toast(`Added ${trackIds.length} to ${name}`)
+      // A playlist holds each track once, so some (or all) may already be there.
+      const added = res?.added ?? trackIds.length
+      toast(added ? `Added ${added} to ${name}` : `Already in ${name}`)
     } catch (e) { haptic('warn'); toast(e.message, true) }
   }
 
   // Density is a per-device preference, so it lives where the theme does: the
   // worklet's settings.json, not the WebView's storage.
-  function cycleDensity () {
-    const next = densityOf(density).next
+  function setDensityValue (v) {
     haptic('light')
-    setDensity(next)
-    call('setSettings', { density: next }).catch(() => {})
+    setDensity(v)
+    call('setSettings', { density: v }).catch(() => {})
   }
 
   // Pull to refresh. The host does not push us anything when its library changes -
@@ -828,14 +861,45 @@ export default function App () {
 
   function jumpTo (index) {
     haptic('light')
-    call('playIndex', { index })
+    // If the player was stopped (its X), there is no live session to seek within - so
+    // restart the kept queue through the full play path, which re-announces and brings
+    // the player bar back. Otherwise a plain in-session jump.
+    if (!now && queue?.items?.length) call('play', { queue: queue.items, index })
+    else call('playIndex', { index })
   }
 
-  function clearQueue () {
-    haptic('warn')
-    call('stop')
-    setQueue({ items: [], index: 0 })
+  // The player's X: stop PLAYBACK only, and KEEP the queue. The bar hides (play:stopped),
+  // the queue stays in the Queue tab, and tapping a track there resumes it.
+  function stopPlayback () {
+    haptic('light')
+    call('stopKeepQueue')
   }
+
+  // The Queue screen's trash icon (behind a confirm). Empties the up-next but keeps the
+  // CURRENT track playing - the queue collapses to that one track. With nothing playing,
+  // it wipes the queue outright.
+  async function clearQueue () {
+    haptic('warn')
+    if (now) {
+      try {
+        const res = await call('queueClearKeepCurrent')
+        setQueue(res)
+        setStatus(s => (s ? { ...s, queueLength: res.items.length } : s))
+      } catch (e) { setError(e.message); loadQueue() }
+    } else {
+      call('stop')
+      setQueue({ items: [], index: 0 })
+    }
+  }
+  const confirmClearQueue = () => setConfirming({
+    title: 'Clear the queue?',
+    body: now
+      ? 'Everything up next is removed. The current song keeps playing.'
+      : 'The whole queue is removed.',
+    danger: true,
+    yes: 'Clear',
+    onYes: clearQueue
+  })
 
   // Reorder the queue. Update the visible list optimistically (so the row does not snap
   // back while the round-trip lands), then reconcile with the shell's authoritative
@@ -1025,7 +1089,7 @@ export default function App () {
         onJump={jumpTo}
         onMove={moveInQueue}
         onRemove={removeFromQueue}
-        onClear={clearQueue}
+        onClear={confirmClearQueue}
       />
     )
   } else if (tab === 'settings') {
@@ -1057,7 +1121,7 @@ export default function App () {
           if (b === 'songs') return showSongs()
           return setBrowse('albums')
         }}
-        onDensity={cycleDensity}
+        onDisplay={() => setDisplay(true)}
         onSearch={runSearch}
         onReconnect={reconnect}
         onRefresh={refresh}
@@ -1081,7 +1145,7 @@ export default function App () {
           <Player
             now={now} status={status} expanded={expanded}
             shuffle={shuffle} repeat={repeat} onQueue={() => goTab('queue')}
-            onShuffle={toggleShuffle} onRepeat={cycleRepeat}
+            onShuffle={toggleShuffle} onRepeat={cycleRepeat} onStop={stopPlayback}
             onExpand={() => { haptic('light'); setExpanded(true) }}
             onCollapse={() => { haptic('light'); setExpanded(false) }}
             onViewArt={() => viewArt(now.artFull || now.art, now.album || now.title)}
@@ -1095,6 +1159,13 @@ export default function App () {
       </div>
 
       {note && <div className={'toast' + (note.bad ? ' bad' : '')}>{note.msg}</div>}
+      {display && (
+        <DisplaySheet
+          browse={browse} density={density} onDensity={setDensityValue}
+          sorts={state.sorts} sort={sort} onSort={applySort}
+          onClose={() => setDisplay(false)}
+        />
+      )}
       {menu && (
         <ActionSheet
           item={menu}
@@ -1283,24 +1354,28 @@ function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
   const sub = (t) => [t.artist, t.album].filter(Boolean).join(' · ')
 
   return (
-    <div className='app'>
-      <header>
-        <div className='pltitlerow'>
-          <h1>Queue</h1>
-          <div className='plheadacts'>
-            <button
-              className={'plicon' + (editing ? ' on' : '')}
-              aria-label={editing ? 'Done editing' : 'Edit queue'}
-              onClick={toggleEdit}
-            >
-              <PencilSimple size={20} weight={editing ? 'fill' : 'regular'} />
-            </button>
-          </div>
-        </div>
+    <div className='app queuescreen'>
+      {/* The header stays put (flex:none at the top of the fixed-height column) while the
+          list scrolls below it. The action icons are absolutely positioned top-right so
+          "Queue" stays centered like every other page header. */}
+      <header className='queuehead'>
+        <h1>Queue</h1>
         <p className='muted sm'>
           {items.length} {items.length === 1 ? 'track' : 'tracks'}
           {left > 0 ? ` · ${left} still to play` : ' · last track'}
         </p>
+        <div className='qacts'>
+          <button className='qtrash' aria-label='Clear queue' onClick={onClear}>
+            <Trash size={19} weight='regular' />
+          </button>
+          <button
+            className={'qedit' + (editing ? ' on' : '')}
+            aria-label={editing ? 'Done editing' : 'Edit queue'}
+            onClick={toggleEdit}
+          >
+            <PencilSimple size={20} weight={editing ? 'fill' : 'regular'} />
+          </button>
+        </div>
       </header>
 
       {editing
@@ -1356,12 +1431,6 @@ function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
             ))}
           </ul>
           )}
-
-      {/* Honest label. There is no way to empty the queue without stopping the
-          music: the queue IS what is playing. */}
-      <button className='more danger' onClick={onClear}>
-        <Trash size={15} weight='bold' /> Clear queue and stop
-      </button>
     </div>
   )
 }
@@ -1503,11 +1572,73 @@ function NamePrompt ({ title, placeholder, submitLabel = 'Save', onSubmit, onClo
 
 // --- library -----------------------------------------------------------------
 
+// Human labels for the canonical sort keys the host advertises. 'title'/'name' are
+// the same idea for a track vs an album; 'duration' reads as "Length" to a listener.
+const SORT_LABEL = {
+  title: 'Title', name: 'Name', artist: 'Artist', album: 'Album', year: 'Year', duration: 'Length'
+}
+
+// The Display sheet: layout (grid density) and sort, in one bottom sheet opened by the
+// single Display icon in the library header. Each section only appears when it applies
+// - Layout on the grid views, Sort when the active source advertises keys for the view
+// (state.sorts) - so a Subsonic Songs list, which has neither, never opens this (its
+// button is disabled). Direction is a toggle shown only for a reversible source once a
+// key is chosen.
+const LAYOUT_OPTS = [
+  { value: 'list', label: 'List', desc: 'One per row, with the full title' },
+  { value: '2', label: 'Grid, 2 per row', desc: 'Larger covers' },
+  { value: '3', label: 'Grid, 3 per row', desc: 'More on screen' }
+]
+function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClose }) {
+  const capType = browse === 'songs' ? 'tracks' : browse
+  const cap = sorts?.[capType]
+  const keys = cap?.keys || []
+  const hasLayout = browse !== 'songs'
+  const cur = sort?.[browse] || null
+  const order = cur?.order || 'asc'
+  const sortOpts = [
+    { value: '', label: 'Default order' },
+    ...keys.map(k => ({ value: k, label: SORT_LABEL[k] || k }))
+  ]
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Display</h1>
+        {hasLayout && (
+          <div className='dispsec'>
+            <div className='displabel'>Layout</div>
+            <OptionList options={LAYOUT_OPTS} value={String(density)} onChange={onDensity} />
+          </div>
+        )}
+        {keys.length > 0 && (
+          <div className='dispsec'>
+            <div className='displabel'>
+              <span>Sort by</span>
+              {cur?.key && cap.reversible && (
+                <button
+                  className='dirtoggle'
+                  onClick={() => onSort(browse, cur.key, order === 'asc' ? 'desc' : 'asc')}
+                  aria-label={order === 'asc' ? 'Ascending - tap for descending' : 'Descending - tap for ascending'}
+                >
+                  {order === 'desc' ? <ArrowDown size={15} weight='bold' /> : <ArrowUp size={15} weight='bold' />}
+                  {order === 'asc' ? 'Ascending' : 'Descending'}
+                </button>
+              )}
+            </div>
+            <OptionList options={sortOpts} value={cur?.key || ''} onChange={(v) => onSort(browse, v || null, order)} />
+          </div>
+        )}
+        <div className='acts'><button className='wide' onClick={onClose}>Done</button></div>
+      </div>
+    </div>
+  )
+}
+
 function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
   favs, onFav, cont, onContinue,
-  onBrowse, onDensity, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
+  onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
   // Bind the generic onFav(kind, item) to per-kind heart handlers for the leaves.
@@ -1522,6 +1653,10 @@ function Library ({
         `${t.title || ''} ${t.artist || ''} ${t.album || ''}`.toLowerCase().includes(songFilter))
     : songs
   const D = densityOf(density)
+  // The Display sheet offers layout (grid views only) and/or sort (whatever the
+  // source can do). Disable its button when the active view has neither.
+  const sortCap = state.sorts?.[browse === 'songs' ? 'tracks' : browse]
+  const displayHasOptions = browse !== 'songs' || (sortCap?.keys?.length > 0)
   // The worklet hands us the base URL rather than finished art URLs, because only
   // the UI knows the density, and therefore the size to ask for.
   const artBase = state.artBase || state.host?.artBase || null
@@ -1637,12 +1772,19 @@ function Library ({
       </header>
 
       <div className='sticky'>
-        <input
-          className='search'
-          value={query}
-          onChange={e => onSearch(e.target.value)}
-          placeholder={browse === 'songs' ? 'Filter loaded songs' : 'Search artists, albums, tracks'}
-        />
+        <div className='searchbar'>
+          <input
+            className='search'
+            value={query}
+            onChange={e => onSearch(e.target.value)}
+            placeholder={browse === 'songs' ? 'Filter loaded songs' : 'Search artists, albums, tracks'}
+          />
+          {query && (
+            <button className='searchclear' onClick={() => onSearch('')} aria-label='Clear search'>
+              <X size={15} weight='bold' />
+            </button>
+          )}
+        </div>
         {!searching && (
           <div className='pickrow'>
             <div className='seg'>
@@ -1650,18 +1792,16 @@ function Library ({
               <button className={browse === 'artists' ? 'on' : ''} onClick={() => onBrowse('artists')}>Artists</button>
               <button className={browse === 'songs' ? 'on' : ''} onClick={() => onBrowse('songs')}>Songs</button>
             </div>
-            {/* Stays PUT in the Songs view, disabled, rather than disappearing.
-                A control that vanishes reflows the row it was in, and the picker
-                you just tapped jumps sideways under your thumb - which reads as a
-                glitch, not as "this does not apply here". Songs is a list; there is
-                no density to choose. */}
+            {/* One "Display" control (layout + sort) instead of two. Stays PUT and
+                disabled when the active view has neither to offer (a Subsonic Songs
+                list: no grid density, no all-songs sort), so the row does not reflow. */}
             <button
               className='icon dens'
-              onClick={onDensity}
-              disabled={browse === 'songs'}
-              aria-label={browse === 'songs' ? 'Layout (not available for lists)' : 'Change layout'}
+              onClick={onDisplay}
+              disabled={!displayHasOptions}
+              aria-label='Display options'
             >
-              <D.Icon size={20} weight='regular' />
+              <Faders size={20} weight='regular' />
             </button>
           </div>
         )}
@@ -2843,7 +2983,7 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
 // content padding along with it.
 function Player ({
   now, status, expanded, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
-  onViewArt, onQueue
+  onViewArt, onQueue, onStop
 }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
@@ -2885,7 +3025,7 @@ function Player ({
           ? (
             <button
               className='icon close'
-              onClick={() => { haptic('light'); call('stop') }}
+              onClick={() => { haptic('light'); onStop() }}
               aria-label='Stop'
             >
               <X size={18} weight='bold' />

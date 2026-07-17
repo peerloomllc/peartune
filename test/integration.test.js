@@ -157,14 +157,15 @@ test('playlists: create, add, reorder/remove, rename, delete - over the real con
   assert.ok(pl.id, 'the host mints the id')
   assert.equal(pl.name, 'Roadtrip')
 
-  // Append (dupes allowed), then read the ordered ids back.
+  // Append, skipping duplicates: 't2' is already in the list, so only 't3' lands.
   await client.playlistAdd({ id: pl.id, trackIds: ['t1', 't2'] })
   const add2 = await client.playlistAdd({ id: pl.id, trackIds: ['t2', 't3'] })
-  assert.equal(add2.count, 4)
-  assert.deepEqual((await client.playlistGet({ id: pl.id })).trackIds, ['t1', 't2', 't2', 't3'])
+  assert.equal(add2.count, 3)
+  assert.equal(add2.added, 1, 'only the new track counts as added')
+  assert.deepEqual((await client.playlistGet({ id: pl.id })).trackIds, ['t1', 't2', 't3'])
 
   // The list view carries a count and the name.
-  assert.deepEqual((await client.playlistList()).items.map(p => [p.name, p.count]), [['Roadtrip', 4]])
+  assert.deepEqual((await client.playlistList()).items.map(p => [p.name, p.count]), [['Roadtrip', 3]])
 
   // Reorder + remove is one setTracks call (the app sends the new order).
   await client.playlistSetTracks({ id: pl.id, trackIds: ['t3', 't1'] })

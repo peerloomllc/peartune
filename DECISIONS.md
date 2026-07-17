@@ -2,6 +2,58 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-16 - Library sorting is a SERVER-SIDE sort param, honestly advertised per source
+Tier: T1 (adapter + UI; no wire change - `library.list` already passes params straight to
+the adapter, so `sort`/`order` are additive and an old client that never sends them is
+unaffected). Branch: feature/library-sorting.
+Context: the Songs view had only the server's order (roughly artist/album/track); TODO
+flagged sort-by-title/date/artist as needing "its own paged-rows cache or a host-side sort
+param". Tim picked the approach after being reminded FOLDER is the primary user-case
+([[Folder is the product]] 2026-07-14).
+The decision that folder-primary drives: sort SERVER-SIDE, not with a client cache. A folder
+holds the whole library in memory, so it sorts any field for free; a client-side full-library
+cache would be complexity aimed only at Subsonic's limitation, which the target users do not
+hit. So each adapter advertises what it can actually do in `stats().sorts`
+(`{tracks|albums|artists: {keys:[...], reversible}}`) and the client shows ONLY a control the
+source can honor - no dead buttons.
+- FOLDER (primary): full set, both directions. Sorts copies of the in-memory _sorted* arrays
+  by a canonical comparator (host/adapters/sort.js), memoized per (type|sort|order) and
+  cleared on rescan - so scrolling a title-sorted list does not re-sort the library per page
+  (the perf note the file already carried).
+- JELLYFIN: full set, server-side via SortBy/SortOrder. Default track order (AlbumArtist,
+  Album,disc,track) is preserved when no sort is sent.
+- SUBSONIC (Tim's Navidrome): albums only (getAlbumList2 types name/artist/year; byYear needs
+  a 0..9999 range). SONGS cannot sort - the all-songs list is an empty-query search3, which
+  takes no order param - so tracks.keys is [] and the client HIDES the Songs sort control on a
+  Subsonic source. Ascending only (the API has no order flag), so albums.reversible is false.
+  Artists come alphabetical already, so [] (offering "name" would just reproduce the default).
+The contract is canonical keys (title/artist/album/year/duration; name; name) that each
+adapter maps to its own server's language, tie-breaking toward shelf order so a year- or
+duration-sort stays stable within equal values. UI: a pill in the pickrow (a compact native
+<select> + an asc/desc toggle shown only when reversible); on a view the source cannot sort it
+becomes a faded disabled stub rather than vanishing, so the row does not reflow (the same call
+the density button makes). Sort choice is per-view and persists across view switches; changing
+it reloads that view from cursor 0 (new params passed straight to the loader, not read back
+from not-yet-committed state).
+Verify: 266 tests (test/sort.test.js brute-checks the comparators + FULL_SORTS; folder sorts
+real fixtures; subsonic/jellyfin stub _call to pin the type/SortBy mapping + the songs-degrade;
+unknown sort key falls through to default order). `npm run verify` green.
+ON-DEVICE (TCL + Umbrel/Navidrome, 2026-07-17): the hardware pass CAUGHT A REAL BUG the unit
+tests could not - the worklet (src/bare.js) built the library.list params EXPLICITLY as
+`{type, cursor, limit}` and DROPPED sort/order, so the control changed the pill but the list
+never reordered. The wire (client.list forwards the whole params object) and the host were both
+correct; only the worklet handlers were narrowing. Fixed: tracks/albums/artists handlers now
+forward sort/order. After the fix, confirmed on the TCL: Albums -> sort by Year reordered to
+oldest-first (Led Zeppelin 1969, II, III, IV...); the Name/Artist/Year picker shows exactly the
+Subsonic album capability (no track-only keys leak in); the Songs view correctly shows the
+disabled stub (Subsonic has no all-songs sort). Also fixed a layout clip found in the same pass:
+the sort <select> ("Default order") overflowed the pickrow on Albums/Artists - shortened the
+default label to "Default", capped the select width, and gave the segmented picker min-width:0
+so it yields space; the row now fits with no clipping. The folder FULL set (Songs title sort +
+asc/desc toggle) was not exercised live - it needs switching Tim's active source, which orphans
+listening state - so it rests on the unit tests. NOTE: sort choice is per-view and in-memory;
+it resets on relaunch (density persists, sort does not - acceptable v1).
+
 ## 2026-07-16 - Guest grants: time-limited access, enforced at connect AND by a live sweep
 Tier: T2. Proposal: proposals/2026-07-16-guest-grants.md. MVP scope (Tim): time-limited only
 (library-subset `paths` deferred), created via a guest pairing window with a duration.

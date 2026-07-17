@@ -23,6 +23,7 @@
 
 const crypto = require('crypto')
 const { trackId } = require('../../protocol/ids')
+const { FULL_SORTS } = require('./sort')
 
 const CLIENT = 'PearTune'
 const VERSION = '0.1.0'
@@ -36,6 +37,25 @@ const TICKS_PER_MS = 10000
 // before it will let ExoPlayer seek. Without it the player can only play forward.
 const TRACK_FIELDS = 'MediaSources,ParentId,ProductionYear,Path'
 const ALBUM_FIELDS = 'ProductionYear,ChildCount,ParentId'
+
+// Canonical sort key -> Jellyfin SortBy. The default (no sort) track order stays what
+// it always was - by album-artist, album, then disc/track - so browsing is unchanged
+// until the user picks a sort. Every key tie-breaks toward SortName so a year- or
+// duration-sorted list is still stable and alphabetical within equal values.
+const DEFAULT_TRACK_SORT = 'AlbumArtist,Album,ParentIndexNumber,IndexNumber,SortName'
+const TRACK_SORT_BY = {
+  title: 'SortName',
+  artist: DEFAULT_TRACK_SORT,
+  album: 'Album,ParentIndexNumber,IndexNumber,SortName',
+  year: 'ProductionYear,PremiereDate,SortName',
+  duration: 'Runtime,SortName'
+}
+const ALBUM_SORT_BY = {
+  name: 'SortName',
+  artist: 'AlbumArtist,SortName',
+  year: 'ProductionYear,PremiereDate,SortName'
+}
+const sortOrder = (order) => (order === 'desc' ? 'Descending' : 'Ascending')
 
 class JellyfinAdapter {
   constructor ({ url, username, password, libraryId, log = () => {} }) {
@@ -276,11 +296,13 @@ class JellyfinAdapter {
       tracks: this._counts ?? 0,
       albums: this._albums ?? 0,
       artists: this._artists ?? 0,
+      // Jellyfin sorts server-side (SortBy + SortOrder) across every field we expose.
+      sorts: FULL_SORTS,
       scannedAt: this.scannedAt
     }
   }
 
-  async list ({ type = 'albums', limit = 100, cursor = 0 } = {}) {
+  async list ({ type = 'albums', limit = 100, cursor = 0, sort, order } = {}) {
     const offset = Number(cursor) || 0
     const more = (items, total) => (offset + items.length < total ? offset + items.length : null)
 
@@ -293,7 +315,7 @@ class JellyfinAdapter {
         userId: this.userId,
         Recursive: true,
         SortBy: 'SortName',
-        SortOrder: 'Ascending'
+        SortOrder: sortOrder(order)
       })
       return { type, items: (body.Items || []).map(i => this._artist(i)), nextCursor: null }
     }
@@ -303,8 +325,8 @@ class JellyfinAdapter {
         userId: this.userId,
         IncludeItemTypes: 'MusicAlbum',
         Recursive: true,
-        SortBy: 'SortName',
-        SortOrder: 'Ascending',
+        SortBy: ALBUM_SORT_BY[sort] || 'SortName',
+        SortOrder: sortOrder(order),
         Fields: ALBUM_FIELDS,
         StartIndex: offset,
         Limit: limit
@@ -318,8 +340,8 @@ class JellyfinAdapter {
         userId: this.userId,
         IncludeItemTypes: 'Audio',
         Recursive: true,
-        SortBy: 'AlbumArtist,Album,ParentIndexNumber,IndexNumber,SortName',
-        SortOrder: 'Ascending',
+        SortBy: TRACK_SORT_BY[sort] || DEFAULT_TRACK_SORT,
+        SortOrder: sortOrder(order),
         Fields: TRACK_FIELDS,
         StartIndex: offset,
         Limit: limit

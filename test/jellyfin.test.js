@@ -131,3 +131,32 @@ test('get(playlist) is null when neither the playlist nor its items resolve', as
   a._call = async () => { throw new Error('Jellyfin: 404') }
   assert.equal(await a.get({ type: 'playlist', id: 'gone' }), null)
 })
+
+// --- sorting (Jellyfin sorts server-side via SortBy + SortOrder) -----------------
+
+test('stats advertises the full sort set (Jellyfin sorts every field server-side)', async () => {
+  const { FULL_SORTS } = require('../host/adapters/sort')
+  const a = make()
+  a._call = async () => ({})
+  assert.deepEqual((await a.stats()).sorts, FULL_SORTS)
+})
+
+test('track and album sort map to SortBy/SortOrder; default is unchanged', async () => {
+  const a = make()
+  let params = null
+  a._call = async (path, p) => { params = p; return { Items: [], TotalRecordCount: 0 } }
+
+  await a.list({ type: 'tracks' })
+  assert.match(params.SortBy, /^AlbumArtist,Album/, 'default track order is unchanged')
+  assert.equal(params.SortOrder, 'Ascending')
+
+  await a.list({ type: 'tracks', sort: 'title', order: 'desc' })
+  assert.equal(params.SortBy, 'SortName')
+  assert.equal(params.SortOrder, 'Descending')
+
+  await a.list({ type: 'tracks', sort: 'duration' })
+  assert.match(params.SortBy, /^Runtime/)
+
+  await a.list({ type: 'albums', sort: 'year' })
+  assert.match(params.SortBy, /^ProductionYear/)
+})

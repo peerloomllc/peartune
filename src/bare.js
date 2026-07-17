@@ -505,18 +505,18 @@ const methods = {
 
   // The Songs view. Navidrome answers an empty-query search3 with everything,
   // paged, so this is a real list and not the 60-call album walk it used to be.
-  async tracks ({ cursor = 0, limit = 100 } = {}) {
+  async tracks ({ cursor = 0, limit = 100, sort, order } = {}) {
     await ensureConnected()
-    const page = await client.list({ type: 'tracks', cursor, limit })
+    const page = await client.list({ type: 'tracks', cursor, limit, sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 
   // Album browsing is the primary way in. A flat list of 1358 tracks is not a
   // music app, and Subsonic has no "all songs" call anyway - so the flat list
   // could only ever show the first page. Albums page properly.
-  async albums ({ cursor = 0, limit = 60 } = {}) {
+  async albums ({ cursor = 0, limit = 60, sort, order } = {}) {
     await ensureConnected()
-    const page = await client.list({ type: 'albums', cursor, limit })
+    const page = await client.list({ type: 'albums', cursor, limit, sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -528,9 +528,9 @@ const methods = {
 
   // Artists are the second way in. The host has always been able to list them
   // (`library.list({type:'artists'})`); nothing was asking.
-  async artists () {
+  async artists ({ sort, order } = {}) {
     await ensureConnected()
-    const page = await client.list({ type: 'artists' })
+    const page = await client.list({ type: 'artists', sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 

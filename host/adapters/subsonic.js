@@ -27,6 +27,26 @@
 const crypto = require('crypto')
 const { trackId } = require('../../protocol/ids')
 
+// What Subsonic can actually sort, and it is uneven. getAlbumList2 offers a few
+// fixed orderings for ALBUMS (alphabetical-by-name/artist, and by-year), so those
+// three keys work - but only ascending, since the API has no order flag (see the
+// albums branch for the byYear exception it does NOT expose here). SONGS have no
+// sort at all: the all-songs list is an empty-query search3, which takes no order
+// param, so we advertise no track sort and the client hides the Songs control on a
+// Subsonic source. ARTISTS come from getArtists, which is alphabetical only - i.e.
+// already the default - so offering "name" would just reproduce what you see, and we
+// advertise none. Folder (the primary source) has the full set; this degrades honestly.
+const SUBSONIC_SORTS = {
+  tracks: { keys: [], reversible: false },
+  albums: { keys: ['name', 'artist', 'year'], reversible: false },
+  artists: { keys: [], reversible: false }
+}
+const ALBUM_LIST_TYPE = {
+  name: 'alphabeticalByName',
+  artist: 'alphabeticalByArtist',
+  year: 'byYear'
+}
+
 const API_VERSION = '1.16.1'
 const CLIENT = 'peartune'
 
@@ -241,11 +261,14 @@ class SubsonicAdapter {
       tracks,
       albums: this._albums ?? 0,
       artists: this._artists ?? 0,
+      // Albums sort (a few fixed orderings); songs cannot (no all-songs order). See
+      // SUBSONIC_SORTS - the client hides the Songs sort control on this source.
+      sorts: SUBSONIC_SORTS,
       scannedAt: this.scannedAt
     }
   }
 
-  async list ({ type = 'albums', limit = 100, cursor = 0 } = {}) {
+  async list ({ type = 'albums', limit = 100, cursor = 0, sort } = {}) {
     const offset = Number(cursor) || 0
 
     if (type === 'artists') {
@@ -262,11 +285,13 @@ class SubsonicAdapter {
     }
 
     if (type === 'albums') {
-      const sr = await this._call('getAlbumList2', {
-        type: 'alphabeticalByName',
-        size: limit,
-        offset
-      })
+      const listType = ALBUM_LIST_TYPE[sort] || 'alphabeticalByName'
+      // byYear is the one ordering that needs a range; without fromYear/toYear the
+      // server returns nothing. A full 0..9999 span asks for "every album, oldest
+      // first" - the ascending order our capability promises.
+      const params = { type: listType, size: limit, offset }
+      if (listType === 'byYear') { params.fromYear = 0; params.toYear = 9999 }
+      const sr = await this._call('getAlbumList2', params)
       const list = sr.albumList2?.album || []
       const items = list.map(a => ({
         id: a.id,
