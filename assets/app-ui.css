@@ -291,6 +291,17 @@ ul.tracks li .favbtn:active {
   background: var(--color-primary);
   color: var(--color-text-on-primary);
 }
+.handoff-ic {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.9rem;
+  height: 2.9rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  color: var(--color-primary);
+}
 .favview section {
   margin-bottom: 1.6rem;
 }

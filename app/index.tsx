@@ -74,6 +74,7 @@ export default function App () {
   const repeatRef = useRef(0)
   const posRef = useRef(0) // last known position (ms), from the status listener
   const lastPersist = useRef(0) // throttle disk writes from the frequent status listener
+  const wasPlaying = useRef(false) // playing-edge detection, to claim the session-handoff token
   const netSub = useRef<{ remove: () => void } | null>(null)
   // Are we currently disconnected from the host? On a drop we do NOT tear the
   // player down (a network switch and a revoke look identical here) - we keep the
@@ -187,6 +188,12 @@ export default function App () {
           queueLength: queueRef.current.length
         })
 
+        // Session handoff: whenever playback transitions INTO playing, make sure we hold the
+        // "active player" token. One place covers every path (play / resume / jump / next);
+        // the worklet claim is idempotent, so re-firing is free.
+        if (s.playing && !wasPlaying.current) activateSession()
+        wasPlaying.current = !!s.playing
+
         posRef.current = posMs
         persistQueue() // throttled: keeps the saved position roughly current
       })
@@ -228,9 +235,24 @@ export default function App () {
     })
   }
 
-  // Snapshot the queue to disk (via the worklet) so a relaunch can restore it.
-  // Throttled, because the status listener fires several times a second; `force`
-  // bypasses it for structural changes (play / enqueue / index advance / mode).
+  // Tell the worklet this device is now the active session player (handoff). Fire-and-forget:
+  // the claim rides P2P and playback must not wait on it; the worklet call is idempotent.
+  const activateSession = () => { call('sessionActivate').catch(() => {}) }
+
+  // Another device took over the session (we pushed our queue and the host said ok:false - the
+  // token moved). Stop cleanly here: the queue now lives on the host session (owned by the new
+  // device), so we don't keep a redundant paused mini-player of a track that's playing
+  // elsewhere - the UI shows the "Playing on <other>" card instead, and "Play here" re-adopts
+  // the session. stop() also clears our now-stale local queue and deactivates our token.
+  function onHandedOff () {
+    stop()
+    toWeb('play:handedoff', {})
+  }
+
+  // Snapshot the queue to disk (via the worklet) so a relaunch can restore it. The worklet
+  // ALSO mirrors it to the host session when we hold the token, and reports lostSession if we
+  // were superseded. Throttled, because the status listener fires several times a second;
+  // `force` bypasses it for structural changes (play / enqueue / index advance / mode).
   function persistQueue (force = false) {
     const t = Date.now()
     if (!force && t - lastPersist.current < 4000) return
@@ -241,7 +263,7 @@ export default function App () {
       positionMs: posRef.current,
       shuffle: shuffleRef.current,
       repeat: repeatRef.current
-    }).catch(() => {})
+    }).then((r: any) => { if (r?.lostSession) onHandedOff() }).catch(() => {})
   }
 
   async function play ({ queue, index = 0 }: any) {
@@ -462,7 +484,9 @@ export default function App () {
     queueRef.current = []
     indexRef.current = 0
     posRef.current = 0
+    wasPlaying.current = false
     call('clearQueueState').catch(() => {}) // stop discards the queue, so forget it
+    call('sessionDeactivate').catch(() => {}) // stop pushing; the host session persists as last-known
     toWeb('play:stopped', {})
   }
 
@@ -530,6 +554,49 @@ export default function App () {
     } catch {
       return { restored: false }
     }
+  }
+
+  // "Play here" (session handoff): adopt a session handed over from another device. Same rebuild
+  // as restoreQueue - re-resolve URLs from IDs, port-rewrite the art (it carried the OTHER
+  // device's shim port) - but it PLAYS, REPLACES any current playback, and seeks to the handed
+  // position. The worklet already claimed the token (sessionTakeover); this just plays it.
+  async function playSession (snap: any) {
+    const q = Array.isArray(snap?.items) ? snap.items : []
+    if (!q.length) return { ok: false }
+    try {
+      const index = Math.min(Math.max(0, Number(snap.index) || 0), q.length - 1)
+      const urls: string[] = []
+      let port: number | null = null
+      for (const t of q) { const r: any = await call('urlFor', { trackId: t.id }); urls.push(r.url); if (r.port) port = r.port }
+      if (port) {
+        const fix = (u: any) => (typeof u === 'string' ? u.replace(/(127\.0\.0\.1:)\d+/, `$1${port}`) : u)
+        for (const t of q) { t.art = fix(t.art); t.artFull = fix(t.artFull) }
+      }
+      queueRef.current = q
+      indexRef.current = index
+      shuffleRef.current = !!snap.shuffle
+      repeatRef.current = Number(snap.repeat) || 0
+      const p = await ensurePlayer(urls, index)
+      px()?.setShuffle(shuffleRef.current)
+      px()?.setRepeatMode(repeatRef.current)
+      announce(index)
+      if (snap.positionMs) p.seekTo(Math.max(0, snap.positionMs / 1000))
+      p.play()
+      persistQueue(true)
+      toWeb('play:mode', { shuffle: shuffleRef.current, repeat: repeatRef.current })
+      return { ok: true }
+    } catch (e: any) {
+      toWeb('play:error', { error: e?.message ?? String(e) })
+      return { ok: false }
+    }
+  }
+
+  // The "Play here" button: claim the token + fetch the session queue (worklet), then play it.
+  // Fire-and-forget from the UI's side - it reacts to play:started like any other playback.
+  async function playHere () {
+    const s: any = await call('sessionTakeover').catch(() => null)
+    if (!s?.ok) { toWeb('play:error', { error: 'Could not take over the session.' }); return { ok: false } }
+    return playSession(s)
   }
 
   // --- boot ----------------------------------------------------------------
@@ -757,6 +824,8 @@ export default function App () {
       prev,
       stop,
       restore: () => restoreQueue(),
+      // Session handoff: "Play here" adopts the session another device is holding.
+      playHere: () => playHere(),
       seekBy: () => seekBy(msg.args.seconds ?? SEEK_STEP),
       seekTo: () => seekTo(msg.args.ms ?? 0),
       shuffle: () => setShuffle(!!msg.args.on),
