@@ -245,6 +245,12 @@ class PearTuneClient {
   playlistAdd (params) { return this._request('playlist.add', params) }
   playlistSetTracks (params) { return this._request('playlist.setTracks', params) }
 
+  // Play session (cross-device handoff, proposal 2026-07-17). The host takes the owner +
+  // acting device from the connection; claim/set are gated by the generation CAS host-side.
+  sessionGet () { return this._request('session.get') }
+  sessionClaim (params) { return this._request('session.claim', params) }
+  sessionSet (params) { return this._request('session.set', params) }
+
   art (params) { return this._request('art.get', params, { stream: true }) }
 
   // Resolves to the whole buffer. `onchunk` lets a caller start work before the
