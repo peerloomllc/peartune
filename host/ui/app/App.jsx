@@ -199,6 +199,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
   const [open, setOpen] = useState({})
   const [showRevoked, setShowRevoked] = useState(false)
   const [pname, setPname] = useState('')
+  const [renaming, setRenaming] = useState(null) // { id, draft } while editing a person's name
 
   const persons = (state.persons || []).filter(p => !p.revokedAt)
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
@@ -236,6 +237,18 @@ function AccessPanel ({ state, refresh, toast, online }) {
   const deletePerson = async p => {
     if (!await askConfirm({ title: `Delete ${p.name}?`, message: 'They have no devices, so this only tidies the list. Nothing is revoked.', confirmLabel: 'Delete' })) return
     mutate('/api/person/delete', { personId: p.id }, () => `Deleted ${p.name}.`)
+  }
+  // Rename in place: the person's name becomes an input with save/cancel. A no-op
+  // (blank or unchanged) just closes the editor; the host refuses a name that collides
+  // with another person and mutate surfaces that as a toast.
+  const startRename = p => setRenaming({ id: p.id, draft: p.name })
+  const saveRename = () => {
+    const r = renaming; if (!r) return
+    const name = r.draft.trim()
+    const p = persons.find(x => x.id === r.id)
+    setRenaming(null)
+    if (!name || (p && name === p.name)) return
+    mutate('/api/person/rename', { personId: r.id, name }, res => `Renamed to ${res.person.name}.`)
   }
   const revoke = async d => {
     if (!await askConfirm({ title: `Revoke "${d.label}"?`, message: 'It loses access immediately, even mid-song. Its play counts stay in your history.', confirmLabel: 'Revoke', danger: true })) return
@@ -280,18 +293,35 @@ function AccessPanel ({ state, refresh, toast, online }) {
                 const on = live.filter(d => d.online).length
                 const expandable = live.length + revoked.length > 0
                 const isOpen = expandable && open[p.id]
+                const editing = renaming?.id === p.id
                 return (
                   <div className='person' key={p.id}>
-                    <div className={'prow' + (expandable ? '' : ' flat')} onClick={() => expandable && setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
+                    <div className={'prow' + (expandable ? '' : ' flat')} onClick={() => !editing && expandable && setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
                       <CaretRight size={14} weight='bold' className={'caret' + (isOpen ? ' open' : '') + (expandable ? '' : ' hidden')} />
                       <span className={'live' + (on ? '' : ' off')} aria-hidden='true' />
-                      <div className='who'>
-                        <div className='name'>{p.name}</div>
-                        <div className='sub'>{live.length} device{live.length === 1 ? '' : 's'}{on ? ` · ${on} online` : ''}</div>
-                      </div>
-                      {live.length
-                        ? <button className='ghost small danger' onClick={e => { e.stopPropagation(); revokePerson(p) }}>Revoke all</button>
-                        : <button className='ghost small danger' onClick={e => { e.stopPropagation(); deletePerson(p) }}>Delete</button>}
+                      {editing
+                        ? <>
+                            <input
+                              className='rename-input' value={renaming.draft} autoFocus aria-label='Person name'
+                              onClick={e => e.stopPropagation()}
+                              onChange={e => setRenaming(r => ({ ...r, draft: e.target.value }))}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') { e.preventDefault(); saveRename() }
+                                if (e.key === 'Escape') setRenaming(null)
+                              }} />
+                            <button className='ghost small' onClick={e => { e.stopPropagation(); saveRename() }}>Save</button>
+                            <button className='ghost small' onClick={e => { e.stopPropagation(); setRenaming(null) }}>Cancel</button>
+                          </>
+                        : <>
+                            <div className='who'>
+                              <div className='name'>{p.name}</div>
+                              <div className='sub'>{live.length} device{live.length === 1 ? '' : 's'}{on ? ` · ${on} online` : ''}</div>
+                            </div>
+                            <button className='ghost small' onClick={e => { e.stopPropagation(); startRename(p) }}>Rename</button>
+                            {live.length
+                              ? <button className='ghost small danger' onClick={e => { e.stopPropagation(); revokePerson(p) }}>Revoke all</button>
+                              : <button className='ghost small danger' onClick={e => { e.stopPropagation(); deletePerson(p) }}>Delete</button>}
+                          </>}
                     </div>
                     <div className={'devices-sub' + (isOpen ? ' open' : '')}>
                       {live.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} onExpiry={changeExpiry} />)}

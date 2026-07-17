@@ -182,6 +182,44 @@ class Grants {
     return person
   }
 
+  // Rename a person from the dashboard - the direct "rename" the UI lacked (you used
+  // to get here only by re-confirming a device's new claim). Returns the updated row,
+  // null if no such person, or throws on a bad/colliding name.
+  //
+  // Two invariants it must keep:
+  // 1. The name is the JOIN KEY personByName uses to turn a claim into an assignment
+  //    ("one Tim, not two"). So a blank name is refused, and a name that collides with
+  //    a DIFFERENT live person is refused - otherwise a later claim would be ambiguous.
+  // 2. Assigned devices carry a claimedUser (the name they claimed). If we renamed the
+  //    person and left those alone, the dashboard's claimMismatch would fire and the
+  //    devices would drop out of the person and reappear under "Needs confirmation" - and
+  //    the phone would read as unconfirmed. So we sync claimedUser on this person's live
+  //    devices to the new name. This is safe here BECAUSE it is the OPERATOR renaming a
+  //    person, not a device self-claiming (which must still stay pending) - the operator
+  //    is the authority on who a confirmed device belongs to.
+  async renamePerson (personId, name) {
+    const person = await this.getPerson(personId)
+    if (!person) return null
+    const clean = cleanName(name)
+    if (!clean) throw new Error('name required')
+
+    const clash = (await this.listPersons()).find(
+      p => p.id !== personId && !p.revokedAt && p.name.toLowerCase() === clean.toLowerCase()
+    )
+    if (clash) throw new Error('another person already has that name')
+
+    person.name = clean
+    await this.bee.put('person:' + personId, person, { valueEncoding: 'json' })
+
+    for (const g of await this.list()) {
+      if (g.personId === personId && !g.revokedAt && g.claimedUser && g.claimedUser !== clean) {
+        g.claimedUser = clean
+        await this.bee.put('grant:' + Grants.keyOf(g.deviceKey), g, { valueEncoding: 'json' })
+      }
+    }
+    return person
+  }
+
   // Attach a device to a person (or detach, with personId = null). This is what
   // makes "revoke that friend, not my tablet" possible: revocation then has a
   // subject a human recognises instead of a 52-character key.

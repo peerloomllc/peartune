@@ -160,6 +160,49 @@ test('deleting a person who still holds a LIVE device is refused', async (t) => 
   assert.notEqual(await g.getPerson(ada.id), null)
 })
 
+test('renamePerson changes the name and sanitizes it', async (t) => {
+  const g = await store(t)
+  const ada = await g.addPerson('Ada')
+
+  const row = await g.renamePerson(ada.id, '  Ada Lovelace\n  ')
+  assert.equal(row.name, 'Ada Lovelace') // trimmed + control chars stripped
+  assert.equal((await g.getPerson(ada.id)).name, 'Ada Lovelace')
+})
+
+test('renamePerson refuses a blank name and a missing person', async (t) => {
+  const g = await store(t)
+  const ada = await g.addPerson('Ada')
+
+  await assert.rejects(() => g.renamePerson(ada.id, '   '), /name required/)
+  assert.equal(await g.renamePerson('nope', 'Whoever'), null) // no such person
+  assert.equal((await g.getPerson(ada.id)).name, 'Ada') // unchanged
+})
+
+test('renamePerson refuses colliding with another live person (the "one Tim" rule)', async (t) => {
+  const g = await store(t)
+  const ada = await g.addPerson('Ada')
+  await g.addPerson('Grace')
+
+  // personByName joins a claim to a person by name, so two live Graces would be ambiguous.
+  await assert.rejects(() => g.renamePerson(ada.id, 'grace'), /already has that name/)
+  assert.equal((await g.getPerson(ada.id)).name, 'Ada')
+})
+
+test('renamePerson keeps assigned devices confirmed (syncs their claim to the new name)', async (t) => {
+  const g = await store(t)
+  const dev = await g.grant({ deviceKey: key(), label: 'phone' })
+  await g.setIdentity(dev.deviceKey, { userName: 'Tim' })
+  const person = await g.confirmClaim(dev.deviceKey) // creates "Tim", assigns the device
+
+  await g.renamePerson(person.personId, 'Timothy')
+
+  const row = await g.get(dev.deviceKey)
+  // Claim followed the rename, so the dashboard's claimMismatch stays false (the device
+  // remains under the person instead of dropping into "Needs confirmation").
+  assert.equal(row.claimedUser, 'Timothy')
+  assert.equal(row.personId, person.personId)
+})
+
 test('a person whose only devices are REVOKED can be deleted', async (t) => {
   const g = await store(t)
   const ada = await g.addPerson('Ada')
