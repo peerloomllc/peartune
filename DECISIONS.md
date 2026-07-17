@@ -2,6 +2,46 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-17 - Palette rework: "analog amber" replaces the spruce-green, across phone + dashboard
+Tier: T1 (pure token values; no wire/host/persisted-shape change - the [data-theme] contract and
+every var() are unchanged, only their values). Branch: feature/theme-analog-amber.
+Context: Tim picked "colors/themes" off the design-refresh list and chose (from a 3-direction visual
+studio rendered on a real PearTune screen) direction 2, "analog amber", over "spruce refined"
+(evolution) and "ink & signal" (neutral art-forward).
+The choice, and why it fits the subject: a lit-VU amber-gold (#e6b24e dark) on warm graphite, the
+palette of a vintage amplifier. It keeps the deliberate WARM, LOW-GLARE dark the app already
+committed to (an app you use with the screen off half the time) while giving the chrome a neutral
+graphite so the ALBUM ART carries the colour on every screen - amber is reserved as the "signal"
+(play, active tab, the heart you set, progress). It also sets up the deferred classic-Winamp skin.
+Rejected: staying spruce (too close to a no-op) and cool-neutral "ink & signal" (drops the
+intentional warmth for slightly more night glare). This is NOT one of the generic AI-design defaults
+(cream+serif+terracotta / near-black+acid-green / broadsheet) - it is grounded in the music-hardware
+subject.
+Light mode: amber has to DARKEN to a functional bronze (#9c6a12) to clear ~4.5:1 as both button
+background (white label) and accent text on cream - a light gold would fail contrast. So light reads
+as warm bronze-on-cream; dark is where the amber glows. Dark is the default and the common case
+(system-following), so this asymmetry is acceptable and coherent.
+Scope - TWO token systems + strays, all moved together so nothing is left green:
+- Phone: src/ui/styles.css [data-theme] blocks (--color-* set). Plus two hardcoded DARK-overlay
+  colours that can't be var() because they sit over always-dark surfaces (the QR scanner text over
+  the camera feed; the full-screen art-viewer caption over black) - moved to the new dark tokens.
+- Shell strip: app/index.tsx SHELL_BG (the status-bar + WebView backing) must equal
+  --color-surface-base or a cold-start flashes the old colour; updated to #17140f / #faf6ee.
+- Dashboard: host/ui/app/styles.css uses its OWN shorter token names (--bg/--primary/--accent/
+  --glow/--good/warn/bad) with THREE colour blocks (dark, @media prefers-light, explicit
+  [data-theme=light]) - all three updated, and the radial --bg-accent glow + --glow were recoloured
+  from the green rgba to amber.
+- Login page: host/ui/login.js is a separate hand-written dark-only string with its own hardcoded
+  palette (bg/fg/accent/danger + the on-primary button text + the error-box rgba) - updated too.
+Semantic colours kept distinct from the new amber primary: error stays a warm red (#e0705f dark /
+#c1362b light), success a muted green (#8bb877 / #3f7d3a) - traffic-light semantics survive a brand
+recolour; warn is a hotter amber (#f2b544 / #8a5a10), used rarely and never beside the primary.
+Verify: 289 tests (unchanged - values only, no logic; the dashboard-is-a-built-artifact test still
+passes) + all builds. ON THE TCL (debug APK) + the Umbrel dashboard (docker cp'd dashboard.html +
+login.js): dark reads warm-graphite with amber Play/active-tab/hearts/progress and album art
+carrying the colour; light reads cream with the bronze accent; the theme toggle (Dark/Light/System)
+switches cleanly both ways. Reset the test phone back to System afterward.
+
 ## 2026-07-17 - Session handoff v1 follow-ups: an instant-presence PUSH, position in the session row, honest paused wording
 Tier: T2 (a new server->client wire message on peartune/media/1 + two new persisted fields on
 the session row). Additive and backward-compatible - an old peer never registers the push type

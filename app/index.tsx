@@ -40,7 +40,7 @@ type Pending = { resolve: (v: any) => void; reject: (e: any) => void }
 // has to know the theme too - otherwise a light UI sits under a black notch. The
 // UI owns the decision (it knows whether the setting is light, dark or system)
 // and reports the RESOLVED scheme back down here.
-const SHELL_BG = { dark: '#14130f', light: '#faf8f5' }
+const SHELL_BG = { dark: '#17140f', light: '#faf6ee' } // must match --color-surface-base (analog amber)
 
 // How long the player may sit buffering-with-no-progress while disconnected before we
 // call it: the buffer starved and we cannot get back in. Long enough that a normal
