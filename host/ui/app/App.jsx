@@ -251,6 +251,11 @@ function AccessPanel ({ state, refresh, toast, online }) {
   // so a second dialog would be redundant. (Revoke still double-checks - it's destructive.)
   const confirmClaim = d => mutate('/api/person/confirm', { deviceKey: d.deviceKey }, r => `${d.label} now belongs to ${r.person.name}.`)
   const assign = (d, personId) => mutate('/api/assign', { deviceKey: d.deviceKey, personId: personId || null })
+  // Edit a guest's expiry: a duration re-limits (from now), 'permanent' clears it. This is
+  // how you promote a guest to permanent, or extend a pass without making them re-scan.
+  const changeExpiry = (d, v) => v === 'permanent'
+    ? mutate('/api/device/expiry', { deviceKey: d.deviceKey, expiresAt: null }, () => `${d.label} now has permanent access.`)
+    : mutate('/api/device/expiry', { deviceKey: d.deviceKey, expiresMs: Number(v) }, () => `${d.label} now expires in ${fmtDur(Number(v))}.`)
 
   const empty = !persons.length && !unassigned.length && !pending.length && !(showRevoked && revokedCount)
 
@@ -289,7 +294,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
                         : <button className='ghost small danger' onClick={e => { e.stopPropagation(); deletePerson(p) }}>Delete</button>}
                     </div>
                     <div className={'devices-sub' + (isOpen ? ' open' : '')}>
-                      {live.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} />)}
+                      {live.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} onExpiry={changeExpiry} />)}
                       {revoked.length > 0 &&
                         <Collapse open={showRevoked}>
                           <div className='revoked-stack'>
@@ -303,7 +308,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
               {(unassigned.length || revokedLoose.length) ?
                 <>
                   <div className='group-h'>Unassigned</div>
-                  {unassigned.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onAssign={assign} onRevoke={revoke} onDelete={deleteDevice} loose />)}
+                  {unassigned.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onAssign={assign} onRevoke={revoke} onDelete={deleteDevice} onExpiry={changeExpiry} loose />)}
                   {revokedLoose.length > 0 &&
                     <Collapse open={showRevoked}>
                       <div className='revoked-stack'>
@@ -328,7 +333,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
 
 // Every device row is exactly two lines (name + status) - no claim chip. A device
 // with an unconfirmed claim is handled by PendingCard instead (see AccessPanel).
-function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, loose }) {
+function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, loose }) {
   const guest = !!d.expiresAt && !d.revokedAt
   const expired = guest && Date.now() > d.expiresAt
   return (
@@ -350,6 +355,16 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, loose }) {
           <select className='assign' value={d.personId || ''} onChange={e => onAssign(d, e.target.value)}>
             <option value=''>— Unassigned —</option>
             {(persons || []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>}
+        {/* Guest-pass controls: re-limit (from now) or promote to permanent. A permanent
+            device shows nothing here - limit new guests via the guest pairing window. */}
+        {guest && onExpiry &&
+          <select className='assign' value='' onChange={e => { if (e.target.value) onExpiry(d, e.target.value) }}>
+            <option value='' disabled>{expired ? 'Renew…' : 'Change…'}</option>
+            <option value={String(DAY_MS)}>Expire in 24 hours</option>
+            <option value={String(7 * DAY_MS)}>Expire in 7 days</option>
+            <option value={String(30 * DAY_MS)}>Expire in 30 days</option>
+            <option value='permanent'>Make permanent</option>
           </select>}
         {d.revokedAt
           ? <button className='ghost small danger' onClick={() => onDelete(d)}>Delete</button>
@@ -577,6 +592,8 @@ function PairModal ({ onClose, toast }) {
   const [busy, setBusy] = useState(false)
   const [guest, setGuest] = useState(false)
   const [durMs, setDurMs] = useState(DAY_MS)
+  const [copied, setCopied] = useState(false)
+  const copyLink = async () => { if (await copyText(qr.link)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }
   const start = async () => {
     setBusy(true)
     // A guest window carries the operator's chosen duration; a full window sends nothing.
@@ -590,7 +607,7 @@ function PairModal ({ onClose, toast }) {
     <Modal title='Pair a Device' onClose={async () => { if (qr) await api('/api/pair/stop', {}); onClose() }}>
       {!qr
         ? <div className='stack center'>
-            <div className='seg'>
+            <div className='seg wide'>
               <button className={guest ? '' : 'on'} onClick={() => setGuest(false)}>Full access</button>
               <button className={guest ? 'on' : ''} onClick={() => setGuest(true)}>Guest pass</button>
             </div>
@@ -610,7 +627,12 @@ function PairModal ({ onClose, toast }) {
                 ? `Guest pass — access expires ${fmtDur(qr.expiresMs)} after this device pairs.`
                 : 'Valid for 5 minutes. Closes as soon as one device pairs.'}
             </div>
-            <div className='key addr'>{qr.link}</div>
+            <div className='keyrow'>
+              <div className='key addr'>{qr.link}</div>
+              <button className='iconbtn copybtn' onClick={copyLink} aria-label='Copy pairing code'>
+                {copied ? <CheckCircle size={16} weight='fill' color='var(--good)' /> : <Copy size={15} />}
+              </button>
+            </div>
             <button className='ghost' onClick={stop}>Cancel</button>
           </div>}
     </Modal>
