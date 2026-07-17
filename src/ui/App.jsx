@@ -1069,6 +1069,7 @@ export default function App () {
       {screen}
 
       <div className='dock' ref={dockRef}>
+        {ident?.expiresAt && state.connected && <GuestBanner expiresAt={ident.expiresAt} />}
         {now && (
           <Player
             now={now} status={status} expanded={expanded}
@@ -2937,6 +2938,30 @@ function fmt (ms) {
   if (!ms && ms !== 0) return '--:--'
   const s = Math.floor(ms / 1000)
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+// Coarse time-until, for the guest-pass banner ("5 min", "2 hr", "3 days"). ROUND, not
+// floor: a 2-hour pass should read "2 hr", not "1 hr" for its whole first hour (floor) -
+// and rounding a 25-hour pass to "1 day" beats ceil's misleading "2 days".
+function untilCoarse (ts) {
+  const s = Math.floor((ts - Date.now()) / 1000)
+  if (s < 60) return 'under a minute'
+  if (s < 3600) return Math.round(s / 60) + ' min'
+  if (s < 86400) return Math.round(s / 3600) + ' hr'
+  const d = Math.round(s / 86400)
+  return d + (d === 1 ? ' day' : ' days')
+}
+
+// A slim strip in the dock telling a GUEST device its access is time-limited. Its own
+// ticker keeps the countdown live between reconnects (loadIdentity refreshes expiresAt
+// on every connect, so an operator's extend/clear reflects here too).
+function GuestBanner ({ expiresAt }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setTick(x => x + 1), 30000)
+    return () => clearInterval(t)
+  }, [])
+  return <div className='guestbar'>Guest access · expires in {untilCoarse(expiresAt)}</div>
 }
 
 // Human bytes: MB up to a gig, then GB. Enough precision to watch a cache fill.

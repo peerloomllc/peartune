@@ -608,6 +608,9 @@ const methods = {
       userName: remote?.user?.name || local.userName || '',
       confirmed: !!remote?.user?.confirmed,
       belongsTo: remote?.belongsTo || null,
+      // A guest pass's expiry (null = permanent / offline / old host), so the UI can show
+      // a countdown banner. Only meaningful when we actually reached the host this call.
+      expiresAt: remote?.expiresAt ?? null,
       supported: remote !== null
     }
   },
