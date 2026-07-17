@@ -110,6 +110,10 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
             platform: d.platform,
             scope: d.scope,
             grantedAt: d.grantedAt,
+            grantedBy: d.grantedBy || null,
+            // A time-limited GUEST grant (null = permanent). The dashboard shows the
+            // countdown and an "expired" state off this.
+            expiresAt: d.expiresAt || null,
             lastSeenAt: d.lastSeenAt,
             revokedAt: d.revokedAt,
             online: d.online
@@ -185,9 +189,17 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
 
       // --- open a pairing window, and hand back a QR ---
       if (req.method === 'POST' && url.pathname === '/api/pair/start') {
-        const link = host.startPairing()
+        // expiresMs > 0 opens a GUEST window (time-limited access); absent = a normal
+        // permanent window. The operator sets the duration here, host-side.
+        const body = await readBody(req)
+        const expiresMs = Number(body.expiresMs) > 0 ? Number(body.expiresMs) : null
+        const link = host.startPairing({ expiresMs })
         const svg = await QRCode.toString(link, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' })
-        return json(res, 200, { link, svg, ttlMs: host.pairSession.ttl })
+        return json(res, 200, {
+          link, svg, ttlMs: host.pairSession.ttl,
+          guest: !!host.pairSession.expiresMs,
+          expiresMs: host.pairSession.expiresMs || null
+        })
       }
 
       if (req.method === 'POST' && url.pathname === '/api/pair/stop') {

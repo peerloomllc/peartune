@@ -168,6 +168,12 @@ a { color: var(--primary-strong); }
 @keyframes beat { 0%, 100% { box-shadow: 0 0 0 0 var(--glow); } 50% { box-shadow: 0 0 0 6px transparent; } }
 @media (prefers-reduced-motion: reduce) { .live { animation: none; } }
 .badge { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 7px; border-radius: 999px; background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+/* An active guest pass is informational, not a warning - so a calm tint, unlike the
+   amber "revoked" / "expired" badges. */
+.badge.guest { background: color-mix(in srgb, var(--primary) 16%, transparent); color: var(--primary); }
+.name .badge { margin-left: 6px; vertical-align: middle; }
+label.dur { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+label.dur select { margin-top: 2px; }
 /* expand/collapse: always rendered, animated via max-height + opacity so the
    caret rotation has a matching reveal. Indented under a hierarchy rail so a
    person's devices clearly read as a subset of that person. */

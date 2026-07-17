@@ -12,7 +12,7 @@ const EventEmitter = require('events')
 const hcrypto = require('hypercore-crypto')
 const z32 = require('z32')
 
-const { decide, Connections } = require('../host/gate')
+const { decide, sweepKills, Connections } = require('../host/gate')
 
 const NOW = 1_000_000
 const okGrant = (over = {}) => ({
@@ -152,4 +152,54 @@ test('Connections: killAll kills every device of a revoked person', () => {
   assert.equal(a.destroyed, true)
   assert.equal(b.destroyed, true)
   assert.equal(c.destroyed, false, 'a bystander must be untouched')
+})
+
+// --- sweepKills (the expiry sweep's selection) -------------------------------
+//
+// The sweep is what makes a guest grant expire while CONNECTED, not just at the next
+// connect. Its selection is pure, so every case is pinned here.
+
+test('sweepKills: a live device whose grant just expired is cut', () => {
+  const key = 'guest'
+  const lookups = new Map([[key, { grant: okGrant({ expiresAt: NOW - 1 }), person: null }]])
+  assert.deepEqual(sweepKills([key], lookups, NOW), [key])
+})
+
+test('sweepKills: a live device whose grant is still valid is left alone', () => {
+  const key = 'guest'
+  const lookups = new Map([[key, { grant: okGrant({ expiresAt: NOW + 10_000 }), person: null }]])
+  assert.deepEqual(sweepKills([key], lookups, NOW), [])
+})
+
+test('sweepKills: a permanent (never-expiring) grant is never swept', () => {
+  const key = 'owner'
+  const lookups = new Map([[key, { grant: okGrant({ expiresAt: null }), person: null }]])
+  assert.deepEqual(sweepKills([key], lookups, NOW), [])
+})
+
+test('sweepKills: only the expired ones among many are returned', () => {
+  const lookups = new Map([
+    ['a', { grant: okGrant({ expiresAt: NOW - 1 }), person: null }], // expired
+    ['b', { grant: okGrant({ expiresAt: NOW + 10_000 }), person: null }], // valid
+    ['c', { grant: okGrant({ expiresAt: null }), person: null }], // permanent
+    ['d', { grant: okGrant({ revokedAt: NOW - 1 }), person: null }] // revoked (belt-and-braces)
+  ])
+  assert.deepEqual(sweepKills(['a', 'b', 'c', 'd'], lookups, NOW).sort(), ['a', 'd'])
+})
+
+test('sweepKills: a live device with no grant at all is cut (fail-closed)', () => {
+  const lookups = new Map() // nothing known about this key
+  assert.deepEqual(sweepKills(['ghost'], lookups, NOW), ['ghost'])
+})
+
+test('Connections: deviceKeys lists exactly the devices holding a live connection', () => {
+  const conns = new Connections()
+  const phone = z32.encode(hcrypto.keyPair().publicKey)
+  const tablet = z32.encode(hcrypto.keyPair().publicKey)
+  const a = fakeConn(); const b = fakeConn()
+  conns.add(phone, a)
+  conns.add(tablet, b)
+  assert.deepEqual(conns.deviceKeys().sort(), [phone, tablet].sort())
+  a.emit('close')
+  assert.deepEqual(conns.deviceKeys(), [tablet])
 })

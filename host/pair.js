@@ -44,11 +44,15 @@ function tokenEquals (a, b) {
 }
 
 class PairSession {
-  constructor ({ identity, grants, libraryName, ttl = PAIR_TTL_MS, log = () => {}, onpaired = null }) {
+  constructor ({ identity, grants, libraryName, ttl = PAIR_TTL_MS, expiresMs = null, log = () => {}, onpaired = null }) {
     this.identity = identity
     this.grants = grants
     this.libraryName = libraryName
     this.ttl = ttl
+    // A GUEST window: devices that pair through it get a grant that expires this many ms
+    // after pairing. null = a normal window (permanent access). Operator-set, host-side -
+    // NEVER read from the device's hello, or a guest could pick its own expiry.
+    this.expiresMs = expiresMs
     this.log = log
     this.onpaired = onpaired
 
@@ -126,18 +130,30 @@ class PairSession {
         // the same as saying who you belong to.
         if (hello.label) await this.grants.setIdentity(remoteKey, { deviceName: hello.label })
 
+        // A GUEST window also REFRESHES the expiry: "extend the pass" is just "scan again
+        // while a guest window is open". A normal window leaves the expiry alone (so
+        // re-pairing a permanent device never accidentally time-limits it). Promoting a
+        // guest to permanent is a follow-up (dashboard expiry editing).
+        if (this.expiresMs) await this.grants.setExpiry(remoteKey, Date.now() + this.expiresMs)
+
         this.log('pair:already-granted', {
           device: z32.encode(remoteKey).slice(0, 8),
-          label: hello.label || existing.label
+          label: hello.label || existing.label,
+          guest: !!this.expiresMs
         })
       } else {
         await this.grants.grant({
           deviceKey: remoteKey,
           label: hello.label || 'device',
           platform: hello.platform || '',
-          grantedBy: 'qr-pair'
+          grantedBy: this.expiresMs ? 'qr-guest' : 'qr-pair',
+          expiresAt: this.expiresMs ? Date.now() + this.expiresMs : null
         })
-        this.log('pair:granted', { device: z32.encode(remoteKey).slice(0, 8), label: hello.label })
+        this.log('pair:granted', {
+          device: z32.encode(remoteKey).slice(0, 8),
+          label: hello.label,
+          guest: !!this.expiresMs
+        })
       }
 
       // Only now, over an authenticated connection, does the phone learn how to

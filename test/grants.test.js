@@ -171,3 +171,45 @@ test('a person whose only devices are REVOKED can be deleted', async (t) => {
   const gone = await g.deletePerson(ada.id)
   assert.equal(gone.id, ada.id)
 })
+
+// --- guest grants: time-limited access ---------------------------------------
+
+test('grant() stamps expiresAt when given one, and the gate then denies it once past', async (t) => {
+  const g = await store(t)
+  const key = z32.encode(hcrypto.keyPair().publicKey)
+  const expiresAt = Date.now() + 60_000
+  const row = await g.grant({ deviceKey: key, label: 'Guest phone', grantedBy: 'qr-guest', expiresAt })
+
+  assert.equal(row.expiresAt, expiresAt)
+  assert.equal(row.grantedBy, 'qr-guest')
+
+  const lookup = await g.lookup(key)
+  assert.equal(decide(lookup, expiresAt - 1).allow, true, 'valid before expiry')
+  assert.equal(decide(lookup, expiresAt + 1).allow, false, 'denied after expiry')
+})
+
+test('grant() defaults to no expiry (permanent), unchanged', async (t) => {
+  const g = await store(t)
+  const key = z32.encode(hcrypto.keyPair().publicKey)
+  const row = await g.grant({ deviceKey: key, label: 'My phone' })
+  assert.equal(row.expiresAt, null)
+  assert.equal(decide(await g.lookup(key), Date.now() + 10 * 365 * 24 * 3600_000).allow, true)
+})
+
+test('setExpiry() refreshes a guest pass without touching the claim, and no-ops on missing/revoked', async (t) => {
+  const g = await store(t)
+  const key = z32.encode(hcrypto.keyPair().publicKey)
+  await g.grant({ deviceKey: key, label: 'Guest', personId: 'p1', expiresAt: Date.now() + 1000 })
+
+  const later = Date.now() + 999_999
+  const row = await g.setExpiry(key, later)
+  assert.equal(row.expiresAt, later)
+  assert.equal(row.personId, 'p1', 'the person is left alone')
+  assert.equal(row.label, 'Guest', 'the label is left alone')
+
+  // missing device
+  assert.equal(await g.setExpiry(z32.encode(hcrypto.keyPair().publicKey), later), null)
+  // revoked device
+  await g.revoke(key)
+  assert.equal(await g.setExpiry(key, later + 1), null, 'a revoked grant is not re-extended')
+})

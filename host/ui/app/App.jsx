@@ -5,7 +5,7 @@ import {
   Lightning, CheckCircle, Folder, CaretLeft, Wrench
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
-import { api, copyText, ago, DONATE } from './api'
+import { api, copyText, ago, until, fmtDur, DONATE } from './api'
 import { loadThemePref, applyThemePref, resolveTheme } from './theme'
 
 // The operator control plane, as an app shell adapted from the PearCircle seeder's
@@ -329,14 +329,21 @@ function AccessPanel ({ state, refresh, toast, online }) {
 // Every device row is exactly two lines (name + status) - no claim chip. A device
 // with an unconfirmed claim is handled by PendingCard instead (see AccessPanel).
 function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, loose }) {
+  const guest = !!d.expiresAt && !d.revokedAt
+  const expired = guest && Date.now() > d.expiresAt
   return (
     <div className='dev'>
       <div className='drow'>
         {loose && <span className={'live' + (d.revokedAt ? ' rev' : (d.online ? '' : ' off'))} aria-hidden='true' />}
         <div className='who'>
-          <div className='name'>{d.label}{d.revokedAt && <span className='badge'>revoked</span>}</div>
-          <div className={'sub' + (d.revokedAt ? ' rev' : '')}>
+          <div className='name'>
+            {d.label}
+            {d.revokedAt && <span className='badge'>revoked</span>}
+            {guest && <span className={'badge' + (expired ? '' : ' guest')}>{expired ? 'expired' : 'guest'}</span>}
+          </div>
+          <div className={'sub' + ((d.revokedAt || expired) ? ' rev' : '')}>
             <span>{d.revokedAt ? `Revoked ${ago(d.revokedAt)}` : (d.online ? 'Connected' : 'Last seen ' + ago(d.lastSeenAt))}</span>
+            {guest && <span>{expired ? ' · pass expired' : ` · expires in ${until(d.expiresAt)}`}</span>}
           </div>
         </div>
         {onAssign && !d.revokedAt &&
@@ -558,14 +565,24 @@ function Modal ({ title, onClose, children }) {
   )
 }
 
+const DAY_MS = 86400000
+const GUEST_DURATIONS = [
+  { ms: DAY_MS, label: '24 hours' },
+  { ms: 7 * DAY_MS, label: '7 days' },
+  { ms: 30 * DAY_MS, label: '30 days' }
+]
+
 function PairModal ({ onClose, toast }) {
-  const [qr, setQr] = useState(null) // { link, dataUrl }
+  const [qr, setQr] = useState(null) // { link, dataUrl, guest, expiresMs }
   const [busy, setBusy] = useState(false)
+  const [guest, setGuest] = useState(false)
+  const [durMs, setDurMs] = useState(DAY_MS)
   const start = async () => {
     setBusy(true)
-    const { link } = await api('/api/pair/start', {})
-    const dataUrl = await QRCode.toDataURL(link, { width: 240, margin: 1, errorCorrectionLevel: 'M' }).catch(() => null)
-    setQr({ link, dataUrl })
+    // A guest window carries the operator's chosen duration; a full window sends nothing.
+    const r = await api('/api/pair/start', guest ? { expiresMs: durMs } : {})
+    const dataUrl = await QRCode.toDataURL(r.link, { width: 240, margin: 1, errorCorrectionLevel: 'M' }).catch(() => null)
+    setQr({ link: r.link, dataUrl, guest: r.guest, expiresMs: r.expiresMs })
     setBusy(false)
   }
   const stop = async () => { await api('/api/pair/stop', {}); setQr(null); toast('Pairing window closed.') }
@@ -573,12 +590,26 @@ function PairModal ({ onClose, toast }) {
     <Modal title='Pair a Device' onClose={async () => { if (qr) await api('/api/pair/stop', {}); onClose() }}>
       {!qr
         ? <div className='stack center'>
-            <p className='hint center'>Opens a 5 minute window. Scan the code in PearTune on your phone.</p>
+            <div className='seg'>
+              <button className={guest ? '' : 'on'} onClick={() => setGuest(false)}>Full access</button>
+              <button className={guest ? 'on' : ''} onClick={() => setGuest(true)}>Guest pass</button>
+            </div>
+            {guest
+              ? <label className='hint center dur'>Access expires
+                  <select value={durMs} onChange={e => setDurMs(Number(e.target.value))}>
+                    {GUEST_DURATIONS.map(o => <option key={o.ms} value={o.ms}>{o.label} after pairing</option>)}
+                  </select>
+                </label>
+              : <p className='hint center'>Permanent access. Scan the code in PearTune on your phone.</p>}
             <button onClick={start} disabled={busy}>{busy ? 'Starting…' : 'Show pairing code'}</button>
           </div>
         : <div className='stack center'>
             {qr.dataUrl && <img className='qr' src={qr.dataUrl} alt='Pairing QR code' />}
-            <div className='hint center'>Valid for 5 minutes. Closes as soon as one device pairs.</div>
+            <div className='hint center'>
+              {qr.guest
+                ? `Guest pass — access expires ${fmtDur(qr.expiresMs)} after this device pairs.`
+                : 'Valid for 5 minutes. Closes as soon as one device pairs.'}
+            </div>
             <div className='key addr'>{qr.link}</div>
             <button className='ghost' onClick={stop}>Cancel</button>
           </div>}
