@@ -679,7 +679,10 @@ export default function App () {
 
   async function runSearch (q) {
     setQuery(q)
-    if (!q.trim()) return setResults(null)
+    // The SONGS view filters what is already loaded, client-side (instant, works offline) -
+    // so no server round-trip there. Albums/Artists still search the whole library server-
+    // side. The Library render does the actual filtering off `query`.
+    if (!q.trim() || browse === 'songs') return setResults(null)
     try {
       setResults(await call('search', { q }))
     } catch (e) {
@@ -1046,6 +1049,10 @@ export default function App () {
         onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
         onBrowse={(b) => {
           haptic('light')
+          // Reset the search box when changing views: it means "search everything" on
+          // Albums/Artists but "filter the loaded list" on Songs, so carrying a query
+          // across that boundary would show a stale, wrong-shaped result.
+          setQuery(''); setResults(null)
           if (b === 'artists') return showArtists()
           if (b === 'songs') return showSongs()
           return setBrowse('albums')
@@ -1505,7 +1512,15 @@ function Library ({
 }) {
   // Bind the generic onFav(kind, item) to per-kind heart handlers for the leaves.
   const favTrack = onFav ? (t => onFav('track', t)) : null
-  const searching = results && query.trim()
+  // Server search shows its own results view - but NOT on Songs, which filters the
+  // already-loaded list in place (see songFilter below and runSearch).
+  const searching = results && query.trim() && browse !== 'songs'
+  // The Songs client-side filter: match title / artist / album, case-insensitive.
+  const songFilter = browse === 'songs' ? query.trim().toLowerCase() : ''
+  const shownSongs = songFilter
+    ? (songs || []).filter(t =>
+        `${t.title || ''} ${t.artist || ''} ${t.album || ''}`.toLowerCase().includes(songFilter))
+    : songs
   const D = densityOf(density)
   // The worklet hands us the base URL rather than finished art URLs, because only
   // the UI knows the density, and therefore the size to ask for.
@@ -1614,7 +1629,9 @@ function Library ({
       <header>
         <h1>{state.host.libraryName || 'Library'}</h1>
         <p className='muted sm'>
-          {count(browse, { albums, artists, songs })}
+          {songFilter
+            ? `${shownSongs.length} of ${songs ? songs.length : 0} loaded songs`
+            : count(browse, { albums, artists, songs })}
           {sourceText(state) && <> · {sourceText(state)}</>}
         </p>
       </header>
@@ -1624,7 +1641,7 @@ function Library ({
           className='search'
           value={query}
           onChange={e => onSearch(e.target.value)}
-          placeholder='Search artists, albums, tracks'
+          placeholder={browse === 'songs' ? 'Filter loaded songs' : 'Search artists, albums, tracks'}
         />
         {!searching && (
           <div className='pickrow'>
@@ -1667,24 +1684,37 @@ function Library ({
           )
         : browse === 'songs'
           ? (songs
-              ? (songs.length
+              ? (shownSongs.length
                   ? (
                     <>
                       <ul className='tracks'>
-                        {songs.map(t => (
+                        {shownSongs.map(t => (
                           <Row
                             key={t.id} t={t} on={now?.trackId === t.id}
-                            onPlay={() => onPlay(songs, t)} onLong={onLong} art
+                            onPlay={() => onPlay(shownSongs, t)} onLong={onLong} art
                             fav={favs.track.has(t.id)} onFav={favTrack}
                           />
                         ))}
                       </ul>
                       {songCursor != null && (
-                        <button className='more' onClick={onMoreSongs}>Load more</button>
+                        <button className='more' onClick={onMoreSongs}>
+                          {songFilter ? 'Load more songs to filter' : 'Load more'}
+                        </button>
                       )}
                     </>
                     )
-                  : <Empty />)
+                  // No matches. When filtering, offer to pull in more of the (paged)
+                  // library so the filter can reach songs not yet loaded.
+                  : songFilter
+                    ? (
+                      <div className='blank'>
+                        <p className='muted sm'>No loaded song matches “{query.trim()}”.</p>
+                        {songCursor != null && (
+                          <button className='more' onClick={onMoreSongs}>Load more songs</button>
+                        )}
+                      </div>
+                      )
+                    : <Empty />)
               : <SkeletonRows />)
           : browse === 'artists'
             ? (artists
