@@ -1867,9 +1867,11 @@ function Library ({
         <HandoffCard handoff={handoff} onPlayHere={onPlayHere} />
       )}
 
-      {/* Pick up where you left off. Only on the home view, and only when nothing is
-          already playing (the parent nulls `cont` in that case). */}
-      {cont?.track && !now && !searching && browse === 'albums' && (
+      {/* Pick up where you left off. Home view, nothing playing here (parent nulls `cont`),
+          AND no live session on another device - the "Playing on <name>" card above is the
+          richer affordance for that case (it brings the whole queue, not just this one track),
+          so Continue yields to it rather than showing the same song twice. */}
+      {cont?.track && !now && !handoff && !searching && browse === 'albums' && (
         <ContinueCard cont={cont} onPlay={onContinue} />
       )}
 
