@@ -147,6 +147,10 @@ a { color: var(--primary-strong); }
 .prow .caret.open { transform: rotate(90deg); }
 .who { flex: 1; min-width: 0; }
 .rename-input { flex: 1; min-width: 0; margin: 0; }
+/* The person-row actions sit side by side (Rename + Revoke all / Delete, or Save +
+   Cancel while editing). A shared min-width lines them up instead of each button
+   sizing to its own label - "Revoke all" is the widest, so the rest match it. */
+.prow > button { flex: 0 0 auto; min-width: 88px; white-space: nowrap; }
 .name { font-weight: 500; font-size: 14.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .name .id { color: var(--subtle); font-size: 11.5px; font-weight: 400; }
 .sub { color: var(--muted); font-size: 12.5px; margin-top: 1px; display: flex; align-items: center; gap: 7px; min-width: 0; }
