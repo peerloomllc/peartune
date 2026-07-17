@@ -3,7 +3,7 @@
  * The LAYOUT is adapted from the PearCircle seeder's #153 app-shell redesign: a
  * fixed top bar, a scrollable middle, a fixed action bar, a stat rail, a soft
  * radial glow, pulsing live dots, a gear menu, and modals. The PALETTE is
- * PearTune's own - the exact warm low-glare tokens + Manrope of the phone app
+ * PearTune's own - the exact "analog amber" tokens + Manrope of the phone app
  * (src/ui/styles.css) - so the dashboard reads as PearTune, not PearCircle. The
  * seeder's own note applies: the energy is in layout + hierarchy, not a rebrand. */
 
@@ -12,36 +12,36 @@
    frame; an explicit data-theme on <html> - stamped by main.jsx and the toggle -
    always wins. */
 :root, :root[data-theme="dark"] {
-  --bg: #14130f;
-  --bg-accent: radial-gradient(1200px 600px at 50% -12%, rgba(87,173,134,.10) 0%, transparent 60%);
-  --surface: #1c1a16; --surface-2: #1f1d19; --surface-hover: #272420;
-  --border: #35322b; --border-strong: #453f36;
-  --text: #f0ece5; --muted: #b6afa4; --subtle: #948d84;
-  --primary: #57ad86; --primary-strong: #3f8a68; --on-primary: #08130d; --glow: #57ad8666;
-  --good: #7ec77a; --warn: #ffb74d; --bad: #e0716d; --accent: #7ec4cf;
+  --bg: #17140f;
+  --bg-accent: radial-gradient(1200px 600px at 50% -12%, rgba(230,178,78,.10) 0%, transparent 60%);
+  --surface: #201c15; --surface-2: #221e17; --surface-hover: #2a251d;
+  --border: #39332a; --border-strong: #4a4237;
+  --text: #f3ede1; --muted: #c3b7a3; --subtle: #948a76;
+  --primary: #e6b24e; --primary-strong: #c8933a; --on-primary: #1c1305; --glow: #e6b24e66;
+  --good: #8bb877; --warn: #f2b544; --bad: #e0705f; --accent: #d17a4a;
   --shadow: 0 1px 2px #00000040, 0 8px 24px #00000030;
   --radius: 14px; --radius-sm: 10px;
 }
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #faf8f5;
-    --bg-accent: radial-gradient(1200px 600px at 50% -12%, rgba(63,138,104,.12) 0%, transparent 60%);
-    --surface: #ffffff; --surface-2: #f2efe9; --surface-hover: #f0ece4;
-    --border: #d9d3c6; --border-strong: #c8bdac;
-    --text: #1a1916; --muted: #4a4a44; --subtle: #7a7568;
-    --primary: #3f8a68; --primary-strong: #2f6a4f; --on-primary: #ffffff; --glow: #3f8a6840;
-    --good: #2e7d32; --warn: #b8730f; --bad: #c62828; --accent: #3a8a99;
+    --bg: #faf6ee;
+    --bg-accent: radial-gradient(1200px 600px at 50% -12%, rgba(156,106,18,.12) 0%, transparent 60%);
+    --surface: #ffffff; --surface-2: #f3ecdf; --surface-hover: #f0e9db;
+    --border: #ddd2bf; --border-strong: #ccbfa6;
+    --text: #1c1710; --muted: #4d4638; --subtle: #7d7360;
+    --primary: #9c6a12; --primary-strong: #7a5210; --on-primary: #ffffff; --glow: #9c6a1240;
+    --good: #3f7d3a; --warn: #8a5a10; --bad: #c1362b; --accent: #a85631;
     --shadow: 0 1px 2px #1b1a1614, 0 10px 30px #26241f14;
   }
 }
 :root[data-theme="light"] {
-  --bg: #faf8f5;
-  --bg-accent: radial-gradient(1200px 600px at 50% -12%, rgba(63,138,104,.12) 0%, transparent 60%);
-  --surface: #ffffff; --surface-2: #f2efe9; --surface-hover: #f0ece4;
-  --border: #d9d3c6; --border-strong: #c8bdac;
-  --text: #1a1916; --muted: #4a4a44; --subtle: #7a7568;
-  --primary: #3f8a68; --primary-strong: #2f6a4f; --on-primary: #ffffff; --glow: #3f8a6840;
-  --good: #2e7d32; --warn: #b8730f; --bad: #c62828; --accent: #3a8a99;
+  --bg: #faf6ee;
+  --bg-accent: radial-gradient(1200px 600px at 50% -12%, rgba(156,106,18,.12) 0%, transparent 60%);
+  --surface: #ffffff; --surface-2: #f3ecdf; --surface-hover: #f0e9db;
+  --border: #ddd2bf; --border-strong: #ccbfa6;
+  --text: #1c1710; --muted: #4d4638; --subtle: #7d7360;
+  --primary: #9c6a12; --primary-strong: #7a5210; --on-primary: #ffffff; --glow: #9c6a1240;
+  --good: #3f7d3a; --warn: #8a5a10; --bad: #c1362b; --accent: #a85631;
   --shadow: 0 1px 2px #1b1a1614, 0 10px 30px #26241f14;
 }
 

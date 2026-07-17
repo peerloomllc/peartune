@@ -13,8 +13,8 @@ module.exports = `<!doctype html>
 <title>PearTune</title>
 <style>
   :root {
-    --bg:#14130f; --fg:#f0ece5; --muted:#948d84; --line:#35322b;
-    --card:#1c1a16; --accent:#57ad86; --danger:#e0716d;
+    --bg:#17140f; --fg:#f3ede1; --muted:#948a76; --line:#39332a;
+    --card:#201c15; --accent:#e6b24e; --danger:#e0705f;
   }
   * { box-sizing:border-box }
   body {
@@ -32,12 +32,12 @@ module.exports = `<!doctype html>
   }
   button {
     width:100%; margin-top:.6rem; padding:.75rem; font:inherit; font-weight:600;
-    border:none; border-radius:10px; background:var(--accent); color:#08130d; cursor:pointer;
+    border:none; border-radius:10px; background:var(--accent); color:#1c1305; cursor:pointer;
   }
   button:disabled { opacity:.5; cursor:default }
   .err {
     margin-top:.8rem; padding:.6rem .8rem; border-radius:8px; font-size:.85rem;
-    background:rgba(224,113,109,.14); border:1px solid rgba(224,113,109,.4);
+    background:rgba(224,112,95,.14); border:1px solid rgba(224,112,95,.4);
   }
   .hint { margin-top:1.5rem; color:var(--muted); font-size:.78rem; line-height:1.5 }
 </style>

@@ -5,27 +5,29 @@
  * radius scales, --pear-safe-* insets. Dark is the default (bare :root), so a
  * document with no data-theme attribute still renders correctly.
  *
- * PearTune's own hue: a warm, low-glare dark (this is an app you use with the
- * screen off half the time) with the suite's green shifted toward the muted
- * spruce the player already used. */
+ * PearTune's own hue: "analog amber" - a lit-VU amber-gold on warm graphite, the
+ * palette of a vintage amplifier. Warm and low-glare (this is an app you use with
+ * the screen off half the time), and the neutral graphite chrome lets album art
+ * carry the colour. Amber is the "signal": play, active, the heart you set. Light
+ * mode darkens the amber to a functional bronze so it still reads on cream. */
 
 :root, :root[data-theme="dark"] {
-  --color-primary: #57ad86; --color-primary-dark: #3f8a68; --color-accent: #7ec4cf;
-  --color-error: #e0716d; --color-warn: #ffb74d; --color-success: #7ec77a;
-  --color-text-primary: #f0ece5; --color-text-secondary: #b6afa4;
-  --color-text-muted: #948d84; --color-text-on-primary: #08130d;
-  --color-surface-base: #14130f; --color-surface-card: #1c1a16;
-  --color-surface-elevated: #272420; --color-surface-input: #1f1d19;
-  --color-border: #35322b; --color-divider: #2c2a25; --color-track: #4a463d;
+  --color-primary: #e6b24e; --color-primary-dark: #c8933a; --color-accent: #d17a4a;
+  --color-error: #e0705f; --color-warn: #f2b544; --color-success: #8bb877;
+  --color-text-primary: #f3ede1; --color-text-secondary: #c3b7a3;
+  --color-text-muted: #948a76; --color-text-on-primary: #1c1305;
+  --color-surface-base: #17140f; --color-surface-card: #201c15;
+  --color-surface-elevated: #2a251d; --color-surface-input: #221e17;
+  --color-border: #39332a; --color-divider: #2d2820; --color-track: #4d4638;
 }
 :root[data-theme="light"] {
-  --color-primary: #3f8a68; --color-primary-dark: #2f6a4f; --color-accent: #3a8a99;
-  --color-error: #c62828; --color-warn: #b8730f; --color-success: #2e7d32;
-  --color-text-primary: #1a1916; --color-text-secondary: #4a4a44;
-  --color-text-muted: #7a7568; --color-text-on-primary: #ffffff;
-  --color-surface-base: #faf8f5; --color-surface-card: #ffffff;
-  --color-surface-elevated: #f0ece4; --color-surface-input: #f2efe9;
-  --color-border: #d9d3c6; --color-divider: #e5e0d5; --color-track: #c2bdaf;
+  --color-primary: #9c6a12; --color-primary-dark: #7a5210; --color-accent: #a85631;
+  --color-error: #c1362b; --color-warn: #8a5a10; --color-success: #3f7d3a;
+  --color-text-primary: #1c1710; --color-text-secondary: #4d4638;
+  --color-text-muted: #7d7360; --color-text-on-primary: #ffffff;
+  --color-surface-base: #faf6ee; --color-surface-card: #ffffff;
+  --color-surface-elevated: #f0e9db; --color-surface-input: #f3ecdf;
+  --color-border: #ddd2bf; --color-divider: #e9e0cf; --color-track: #c7bba3;
 }
 
 :root {
@@ -271,7 +273,7 @@ ul.tracks.editing li.editrow { gap: .5rem; background: var(--color-surface-base)
   position: absolute; left: 0; right: 0; bottom: 0; padding: 2rem;
   display: flex; flex-direction: column; gap: 1rem; align-items: center;
   background: linear-gradient(transparent, rgba(0, 0, 0, .85));
-  color: #f0ece5;
+  color: #f3ede1; /* over the camera feed (always dark) - the dark text token */
 }
 details { width: 100%; max-width: 22rem; }
 summary { cursor: pointer; padding: .5rem; }
@@ -767,7 +769,7 @@ button.shead .caret.open { transform: rotate(90deg); }
   max-width: 100%; max-height: 78vh; border-radius: 10px; object-fit: contain;
   box-shadow: 0 8px 40px rgba(0, 0, 0, .5);
 }
-.artviewer .cap { color: #b6afa4; text-align: center; }
+.artviewer .cap { color: #c3b7a3; text-align: center; } /* over the black art viewer - the dark secondary token */
 .tapart { cursor: pointer; flex: none; }
 
 /* --- pull to refresh ------------------------------------------------------ */
