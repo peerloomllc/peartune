@@ -55,6 +55,15 @@ const DENSITY = {
 }
 const densityOf = (d) => DENSITY[d] || DENSITY[2]
 
+// The {sort,order} params for a view's chosen sort in a sort map, or {} for none
+// (so the call falls through to the source's default order). Pure, so it works on a
+// sort object that has NOT been committed to state yet - the restore-on-launch load
+// and applySort's optimistic reload both need the params before setSort lands.
+const sortParamsFor = (sortMap, view) => {
+  const s = sortMap && sortMap[view]
+  return s?.key ? { sort: s.key, order: s.order || 'asc' } : {}
+}
+
 export default function App () {
   const [state, setState] = useState({ loading: true })
   const [tab, setTab] = useState('library')
@@ -112,12 +121,17 @@ export default function App () {
       .then((s) => {
         setState({ ...s, loading: false })
         if (s.settings?.density) setDensity(String(s.settings.density))
+        // Restore the persisted per-view sort. Held in a local, not read back from state,
+        // for the load below: setSort has not committed yet in this same tick, so the
+        // first albums load must take its params directly (same reason applySort does).
+        const savedSort = s.settings?.sort && typeof s.settings.sort === 'object' ? s.settings.sort : null
+        if (savedSort) setSort(savedSort)
         loadPinned() // pins are local - available even offline
         // Restore the paused queue from the last session (the shell rebuilds it and
         // emits play:started, which lights up the mini-player). Fire-and-forget: a
         // cached queue restores offline; an uncached one waits for the connection.
         call('restore').then(r => { if (r?.restored) setCont(null) }).catch(() => {})
-        if (s.connected) { loadAlbums(0); loadSource(); loadFavs(); loadContinue(); loadPlaylists() }
+        if (s.connected) { loadAlbums(0, sortParamsFor(savedSort, 'albums')); loadSource(); loadFavs(); loadContinue(); loadPlaylists() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
@@ -190,6 +204,13 @@ export default function App () {
   // What the once-registered listeners above need to see, always current.
   const liveRef = useRef({})
   liveRef.current = { host: state.host, connected: state.connected, reconnecting }
+
+  // The per-view sort, via a ref, because the loaders run from once-registered
+  // listeners (host:connected fires the first library load) whose closures captured
+  // the FIRST render's empty sort - reading the ref lets a no-param load pick up a
+  // sort restored from settings on launch. sortParams reads this, not the state.
+  const sortRef = useRef({})
+  sortRef.current = sort
 
   // Resume positions (milestone 3, phase 2): every 8s while a track plays, save its
   // position to the host, so it (and any of this person's other devices) can pick up
@@ -379,17 +400,18 @@ export default function App () {
   // server-side), and the {sort,order} params for a view's active choice - empty
   // when none, so a call falls through to the source's default order.
   const SORT_TYPE = { albums: 'albums', artists: 'artists', songs: 'tracks' }
-  function sortParams (view) {
-    const s = sort[view]
-    return s?.key ? { sort: s.key, order: s.order || 'asc' } : {}
-  }
+  const sortParams = (view) => sortParamsFor(sortRef.current, view)
 
   // Change (or clear) the sort for a view and reload it from the top. The new params
   // are passed straight into the loader rather than read back from state, because
   // setSort has not committed yet when the reload fires.
   function applySort (view, key, order) {
     const entry = key ? { key, order: order || 'asc' } : null
-    setSort(s => ({ ...s, [view]: entry }))
+    const next = { ...sort, [view]: entry }
+    setSort(next)
+    // Persist the choice so it survives a relaunch, like density - it rides the same
+    // worklet settings.json (state used to reset every launch; density did not - v1 gap).
+    call('setSettings', { sort: next }).catch(() => {})
     const params = entry ? { sort: entry.key, order: entry.order } : {}
     haptic('light')
     if (view === 'albums') { setAlbums([]); setCursor(0); setAlbumsLoaded(false); loadAlbums(0, params) }
