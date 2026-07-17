@@ -364,3 +364,43 @@ test('setSession sanitizes the queue and is owner-isolated; a missing session is
   assert.equal(await s.getSession('p:ASA'), null)                                  // another owner: none
   assert.equal(await s.setSession('p:ASA', 'PHONE', { queue: [] }), null)          // no row to be active of
 })
+
+test('setSession stores positionMs + playing for exact handoff and card wording', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0)
+  await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'a' }], index: 0, positionMs: 42000, playing: true })
+  const row = await s.getSession('p:TIM')
+  assert.equal(row.positionMs, 42000)
+  assert.equal(row.playing, true)
+  // A pause pushes the exact spot with playing:false - what makes another device say "Paused on".
+  await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'a' }], index: 0, positionMs: 43210, playing: false })
+  const paused = await s.getSession('p:TIM')
+  assert.equal(paused.positionMs, 43210)
+  assert.equal(paused.playing, false)
+})
+
+test('setSession clamps a garbage positionMs to 0 rather than throwing', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0)
+  await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'a' }], index: 0, positionMs: -5, playing: 'yes' })
+  const row = await s.getSession('p:TIM')
+  assert.equal(row.positionMs, 0)   // negative -> 0
+  assert.equal(row.playing, true)   // any truthy -> boolean true
+  // Absent fields default to 0 / false (an old client that never sends them).
+  await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'a' }], index: 0 })
+  const bare = await s.getSession('p:TIM')
+  assert.equal(bare.positionMs, 0)
+  assert.equal(bare.playing, false)
+})
+
+test('a claim ADOPTS positionMs + playing so "Play here" can seek from the claim reply', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0)
+  await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'a' }], index: 0, positionMs: 90000, playing: true })
+  const adopted = await s.claimSession('p:TIM', 'TABLET', 1)
+  assert.equal(adopted.positionMs, 90000) // the receiver seeks here with no extra round-trip
+  assert.equal(adopted.playing, true)
+})

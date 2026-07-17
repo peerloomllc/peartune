@@ -22,6 +22,7 @@ const { createIdentity } = require('./identity')
 const { Grants } = require('./grants')
 const { UserState } = require('./state')
 const { decide, sweepKills, Connections } = require('./gate')
+const { Presence } = require('./presence')
 
 // How often to sweep live connections for an expired guest grant. `decide()` covers
 // connect; this covers a guest that expires WHILE connected. 30s is fine for a scheduled
@@ -74,6 +75,11 @@ class PearTuneHost {
     this.userState = new UserState(this.stateBee)
 
     this.connections = new Connections()
+
+    // The registry that lets a session.claim on one device's connection push "you lost the
+    // token" to another device's connection (host/presence.js). Only ever holds channels the
+    // firewall already admitted; a revoke destroys the connection, which unregisters here.
+    this.presence = new Presence()
 
     // One interface, two implementations. The app never learns which is behind the
     // media API, which is what keeps the raw-folder path a first-class citizen
@@ -346,6 +352,9 @@ class PearTuneHost {
         // is fixed by `grant`, which came from the Noise-authenticated key of this
         // very connection - see host/grants.js setIdentity.
         grants: this.grants,
+        // So a session.claim here can push "you were superseded" to the device that
+        // held the token (cross-device handoff, instant presence).
+        presence: this.presence,
         log: (msg, data) => this.log(msg, { device: short, ...data })
       })
     })

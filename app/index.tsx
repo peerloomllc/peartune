@@ -262,7 +262,11 @@ export default function App () {
       index: indexRef.current,
       positionMs: posRef.current,
       shuffle: shuffleRef.current,
-      repeat: repeatRef.current
+      repeat: repeatRef.current,
+      // Mirrored to the host session so another device seeks to the right spot and its card
+      // reads "Playing"/"Paused on <name>" honestly. Read live from the player so a forced
+      // snapshot right after pause()/play() carries the state it just changed to.
+      playing: !!player.current?.playing
     }).then((r: any) => { if (r?.lostSession) onHandedOff() }).catch(() => {})
   }
 
@@ -391,6 +395,11 @@ export default function App () {
     if (!p) return
     if (p.playing) p.pause()
     else p.play()
+    // Flush the new play/pause state (and exact position) to the host session at once. A pause
+    // otherwise wouldn't push - the status poll goes silent the instant playback stops - so
+    // another device's card would keep saying "Playing on <name>" and a takeover would seek to
+    // a stale spot. The forced snapshot reads player.playing, which pause()/play() just set.
+    persistQueue(true)
   }
 
   // setQueueSources / skipToNext / skipToPrevious / currentQueueIndex come from
@@ -661,6 +670,14 @@ export default function App () {
             // playing and let the reconnect decide (proposal 2026-07-14).
             if (msg.event === 'host:disconnected') onHostDropped()
             else if (msg.event === 'host:connected') dropped.current = false
+            else if (msg.event === 'session:superseded') {
+              // Instant presence: another of this person's devices claimed the play token, so
+              // stop NOW. Same handler as the lazy path (a rejected heartbeat) - onHandedOff is
+              // idempotent, so a lazy rejection arriving after this too is harmless. It already
+              // emits play:handedoff to the UI, so we do not also forward this raw event.
+              onHandedOff()
+              continue
+            }
             toWeb(msg.event, msg.data)
             continue
           }

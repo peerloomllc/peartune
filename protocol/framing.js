@@ -129,6 +129,31 @@ const err = {
   }
 }
 
+// Host -> client. An UNSOLICITED, typed event - the one server->client push path.
+// Carries no request id (it answers no request); `kind` names the event and `data` is
+// its JSON payload. Today the only kind is 'session-superseded' (another of your devices
+// claimed the play-session token, so stop). It rides the same Noise-authenticated,
+// firewall-gated media channel as everything else and dies with the connection, so a
+// revoked device - whose connection the host destroys - can never receive one. Appended
+// LAST (type 5) so every existing type id is preserved: an old client that never
+// registered it simply drops the frame and falls back to lazy presence.
+const push = {
+  preencode (state, m) {
+    c.string.preencode(state, m.kind || '')
+    json.preencode(state, m.data ?? null)
+  },
+  encode (state, m) {
+    c.string.encode(state, m.kind || '')
+    json.encode(state, m.data ?? null)
+  },
+  decode (state) {
+    return {
+      kind: c.string.decode(state),
+      data: json.decode(state)
+    }
+  }
+}
+
 // Client -> host, on peartune/pair/1. The phone announces itself.
 //
 // `rv` is the one-time pairing token from the QR. It proves the phone actually
@@ -175,4 +200,4 @@ const paired = {
   }
 }
 
-module.exports = { json, req, res, chunk, end, err, deviceHello, paired }
+module.exports = { json, req, res, chunk, end, err, push, deviceHello, paired }

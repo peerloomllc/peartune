@@ -2,6 +2,71 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-17 - Session handoff v1 follow-ups: an instant-presence PUSH, position in the session row, honest paused wording
+Tier: T2 (a new server->client wire message on peartune/media/1 + two new persisted fields on
+the session row). Additive and backward-compatible - an old peer never registers the push type
+and drops the frame, an old host never sends it, both fall back to today's lazy presence. Branch:
+feature/handoff-instant-presence. Delivers the three deferred follow-ups from the 2026-07-17
+session-handoff proposal at once, because they share one piece of infrastructure.
+
+THE KEYSTONE - a server->client push. The media channel was pure request/response (req/res/chunk/
+end/err). Instant presence needs the host to speak first: when device B claims the token, the
+device that HELD it (A) must be told NOW, not on its next ~4s heartbeat. So `push` is appended as
+message type 5 (host/presence.js + protocol/framing.js `push` + protocol/channels.js). A `Presence`
+registry maps deviceKey -> live media channel(s); serveMedia registers on channel open and
+unregisters on close; session.claim reads the PRIOR activeDeviceKey and `presence.notify`s it
+'session-superseded'. The client (client/index.js onPush -> src/bare.js) drops the token and emits
+`session:superseded` to the shell, which runs the SAME onHandedOff as the lazy path (idempotent, so
+a lazy rejection landing too is harmless).
+Why this does NOT compromise the design (Tim asked for the assessment before approving): the push
+adds NO access surface. It only rides a channel that already exists, which only exists on a
+connection the firewall already admitted; register() runs AFTER the grant check. Revoke destroys
+the connection, whose close unregisters here, so a revoked device is gone from the registry and
+cannot be pushed to - the push is strictly WEAKER than the connection it rides and never touches
+the firewall, the grant store, or the revoke path. The only actor that gains a capability is the
+host, already fully trusted. Both load-bearing rules (grant store host-local; revoke kills live
+connections) are untouched, which is why this stays T2, not T3.
+
+POSITION rides the SESSION ROW now, not the resume row (Option A, chosen over the proposal's
+resolved #3). The active device carries positionMs + playing in the SAME ~4s heartbeat that already
+mirrors the queue (host/state.js setSession/claimSession), so "Play here" seeks from the claim
+reply ATOMICALLY - no extra round-trip, no read-after-write race against resume. The proposal's #3
+(the LOSING device flushes an exact resume on handoff) was rejected because its exactness depends on
+the loser being alive to flush, and the most common handoff (walk away from a backgrounded/paused
+phone) is exactly when it CANNOT - so it would silently degrade to the <=8s resume, i.e. least
+reliable when handoff is most common. Option A bends the proposal's tidy "position rides resume"
+separation for robustness; the cost is only conceptual (position now lives in two rows), not write
+traffic (the heartbeat fired anyway). Exactness at the handoff MOMENT comes from the shell forcing a
+snapshot on pause (app/index.tsx toggle -> persistQueue(true)): a pause otherwise wouldn't push
+(the status poll goes silent the instant playback stops), so without it another device's card would
+keep saying "Playing" and a takeover would seek stale.
+
+PAUSED WORDING (follow-up #2): the session row's `playing` flows to the card, which now reads
+"Paused on X" vs "Playing on X" honestly (src/ui/App.jsx HandoffCard, worklet sessionInfo
+activePlaying). The card refreshes on connect/resume/handoff, not live - the verb is correct at load
+time, a known v1 limit (a backgrounded device's card can lag the other device's play/pause until it
+next foregrounds).
+
+THE HONEST LIMIT, observed on hardware: the push only reaches a loser whose worklet is CONNECTED.
+A device playing from its buffer/cache with the screen off has its worklet suspended by Android and
+its host connection dropped (its heartbeats stop) - so `session:claim` logs `superseded:0`, nothing
+is pushed, and it falls back to lazy presence (stops when it next reconnects). This is the OS-suspend
+limit flagged in the assessment, not a bug: the push tightens the alive-but-not-pushing window
+(paused-connected, or the <=4s heartbeat gap) from lazy to instant, and it cannot wake a suspended
+process. The two-phone test caught BOTH cases cleanly (below).
+Verify: 289 tests (test/presence.test.js registry semantics incl. multi-connection + isolation +
+throwing-sender; state.test.js positionMs/playing store + clamp + claim-adoption; two new
+integration.test.js end-to-end-over-real-DHT tests - a claim pushes 'session-superseded' to the
+prior holder carrying the winning generation + exact positionMs in the claim reply, and a self
+re-claim pushes nobody). ON TWO PHONES (TCL + Pixel, host deployed to the Umbrel via docker cp, new
+APK on both): the card flipped "Paused on Pixel" -> "Playing on Pixel" with the Pixel's real state;
+BOTH handoff directions logged `session:claim superseded:1` and the loser's worklet logged
+`session:superseded {generation:N}` ~230-460 ms after the host claim (effectively instant, vs the
+old ~4s), tearing down / pausing playback at once; the taking-over device landed at ~88 s against
+the source's ~84 s (the <=4s heartbeat freshness + spin-up, position transferring correctly); single
+active player held throughout. The suspend fallback was also observed (`superseded:0` when the loser
+had been playing from buffer screen-off, lazy takeover still correct).
+
 ## 2026-07-17 - Library sort now PERSISTS across relaunch (closing the v1 gap), and a stale closure was in the way
 Tier: T1 (client only; no wire change, no host change - the sort choice rides the existing
 worklet settings.json alongside density). Branch: feature/sort-persistence.

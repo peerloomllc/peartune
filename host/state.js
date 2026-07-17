@@ -260,14 +260,21 @@ class UserState {
   //
   // ONE row per owner - the person's current listening session:
   //   session:{ownerId} -> { queue:[{trackId,...meta}], index, shuffle, repeat,
-  //                          activeDeviceKey, generation, updatedAt }
+  //                          positionMs, playing, activeDeviceKey, generation, updatedAt }
   //
   // This is SESSION state, not library state, so it is NOT ambient last-write-wins like
   // favorites. A single active device holds the session via `activeDeviceKey`, and taking it
   // is a deliberate act guarded by a monotonic `generation` compare-and-set (the conflict
-  // primitive). Position is NOT stored here - it rides the resume row (the receiver seeks to
-  // resume.get for the current track). `activeDeviceKey` is the specific DEVICE key (not the
-  // owner), because two of a person's devices share the ownerId but only one is active.
+  // primitive). `activeDeviceKey` is the specific DEVICE key (not the owner), because two of
+  // a person's devices share the ownerId but only one is active.
+  //
+  // POSITION rides here now, not only the resume row. The active device carries positionMs in
+  // the SAME throttled heartbeat that already mirrors the queue (no new write cadence - the
+  // heartbeat fires anyway), so "Play here" seeks to the queue and the position ATOMICALLY,
+  // with no extra round-trip and no read-after-write race against resume (deferred follow-up
+  // #3, chosen over the proposal's losing-device flush - which a backgrounded loser cannot
+  // do). `playing` says whether the active device is playing or paused, so another device's
+  // card can read "Paused on X" honestly instead of "Playing on X" (follow-up #2).
   _sessionKey (ownerId) {
     return `session:${ownerId}`
   }
@@ -291,6 +298,10 @@ class UserState {
       index: row?.index || 0,
       shuffle: row?.shuffle || false,
       repeat: row?.repeat || 0,
+      // Adopt the leaving device's last-known position, so "Play here" can seek immediately
+      // from the claim's own reply (the receiver need not chase a separate resume read).
+      positionMs: row?.positionMs || 0,
+      playing: row?.playing || false,
       activeDeviceKey: deviceKey,
       generation: cur + 1,
       updatedAt: Date.now()
@@ -303,13 +314,17 @@ class UserState {
   // non-holder (a device superseded by a claim it has not noticed yet) is rejected with null,
   // which is exactly how it learns it is no longer active (lazy presence). The token
   // (activeDeviceKey + generation) is left untouched.
-  async setSession (ownerId, deviceKey, { queue, index, shuffle, repeat } = {}) {
+  async setSession (ownerId, deviceKey, { queue, index, shuffle, repeat, positionMs, playing } = {}) {
     const row = await this.getSession(ownerId)
     if (!row || row.activeDeviceKey !== deviceKey) return null
     row.queue = sanitizeQueue(queue)
     row.index = Number.isInteger(index) && index >= 0 ? index : 0
     row.shuffle = !!shuffle
     row.repeat = Number(repeat) || 0
+    // Position + playing ride the same heartbeat as the queue (see the header note). Clamp to
+    // a non-negative integer; a garbage value just means the receiver seeks to 0, never throws.
+    row.positionMs = Number.isFinite(positionMs) && positionMs > 0 ? Math.round(positionMs) : 0
+    row.playing = !!playing
     row.updatedAt = Date.now()
     await this.bee.put(this._sessionKey(ownerId), row, { valueEncoding: 'json' })
     return row

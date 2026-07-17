@@ -196,6 +196,97 @@ test('a playlist is the DEVICE\'s: a second unclaimed device cannot see or touch
   assert.equal((await a.client.playlistList()).items[0].name, 'private')
 })
 
+// --- session handoff: instant presence (proposal 2026-07-17, follow-up #1) ---
+
+// Pair two devices, assign BOTH to one person (so they share a session owner), then connect.
+// Assignment must precede connect: the grant - and the owner derived from it - is captured at
+// connect time, so a device assigned after connecting would still own state as itself.
+async function twoDevicesOnePerson (testnet, host, name = 'Tim') {
+  const aClient = newClient(testnet)
+  const bClient = newClient(testnet)
+  const linkA = host.startPairing()
+  const pairedA = await aClient.pair(linkA, { label: 'Phone', platform: 'android' })
+  const linkB = host.startPairing()
+  const pairedB = await bClient.pair(linkB, { label: 'Tablet', platform: 'android' })
+
+  const person = await host.grants.addPerson(name)
+  await host.grants.assign(z32.encode(aClient.keyPair.publicKey), person.id)
+  await host.grants.assign(z32.encode(bClient.keyPair.publicKey), person.id)
+
+  await aClient.connect({ hostKey: pairedA.hostKey, libraryId: pairedA.libraryId })
+  await bClient.connect({ hostKey: pairedB.hostKey, libraryId: pairedB.libraryId })
+  // Shaped like pairAndConnect ({ client, ... }) so the tests read a.client / b.client.
+  return { a: { client: aClient }, b: { client: bClient } }
+}
+
+// Resolve when `client` receives a push of `kind`, preserving any handler already set.
+function oncePush (client, kind, ms = 4000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('no push: ' + kind)), ms)
+    if (timer.unref) timer.unref()
+    const prev = client.onPush
+    client.onPush = (m) => {
+      if (prev) { try { prev(m) } catch {} }
+      if (m && m.kind === kind) { clearTimeout(timer); resolve(m) }
+    }
+  })
+}
+
+test('HANDOFF: claiming the session pushes "superseded" to the device that held it (instant presence)', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  // A becomes the active player and mirrors a queue + its exact spot.
+  const c0 = await a.client.sessionGet()
+  const claimedA = await a.client.sessionClaim({ generation: c0?.generation || 0 })
+  assert.equal(claimedA.ok, true)
+  await a.client.sessionSet({ queue: [{ trackId: 't1' }, { trackId: 't2' }], index: 1, positionMs: 42000, playing: true })
+
+  // B reads the session (same owner, so it SEES A's) and "Play here".
+  const seen = await b.client.sessionGet()
+  assert.equal(seen.isActiveHere, false)
+  assert.equal(seen.activeDeviceName, 'Phone')
+  assert.equal(seen.playing, true)           // the card would read "Playing on Phone"
+  assert.equal(seen.queue.length, 2)
+
+  // The claim must push "superseded" to A. Arm the listener BEFORE claiming so we cannot miss it.
+  const pushed = oncePush(a.client, 'session-superseded')
+  const claimedB = await b.client.sessionClaim({ generation: seen.generation })
+  assert.equal(claimedB.ok, true)
+  assert.equal(claimedB.session.positionMs, 42000, 'B adopts the exact spot from the claim reply')
+  assert.equal(claimedB.session.index, 1)
+
+  const evt = await pushed
+  assert.equal(evt.data.generation, claimedB.session.generation, 'the push carries the winning generation')
+
+  // The push is the fast path; the lazy backstop still holds - A, now superseded, is refused if
+  // it writes (ok:false, which is how it would have learned lazily without the push).
+  const rejected = await a.client.sessionSet({ queue: [{ trackId: 'x' }], index: 0 })
+  assert.equal(rejected.ok, false, 'a superseded device cannot overwrite the session')
+  const after = await b.client.sessionGet()
+  assert.equal(after.isActiveHere, true, 'B holds the token')
+})
+
+test('HANDOFF: an idempotent re-claim by the current holder pushes nobody', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  const c0 = await a.client.sessionGet()
+  const claimed = await a.client.sessionClaim({ generation: c0?.generation || 0 })
+
+  // A re-claims with the CURRENT generation (it still holds the token). No prior holder changed,
+  // so B must not be told anything. Assert B gets no push within a short window.
+  let bGotPush = false
+  b.client.onPush = () => { bGotPush = true }
+  await a.client.sessionClaim({ generation: claimed.session.generation })
+  await new Promise(r => setTimeout(r, 500))
+  assert.equal(bGotPush, false, 'a self re-claim supersedes nobody')
+})
+
 test('stream a whole track, bytes identical to the file on disk', async (t) => {
   const { testnet, host, track } = await scaffold(t)
   const { client } = await pairAndConnect(testnet, host)
