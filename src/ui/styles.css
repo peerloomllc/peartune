@@ -340,11 +340,43 @@ button.more { width: 100%; margin: 1.2rem 0 0; }
   padding: .35rem 0 .5rem;
 }
 .pickrow { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; }
-.pickrow .seg { flex: 1; }
+/* min-width:0 lets the segmented picker YIELD width to the density + sort controls
+   on its right rather than forcing the row past the screen edge (the sort <select>
+   is the widest thing that can sit there). */
+.pickrow .seg { flex: 1; min-width: 0; }
+.pickrow .seg button { min-width: 0; }
 button.icon.dens {
   flex: none; padding: .5rem .6rem; border: 1px solid var(--color-border);
   background: var(--color-surface-input); border-radius: 9999px;
   color: var(--color-text-secondary);
+}
+
+/* Sort control: a pill holding a compact native <select> plus, when a key is chosen,
+   an ascending/descending toggle. Sits after the density button in the pickrow and
+   stays its natural width (flex: none) so the Albums/Artists/Songs pill keeps the
+   room. On a source that cannot sort the active view it becomes the faded `.sortbtn`
+   stub rather than disappearing, so the row does not reflow. */
+.pickrow .sortctl {
+  flex: none; display: flex; align-items: center; gap: .15rem;
+  border: 1px solid var(--color-border); background: var(--color-surface-input);
+  border-radius: 9999px; padding: .3rem .45rem;
+  color: var(--color-text-secondary);
+}
+.sortctl .sortglyph { flex: none; opacity: .75; }
+select.sortsel {
+  border: none; background: transparent; color: var(--color-text-primary);
+  font-size: .8rem; font-weight: 500; padding: 0 .1rem; max-width: 4.5rem;
+  -webkit-appearance: none; appearance: none;
+  text-overflow: ellipsis;
+}
+.sortctl button.icon.dir {
+  flex: none; padding: .1rem; border: none; background: transparent;
+  color: var(--color-primary); display: flex; align-items: center;
+}
+button.icon.sortbtn {
+  flex: none; padding: .5rem .6rem; border: 1px solid var(--color-border);
+  background: var(--color-surface-input); border-radius: 9999px;
+  color: var(--color-text-secondary); opacity: .4;
 }
 
 /* Segmented pill. Albums / Artists / Songs here, Favorites / Most Played in the

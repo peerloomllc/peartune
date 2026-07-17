@@ -699,6 +699,10 @@ button.more {
 }
 .pickrow .seg {
   flex: 1;
+  min-width: 0;
+}
+.pickrow .seg button {
+  min-width: 0;
 }
 button.icon.dens {
   flex: none;
@@ -707,6 +711,51 @@ button.icon.dens {
   background: var(--color-surface-input);
   border-radius: 9999px;
   color: var(--color-text-secondary);
+}
+.pickrow .sortctl {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: .15rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-input);
+  border-radius: 9999px;
+  padding: .3rem .45rem;
+  color: var(--color-text-secondary);
+}
+.sortctl .sortglyph {
+  flex: none;
+  opacity: .75;
+}
+select.sortsel {
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: .8rem;
+  font-weight: 500;
+  padding: 0 .1rem;
+  max-width: 4.5rem;
+  -webkit-appearance: none;
+  appearance: none;
+  text-overflow: ellipsis;
+}
+.sortctl button.icon.dir {
+  flex: none;
+  padding: .1rem;
+  border: none;
+  background: transparent;
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+}
+button.icon.sortbtn {
+  flex: none;
+  padding: .5rem .6rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-input);
+  border-radius: 9999px;
+  color: var(--color-text-secondary);
+  opacity: .4;
 }
 .seg {
   display: flex;

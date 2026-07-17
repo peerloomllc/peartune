@@ -19,7 +19,7 @@ import {
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
-  Palette, SpeakerHigh, Key, ChartLineUp
+  Palette, SpeakerHigh, Key, ChartLineUp, ArrowsDownUp, ArrowUp, ArrowDown
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -66,6 +66,11 @@ export default function App () {
   const [songs, setSongs] = useState(null)
   const [songCursor, setSongCursor] = useState(0)
   const [density, setDensity] = useState('2')
+  // Per-view sort choice: { albums:{key,order}, artists:{key,order}, songs:{key,order} }.
+  // Absent = the source's default (shelf) order. Which keys are OFFERED comes from the
+  // host's advertised capability (state.sorts), so a source that cannot sort a view
+  // (Subsonic songs) shows no control at all.
+  const [sort, setSort] = useState({})
   const [ident, setIdent] = useState(null) // device name + user claim
   const [query, setQuery] = useState('')
   const [results, setResults] = useState(null)
@@ -253,7 +258,7 @@ export default function App () {
       // sourceName is the server's OWN name for itself ("Nextcloud Music", "Gonic",
       // "Emby Server"); source is the coarse kind. Prefer the specific one, keep the
       // kind so an older host with no sourceName still gets a label.
-      setState(s => ({ ...s, source: st.source, sourceName: st.sourceName || null }))
+      setState(s => ({ ...s, source: st.source, sourceName: st.sourceName || null, sorts: st.sorts || null }))
     } catch {
       // Offline, or a host too old to answer: the indicator just stays hidden.
     }
@@ -369,9 +374,31 @@ export default function App () {
 
   // --- data ------------------------------------------------------------------
 
-  async function loadAlbums (from) {
+  // Which host capability key backs each browse view (the Songs view is 'tracks'
+  // server-side), and the {sort,order} params for a view's active choice - empty
+  // when none, so a call falls through to the source's default order.
+  const SORT_TYPE = { albums: 'albums', artists: 'artists', songs: 'tracks' }
+  function sortParams (view) {
+    const s = sort[view]
+    return s?.key ? { sort: s.key, order: s.order || 'asc' } : {}
+  }
+
+  // Change (or clear) the sort for a view and reload it from the top. The new params
+  // are passed straight into the loader rather than read back from state, because
+  // setSort has not committed yet when the reload fires.
+  function applySort (view, key, order) {
+    const entry = key ? { key, order: order || 'asc' } : null
+    setSort(s => ({ ...s, [view]: entry }))
+    const params = entry ? { sort: entry.key, order: entry.order } : {}
+    haptic('light')
+    if (view === 'albums') { setAlbums([]); setCursor(0); setAlbumsLoaded(false); loadAlbums(0, params) }
+    else if (view === 'artists') { setArtists(null); loadArtists(params) }
+    else if (view === 'songs') { setSongs(null); setSongCursor(0); loadSongs(0, params) }
+  }
+
+  async function loadAlbums (from, params) {
     try {
-      const page = await call('albums', { cursor: from, limit: 60 })
+      const page = await call('albums', { cursor: from, limit: 60, ...(params ?? sortParams('albums')) })
       setAlbums(a => (from ? [...a, ...page.items] : page.items))
       setCursor(page.nextCursor)
       setAlbumsLoaded(true)
@@ -407,24 +434,28 @@ export default function App () {
 
   // Artists load once, on the first visit: getArtists returns the whole index in
   // a single call, so unlike albums there is nothing to page.
-  async function showArtists (force) {
-    setBrowse('artists')
-    if (artists && !force) return
+  async function loadArtists (params) {
     try {
-      const page = await call('artists')
+      const page = await call('artists', { ...(params ?? sortParams('artists')) })
       setArtists(page.items)
     } catch (e) {
       setError(e.message)
     }
   }
 
+  async function showArtists (force) {
+    setBrowse('artists')
+    if (artists && !force) return
+    await loadArtists()
+  }
+
   // The Songs view. It exists because Navidrome answers an empty-query search3
   // with everything, PAGED - so this is a real list, not the album walk the old
   // code did (which could only ever reach the first page of albums, and is why
   // this view was dropped the first time round).
-  async function loadSongs (from) {
+  async function loadSongs (from, params) {
     try {
-      const page = await call('tracks', { cursor: from, limit: 100 })
+      const page = await call('tracks', { cursor: from, limit: 100, ...(params ?? sortParams('songs')) })
       setSongs(s => (from ? [...(s || []), ...page.items] : page.items))
       setSongCursor(page.nextCursor)
     } catch (e) {
@@ -1058,6 +1089,7 @@ export default function App () {
           return setBrowse('albums')
         }}
         onDensity={cycleDensity}
+        sort={sort} onSort={applySort}
         onSearch={runSearch}
         onReconnect={reconnect}
         onRefresh={refresh}
@@ -1503,11 +1535,65 @@ function NamePrompt ({ title, placeholder, submitLabel = 'Save', onSubmit, onClo
 
 // --- library -----------------------------------------------------------------
 
+// Human labels for the canonical sort keys the host advertises. 'title'/'name' are
+// the same idea for a track vs an album; 'duration' reads as "Length" to a listener.
+const SORT_LABEL = {
+  title: 'Title', name: 'Name', artist: 'Artist', album: 'Album', year: 'Year', duration: 'Length'
+}
+
+// The Sort control. It shows ONLY what the active source can do: the keys come from
+// the host's advertised capability (state.sorts) for the active view, so a source
+// that cannot sort the current view (Subsonic songs) shows a disabled stub - kept in
+// place rather than vanishing, so the row does not reflow under your thumb, the same
+// call the density button makes. A source that cannot sort anything (an old host with
+// no `sorts`) shows nothing at all.
+function SortControl ({ browse, sorts, sort, onSort }) {
+  const capType = browse === 'songs' ? 'tracks' : browse
+  const hasAny = sorts && Object.values(sorts).some(c => c?.keys?.length)
+  if (!hasAny) return null
+
+  const keys = sorts[capType]?.keys || []
+  if (!keys.length) {
+    return (
+      <button className='icon sortbtn' disabled aria-label='Sorting is not available for this view'>
+        <ArrowsDownUp size={20} weight='regular' />
+      </button>
+    )
+  }
+
+  const reversible = sorts[capType].reversible
+  const cur = sort?.[browse] || null
+  const order = cur?.order || 'asc'
+  return (
+    <div className='sortctl'>
+      <ArrowsDownUp size={16} weight='regular' className='sortglyph' />
+      <select
+        className='sortsel'
+        value={cur?.key || ''}
+        onChange={e => onSort(browse, e.target.value || null, order)}
+        aria-label='Sort by'
+      >
+        <option value=''>Default</option>
+        {keys.map(k => <option key={k} value={k}>{SORT_LABEL[k] || k}</option>)}
+      </select>
+      {cur?.key && reversible && (
+        <button
+          className='icon dir'
+          onClick={() => onSort(browse, cur.key, order === 'asc' ? 'desc' : 'asc')}
+          aria-label={order === 'asc' ? 'Ascending - tap for descending' : 'Descending - tap for ascending'}
+        >
+          {order === 'asc' ? <ArrowUp size={18} weight='bold' /> : <ArrowDown size={18} weight='bold' />}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
   favs, onFav, cont, onContinue,
-  onBrowse, onDensity, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
+  onBrowse, onDensity, sort, onSort, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
   // Bind the generic onFav(kind, item) to per-kind heart handlers for the leaves.
@@ -1663,6 +1749,7 @@ function Library ({
             >
               <D.Icon size={20} weight='regular' />
             </button>
+            <SortControl browse={browse} sorts={state.sorts} sort={sort} onSort={onSort} />
           </div>
         )}
       </div>

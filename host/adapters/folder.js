@@ -25,6 +25,7 @@ const path = require('path')
 const { Readable } = require('stream')
 const { spawn } = require('child_process')
 const { trackId, groupId } = require('../../protocol/ids')
+const { TRACK_CMP, ALBUM_CMP, ARTIST_CMP, FULL_SORTS, sortRows } = require('./sort')
 
 // The transcoder. `PEARTUNE_FFMPEG` overrides the binary (a bundled static build,
 // say); otherwise we trust PATH. Adding ffmpeg to the host image is what turns
@@ -114,6 +115,13 @@ class FolderAdapter {
     this._sortedAlbums = []
     this._sortedArtists = []
     this._sortedTracks = []
+
+    // Sorted permutations of the above, memoized per (type|sort|order). The library
+    // is sorted once at scan into its default (shelf) order; a request for a
+    // different order sorts it once more and keeps the result, so scrolling a
+    // title-sorted Songs list does not re-sort 100,000 rows on every page. Cleared
+    // on every rebuild.
+    this._sortCache = new Map()
 
     this.artCache = new Map() // coverId -> Buffer | null  (null = looked, found nothing)
     this.scannedAt = null
@@ -305,6 +313,7 @@ class FolderAdapter {
     this.tracks.clear()
     this.albums.clear()
     this.artists.clear()
+    this._sortCache = new Map() // the library changed; old sorted permutations are stale
 
     // Pass 1: bucket the files into albums.
     const buckets = new Map() // albumKey -> { rows, dir }
@@ -433,11 +442,26 @@ class FolderAdapter {
       tracks: this.tracks.size,
       albums: this.albums.size,
       artists: this.artists.size,
+      // The whole library is in memory, so every field sorts for free, both ways.
+      sorts: FULL_SORTS,
       scannedAt: this.scannedAt
     }
   }
 
-  async list ({ type = 'tracks', limit = 200, cursor = 0 } = {}) {
+  // Sorted-and-memoized view of one of the _sorted* arrays. An unknown/absent `sort`
+  // returns the default (shelf) order untouched.
+  _order (type, all, table, sort, order) {
+    if (!table[sort]) return all
+    const key = `${type}|${sort}|${order === 'desc' ? 'desc' : 'asc'}`
+    let rows = this._sortCache.get(key)
+    if (!rows) {
+      rows = sortRows(all, table, sort, order)
+      this._sortCache.set(key, rows)
+    }
+    return rows
+  }
+
+  async list ({ type = 'tracks', limit = 200, cursor = 0, sort, order } = {}) {
     const start = Math.max(0, Number(cursor) || 0)
     const page = (all, map) => {
       const items = all.slice(start, start + limit).map(map)
@@ -446,7 +470,7 @@ class FolderAdapter {
     }
 
     if (type === 'albums') {
-      return page(this._sortedAlbums, a => ({
+      return page(this._order('albums', this._sortedAlbums, ALBUM_CMP, sort, order), a => ({
         id: a.id, name: a.name, artist: a.artist, year: a.year, songCount: a.songCount, coverId: a.coverId
       }))
     }
@@ -454,13 +478,15 @@ class FolderAdapter {
     if (type === 'artists') {
       // Not paged, to match the Navidrome adapter (getArtists answers in one shot,
       // and the app's artist grid asks for the lot).
-      const items = this._sortedArtists.map(a => ({
+      const items = this._order('artists', this._sortedArtists, ARTIST_CMP, sort, order).map(a => ({
         id: a.id, name: a.name, albumCount: a.albumCount, coverId: a.coverId
       }))
       return { type, items, nextCursor: null }
     }
 
-    if (type === 'tracks') return page(this._sortedTracks, t => this._pub(t))
+    if (type === 'tracks') {
+      return page(this._order('tracks', this._sortedTracks, TRACK_CMP, sort, order), t => this._pub(t))
+    }
 
     // No playlists in a folder. An .m3u reader is a fine idea and it is not this.
     return { type, items: [], nextCursor: null }
