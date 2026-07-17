@@ -345,6 +345,25 @@ export default function App () {
     return { items: queueRef.current, index: indexRef.current }
   }
 
+  // "Clear Queue" that KEEPS the current track playing: remove every other item so the
+  // queue collapses to just the now-playing track, uninterrupted. We remove from the
+  // ends inward (after the current, then before it) so indices stay valid and the
+  // current media item is never touched - ExoPlayer keeps playing it, and its index
+  // slides to 0. Empty / single-item queues are a no-op.
+  function queueClearKeepCurrent () {
+    const q = queueRef.current
+    const cur = indexRef.current
+    if (q.length <= 1) return { items: queueRef.current, index: indexRef.current }
+    const keep = q[cur]
+    if (!keep) { stop(); return { items: [], index: 0 } }
+    for (let i = q.length - 1; i > cur; i--) px()?.removeQueueItem(i)
+    for (let i = cur - 1; i >= 0; i--) px()?.removeQueueItem(i)
+    queueRef.current = [keep]
+    indexRef.current = 0
+    persistQueue(true)
+    return { items: [keep], index: 0 }
+  }
+
   function toggle () {
     const p = player.current
     if (!p) return
@@ -695,6 +714,9 @@ export default function App () {
       // playing, and both return the new {items,index} so the UI reflects it at once.
       queueMove: () => queueMove(msg.args),
       queueRemove: () => queueRemove(msg.args),
+      // Clear the queue but keep the current track playing (the Queue screen's
+      // "Clear Queue"). A full stop is a separate 'stop' call (the player's X).
+      queueClearKeepCurrent: () => queueClearKeepCurrent(),
 
       // Jump straight to a track in the queue. seekToQueueIndex is ExoPlayer's own
       // (via the patch), so this respects the shuffled order rather than fighting

@@ -61,7 +61,7 @@ h2 {
 .app { padding: 1rem 1rem calc(var(--dock-h) + 1rem); max-width: 560px; margin: 0 auto; }
 /* Page titles (Library, You, Queue, Settings) are centered - the h1 and its muted
    count line. The controls below (search, pickers, cards) stay left-aligned. */
-header { padding: .5rem 0 1rem; text-align: center; }
+header { padding: .5rem 0 .55rem; text-align: center; }
 
 button {
   font: inherit; font-weight: 500; padding: .7rem 1.2rem; border-radius: 10px;
@@ -269,7 +269,18 @@ details { width: 100%; max-width: 22rem; }
 summary { cursor: pointer; padding: .5rem; }
 
 /* --- albums + artists ---------------------------------------------------- */
-input.search { margin-top: .8rem; }
+/* Search box with an inline clear (X), shown only while there is text. The margin is
+   dropped here (the sticky bar + header already space it) so there is no dead gap
+   between the library info line and the search box. */
+.searchbar { position: relative; }
+.searchbar input.search { margin: 0; padding-right: 2.4rem; }
+.searchclear {
+  position: absolute; right: .45rem; top: 50%; transform: translateY(-50%);
+  width: 1.9rem; height: 1.9rem; padding: 0; border-radius: 9999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--color-surface-elevated); border: none;
+  color: var(--color-text-secondary); -webkit-tap-highlight-color: transparent;
+}
 /* minmax(0, 1fr), NOT 1fr. `1fr` is shorthand for minmax(auto, 1fr), and
    min-width:auto refuses to shrink a column below its content's min-content
    width. A long nowrap album title ("LED Spirals" (Extended Version) [From
@@ -339,55 +350,32 @@ button.more { width: 100%; margin: 1.2rem 0 0; }
   background: var(--color-surface-base);
   padding: .35rem 0 .5rem;
 }
-/* Wraps so that on a NARROW screen the sort pill drops to a second line rather than
-   squeezing the Albums/Artists/Songs picker into overlapping text. */
-.pickrow { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; flex-wrap: wrap; row-gap: .4rem; }
-/* The picker keeps a readable floor (three buttons need the room) and grows to fill;
-   it does NOT shrink below that into text collisions - the sort pill wraps instead. */
-.pickrow .seg { flex: 1 1 11rem; min-width: 11rem; }
+.pickrow { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; }
+.pickrow .seg { flex: 1; }
+/* The single Display icon (layout + sort). Disabled + faded when the active view has
+   neither to offer, kept in place so the row does not reflow. */
 button.icon.dens {
   flex: none; padding: .5rem .6rem; border: 1px solid var(--color-border);
   background: var(--color-surface-input); border-radius: 9999px;
   color: var(--color-text-secondary);
 }
+button.icon.dens:disabled { opacity: .4; }
 
-/* Sort control: a pill holding a compact native <select> plus, when a key is chosen,
-   an ascending/descending toggle. Sits after the density button in the pickrow and
-   stays its natural width (flex: none) so the Albums/Artists/Songs pill keeps the
-   room. On a source that cannot sort the active view it becomes the faded `.sortbtn`
-   stub rather than disappearing, so the row does not reflow. */
-.pickrow .sortctl {
-  flex: none; display: flex; align-items: center; gap: .15rem;
-  border: 1px solid var(--color-border); background: var(--color-surface-input);
-  border-radius: 9999px; padding: .3rem .45rem;
-  color: var(--color-text-secondary);
-  /* No tap flash or text selection when you touch the pill. */
-  -webkit-tap-highlight-color: transparent; user-select: none;
+/* Display sheet: a labelled Layout and/or Sort section, each an OptionList, plus a
+   small ascending/descending toggle beside the "Sort by" label. */
+.dispsec { margin-top: .4rem; }
+.dispsec + .dispsec { margin-top: 1.1rem; }
+.displabel {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: .8rem; font-weight: 600; color: var(--color-text-secondary);
+  margin: 0 .1rem .5rem; text-transform: uppercase; letter-spacing: .04em;
 }
-.sortctl .sortglyph { flex: none; opacity: .75; }
-select.sortsel {
-  border: none; background: transparent; color: var(--color-text-primary);
-  font-size: .8rem; font-weight: 500; padding: 0 .1rem;
-  /* FIXED width (not max-width): "Default", "Title" and "Length" all occupy the same
-     footprint, so choosing a sort never resizes the pill. CENTERED so the label sits
-     midway between the leading glyph and the trailing sort-order arrow. */
-  width: 3.7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  text-align: center; text-align-last: center;
-  -webkit-appearance: none; appearance: none;
-  -webkit-tap-highlight-color: transparent;
-}
-/* No focus ring / selected-text highlight on the control (this is a touch pill, not a
-   form field the user tabs through). */
-.sortctl select:focus, .sortctl button:focus, .sortctl select:focus-visible { outline: none; box-shadow: none; }
-.sortctl button.icon.dir {
-  flex: none; padding: .1rem; border: none; background: transparent;
-  color: var(--color-primary); display: flex; align-items: center;
-  -webkit-tap-highlight-color: transparent;
-}
-button.icon.sortbtn {
-  flex: none; padding: .5rem .6rem; border: 1px solid var(--color-border);
-  background: var(--color-surface-input); border-radius: 9999px;
-  color: var(--color-text-secondary); opacity: .4;
+.dirtoggle {
+  display: inline-flex; align-items: center; gap: .3rem;
+  padding: .25rem .6rem; border-radius: 9999px; font-size: .72rem; font-weight: 600;
+  letter-spacing: 0; text-transform: none;
+  background: var(--color-surface-input); border: 1px solid var(--color-border);
+  color: var(--color-primary);
 }
 
 /* Segmented pill. Albums / Artists / Songs here, Favorites / Most Played in the
@@ -476,19 +464,20 @@ button.more.danger {
   color: var(--color-text-secondary);
 }
 .qedit.on { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-text-on-primary); }
-/* The clear button is PINNED just above the dock. --dock-h tracks the dock's real
-   height, so it hovers over the navbar alone, or over the player when one is showing.
-   The gradient lets the list scroll under it; pointer-events pass through the fade so
-   only the button itself is a tap target. The screen's bottom padding (below) keeps
-   the last track clear of it, and there is no dead whitespace beneath. */
+/* The Clear Queue button is PINNED just above the dock (--dock-h tracks the dock, so it
+   hovers over the navbar, or the player when one shows). The list scrolls under it behind
+   a short fade; the screen's bottom padding is tuned to the button's height so that,
+   scrolled to the end of a long queue, the last track sits right above it with no gap. A
+   short queue leaves space above the pinned button (chosen: keep it always visible). The
+   fade is click-through so only the button itself is a tap target. */
 .queueclear {
   position: fixed; left: 0; right: 0; bottom: var(--dock-h); z-index: 39;
-  max-width: 560px; margin: 0 auto; padding: .7rem 1rem;
-  background: linear-gradient(to top, var(--color-surface-base) 62%, transparent);
+  max-width: 560px; margin: 0 auto; padding: .5rem 1rem;
+  background: linear-gradient(to top, var(--color-surface-base) 60%, transparent);
   pointer-events: none;
 }
 .queueclear .more { margin: 0; pointer-events: auto; }
-.app.queuescreen { padding-bottom: calc(var(--dock-h) + 4.4rem); }
+.app.queuescreen { padding-bottom: calc(var(--dock-h) + 3.6rem); }
 
 /* --- empty / offline / skeleton states ----------------------------------- */
 .blank {
@@ -709,7 +698,10 @@ button.qbtn {
   background: transparent; border: 1px solid var(--color-border);
   border-radius: 9999px; color: var(--color-text-muted);
 }
-.queuelist { max-height: 46vh; overflow-y: auto; margin-top: .5rem; }
+/* No max-height cap: the list flows in the page and scrolls with it, so tracks pass
+   under the pinned Clear Queue button instead of scrolling inside a half-height box
+   that left a gap above the button. */
+.queuelist { margin-top: .5rem; }
 .queuelist li { padding: .6rem .25rem; }
 /* Already played, still in the list (you can go back to it) - just quieter. */
 .queuelist li.played { opacity: .45; }

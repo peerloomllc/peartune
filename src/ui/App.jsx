@@ -19,7 +19,7 @@ import {
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
-  Palette, SpeakerHigh, Key, ChartLineUp, ArrowsDownUp, ArrowUp, ArrowDown
+  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -71,6 +71,7 @@ export default function App () {
   // host's advertised capability (state.sorts), so a source that cannot sort a view
   // (Subsonic songs) shows no control at all.
   const [sort, setSort] = useState({})
+  const [display, setDisplay] = useState(false) // the layout + sort bottom sheet
   const [ident, setIdent] = useState(null) // device name + user claim
   const [query, setQuery] = useState('')
   const [results, setResults] = useState(null)
@@ -687,11 +688,10 @@ export default function App () {
 
   // Density is a per-device preference, so it lives where the theme does: the
   // worklet's settings.json, not the WebView's storage.
-  function cycleDensity () {
-    const next = densityOf(density).next
+  function setDensityValue (v) {
     haptic('light')
-    setDensity(next)
-    call('setSettings', { density: next }).catch(() => {})
+    setDensity(v)
+    call('setSettings', { density: v }).catch(() => {})
   }
 
   // Pull to refresh. The host does not push us anything when its library changes -
@@ -862,10 +862,24 @@ export default function App () {
     call('playIndex', { index })
   }
 
-  function clearQueue () {
+  // The player's X: a full stop. Clears the ENTIRE queue (including the current
+  // track) and stops playback.
+  function stopAll () {
     haptic('warn')
     call('stop')
     setQueue({ items: [], index: 0 })
+  }
+
+  // The Queue screen's "Clear Queue": empty the up-next but keep the CURRENT track
+  // playing - the queue collapses to just that one track. If nothing is playing it is
+  // a plain stop.
+  async function clearQueue () {
+    haptic('warn')
+    try {
+      const res = await call('queueClearKeepCurrent')
+      setQueue(res)
+      setStatus(s => (s ? { ...s, queueLength: res.items.length } : s))
+    } catch (e) { setError(e.message); loadQueue() }
   }
 
   // Reorder the queue. Update the visible list optimistically (so the row does not snap
@@ -1088,8 +1102,7 @@ export default function App () {
           if (b === 'songs') return showSongs()
           return setBrowse('albums')
         }}
-        onDensity={cycleDensity}
-        sort={sort} onSort={applySort}
+        onDisplay={() => setDisplay(true)}
         onSearch={runSearch}
         onReconnect={reconnect}
         onRefresh={refresh}
@@ -1113,7 +1126,7 @@ export default function App () {
           <Player
             now={now} status={status} expanded={expanded}
             shuffle={shuffle} repeat={repeat} onQueue={() => goTab('queue')}
-            onShuffle={toggleShuffle} onRepeat={cycleRepeat}
+            onShuffle={toggleShuffle} onRepeat={cycleRepeat} onStop={stopAll}
             onExpand={() => { haptic('light'); setExpanded(true) }}
             onCollapse={() => { haptic('light'); setExpanded(false) }}
             onViewArt={() => viewArt(now.artFull || now.art, now.album || now.title)}
@@ -1127,6 +1140,13 @@ export default function App () {
       </div>
 
       {note && <div className={'toast' + (note.bad ? ' bad' : '')}>{note.msg}</div>}
+      {display && (
+        <DisplaySheet
+          browse={browse} density={density} onDensity={setDensityValue}
+          sorts={state.sorts} sort={sort} onSort={applySort}
+          onClose={() => setDisplay(false)}
+        />
+      )}
       {menu && (
         <ActionSheet
           item={menu}
@@ -1395,7 +1415,7 @@ function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
           because the queue IS what is playing. */}
       <div className='queueclear'>
         <button className='more danger' onClick={onClear}>
-          <Trash size={15} weight='bold' /> Clear queue and stop
+          <Trash size={15} weight='bold' /> Clear Queue
         </button>
       </div>
     </div>
@@ -1545,57 +1565,58 @@ const SORT_LABEL = {
   title: 'Title', name: 'Name', artist: 'Artist', album: 'Album', year: 'Year', duration: 'Length'
 }
 
-// The Sort control. It shows ONLY what the active source can do: the keys come from
-// the host's advertised capability (state.sorts) for the active view, so a source
-// that cannot sort the current view (Subsonic songs) shows a disabled stub - kept in
-// place rather than vanishing, so the row does not reflow under your thumb, the same
-// call the density button makes. A source that cannot sort anything (an old host with
-// no `sorts`) shows nothing at all.
-function SortControl ({ browse, sorts, sort, onSort }) {
+// The Display sheet: layout (grid density) and sort, in one bottom sheet opened by the
+// single Display icon in the library header. Each section only appears when it applies
+// - Layout on the grid views, Sort when the active source advertises keys for the view
+// (state.sorts) - so a Subsonic Songs list, which has neither, never opens this (its
+// button is disabled). Direction is a toggle shown only for a reversible source once a
+// key is chosen.
+const LAYOUT_OPTS = [
+  { value: 'list', label: 'List', desc: 'One per row, with the full title' },
+  { value: '2', label: 'Grid, 2 per row', desc: 'Larger covers' },
+  { value: '3', label: 'Grid, 3 per row', desc: 'More on screen' }
+]
+function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClose }) {
   const capType = browse === 'songs' ? 'tracks' : browse
-  const hasAny = sorts && Object.values(sorts).some(c => c?.keys?.length)
-  if (!hasAny) return null
-
-  const keys = sorts[capType]?.keys || []
-  if (!keys.length) {
-    return (
-      <button className='icon sortbtn' disabled aria-label='Sorting is not available for this view'>
-        <ArrowsDownUp size={20} weight='regular' />
-      </button>
-    )
-  }
-
-  const reversible = sorts[capType].reversible
+  const cap = sorts?.[capType]
+  const keys = cap?.keys || []
+  const hasLayout = browse !== 'songs'
   const cur = sort?.[browse] || null
   const order = cur?.order || 'asc'
-  // On a reversible source the direction toggle's slot is ALWAYS present (just
-  // hidden until a key is chosen), so picking a sort does not grow the pill - it
-  // stays one constant size whether it reads "Default" or "Title ↑".
-  const showDir = !!cur?.key
+  const sortOpts = [
+    { value: '', label: 'Default order' },
+    ...keys.map(k => ({ value: k, label: SORT_LABEL[k] || k }))
+  ]
   return (
-    <div className='sortctl'>
-      <ArrowsDownUp size={16} weight='regular' className='sortglyph' />
-      <select
-        className='sortsel'
-        value={cur?.key || ''}
-        onChange={e => onSort(browse, e.target.value || null, order)}
-        aria-label='Sort by'
-      >
-        <option value=''>Default</option>
-        {keys.map(k => <option key={k} value={k}>{SORT_LABEL[k] || k}</option>)}
-      </select>
-      {reversible && (
-        <button
-          className='icon dir'
-          style={showDir ? undefined : { visibility: 'hidden' }}
-          tabIndex={showDir ? undefined : -1}
-          aria-hidden={showDir ? undefined : true}
-          onClick={showDir ? () => onSort(browse, cur.key, order === 'asc' ? 'desc' : 'asc') : undefined}
-          aria-label={order === 'asc' ? 'Ascending - tap for descending' : 'Descending - tap for ascending'}
-        >
-          {order === 'desc' ? <ArrowDown size={18} weight='bold' /> : <ArrowUp size={18} weight='bold' />}
-        </button>
-      )}
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Display</h1>
+        {hasLayout && (
+          <div className='dispsec'>
+            <div className='displabel'>Layout</div>
+            <OptionList options={LAYOUT_OPTS} value={String(density)} onChange={onDensity} />
+          </div>
+        )}
+        {keys.length > 0 && (
+          <div className='dispsec'>
+            <div className='displabel'>
+              <span>Sort by</span>
+              {cur?.key && cap.reversible && (
+                <button
+                  className='dirtoggle'
+                  onClick={() => onSort(browse, cur.key, order === 'asc' ? 'desc' : 'asc')}
+                  aria-label={order === 'asc' ? 'Ascending - tap for descending' : 'Descending - tap for ascending'}
+                >
+                  {order === 'desc' ? <ArrowDown size={15} weight='bold' /> : <ArrowUp size={15} weight='bold' />}
+                  {order === 'asc' ? 'Ascending' : 'Descending'}
+                </button>
+              )}
+            </div>
+            <OptionList options={sortOpts} value={cur?.key || ''} onChange={(v) => onSort(browse, v || null, order)} />
+          </div>
+        )}
+        <div className='acts'><button className='wide' onClick={onClose}>Done</button></div>
+      </div>
     </div>
   )
 }
@@ -1604,7 +1625,7 @@ function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
   favs, onFav, cont, onContinue,
-  onBrowse, onDensity, sort, onSort, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
+  onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
   // Bind the generic onFav(kind, item) to per-kind heart handlers for the leaves.
@@ -1619,6 +1640,10 @@ function Library ({
         `${t.title || ''} ${t.artist || ''} ${t.album || ''}`.toLowerCase().includes(songFilter))
     : songs
   const D = densityOf(density)
+  // The Display sheet offers layout (grid views only) and/or sort (whatever the
+  // source can do). Disable its button when the active view has neither.
+  const sortCap = state.sorts?.[browse === 'songs' ? 'tracks' : browse]
+  const displayHasOptions = browse !== 'songs' || (sortCap?.keys?.length > 0)
   // The worklet hands us the base URL rather than finished art URLs, because only
   // the UI knows the density, and therefore the size to ask for.
   const artBase = state.artBase || state.host?.artBase || null
@@ -1734,12 +1759,19 @@ function Library ({
       </header>
 
       <div className='sticky'>
-        <input
-          className='search'
-          value={query}
-          onChange={e => onSearch(e.target.value)}
-          placeholder={browse === 'songs' ? 'Filter loaded songs' : 'Search artists, albums, tracks'}
-        />
+        <div className='searchbar'>
+          <input
+            className='search'
+            value={query}
+            onChange={e => onSearch(e.target.value)}
+            placeholder={browse === 'songs' ? 'Filter loaded songs' : 'Search artists, albums, tracks'}
+          />
+          {query && (
+            <button className='searchclear' onClick={() => onSearch('')} aria-label='Clear search'>
+              <X size={15} weight='bold' />
+            </button>
+          )}
+        </div>
         {!searching && (
           <div className='pickrow'>
             <div className='seg'>
@@ -1747,20 +1779,17 @@ function Library ({
               <button className={browse === 'artists' ? 'on' : ''} onClick={() => onBrowse('artists')}>Artists</button>
               <button className={browse === 'songs' ? 'on' : ''} onClick={() => onBrowse('songs')}>Songs</button>
             </div>
-            {/* Stays PUT in the Songs view, disabled, rather than disappearing.
-                A control that vanishes reflows the row it was in, and the picker
-                you just tapped jumps sideways under your thumb - which reads as a
-                glitch, not as "this does not apply here". Songs is a list; there is
-                no density to choose. */}
+            {/* One "Display" control (layout + sort) instead of two. Stays PUT and
+                disabled when the active view has neither to offer (a Subsonic Songs
+                list: no grid density, no all-songs sort), so the row does not reflow. */}
             <button
               className='icon dens'
-              onClick={onDensity}
-              disabled={browse === 'songs'}
-              aria-label={browse === 'songs' ? 'Layout (not available for lists)' : 'Change layout'}
+              onClick={onDisplay}
+              disabled={!displayHasOptions}
+              aria-label='Display options'
             >
-              <D.Icon size={20} weight='regular' />
+              <Faders size={20} weight='regular' />
             </button>
-            <SortControl browse={browse} sorts={state.sorts} sort={sort} onSort={onSort} />
           </div>
         )}
       </div>
@@ -2941,7 +2970,7 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
 // content padding along with it.
 function Player ({
   now, status, expanded, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
-  onViewArt, onQueue
+  onViewArt, onQueue, onStop
 }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
@@ -2983,7 +3012,7 @@ function Player ({
           ? (
             <button
               className='icon close'
-              onClick={() => { haptic('light'); call('stop') }}
+              onClick={() => { haptic('light'); onStop() }}
               aria-label='Stop'
             >
               <X size={18} weight='bold' />
