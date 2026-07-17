@@ -29,6 +29,18 @@ function decide ({ grant, person }, now = Date.now()) {
   return { allow: true, reason: 'ok' }
 }
 
+// Which of the currently-LIVE devices should be cut right now? Pure, so the sweep's
+// selection is unit-testable without a DHT or a clock. `lookups` maps deviceKey ->
+// { grant, person }; the caller (the host) loads them, then kills what this returns.
+//
+// This exists for TIME-BASED expiry: `decide()` runs only at connect, so a guest that
+// connected before its grant expired would stream on until it reconnected - the same gap
+// `Connections` closes for revoke. Revoke fires an event we hang kill() on; an expiry has
+// none, so the host sweeps periodically and kills whatever decide() now refuses.
+function sweepKills (liveKeys, lookups, now = Date.now()) {
+  return liveKeys.filter(k => !decide(lookups.get(k) || { grant: null }, now).allow)
+}
+
 // Registry of live connections, keyed by the peer's Noise-proven public key.
 class Connections {
   constructor () {
@@ -58,6 +70,12 @@ class Connections {
   count (deviceKey) {
     const key = typeof deviceKey === 'string' ? deviceKey : z32.encode(deviceKey)
     return this.byDevice.get(key)?.size ?? 0
+  }
+
+  // The z32 device keys that currently hold at least one live connection - what the
+  // expiry sweep walks.
+  deviceKeys () {
+    return [...this.byDevice.keys()]
   }
 
   // The teeth. Destroy every live connection for a device.
@@ -95,4 +113,4 @@ class Connections {
   }
 }
 
-module.exports = { decide, Connections }
+module.exports = { decide, sweepKills, Connections }

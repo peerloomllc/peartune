@@ -48,6 +48,25 @@ export function ago (ts) {
   return Math.floor(s / 86400) + 'd ago'
 }
 
+// How long UNTIL a future timestamp, coarse ("3h", "2d"). '' once it is past.
+export function until (ts) {
+  if (!ts) return ''
+  const s = Math.floor((ts - Date.now()) / 1000)
+  if (s <= 0) return ''
+  if (s < 3600) return Math.max(1, Math.floor(s / 60)) + 'm'
+  if (s < 86400) return Math.floor(s / 3600) + 'h'
+  return Math.floor(s / 86400) + 'd'
+}
+
+// A guest-pass DURATION in ms as coarse words, for the pairing modal.
+export function fmtDur (ms) {
+  const d = Math.round(ms / 86400000)
+  if (d >= 1) return d === 1 ? '24 hours' : d + ' days'
+  const h = Math.round(ms / 3600000)
+  if (h >= 1) return h === 1 ? '1 hour' : h + ' hours'
+  return Math.max(1, Math.round(ms / 60000)) + ' minutes'
+}
+
 // Suite donation config, the same addresses the phone app's About tab uses
 // (src/ui/App.jsx). Rendered entirely client-side: no tracking, no phone-home.
 export const DONATE = {

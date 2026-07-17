@@ -76,7 +76,7 @@ class Grants {
     return out
   }
 
-  async grant ({ deviceKey, personId = null, label = '', platform = '', scope = SCOPE.FULL, grantedBy = 'operator' }) {
+  async grant ({ deviceKey, personId = null, label = '', platform = '', scope = SCOPE.FULL, grantedBy = 'operator', expiresAt = null }) {
     const key = Grants.keyOf(deviceKey)
     const row = {
       deviceKey: key,
@@ -86,11 +86,23 @@ class Grants {
       scope,
       grantedAt: Date.now(),
       grantedBy,
-      expiresAt: null, // reserved: v2 time-limited guest grants
+      expiresAt, // null = never; a timestamp = a time-limited GUEST grant (gate.decide denies past it)
       paths: null, // reserved: v2 library-subset scopes
       revokedAt: null,
       lastSeenAt: null
     }
+    await this.bee.put('grant:' + key, row, { valueEncoding: 'json' })
+    return row
+  }
+
+  // Refresh a grant's expiry - what re-pairing an already-granted device through a GUEST
+  // window does ("extend the pass" = scan again). Touches only expiresAt; personId, the
+  // claim and the label are left exactly as they were. No-op on a missing or revoked row.
+  async setExpiry (deviceKey, expiresAt) {
+    const key = Grants.keyOf(deviceKey)
+    const row = await this.get(key)
+    if (!row || row.revokedAt) return null
+    row.expiresAt = expiresAt
     await this.bee.put('grant:' + key, row, { valueEncoding: 'json' })
     return row
   }

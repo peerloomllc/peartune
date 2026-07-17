@@ -2,6 +2,36 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-16 - Guest grants: time-limited access, enforced at connect AND by a live sweep
+Tier: T2. Proposal: proposals/2026-07-16-guest-grants.md. MVP scope (Tim): time-limited only
+(library-subset `paths` deferred), created via a guest pairing window with a duration.
+Context: the grant store always reserved `expiresAt`/`paths` as nulls for "v2 guest grants", and
+`gate.decide()` already denied an expired grant at connect. So the groundwork existed; this is
+the value change it was designed for.
+What's new, and it is small: (1) `startPairing({expiresMs})` opens a GUEST window; the duration
+is OPERATOR-SET, host-side, never read from the device's hello (a guest must not pick its own
+expiry - the same rule as "a device may name itself but not set its own personId"). (2) pairing
+stamps `expiresAt = now + expiresMs` (`grants.grant` gained the param; re-pairing an already-
+granted device through a guest window REFRESHES it via a new `grants.setExpiry`, so "extend the
+pass" = "scan again"). (3) a 30s periodic SWEEP (`_sweepExpired` + the pure `gate.sweepKills`)
+cuts any live connection whose grant `decide()` now refuses.
+The load-bearing point, and why (3) is not optional: `decide()` runs only at CONNECT. A guest
+that connected before expiry would keep streaming until it happened to reconnect - the exact gap
+`Connections` exists to close for revoke. Revoke fires an event we hang `kill()` on; a time-based
+expiry has none, so the host sweeps. 30s lag is fine here (a SCHEDULED expiry, not the sub-second
+claw-back a lost-phone revoke needs; revoke keeps its instant, event-driven kill).
+The dashboard: a "Guest pass" toggle + duration picker (24h/7d/30d) in the pair modal; device
+rows show a calm "guest" badge + "expires in 3h" countdown, and an amber "expired" once past.
+The phone needs NO change: an expired guest experiences exactly what a revoked one does.
+Deferred (follow-ups, in the proposal): library-subset `paths`; editing/PROMOTING expiry on an
+existing device from the dashboard (so for now a guest is made permanent only by revoke+delete+
+re-pair through a full window); a client-facing "expires in X" banner.
+Verify: 248 tests (sweepKills per-branch incl. fail-closed, grant expiresAt/setExpiry, the
+already-tested decide() expiry branch). On the TCL + Umbrel (host deployed via docker cp): a
+2-minute guest window, TCL paired guest -> host log `pair:already-granted {guest:true}` then
+`host:expired {killed:1}` ~27s past expiry (within the 30s bound) then `gate:deny {grant-expired}`
+on its reconnect; the phone showed "Not connected", cached audio kept playing under the lease,
+and a normal re-pair restored a permanent grant.
 ## 2026-07-16 - The You picker is icon-first: the active view shows its label, the rest are icons
 Tier: T1 (UI only). Branch: fix/you-picker-icon-pills.
 Context: the You sub-picker grew to four pills (Favorites / Most Played / Playlists /

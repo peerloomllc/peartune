@@ -21,7 +21,12 @@ const z32 = require('z32')
 const { createIdentity } = require('./identity')
 const { Grants } = require('./grants')
 const { UserState } = require('./state')
-const { decide, Connections } = require('./gate')
+const { decide, sweepKills, Connections } = require('./gate')
+
+// How often to sweep live connections for an expired guest grant. `decide()` covers
+// connect; this covers a guest that expires WHILE connected. 30s is fine for a scheduled
+// expiry - unlike revoke's instant, event-driven kill, nobody is racing a lost phone here.
+const EXPIRY_SWEEP_MS = 30_000
 const { serveMedia } = require('./media')
 const { PairSession } = require('./pair')
 const { SourceStore, buildAdapter } = require('./source')
@@ -193,12 +198,31 @@ class PearTuneHost {
 
     await this.server.listen(this.identity.keyPair)
 
+    // Cut guest connections whose grant has expired since they dialed in (see
+    // EXPIRY_SWEEP_MS). unref so it never keeps the process alive on its own.
+    this._sweep = setInterval(() => { this._sweepExpired().catch(() => {}) }, EXPIRY_SWEEP_MS)
+    if (this._sweep.unref) this._sweep.unref()
+
     this.log('host:listening', {
       hostKey: z32.encode(this.identity.publicKey),
       libraryId: this.libraryId
     })
 
     return this
+  }
+
+  // Walk the live-connection devices and kill any whose grant decide() now refuses -
+  // an expired guest, mostly (a revoke already killed on its own event). Loads each
+  // lookup, then delegates the selection to the pure gate.sweepKills.
+  async _sweepExpired () {
+    const keys = this.connections.deviceKeys()
+    if (!keys.length) return
+    const lookups = new Map()
+    for (const key of keys) lookups.set(key, await this.grants.lookup(key))
+    for (const key of sweepKills(keys, lookups)) {
+      const killed = this.connections.kill(key)
+      this.log('host:expired', { device: key.slice(0, 8), killed })
+    }
   }
 
   // HyperDHT awaits this hook, so touching the Hyperbee here is fine. It also
@@ -308,16 +332,26 @@ class PearTuneHost {
 
   // --- operator actions (the dashboard drives these) -----------------------
 
-  startPairing () {
-    if (this.pairing) return this.pairSession.link
+  // expiresMs > 0 opens a GUEST window: devices that pair through it get access that
+  // expires that many ms after pairing. Omitted / null = a normal permanent window.
+  startPairing ({ expiresMs = null } = {}) {
+    // A window is already open. If its GUEST-ness matches what was asked, reuse it;
+    // otherwise close it and open the requested kind, so "Guest pass" never silently
+    // hands back a permanent window (or vice versa).
+    if (this.pairing) {
+      const openMs = this.pairSession.expiresMs || null
+      if ((openMs ? 1 : 0) === (expiresMs ? 1 : 0)) return this.pairSession.link
+      this.pairSession.close('operator')
+    }
 
     this.pairSession = new PairSession({
       identity: this.identity,
       grants: this.grants,
       libraryName: this.libraryName,
+      expiresMs: expiresMs && expiresMs > 0 ? expiresMs : null,
       log: this.log
     })
-    this.log('pair:open', { ttlMs: this.pairSession.ttl })
+    this.log('pair:open', { ttlMs: this.pairSession.ttl, guest: !!this.pairSession.expiresMs })
     return this.pairSession.link
   }
 
@@ -380,6 +414,7 @@ class PearTuneHost {
 
   async close () {
     this.stopPairing()
+    if (this._sweep) clearInterval(this._sweep)
     if (this.server) await this.server.close()
     await this.bee.close()
     await this.stateBee.close()
