@@ -256,6 +256,21 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         return json(res, 200, { ok: true })
       }
 
+      // Rename a person directly (the dashboard used to only reach a rename by
+      // re-confirming a device's new claim). The host sanitizes the name, refuses a
+      // collision with another live person, and keeps assigned devices' claims in step.
+      if (req.method === 'POST' && url.pathname === '/api/person/rename') {
+        const { personId, name } = await readBody(req)
+        if (!personId) return json(res, 400, { error: 'personId required' })
+        try {
+          const person = await host.grants.renamePerson(personId, name)
+          if (!person) return json(res, 404, { error: 'no such person' })
+          return json(res, 200, { ok: true, person })
+        } catch (e) {
+          return json(res, 400, { error: e.message })
+        }
+      }
+
       // --- the teeth ---
       if (req.method === 'POST' && url.pathname === '/api/revoke') {
         const { deviceKey } = await readBody(req)

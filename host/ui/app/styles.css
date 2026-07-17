@@ -146,6 +146,7 @@ a { color: var(--primary-strong); }
 .prow .caret.hidden { visibility: hidden; } /* keep the row's alignment, hide the toggle */
 .prow .caret.open { transform: rotate(90deg); }
 .who { flex: 1; min-width: 0; }
+.rename-input { flex: 1; min-width: 0; margin: 0; }
 .name { font-weight: 500; font-size: 14.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .name .id { color: var(--subtle); font-size: 11.5px; font-weight: 400; }
 .sub { color: var(--muted); font-size: 12.5px; margin-top: 1px; display: flex; align-items: center; gap: 7px; min-width: 0; }
