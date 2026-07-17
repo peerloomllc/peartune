@@ -382,6 +382,19 @@ button.icon.dens {
   padding-bottom: var(--pear-safe-bottom);
   max-width: 560px; margin: 0 auto;
 }
+/* A guest device's time-limited-access strip, at the top of the dock (above the
+   player/navbar) so it never collides with a screen header. Informational, not a
+   warning - a calm primary tint, not the error red. */
+.guestbar {
+  text-align: center; font-size: 11.5px; font-weight: 500; letter-spacing: .01em;
+  padding: 5px 12px; color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-primary) 13%, var(--color-surface-card));
+  border-bottom: 1px solid var(--color-divider);
+}
+/* When the banner is the top of the dock, it already owns the top edge - drop the
+   navbar's own top border to avoid a double line (mirrors the navbar:first-child rule). */
+.dock > .guestbar + .navbar { border-top: none; }
+
 .navbar { display: flex; border-top: 1px solid var(--color-divider); }
 /* No player above it means the navbar IS the top of the dock, and a second
    border there would draw a double line. */

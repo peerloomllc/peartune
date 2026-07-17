@@ -100,6 +100,11 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
     return {
       deviceName: row?.label || null,
       belongsTo: person ? person.name : null,
+      // The device's own guest expiry (null = permanent), so the phone can show a
+      // "guest access expires in X" banner. Read from THIS connection's grant, never a
+      // param - a device only ever learns its OWN access. Refreshed on every connect, so
+      // an operator extending or clearing it on the dashboard reflects on the phone.
+      expiresAt: row?.expiresAt ?? null,
       user: claim
         ? {
             name: claim,
