@@ -274,10 +274,14 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
       case 'playlist.add': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        // How many actually landed, after de-duping against what is already there -
+        // so the app can say "added 2" vs "already in the playlist" honestly.
+        const before = (await state.getPlaylist(ownerOf(grant), params.id))?.trackIds?.length ?? 0
         const row = await state.addToPlaylist(ownerOf(grant), params.id, params?.trackIds)
         if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
-        log('playlist:add', { id: row.id, count: row.trackIds.length })
-        return send.res.send({ id, body: { ok: true, count: row.trackIds.length } })
+        const added = row.trackIds.length - before
+        log('playlist:add', { id: row.id, count: row.trackIds.length, added })
+        return send.res.send({ id, body: { ok: true, count: row.trackIds.length, added } })
       }
 
       case 'playlist.setTracks': {

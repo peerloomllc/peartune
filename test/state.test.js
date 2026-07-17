@@ -227,16 +227,21 @@ test('a playlist is created with a host-minted id and an empty ordered list', as
   assert.deepEqual((await s.listPlaylists('p:tim')).map(p => [p.name, p.count]), [['Roadtrip', 0]])
 })
 
-test('adding appends (dupes allowed); setTracks replaces the whole order', async (t) => {
+test('adding skips duplicates (each track at most once); setTracks replaces the order', async (t) => {
   const { bee } = await store(t)
   const s = new UserState(bee)
   const pl = await s.createPlaylist('p:tim', 'Mix')
 
   await s.addToPlaylist('p:tim', pl.id, ['a', 'b'])
-  await s.addToPlaylist('p:tim', pl.id, ['b', 'c']) // 'b' again is intentional
-  assert.deepEqual((await s.getPlaylist('p:tim', pl.id)).trackIds, ['a', 'b', 'b', 'c'])
+  // 'b' is already in the list and the batch repeats 'c' - only ONE new 'c' lands.
+  await s.addToPlaylist('p:tim', pl.id, ['b', 'c', 'c'])
+  assert.deepEqual((await s.getPlaylist('p:tim', pl.id)).trackIds, ['a', 'b', 'c'])
 
-  // Reorder-and-remove is one write: send the new order (drop a dupe, flip the ends).
+  // Re-adding an existing track is a no-op on the count.
+  const row = await s.addToPlaylist('p:tim', pl.id, ['a'])
+  assert.deepEqual(row.trackIds, ['a', 'b', 'c'])
+
+  // Reorder-and-remove is one write: send the new order (flip the ends).
   await s.setPlaylistTracks('p:tim', pl.id, ['c', 'b', 'a'])
   assert.deepEqual((await s.getPlaylist('p:tim', pl.id)).trackIds, ['c', 'b', 'a'])
 })

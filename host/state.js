@@ -216,13 +216,20 @@ class UserState {
     return { id }
   }
 
-  // Append. Duplicates are allowed on purpose (adding an album you already have some of
-  // is a normal thing to do), and removal is by position via setPlaylistTracks.
+  // Append, but a playlist holds each track at most ONCE: a track already in the list
+  // is skipped, and the incoming batch is de-duped too - so adding a song that is
+  // already there never creates a duplicate or bumps the count (adding an album you
+  // half-have just tops up the missing tracks). Removal is by position via
+  // setPlaylistTracks.
   async addToPlaylist (ownerId, id, trackIds) {
     const row = await this.getPlaylist(ownerId, id)
     if (!row) return null
-    const ids = (Array.isArray(trackIds) ? trackIds : []).filter(x => typeof x === 'string' && x)
-    row.trackIds = [...(row.trackIds || []), ...ids].slice(0, PLAYLIST_MAX_TRACKS)
+    const seen = new Set(row.trackIds || [])
+    const add = []
+    for (const x of (Array.isArray(trackIds) ? trackIds : [])) {
+      if (typeof x === 'string' && x && !seen.has(x)) { seen.add(x); add.push(x) }
+    }
+    row.trackIds = [...(row.trackIds || []), ...add].slice(0, PLAYLIST_MAX_TRACKS)
     row.updatedAt = Date.now()
     await this.bee.put(this._plKey(ownerId, id), row, { valueEncoding: 'json' })
     return row

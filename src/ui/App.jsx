@@ -679,10 +679,12 @@ export default function App () {
     const trackIds = tracks.map(t => t.id).filter(Boolean)
     if (!trackIds.length) { haptic('warn'); return toast('Nothing to add', true) }
     try {
-      await call('addToPlaylist', { id, trackIds })
+      const res = await call('addToPlaylist', { id, trackIds })
       await loadPlaylists(true)
       haptic('light')
-      toast(`Added ${trackIds.length} to ${name}`)
+      // A playlist holds each track once, so some (or all) may already be there.
+      const added = res?.added ?? trackIds.length
+      toast(added ? `Added ${added} to ${name}` : `Already in ${name}`)
     } catch (e) { haptic('warn'); toast(e.message, true) }
   }
 
