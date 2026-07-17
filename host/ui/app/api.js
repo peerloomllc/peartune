@@ -58,6 +58,15 @@ export function until (ts) {
   return Math.floor(s / 86400) + 'd'
 }
 
+// A device's platform as a friendly label for the access list. Unknown/absent -> null
+// (the caller then renders no chip). The value comes from the device hello at pairing.
+export function platformLabel (p) {
+  const k = String(p || '').toLowerCase()
+  if (k === 'android') return 'Android'
+  if (k === 'ios' || k === 'ipados') return 'iOS'
+  return p ? p[0].toUpperCase() + p.slice(1) : null
+}
+
 // A guest-pass DURATION in ms as coarse words, for the pairing modal.
 export function fmtDur (ms) {
   const d = Math.round(ms / 86400000)

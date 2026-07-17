@@ -176,6 +176,9 @@ a { color: var(--primary-strong); }
 /* An active guest pass is informational, not a warning - so a calm tint, unlike the
    amber "revoked" / "expired" badges. */
 .badge.guest { background: color-mix(in srgb, var(--primary) 16%, transparent); color: var(--primary); }
+/* Platform (Android/iOS) is neutral metadata, not an alert - muted, not warn/primary, and
+   normal-case so the OS name reads as itself rather than shouting. */
+.badge.plat { background: var(--surface-hover); color: var(--subtle); text-transform: none; letter-spacing: 0; font-weight: 500; }
 .name .badge { margin-left: 6px; vertical-align: middle; }
 label.dur { display: flex; flex-direction: column; gap: 6px; align-items: center; }
 label.dur select { margin-top: 2px; }

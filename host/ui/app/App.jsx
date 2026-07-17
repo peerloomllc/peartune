@@ -5,7 +5,7 @@ import {
   Lightning, CheckCircle, Folder, CaretLeft, Wrench
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
-import { api, copyText, ago, until, fmtDur, DONATE } from './api'
+import { api, copyText, ago, until, fmtDur, platformLabel, DONATE } from './api'
 import { loadThemePref, applyThemePref, resolveTheme } from './theme'
 
 // The operator control plane, as an app shell adapted from the PearCircle seeder's
@@ -315,7 +315,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
                         : <>
                             <div className='who'>
                               <div className='name'>{p.name}</div>
-                              <div className='sub'>{live.length} device{live.length === 1 ? '' : 's'}{on ? ` · ${on} online` : ''}</div>
+                              <div className='sub'>{live.length} device{live.length === 1 ? '' : 's'}{on ? ` · ${on} online` : ''}{p.createdAt ? ` · added ${ago(p.createdAt)}` : ''}</div>
                             </div>
                             <button className='ghost small' onClick={e => { e.stopPropagation(); startRename(p) }}>Rename</button>
                             {live.length
@@ -373,11 +373,13 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, loose 
         <div className='who'>
           <div className='name'>
             {d.label}
+            {platformLabel(d.platform) && <span className='badge plat'>{platformLabel(d.platform)}</span>}
             {d.revokedAt && <span className='badge'>revoked</span>}
             {guest && <span className={'badge' + (expired ? '' : ' guest')}>{expired ? 'expired' : 'guest'}</span>}
           </div>
           <div className={'sub' + ((d.revokedAt || expired) ? ' rev' : '')}>
             <span>{d.revokedAt ? `Revoked ${ago(d.revokedAt)}` : (d.online ? 'Connected' : 'Last seen ' + ago(d.lastSeenAt))}</span>
+            {!d.revokedAt && d.grantedAt && <span>{`· paired ${ago(d.grantedAt)}`}</span>}
             {guest && <span>{expired ? ' · pass expired' : ` · expires in ${until(d.expiresAt)}`}</span>}
           </div>
         </div>
