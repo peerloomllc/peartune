@@ -87,6 +87,17 @@ let currentHost = null
 let connected = false
 let reconnecting = null // the in-flight reconnect, so N callers share ONE attempt
 
+// --- cross-device session handoff (proposal 2026-07-17) ---------------------
+// This device holds the host's session "active player" token while it is the one playing.
+// While active, saveQueueState mirrors the queue to the host so another device can "Play
+// here"; a rejected push (ok:false) means we were superseded and must pause (lazy presence).
+let sessionActive = false // do we currently hold the token?
+let sessionGen = 0 // the generation we last saw (for the claim CAS)
+let sessionSupported = true // false once a host answers ENOMETHOD - degrade silently
+// Skip redundant host writes: the queue snapshot arrives every ~4s (position ticks), but the
+// session only cares about the STRUCTURAL part (track ids + index + modes). Push only on change.
+let lastPushedSig = null
+
 // --- IPC --------------------------------------------------------------------
 
 function send (msg) {
@@ -644,7 +655,29 @@ const methods = {
       fs.mkdirSync(DATA_DIR, { recursive: true })
       fs.writeFileSync(QUEUE_FILE, JSON.stringify(snapshot || {}))
     } catch {}
-    return { ok: true }
+
+    // If we hold the session token, mirror the queue to the host so another device can
+    // "Play here". Items go as { trackId, ...meta } (id -> trackId is the host contract); no
+    // stream URLs (the receiver re-resolves via urlFor, exactly as launch-restore does; the art
+    // shim URL is port-rewritten on the receiver). A rejected push means we were superseded -
+    // report lostSession so the shell pauses (lazy presence). Only push on a STRUCTURAL change.
+    let lostSession = false
+    if (sessionActive && sessionSupported && connected && client && snapshot) {
+      const items = Array.isArray(snapshot.items) ? snapshot.items : []
+      const sig = JSON.stringify([items.map(t => t.id), snapshot.index || 0, !!snapshot.shuffle, Number(snapshot.repeat) || 0])
+      if (sig !== lastPushedSig) {
+        try {
+          const queue = items.map(t => ({ trackId: t.id, title: t.title, artist: t.artist, album: t.album, art: t.art, artFull: t.artFull, durationMs: t.durationMs }))
+          const r = await client.sessionSet({ queue, index: snapshot.index || 0, shuffle: !!snapshot.shuffle, repeat: Number(snapshot.repeat) || 0 })
+          if (r && r.ok === false) { sessionActive = false; lostSession = true } // superseded
+          else { lastPushedSig = sig }
+        } catch (e) {
+          if (e?.code === 'ENOMETHOD') sessionSupported = false
+          // offline / transient: keep the token, retry on the next snapshot
+        }
+      }
+    }
+    return { ok: true, lostSession }
   },
   async loadQueueState () {
     try {
@@ -656,6 +689,80 @@ const methods = {
   async clearQueueState () {
     try { fs.unlinkSync(QUEUE_FILE) } catch {}
     return { ok: true }
+  },
+
+  // --- cross-device session handoff (proposal 2026-07-17) ---------------------
+  //
+  // Become the active player. Called by the shell when playback starts here. Idempotent: a no-op
+  // if we already hold the token. Otherwise read the current generation and CAS-claim it (one
+  // retry if another device claimed in the same instant). Claiming ADOPTS the existing queue on
+  // the host; the shell's next saveQueueState overwrites it with ours.
+  async sessionActivate () {
+    if (!sessionSupported) return { active: false, supported: false }
+    if (sessionActive) return { active: true }
+    try {
+      await ensureConnected()
+      for (let i = 0; i < 2; i++) {
+        const cur = await client.sessionGet()
+        const r = await client.sessionClaim({ generation: cur?.generation || 0 })
+        if (r?.ok) { sessionActive = true; sessionGen = r.session.generation; lastPushedSig = null; return { active: true } }
+      }
+      return { active: false }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') { sessionSupported = false; return { active: false, supported: false } }
+      return { active: false } // offline; the next play retries
+    }
+  },
+
+  // Stop being the active player (the shell's stop). Does NOT release the host token - the
+  // session persists as last-known so another device can still "Play here"; we just stop pushing.
+  sessionDeactivate () { sessionActive = false; return { ok: true } },
+
+  // What the UI needs for the "Playing on <name>" card: is another of my devices actively
+  // holding a non-empty session. Tracks the generation for a later claim.
+  async sessionInfo () {
+    if (!sessionSupported) return { supported: false }
+    try {
+      await ensureConnected()
+      const s = await client.sessionGet()
+      if (s) sessionGen = s.generation
+      return {
+        supported: true,
+        active: !!(s && s.isActiveHere), // is THIS device the active one
+        hasQueue: !!(s && Array.isArray(s.queue) && s.queue.length > 0),
+        activeDeviceName: s?.activeDeviceName || null,
+        count: s?.queue?.length || 0
+      }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') { sessionSupported = false; return { supported: false } }
+      return { supported: true, offline: true }
+    }
+  },
+
+  // "Play here": claim the token and hand the session queue back to the shell (mapped to its
+  // shape) plus the current track's resume position, so the shell rebuilds + seeks + plays.
+  async sessionTakeover () {
+    if (!sessionSupported) return { ok: false, supported: false }
+    try {
+      await ensureConnected()
+      for (let i = 0; i < 2; i++) {
+        const s = await client.sessionGet()
+        if (!s || !Array.isArray(s.queue) || !s.queue.length) return { ok: false, empty: true }
+        const r = await client.sessionClaim({ generation: s.generation })
+        if (r?.ok) {
+          sessionActive = true; sessionGen = r.session.generation; lastPushedSig = null
+          const items = r.session.queue.map(t => ({ id: t.trackId, title: t.title, artist: t.artist, album: t.album, art: t.art, artFull: t.artFull, durationMs: t.durationMs }))
+          const cur = items[r.session.index || 0]
+          let positionMs = 0
+          if (cur) { try { const rp = await client.resumeGet({ trackId: cur.id }); positionMs = rp?.positionMs || 0 } catch {} }
+          return { ok: true, items, index: r.session.index || 0, shuffle: !!r.session.shuffle, repeat: r.session.repeat || 0, positionMs }
+        }
+      }
+      return { ok: false }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') { sessionSupported = false; return { ok: false, supported: false } }
+      return { ok: false }
+    }
   },
 
   // --- favorites (host-as-hub, milestone 3) -----------------------------------

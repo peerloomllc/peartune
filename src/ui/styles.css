@@ -137,6 +137,14 @@ ul.tracks li .favbtn:active { transform: scale(.85); }
   width: 2.4rem; height: 2.4rem; border-radius: 50%;
   background: var(--color-primary); color: var(--color-text-on-primary);
 }
+/* Session-handoff card: a device icon where the album cover would be (there is no single
+   cover for a whole session), tinted like the card. */
+.handoff-ic {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 2.9rem; height: 2.9rem; border-radius: 10px;
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  color: var(--color-primary);
+}
 
 .favview section { margin-bottom: 1.6rem; }
 .favh {

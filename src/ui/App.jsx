@@ -105,6 +105,7 @@ export default function App () {
   const [favSupported, setFavSupported] = useState(true) // false = host too old
   const [favItems, setFavItems] = useState(null) // the Favorites view, resolved + grouped
   const [cont, setCont] = useState(null) // "continue listening": { track, positionMs }
+  const [handoff, setHandoff] = useState(null) // another device holds the play session: { activeDeviceName, count }
   const [mostPlayed, setMostPlayed] = useState(null) // the Most Played view: { items }
   const [youView, setYouView] = useState('favorites') // the "You" tab's sub-picker: favorites | top | playlists
   const [playlists, setPlaylists] = useState(null) // the Playlists list: [{ id, name, count }]
@@ -131,21 +132,25 @@ export default function App () {
         // emits play:started, which lights up the mini-player). Fire-and-forget: a
         // cached queue restores offline; an uncached one waits for the connection.
         call('restore').then(r => { if (r?.restored) setCont(null) }).catch(() => {})
-        if (s.connected) { loadAlbums(0, sortParamsFor(savedSort, 'albums')); loadSource(); loadFavs(); loadContinue(); loadPlaylists() }
+        if (s.connected) { loadAlbums(0, sortParamsFor(savedSort, 'albums')); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
     const offs = [
       on('play:started', (d) => {
         setNow(d); setError(null)
+        setHandoff(null) // we are the active player now - hide any "Playing on <other>" card
         countedRef.current = { trackId: d?.trackId, counted: false } // a fresh play to count
       }),
       on('play:status', setStatus),
+      // Session handoff: another device took the token, so we paused. Say so, then refresh the
+      // card so the user can "Play here" again to take it back.
+      on('play:handedoff', () => { toast('Now playing on your other device.'); loadHandoff() }),
       // Add-to-queue grows the queue but does not touch playback, so no play:status
       // follows - update the length the navbar badge reads from this event instead,
       // or the badge stays stale until the next status tick.
       on('play:queued', (d) => setStatus(s => ({ ...(s || {}), queueLength: d.queueLength }))),
-      on('play:stopped', () => { setNow(null); setStatus(null); loadContinue() }),
+      on('play:stopped', () => { setNow(null); setStatus(null); loadContinue(); loadHandoff() }),
       on('play:error', (d) => setError(d.error)),
       // The buffer ran dry while we were disconnected and could not get back in - a
       // revoke, or a network hole. play:stopped clears the player; this just says why,
@@ -187,6 +192,7 @@ export default function App () {
         loadSource()
         loadFavs()
         loadContinue()
+        loadHandoff()
         loadPlaylists(true)
       }),
 
@@ -196,6 +202,7 @@ export default function App () {
       on('app:active', () => {
         const s = liveRef.current
         if (s.host && !s.connected && !s.reconnecting) reconnect()
+        loadHandoff() // lazy presence: another device may have started/stopped while we were away
       })
     ]
     return () => offs.forEach(f => f())
@@ -505,6 +512,24 @@ export default function App () {
     try {
       setCont(await call('resumeLatest'))
     } catch {}
+  }
+
+  // Session handoff: show a "Playing on <name>" card when ANOTHER of this person's devices is
+  // the active player with a non-empty queue. Cleared when this device becomes the active one
+  // (play:started) or when the host does not support handoff / has no session.
+  async function loadHandoff () {
+    try {
+      const s = await call('sessionInfo')
+      setHandoff(s && s.supported && !s.active && s.hasQueue ? s : null)
+    } catch { setHandoff(null) }
+  }
+
+  // "Play here": adopt the session from the other device. The shell claims the token, rebuilds
+  // the queue, seeks to the handed position and plays; play:started then clears the card.
+  function playHere () {
+    haptic('medium')
+    setHandoff(null) // optimistic - play:started confirms
+    call('playHere').catch(() => toast('Could not take over the session.', true))
   }
 
   async function loadFavs () {
@@ -1133,6 +1158,8 @@ export default function App () {
         favs={favs} onFav={favSupported ? onFav : null}
         cont={now ? null : cont}
         onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
+        handoff={now ? null : handoff}
+        onPlayHere={playHere}
         onBrowse={(b) => {
           haptic('light')
           // Reset the search box when changing views: it means "search everything" on
@@ -1659,7 +1686,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
-  favs, onFav, cont, onContinue,
+  favs, onFav, cont, onContinue, handoff, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
@@ -1830,6 +1857,12 @@ function Library ({
       </div>
 
       {error && <div className='error'>{error}</div>}
+
+      {/* Session handoff: another device is the active player. "Play here" adopts its queue.
+          Shown on the home view when nothing is playing here (parent nulls it while now-playing). */}
+      {handoff && !now && !searching && browse === 'albums' && (
+        <HandoffCard handoff={handoff} onPlayHere={onPlayHere} />
+      )}
 
       {/* Pick up where you left off. Only on the home view, and only when nothing is
           already playing (the parent nulls `cont` in that case). */}
@@ -2256,6 +2289,26 @@ function ContinueCard ({ cont, onPlay }) {
         <div className='muted sm sub'>
           {[t.artist, cont.positionMs ? 'at ' + fmt(cont.positionMs) : ''].filter(Boolean).join(' · ')}
         </div>
+      </div>
+      <div className='contplay'><Play size={20} weight='fill' /></div>
+    </div>
+  )
+}
+
+// Session handoff: another of this person's devices is the active player. "Play here" adopts
+// its queue (same track + spot) onto this device and pauses the other one. Shown only when
+// nothing is playing here.
+function HandoffCard ({ handoff, onPlayHere }) {
+  const press = usePress(onPlayHere)
+  const name = handoff.activeDeviceName || 'another device'
+  const n = handoff.count || 0
+  return (
+    <div className='contcard' {...press}>
+      <div className='handoff-ic'><SpeakerHigh size={22} weight='fill' /></div>
+      <div className='meta'>
+        <div className='muted sm cont-h'>Playing on {name}</div>
+        <div className='t'>Play here</div>
+        <div className='muted sm sub'>{n} track{n === 1 ? '' : 's'} · continue on this device</div>
       </div>
       <div className='contplay'><Play size={20} weight='fill' /></div>
     </div>
