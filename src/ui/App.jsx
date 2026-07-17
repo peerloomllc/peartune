@@ -2315,11 +2315,15 @@ function HandoffCard ({ handoff, onPlayHere }) {
   const press = usePress(onPlayHere)
   const name = handoff.activeDeviceName || 'another device'
   const n = handoff.count || 0
+  // Say what the other device is actually doing. It holds the token while paused too, so a flat
+  // "Playing on X" would lie when X is paused (deferred follow-up #2). Default to "Playing" only
+  // if the field is absent (an old worklet that never reported it).
+  const verb = handoff.activePlaying === false ? 'Paused' : 'Playing'
   return (
     <div className='contcard' {...press}>
       <div className='handoff-ic'><SpeakerHigh size={22} weight='fill' /></div>
       <div className='meta'>
-        <div className='muted sm cont-h'>Playing on {name}</div>
+        <div className='muted sm cont-h'>{verb} on {name}</div>
         <div className='t'>Play here</div>
         <div className='muted sm sub'>{n} track{n === 1 ? '' : 's'} · continue on this device</div>
       </div>

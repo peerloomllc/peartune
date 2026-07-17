@@ -34,6 +34,10 @@ class PearTuneClient {
 
     this._nextId = 1
     this._pending = new Map() // req id -> { resolve, reject, stream? }
+
+    // The host's unsolicited push (session handoff). The worklet sets this to react to a
+    // 'session-superseded' event instantly instead of waiting for the next lazy heartbeat.
+    this.onPush = null
   }
 
   // --- pairing -------------------------------------------------------------
@@ -169,7 +173,11 @@ class PearTuneClient {
         const e = new Error(m.message || m.code)
         e.code = m.code
         p.reject(e)
-      }
+      },
+
+      // Unsolicited host event - no request id to correlate. Hand it straight to the
+      // worklet; it decides what to do (today: 'session-superseded' -> stop and yield).
+      onpush: (m) => { try { this.onPush && this.onPush(m) } catch {} }
     })
     if (!built) throw new Error('could not open media channel')
 

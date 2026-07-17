@@ -36,7 +36,11 @@ function pairChannel (mux, { id, onhello = null, onpaired = null, onopen = null,
   return { channel, messages }
 }
 
-// Message order for peartune/media/1: req(0), res(1), chunk(2), end(3), err(4).
+// Message order for peartune/media/1: req(0), res(1), chunk(2), end(3), err(4), push(5).
+// `push` is the host's one unsolicited server->client event (session handoff). It is LAST
+// so every existing type id is unchanged - an old peer that never registers it just drops
+// the frame (Protomux ignores an unknown type), which is exactly the backward-compat this
+// file exists to guarantee.
 function mediaChannel (mux, {
   id,
   onreq = null,
@@ -44,6 +48,7 @@ function mediaChannel (mux, {
   onchunk = null,
   onend = null,
   onerr = null,
+  onpush = null,
   onopen = null,
   onclose = null
 } = {}) {
@@ -60,7 +65,8 @@ function mediaChannel (mux, {
     res: channel.addMessage({ encoding: framing.res, onmessage: onres || undefined }),
     chunk: channel.addMessage({ encoding: framing.chunk, onmessage: onchunk || undefined }),
     end: channel.addMessage({ encoding: framing.end, onmessage: onend || undefined }),
-    err: channel.addMessage({ encoding: framing.err, onmessage: onerr || undefined })
+    err: channel.addMessage({ encoding: framing.err, onmessage: onerr || undefined }),
+    push: channel.addMessage({ encoding: framing.push, onmessage: onpush || undefined })
   }
 
   return { channel, messages }

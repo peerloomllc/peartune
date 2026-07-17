@@ -317,6 +317,20 @@ function purgeAll () {
 async function ensureClient () {
   if (client) return client
   client = new PearTuneClient({ keyPair: identity, log })
+
+  // Instant presence: the host pushes 'session-superseded' the moment another of this
+  // person's devices claims the play token, so we stop NOW instead of waiting for our next
+  // heartbeat to come back ok:false (lazy presence). Same effect as a rejected heartbeat -
+  // drop the token and tell the shell to hand off - just immediate. The shell's onHandedOff
+  // is idempotent, so a later lazy rejection landing too is harmless.
+  client.onPush = (m) => {
+    if (m?.kind === 'session-superseded') {
+      sessionActive = false
+      if (m.data?.generation) sessionGen = m.data.generation
+      log('session:superseded', { generation: m.data?.generation ?? null })
+      emit('session:superseded', {})
+    }
+  }
   return client
 }
 
@@ -669,7 +683,11 @@ const methods = {
       const items = Array.isArray(snapshot.items) ? snapshot.items : []
       try {
         const queue = items.map(t => ({ trackId: t.id, title: t.title, artist: t.artist, album: t.album, art: t.art, artFull: t.artFull, durationMs: t.durationMs }))
-        const r = await client.sessionSet({ queue, index: snapshot.index || 0, shuffle: !!snapshot.shuffle, repeat: Number(snapshot.repeat) || 0 })
+        // positionMs + playing ride this same heartbeat, so "Play here" seeks to the exact
+        // spot from the claim reply (no separate resume round-trip) and another device's card
+        // can say "Paused on <name>" honestly. The shell forces a snapshot on pause, so the
+        // paused state + exact position land at once rather than up to a heartbeat late.
+        const r = await client.sessionSet({ queue, index: snapshot.index || 0, shuffle: !!snapshot.shuffle, repeat: Number(snapshot.repeat) || 0, positionMs: Number(snapshot.positionMs) || 0, playing: !!snapshot.playing })
         if (r && r.ok === false) { sessionActive = false; lostSession = true } // superseded
       } catch (e) {
         if (e?.code === 'ENOMETHOD') sessionSupported = false
@@ -730,6 +748,7 @@ const methods = {
         active: !!(s && s.isActiveHere), // is THIS device the active one
         hasQueue: !!(s && Array.isArray(s.queue) && s.queue.length > 0),
         activeDeviceName: s?.activeDeviceName || null,
+        activePlaying: !!(s && s.playing), // is the active device PLAYING or paused (card wording)
         count: s?.queue?.length || 0
       }
     } catch (e) {
@@ -752,8 +771,11 @@ const methods = {
           sessionActive = true; sessionGen = r.session.generation
           const items = r.session.queue.map(t => ({ id: t.trackId, title: t.title, artist: t.artist, album: t.album, art: t.art, artFull: t.artFull, durationMs: t.durationMs }))
           const cur = items[r.session.index || 0]
-          let positionMs = 0
-          if (cur) { try { const rp = await client.resumeGet({ trackId: cur.id }); positionMs = rp?.positionMs || 0 } catch {} }
+          // Seek to the position the leaving device pushed with the queue (exact when it paused
+          // first, <=one heartbeat old otherwise). Fall back to the per-track resume row only if
+          // the session carries none (an old host, or a session written before this shipped).
+          let positionMs = Number(r.session.positionMs) || 0
+          if (!positionMs && cur) { try { const rp = await client.resumeGet({ trackId: cur.id }); positionMs = rp?.positionMs || 0 } catch {} }
           return { ok: true, items, index: r.session.index || 0, shuffle: !!r.session.shuffle, repeat: r.session.repeat || 0, positionMs }
         }
       }

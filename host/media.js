@@ -28,14 +28,18 @@ function ownerOf (grant) {
   return grant.personId ? 'p:' + grant.personId : 'd:' + grant.deviceKey
 }
 
-function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state = null, log = () => {} }) {
+function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state = null, presence = null, log = () => {} }) {
   const mux = Protomux.from(conn)
+
+  // Set once the channel is open (below). Called on close to drop this connection's push
+  // sender from the presence registry, so a dead channel is never pushed to.
+  let unregisterPresence = () => {}
 
   // Registration order is fixed in protocol/channels.js and MUST match the
   // client's. Do not hand-roll addMessage here - see the note in that file.
   const built = mediaChannel(mux, {
     id: b4a.from(libraryId),
-    onclose: () => log('media:channel-closed'),
+    onclose: () => { unregisterPresence(); log('media:channel-closed') },
     onreq: async (m) => {
       try {
         await dispatch(m)
@@ -52,6 +56,10 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
   const send = built.messages
 
   channel.open()
+
+  // This connection is now reachable by an unsolicited push. Keyed by the grant's device -
+  // the one the firewall authenticated - so a session.claim on ANOTHER connection can reach it.
+  if (presence) unregisterPresence = presence.register(grant.deviceKey, (evt) => { try { send.push.send(evt) } catch {} })
 
   function safeErr (id, code, message) {
     try {
@@ -316,9 +324,20 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
 
       case 'session.claim': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        const owner = ownerOf(grant)
+        // Who held the token BEFORE this claim - so we can tell them, instantly, that they lost
+        // it (instead of them finding out lazily on their next heartbeat, deferred follow-up #1).
+        const prev = (await state.getSession(owner))?.activeDeviceKey || null
         // Compare-and-set on the generation the client last saw. null = it lost the race.
-        const row = await state.claimSession(ownerOf(grant), grant.deviceKey, Number(params?.generation) || 0)
-        log('session:claim', { ok: !!row, generation: row?.generation ?? null })
+        const row = await state.claimSession(owner, grant.deviceKey, Number(params?.generation) || 0)
+        // Push only on a SUCCESSFUL takeover from a DIFFERENT device (an idempotent re-claim by
+        // the current holder, or a lost CAS race, must not tell anyone to stop). presence is
+        // null in the unit tests; the push is best-effort and never gates the reply.
+        let pushed = 0
+        if (row && prev && prev !== grant.deviceKey && presence) {
+          pushed = presence.notify(prev, 'session-superseded', { generation: row.generation })
+        }
+        log('session:claim', { ok: !!row, generation: row?.generation ?? null, superseded: pushed })
         return send.res.send({ id, body: { ok: !!row, session: row } })
       }
 
