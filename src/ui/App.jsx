@@ -859,28 +859,45 @@ export default function App () {
 
   function jumpTo (index) {
     haptic('light')
-    call('playIndex', { index })
+    // If the player was stopped (its X), there is no live session to seek within - so
+    // restart the kept queue through the full play path, which re-announces and brings
+    // the player bar back. Otherwise a plain in-session jump.
+    if (!now && queue?.items?.length) call('play', { queue: queue.items, index })
+    else call('playIndex', { index })
   }
 
-  // The player's X: a full stop. Clears the ENTIRE queue (including the current
-  // track) and stops playback.
-  function stopAll () {
-    haptic('warn')
-    call('stop')
-    setQueue({ items: [], index: 0 })
+  // The player's X: stop PLAYBACK only, and KEEP the queue. The bar hides (play:stopped),
+  // the queue stays in the Queue tab, and tapping a track there resumes it.
+  function stopPlayback () {
+    haptic('light')
+    call('stopKeepQueue')
   }
 
-  // The Queue screen's "Clear Queue": empty the up-next but keep the CURRENT track
-  // playing - the queue collapses to just that one track. If nothing is playing it is
-  // a plain stop.
+  // The Queue screen's trash icon (behind a confirm). Empties the up-next but keeps the
+  // CURRENT track playing - the queue collapses to that one track. With nothing playing,
+  // it wipes the queue outright.
   async function clearQueue () {
     haptic('warn')
-    try {
-      const res = await call('queueClearKeepCurrent')
-      setQueue(res)
-      setStatus(s => (s ? { ...s, queueLength: res.items.length } : s))
-    } catch (e) { setError(e.message); loadQueue() }
+    if (now) {
+      try {
+        const res = await call('queueClearKeepCurrent')
+        setQueue(res)
+        setStatus(s => (s ? { ...s, queueLength: res.items.length } : s))
+      } catch (e) { setError(e.message); loadQueue() }
+    } else {
+      call('stop')
+      setQueue({ items: [], index: 0 })
+    }
   }
+  const confirmClearQueue = () => setConfirming({
+    title: 'Clear the queue?',
+    body: now
+      ? 'Everything up next is removed. The current song keeps playing.'
+      : 'The whole queue is removed.',
+    danger: true,
+    yes: 'Clear',
+    onYes: clearQueue
+  })
 
   // Reorder the queue. Update the visible list optimistically (so the row does not snap
   // back while the round-trip lands), then reconcile with the shell's authoritative
@@ -1070,7 +1087,7 @@ export default function App () {
         onJump={jumpTo}
         onMove={moveInQueue}
         onRemove={removeFromQueue}
-        onClear={clearQueue}
+        onClear={confirmClearQueue}
       />
     )
   } else if (tab === 'settings') {
@@ -1126,7 +1143,7 @@ export default function App () {
           <Player
             now={now} status={status} expanded={expanded}
             shuffle={shuffle} repeat={repeat} onQueue={() => goTab('queue')}
-            onShuffle={toggleShuffle} onRepeat={cycleRepeat} onStop={stopAll}
+            onShuffle={toggleShuffle} onRepeat={cycleRepeat} onStop={stopPlayback}
             onExpand={() => { haptic('light'); setExpanded(true) }}
             onCollapse={() => { haptic('light'); setExpanded(false) }}
             onViewArt={() => viewArt(now.artFull || now.art, now.album || now.title)}
@@ -1336,22 +1353,27 @@ function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
 
   return (
     <div className='app queuescreen'>
-      {/* The edit toggle is absolutely positioned (top-right) rather than in a flex
-          row with the title, so "Queue" stays centered like every other page header
-          instead of being shoved off-center by the button's width. */}
+      {/* The header stays put (flex:none at the top of the fixed-height column) while the
+          list scrolls below it. The action icons are absolutely positioned top-right so
+          "Queue" stays centered like every other page header. */}
       <header className='queuehead'>
         <h1>Queue</h1>
         <p className='muted sm'>
           {items.length} {items.length === 1 ? 'track' : 'tracks'}
           {left > 0 ? ` · ${left} still to play` : ' · last track'}
         </p>
-        <button
-          className={'qedit' + (editing ? ' on' : '')}
-          aria-label={editing ? 'Done editing' : 'Edit queue'}
-          onClick={toggleEdit}
-        >
-          <PencilSimple size={20} weight={editing ? 'fill' : 'regular'} />
-        </button>
+        <div className='qacts'>
+          <button className='qtrash' aria-label='Clear queue' onClick={onClear}>
+            <Trash size={19} weight='regular' />
+          </button>
+          <button
+            className={'qedit' + (editing ? ' on' : '')}
+            aria-label={editing ? 'Done editing' : 'Edit queue'}
+            onClick={toggleEdit}
+          >
+            <PencilSimple size={20} weight={editing ? 'fill' : 'regular'} />
+          </button>
+        </div>
       </header>
 
       {editing
@@ -1407,17 +1429,6 @@ function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
             ))}
           </ul>
           )}
-
-      {/* Pinned just above the dock (navbar, or the player when it is showing) rather
-          than flowing after the list - so it is always reachable without scrolling and
-          there is no dead whitespace beneath it. The list padding clears its height.
-          Honest label: there is no way to empty the queue without stopping the music,
-          because the queue IS what is playing. */}
-      <div className='queueclear'>
-        <button className='more danger' onClick={onClear}>
-          <Trash size={15} weight='bold' /> Clear Queue
-        </button>
-      </div>
     </div>
   )
 }

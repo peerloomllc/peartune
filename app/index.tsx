@@ -466,6 +466,20 @@ export default function App () {
     toWeb('play:stopped', {})
   }
 
+  // The player's X: stop PLAYBACK but KEEP the queue (unlike stop(), which wipes it).
+  // The ExoPlayer instance stays alive and PAUSED - so tapping a track in the Queue tab
+  // resumes via playIndex, which needs a live player - and we just hide the now-playing
+  // bar (play:stopped) and clear the lock-screen session. The persisted queue is left
+  // intact, so it also survives a relaunch.
+  function stopKeepQueue () {
+    const p = player.current
+    if (p) {
+      try { p.pause(); p.clearLockScreenControls() } catch {}
+    }
+    posRef.current = 0
+    toWeb('play:stopped', {})
+  }
+
   // Restore the saved queue on launch, PAUSED, seeked to where you were - the strong
   // "continue where you left off" (the whole session, which is why it earns a media
   // notification, unlike a single track). It is the play() flow MINUS p.play(), plus a
@@ -717,6 +731,8 @@ export default function App () {
       // Clear the queue but keep the current track playing (the Queue screen's
       // "Clear Queue"). A full stop is a separate 'stop' call (the player's X).
       queueClearKeepCurrent: () => queueClearKeepCurrent(),
+      // The player's X: stop playback, keep the queue (see stopKeepQueue).
+      stopKeepQueue: () => stopKeepQueue(),
 
       // Jump straight to a track in the queue. seekToQueueIndex is ExoPlayer's own
       // (via the patch), so this respects the shuffled order rather than fighting
