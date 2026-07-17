@@ -2,6 +2,36 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-17 - Library sort now PERSISTS across relaunch (closing the v1 gap), and a stale closure was in the way
+Tier: T1 (client only; no wire change, no host change - the sort choice rides the existing
+worklet settings.json alongside density). Branch: feature/sort-persistence.
+Context: the 2026-07-16 sorting entry shipped sort as per-view and IN-MEMORY, "resets on relaunch
+(density persists, sort does not - acceptable v1)". This closes that gap: the per-view sort
+{albums,artists,songs}:{key,order} is written to settings.json (setSettings, same path density
+uses) and restored on launch. No worklet change - saveSettings already merges any patch key and
+init already returns loadSettings(), so `sort` round-trips for free.
+The subtlety, and it is the whole reason this was more than a one-liner: restoring the sort into
+STATE was not enough. The folder host connects in the BACKGROUND, so init returns connected:false
+and the first library load fires from the once-registered `host:connected` listener - whose
+closure captured the FIRST render's EMPTY sort (the same stale-closure trap the nowRef/statusRef/
+liveRef pattern already exists to dodge). Result on hardware: the Display sheet correctly showed
+the restored Year sort, but the album list loaded in DEFAULT order. Fix: read sort through a
+`sortRef` so any no-param loader sees the live value, PLUS pass explicit params on the
+connected-at-init branch (setSort has not committed in that same tick - the reason applySort
+already threads params directly). A pure `sortParamsFor(sortMap, view)` computes the params off a
+not-yet-committed map, shared by the restore load, applySort's optimistic reload, and sortParams.
+A cross-source note (benign): the sort map is global, not per-source. A songs sort saved on a
+folder source, then a switch to Subsonic (which cannot sort songs and hides the control), leaves
+the stored key inert - the adapter ignores an unknown/unhonored sort (falls through to default
+order, per the 2026-07-16 entry) and the hidden control means the user cannot see or change it
+until they switch back. Acceptable; matches how density is also global.
+Verify: 266 tests (unchanged - the mechanism is a settings round-trip + a ref read; the existing
+sort.test.js still pins the comparators/capabilities). ON DEVICE (TCL + Umbrel/folder): set
+Albums=Year asc and Songs=Title desc, force-stop -> relaunch each time; both the loaded list
+order AND the Display sheet (including the desc flag) came back exactly. First relaunch caught the
+stale-closure bug (list default while sheet showed Year); after the ref fix, the cold launch
+loaded year-sorted. Reset both back to Default afterward so the test phone is not left changed.
+
 ## 2026-07-16 - Library sorting is a SERVER-SIDE sort param, honestly advertised per source
 Tier: T1 (adapter + UI; no wire change - `library.list` already passes params straight to
 the adapter, so `sort`/`order` are additive and an old client that never sends them is
