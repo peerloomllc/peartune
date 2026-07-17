@@ -36,6 +36,15 @@ const FAV_KINDS = ['track', 'album', 'artist']
 const PLAYLIST_NAME_MAX = 100
 const PLAYLIST_MAX_TRACKS = 10000
 
+// The play session (cross-device handoff, proposal 2026-07-17) mirrors the app's queue
+// verbatim, so it is capped the same way. Each item is { trackId, ...renderMeta } - IDs +
+// what the receiver needs to render + re-resolve, never shim URLs (ports change per launch).
+const SESSION_MAX_TRACKS = 10000
+function sanitizeQueue (q) {
+  if (!Array.isArray(q)) return []
+  return q.filter(t => t && typeof t.trackId === 'string' && t.trackId).slice(0, SESSION_MAX_TRACKS)
+}
+
 // Playlist names are operator-and-user text that renders on the phone (and could reach
 // the dashboard later), so strip control chars and cap the length here at the single
 // writer, exactly like device/user names (proposal 2026-07-14). An empty name is not an
@@ -244,6 +253,65 @@ class UserState {
     row.trackIds = (Array.isArray(trackIds) ? trackIds : []).filter(x => typeof x === 'string' && x).slice(0, PLAYLIST_MAX_TRACKS)
     row.updatedAt = Date.now()
     await this.bee.put(this._plKey(ownerId, id), row, { valueEncoding: 'json' })
+    return row
+  }
+
+  // --- play session: cross-device handoff (proposal 2026-07-17) --------------
+  //
+  // ONE row per owner - the person's current listening session:
+  //   session:{ownerId} -> { queue:[{trackId,...meta}], index, shuffle, repeat,
+  //                          activeDeviceKey, generation, updatedAt }
+  //
+  // This is SESSION state, not library state, so it is NOT ambient last-write-wins like
+  // favorites. A single active device holds the session via `activeDeviceKey`, and taking it
+  // is a deliberate act guarded by a monotonic `generation` compare-and-set (the conflict
+  // primitive). Position is NOT stored here - it rides the resume row (the receiver seeks to
+  // resume.get for the current track). `activeDeviceKey` is the specific DEVICE key (not the
+  // owner), because two of a person's devices share the ownerId but only one is active.
+  _sessionKey (ownerId) {
+    return `session:${ownerId}`
+  }
+
+  async getSession (ownerId) {
+    const node = await this.bee.get(this._sessionKey(ownerId), { valueEncoding: 'json' })
+    return node ? node.value : null
+  }
+
+  // Take the active-player token via compare-and-set. The caller passes the `generation` it
+  // last saw; if it still matches (nobody claimed since), we bump it, stamp this device active,
+  // and return the new row. A stale generation returns null - the caller lost the race and must
+  // re-read. A missing row is generation 0, so the first claimer creates it. A claim ADOPTS the
+  // existing queue (it does not wipe it) - "Play here" continues the session, it does not clear it.
+  async claimSession (ownerId, deviceKey, generation = 0) {
+    const row = await this.getSession(ownerId)
+    const cur = row?.generation || 0
+    if ((Number(generation) || 0) !== cur) return null // someone else holds/changed it
+    const next = {
+      queue: row?.queue || [],
+      index: row?.index || 0,
+      shuffle: row?.shuffle || false,
+      repeat: row?.repeat || 0,
+      activeDeviceKey: deviceKey,
+      generation: cur + 1,
+      updatedAt: Date.now()
+    }
+    await this.bee.put(this._sessionKey(ownerId), next, { valueEncoding: 'json' })
+    return next
+  }
+
+  // Replace the session's queue/index/modes. ONLY the current active device may do this; a
+  // non-holder (a device superseded by a claim it has not noticed yet) is rejected with null,
+  // which is exactly how it learns it is no longer active (lazy presence). The token
+  // (activeDeviceKey + generation) is left untouched.
+  async setSession (ownerId, deviceKey, { queue, index, shuffle, repeat } = {}) {
+    const row = await this.getSession(ownerId)
+    if (!row || row.activeDeviceKey !== deviceKey) return null
+    row.queue = sanitizeQueue(queue)
+    row.index = Number.isInteger(index) && index >= 0 ? index : 0
+    row.shuffle = !!shuffle
+    row.repeat = Number(repeat) || 0
+    row.updatedAt = Date.now()
+    await this.bee.put(this._sessionKey(ownerId), row, { valueEncoding: 'json' })
     return row
   }
 }

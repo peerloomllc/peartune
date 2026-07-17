@@ -305,3 +305,62 @@ test('trackIds are validated: non-strings are dropped, not stored', async (t) =>
   await s.addToPlaylist('p:tim', pl.id, ['a', 123, null, '', 'b', undefined])
   assert.deepEqual((await s.getPlaylist('p:tim', pl.id)).trackIds, ['a', 'b'])
 })
+
+// --- play session: cross-device handoff (proposal 2026-07-17) ----------------
+
+test('claimSession creates a session on first claim and stamps the active device', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  const row = await s.claimSession('p:TIM', 'PHONE', 0) // no row yet = generation 0
+  assert.equal(row.activeDeviceKey, 'PHONE')
+  assert.equal(row.generation, 1)
+  assert.deepEqual(row.queue, [])
+})
+
+test('claimSession is a compare-and-set: a stale generation loses the race', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0)                 // gen -> 1, active PHONE
+  // Two devices both read generation 1 and race to claim.
+  const tablet = await s.claimSession('p:TIM', 'TABLET', 1) // matches -> wins, gen 2
+  const laptop = await s.claimSession('p:TIM', 'LAPTOP', 1) // stale (gen is now 2) -> null
+  assert.equal(tablet.activeDeviceKey, 'TABLET')
+  assert.equal(tablet.generation, 2)
+  assert.equal(laptop, null)
+  assert.equal((await s.getSession('p:TIM')).activeDeviceKey, 'TABLET')
+})
+
+test('a claim ADOPTS the existing queue, it does not wipe it ("Play here" continues)', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0)
+  await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'a' }, { trackId: 'b' }], index: 1, shuffle: true, repeat: 2 })
+  const adopted = await s.claimSession('p:TIM', 'TABLET', 1)
+  assert.deepEqual(adopted.queue.map(x => x.trackId), ['a', 'b'])
+  assert.equal(adopted.index, 1)
+  assert.equal(adopted.shuffle, true)
+  assert.equal(adopted.repeat, 2)
+  assert.equal(adopted.activeDeviceKey, 'TABLET')
+})
+
+test('setSession is allowed only for the active device; a superseded one is rejected (lazy presence)', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0)   // PHONE active
+  await s.claimSession('p:TIM', 'TABLET', 1)  // TABLET takes over
+  // PHONE, not knowing it was superseded, tries to push its queue - rejected. This null is how
+  // it learns it lost the token.
+  assert.equal(await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'x' }], index: 0 }), null)
+  const ok = await s.setSession('p:TIM', 'TABLET', { queue: [{ trackId: 'y' }], index: 0 })
+  assert.equal(ok.queue[0].trackId, 'y')
+})
+
+test('setSession sanitizes the queue and is owner-isolated; a missing session is null', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0)
+  await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'a' }, { trackId: 5 }, { nope: 1 }, null], index: 0 })
+  assert.deepEqual((await s.getSession('p:TIM')).queue.map(x => x.trackId), ['a']) // non-strings dropped
+  assert.equal(await s.getSession('p:ASA'), null)                                  // another owner: none
+  assert.equal(await s.setSession('p:ASA', 'PHONE', { queue: [] }), null)          // no row to be active of
+})

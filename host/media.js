@@ -15,7 +15,8 @@ const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 // so a new mutating method cannot accidentally ship without a scope check.
 const MUTATING = new Set([
   'identity.set', 'fav.set', 'resume.set', 'count.bump',
-  'playlist.create', 'playlist.rename', 'playlist.delete', 'playlist.add', 'playlist.setTracks'
+  'playlist.create', 'playlist.rename', 'playlist.delete', 'playlist.add', 'playlist.setTracks',
+  'session.claim', 'session.set'
 ])
 
 // WHO owns the user state on this connection. Derived from the grant the firewall
@@ -291,6 +292,42 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
         if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
         log('playlist:set-tracks', { id: row.id, count: row.trackIds.length })
         return send.res.send({ id, body: { ok: true, count: row.trackIds.length } })
+      }
+
+      // --- play session: cross-device handoff (proposal 2026-07-17) ----------
+      //
+      // ownerOf(grant) keys the session to the PERSON; grant.deviceKey identifies WHICH of
+      // their devices is acting. Both come from the Noise-authenticated connection, never a
+      // param - a device can only ever touch its own owner's session and claim as itself.
+      case 'session.get': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        const row = await state.getSession(ownerOf(grant))
+        if (!row) return send.res.send({ id, body: null })
+        // Enrich so the app can render "Playing on <name>" / "Play here" with no extra lookup:
+        // is THIS device the active one, and if not, what is the active device called.
+        const isActiveHere = row.activeDeviceKey === grant.deviceKey
+        let activeDeviceName = null
+        if (!isActiveHere && grants) {
+          const g = await grants.get(row.activeDeviceKey)
+          activeDeviceName = g?.label || null
+        }
+        return send.res.send({ id, body: { ...row, isActiveHere, activeDeviceName } })
+      }
+
+      case 'session.claim': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        // Compare-and-set on the generation the client last saw. null = it lost the race.
+        const row = await state.claimSession(ownerOf(grant), grant.deviceKey, Number(params?.generation) || 0)
+        log('session:claim', { ok: !!row, generation: row?.generation ?? null })
+        return send.res.send({ id, body: { ok: !!row, session: row } })
+      }
+
+      case 'session.set': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        // Only the active device may write. null (ok:false) = superseded - the client learns
+        // here that it lost the token (lazy presence) and pauses.
+        const row = await state.setSession(ownerOf(grant), grant.deviceKey, params || {})
+        return send.res.send({ id, body: { ok: !!row, session: row } })
       }
 
       case 'art.get': {
