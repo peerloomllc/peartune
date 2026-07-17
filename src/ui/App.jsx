@@ -1315,24 +1315,23 @@ function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
   const sub = (t) => [t.artist, t.album].filter(Boolean).join(' · ')
 
   return (
-    <div className='app'>
-      <header>
-        <div className='pltitlerow'>
-          <h1>Queue</h1>
-          <div className='plheadacts'>
-            <button
-              className={'plicon' + (editing ? ' on' : '')}
-              aria-label={editing ? 'Done editing' : 'Edit queue'}
-              onClick={toggleEdit}
-            >
-              <PencilSimple size={20} weight={editing ? 'fill' : 'regular'} />
-            </button>
-          </div>
-        </div>
+    <div className='app queuescreen'>
+      {/* The edit toggle is absolutely positioned (top-right) rather than in a flex
+          row with the title, so "Queue" stays centered like every other page header
+          instead of being shoved off-center by the button's width. */}
+      <header className='queuehead'>
+        <h1>Queue</h1>
         <p className='muted sm'>
           {items.length} {items.length === 1 ? 'track' : 'tracks'}
           {left > 0 ? ` · ${left} still to play` : ' · last track'}
         </p>
+        <button
+          className={'qedit' + (editing ? ' on' : '')}
+          aria-label={editing ? 'Done editing' : 'Edit queue'}
+          onClick={toggleEdit}
+        >
+          <PencilSimple size={20} weight={editing ? 'fill' : 'regular'} />
+        </button>
       </header>
 
       {editing
@@ -1389,11 +1388,16 @@ function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
           </ul>
           )}
 
-      {/* Honest label. There is no way to empty the queue without stopping the
-          music: the queue IS what is playing. */}
-      <button className='more danger' onClick={onClear}>
-        <Trash size={15} weight='bold' /> Clear queue and stop
-      </button>
+      {/* Pinned just above the dock (navbar, or the player when it is showing) rather
+          than flowing after the list - so it is always reachable without scrolling and
+          there is no dead whitespace beneath it. The list padding clears its height.
+          Honest label: there is no way to empty the queue without stopping the music,
+          because the queue IS what is playing. */}
+      <div className='queueclear'>
+        <button className='more danger' onClick={onClear}>
+          <Trash size={15} weight='bold' /> Clear queue and stop
+        </button>
+      </div>
     </div>
   )
 }
@@ -1564,6 +1568,10 @@ function SortControl ({ browse, sorts, sort, onSort }) {
   const reversible = sorts[capType].reversible
   const cur = sort?.[browse] || null
   const order = cur?.order || 'asc'
+  // On a reversible source the direction toggle's slot is ALWAYS present (just
+  // hidden until a key is chosen), so picking a sort does not grow the pill - it
+  // stays one constant size whether it reads "Default" or "Title ↑".
+  const showDir = !!cur?.key
   return (
     <div className='sortctl'>
       <ArrowsDownUp size={16} weight='regular' className='sortglyph' />
@@ -1576,13 +1584,16 @@ function SortControl ({ browse, sorts, sort, onSort }) {
         <option value=''>Default</option>
         {keys.map(k => <option key={k} value={k}>{SORT_LABEL[k] || k}</option>)}
       </select>
-      {cur?.key && reversible && (
+      {reversible && (
         <button
           className='icon dir'
-          onClick={() => onSort(browse, cur.key, order === 'asc' ? 'desc' : 'asc')}
+          style={showDir ? undefined : { visibility: 'hidden' }}
+          tabIndex={showDir ? undefined : -1}
+          aria-hidden={showDir ? undefined : true}
+          onClick={showDir ? () => onSort(browse, cur.key, order === 'asc' ? 'desc' : 'asc') : undefined}
           aria-label={order === 'asc' ? 'Ascending - tap for descending' : 'Descending - tap for ascending'}
         >
-          {order === 'asc' ? <ArrowUp size={18} weight='bold' /> : <ArrowDown size={18} weight='bold' />}
+          {order === 'desc' ? <ArrowDown size={18} weight='bold' /> : <ArrowUp size={18} weight='bold' />}
         </button>
       )}
     </div>

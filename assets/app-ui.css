@@ -696,13 +696,12 @@ button.more {
   align-items: center;
   gap: .5rem;
   margin-top: .4rem;
+  flex-wrap: wrap;
+  row-gap: .4rem;
 }
 .pickrow .seg {
-  flex: 1;
-  min-width: 0;
-}
-.pickrow .seg button {
-  min-width: 0;
+  flex: 1 1 11rem;
+  min-width: 11rem;
 }
 button.icon.dens {
   flex: none;
@@ -722,6 +721,8 @@ button.icon.dens {
   border-radius: 9999px;
   padding: .3rem .45rem;
   color: var(--color-text-secondary);
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
 .sortctl .sortglyph {
   flex: none;
@@ -734,10 +735,21 @@ select.sortsel {
   font-size: .8rem;
   font-weight: 500;
   padding: 0 .1rem;
-  max-width: 4.5rem;
+  width: 3.7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  text-align-last: center;
   -webkit-appearance: none;
   appearance: none;
-  text-overflow: ellipsis;
+  -webkit-tap-highlight-color: transparent;
+}
+.sortctl select:focus,
+.sortctl button:focus,
+.sortctl select:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 .sortctl button.icon.dir {
   flex: none;
@@ -747,6 +759,7 @@ select.sortsel {
   color: var(--color-primary);
   display: flex;
   align-items: center;
+  -webkit-tap-highlight-color: transparent;
 }
 button.icon.sortbtn {
   flex: none;
@@ -884,6 +897,52 @@ button.more.danger {
   align-items: center;
   justify-content: center;
   gap: .4rem;
+}
+.queuehead {
+  position: relative;
+}
+.qedit {
+  position: absolute;
+  right: 0;
+  top: .35rem;
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-input);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+}
+.qedit.on {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-on-primary);
+}
+.queueclear {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: var(--dock-h);
+  z-index: 39;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: .7rem 1rem;
+  background:
+    linear-gradient(
+      to top,
+      var(--color-surface-base) 62%,
+      transparent);
+  pointer-events: none;
+}
+.queueclear .more {
+  margin: 0;
+  pointer-events: auto;
+}
+.app.queuescreen {
+  padding-bottom: calc(var(--dock-h) + 4.4rem);
 }
 .blank {
   display: flex;
