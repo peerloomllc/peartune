@@ -285,6 +285,14 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .donate-actions > * { flex: 1 1 0; min-width: 0; }
 .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--muted); word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; width: 100%; text-align: center; }
 .key.addr { white-space: nowrap; overflow-x: auto; font-size: 11.5px; word-break: normal; }
+/* The pairing access-type toggle must fill the modal so its two options are EQUAL
+   width - a .stack.center otherwise shrink-wraps the .seg to its content, leaving
+   "Full access" and "Guest pass" different widths. */
+.seg.wide { width: 100%; }
+/* The pairing code beside a copy button. */
+.keyrow { display: flex; align-items: center; gap: 8px; width: 100%; }
+.keyrow .key { flex: 1 1 auto; min-width: 0; }
+.copybtn { flex: none; width: 30px; height: 30px; }
 .btnrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 a.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none; background: var(--primary); color: var(--on-primary); padding: 9px 15px; border-radius: 9px; font-size: 13.5px; font-weight: 500; cursor: pointer; }
 a.btn.ghost { background: var(--surface); color: var(--text); border: 1px solid var(--border); }

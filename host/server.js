@@ -373,6 +373,17 @@ class PearTuneHost {
     return { grant: row, killed }
   }
 
+  // Edit a device's guest expiry from the dashboard: a timestamp to (re)limit it, or null
+  // to promote it to permanent. The sweep enforces a future expiry; if the operator sets
+  // one already in the past we cut the connection now rather than waiting up to 30s.
+  async setDeviceExpiry (deviceKey, expiresAt) {
+    const row = await this.grants.setExpiry(deviceKey, expiresAt)
+    if (!row) return { grant: null, killed: 0 }
+    const killed = (expiresAt && Date.now() > expiresAt) ? this.connections.kill(deviceKey) : 0
+    this.log('host:expiry-set', { device: Grants.keyOf(deviceKey).slice(0, 8), expiresAt, killed })
+    return { grant: row, killed }
+  }
+
   async revokePerson (personId) {
     const revoked = await this.grants.revokePerson(personId)
     const killed = this.connections.killAll(revoked.map(r => r.deviceKey))

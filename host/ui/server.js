@@ -280,6 +280,19 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         return json(res, 200, { ok: true })
       }
 
+      // Edit a device's guest expiry: expiresAt = a timestamp to (re)limit it, or null to
+      // make it permanent. expiresMs (a duration) is accepted as a convenience and turned
+      // into an absolute time here, on the host clock (the authority on expiry).
+      if (req.method === 'POST' && url.pathname === '/api/device/expiry') {
+        const { deviceKey, expiresAt, expiresMs } = await readBody(req)
+        if (!deviceKey) return json(res, 400, { error: 'deviceKey required' })
+        const at = Number(expiresMs) > 0 ? Date.now() + Number(expiresMs)
+          : (Number(expiresAt) > 0 ? Number(expiresAt) : null)
+        const { grant } = await host.setDeviceExpiry(deviceKey, at)
+        if (!grant) return json(res, 400, { error: 'no such device, or it is revoked' })
+        return json(res, 200, { ok: true, expiresAt: grant.expiresAt })
+      }
+
       json(res, 404, { error: 'not found' })
     } catch (e) {
       json(res, 500, { error: e.message })
