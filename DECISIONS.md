@@ -2,6 +2,42 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-17 - A "classic" player skin: the WebView UI makes a retro amplifier face cheap
+Tier: T1 (client UI only; a new persisted setting `skin`, no wire/host change). Branch:
+feature/retro-skin.
+Context: Tim asked "is a classic Winamp skin possible?". The load-bearing finding: PearTune's UI
+is a WEBVIEW (arbitrary HTML/CSS/canvas), so a pixel-faithful vintage-amplifier player is cheap and
+fully in our control - unlike the HOME-SCREEN WIDGET version, which is boxed in by Android's
+RemoteViews (no canvas; a faithful look needs pre-rendered bitmap sprites, and live spectrum bars
+fight the widget update throttle). So the two are separable, and the in-app skin is the high-value
+one. Built a browser POC first (shown to Tim), then shipped it.
+What it is: a `skin` preference (modern | classic) beside theme/density in the worklet settings.json.
+Classic re-faces ONLY the EXPANDED player - a metal-chrome window with a green LCD time, a scrolling
+title marquee, a live spectrum, and beveled transport. The mini bar and the rest of the app stay on
+the amber theme, so collapsing always lands somewhere familiar. The RetroPlayer reads the SAME
+now/status and drives the SAME controls (call('toggle'|'prev'|'next'|'seekTo'), onShuffle/onRepeat/
+onStop) - it is purely presentational, no new playback surface.
+Deliberate choices:
+- The skin is theme-INDEPENDENT (fixed metal + green LCD hexes, not var() tokens): a skin is its own
+  world, and the iconic green LCD is the point. It sits inside the amber app unapologetically.
+- ORIGINAL look inspired by the classic player - PearTune-branded ("PEARTUNE" titlebar), no Nullsoft
+  artwork/bitmaps (the trademark/asset line flagged in TODO).
+- The spectrum is SIMULATED (bass-heavy jitter + falling peak caps, frozen/decaying when paused,
+  static under prefers-reduced-motion). A REAL audio-reactive spectrum needs a native hook (Android's
+  Visualizer on ExoPlayer's session, streamed over the shell->WebView bridge) - deferred, noted; most
+  skins were simulated anyway.
+- The marquee renders the title TWICE back-to-back with a -50% scroll, so the loop is seamless and the
+  title is always on screen (a single copy left the LCD blank half the time - caught on hardware).
+- It is a distinct tree from the modern expando, so the grow/shrink tween does not carry across the
+  swap - acceptable for a skin the user deliberately switches to.
+Deferred follow-ups (not built): a retro MINI bar (classic "shade mode"); the real Visualizer
+spectrum; a playlist window (the queue is not currently plumbed into the player); the home-screen
+Winamp WIDGET (its own bitmap-sprite + media-session project, separate surface).
+Verify: 289 tests (UI-only; no test surface for the player face) + builds. On the TCL: switched
+Settings -> Appearance -> Player skin -> Classic, expanded the player - LCD ticks, the title marquee
+scrolls and stays visible, the spectrum bounces while playing and freezes when paused, and prev/play/
+next/seek/shuffle/repeat all drive the real player.
+
 ## 2026-07-17 - Palette rework: "analog amber" replaces the spruce-green, across phone + dashboard
 Tier: T1 (pure token values; no wire/host/persisted-shape change - the [data-theme] contract and
 every var() are unchanged, only their values). Branch: feature/theme-analog-amber.
