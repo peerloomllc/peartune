@@ -1114,6 +1114,7 @@ export default function App () {
     screen = (
       <You
         state={state} density={density} now={now}
+        handoff={handoff} playing={!!status?.playing} onPlayHere={playHere}
         youView={youView} onYouView={openYou}
         favSupported={favSupported} favItems={favItems} mostPlayed={mostPlayed}
         favs={favs} onFav={favSupported ? onFav : null}
@@ -1863,7 +1864,10 @@ function Library ({
       {/* Session handoff: another device is the active player. "Play here" adopts its queue.
           Shown on the home view when this device is NOT actively playing - a PAUSED local queue
           (e.g. a launch-restore) should still offer to switch, so gate on `playing`, not `now`. */}
-      {handoff && !playing && !searching && browse === 'albums' && (
+      {/* The handoff affordance shows across ALL library sub-views (Albums / Artists / Songs),
+          not just the album home - it's easy to miss otherwise. Hidden while searching (don't
+          crowd results) or while playing here. Also rendered on the You tab. */}
+      {handoff && !playing && !searching && (
         <HandoffCard handoff={handoff} onPlayHere={onPlayHere} />
       )}
 
@@ -1978,7 +1982,7 @@ function FavEmpty () {
 // the same FavoritesView and Most-Played list that used to live in Library; only the
 // home changed.
 function You ({
-  state, density, now, youView, onYouView,
+  state, density, now, handoff, playing, onPlayHere, youView, onYouView,
   favSupported, favItems, mostPlayed, favs, onFav,
   playlists, plSupported, serverPls, sourceName, downloads,
   onOpenPlaylist, onOpenServerPlaylist, onOpenDownload, onNewPlaylist,
@@ -2028,6 +2032,10 @@ function You ({
           </div>
         </div>
       </div>
+
+      {/* Session handoff also surfaces on the You tab (below the sub-picker), so it is not
+          missable while browsing favorites/playlists/downloads. */}
+      {handoff && !playing && <HandoffCard handoff={handoff} onPlayHere={onPlayHere} />}
 
       {view === 'favorites'
         ? (favItems
