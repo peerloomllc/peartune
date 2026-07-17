@@ -144,8 +144,9 @@ export default function App () {
       }),
       on('play:status', setStatus),
       // Session handoff: another device took the token, so we paused. Say so, then refresh the
-      // card so the user can "Play here" again to take it back.
-      on('play:handedoff', () => { toast('Now playing on your other device.'); loadHandoff() }),
+      // card so the user can "Play here" again to take it back. The retry covers the lazy-presence
+      // race where our loadHandoff beats the new owner's claim propagating to our read.
+      on('play:handedoff', () => { toast('Now playing on your other device.'); loadHandoff(); setTimeout(loadHandoff, 2000) }),
       // Add-to-queue grows the queue but does not touch playback, so no play:status
       // follows - update the length the navbar badge reads from this event instead,
       // or the badge stays stale until the next status tick.
@@ -192,7 +193,7 @@ export default function App () {
         loadSource()
         loadFavs()
         loadContinue()
-        loadHandoff()
+        loadHandoff(); setTimeout(loadHandoff, 2000) // retry: the active device may push its queue just after we connect
         loadPlaylists(true)
       }),
 
@@ -1158,7 +1159,8 @@ export default function App () {
         favs={favs} onFav={favSupported ? onFav : null}
         cont={now ? null : cont}
         onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
-        handoff={now ? null : handoff}
+        handoff={handoff}
+        playing={!!status?.playing}
         onPlayHere={playHere}
         onBrowse={(b) => {
           haptic('light')
@@ -1686,7 +1688,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 function Library ({
   state, albums, artists, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
-  favs, onFav, cont, onContinue, handoff, onPlayHere,
+  favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onPlay, onLong
 }) {
@@ -1859,8 +1861,9 @@ function Library ({
       {error && <div className='error'>{error}</div>}
 
       {/* Session handoff: another device is the active player. "Play here" adopts its queue.
-          Shown on the home view when nothing is playing here (parent nulls it while now-playing). */}
-      {handoff && !now && !searching && browse === 'albums' && (
+          Shown on the home view when this device is NOT actively playing - a PAUSED local queue
+          (e.g. a launch-restore) should still offer to switch, so gate on `playing`, not `now`. */}
+      {handoff && !playing && !searching && browse === 'albums' && (
         <HandoffCard handoff={handoff} onPlayHere={onPlayHere} />
       )}
 

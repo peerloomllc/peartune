@@ -240,9 +240,12 @@ export default function App () {
   const activateSession = () => { call('sessionActivate').catch(() => {}) }
 
   // Another device took over the session (we pushed our queue and the host said ok:false - the
-  // token moved). Pause here but KEEP the queue (lazy presence), and tell the UI why.
+  // token moved). Stop cleanly here: the queue now lives on the host session (owned by the new
+  // device), so we don't keep a redundant paused mini-player of a track that's playing
+  // elsewhere - the UI shows the "Playing on <other>" card instead, and "Play here" re-adopts
+  // the session. stop() also clears our now-stale local queue and deactivates our token.
   function onHandedOff () {
-    stopKeepQueue()
+    stop()
     toWeb('play:handedoff', {})
   }
 

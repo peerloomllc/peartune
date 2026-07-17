@@ -94,9 +94,6 @@ let reconnecting = null // the in-flight reconnect, so N callers share ONE attem
 let sessionActive = false // do we currently hold the token?
 let sessionGen = 0 // the generation we last saw (for the claim CAS)
 let sessionSupported = true // false once a host answers ENOMETHOD - degrade silently
-// Skip redundant host writes: the queue snapshot arrives every ~4s (position ticks), but the
-// session only cares about the STRUCTURAL part (track ids + index + modes). Push only on change.
-let lastPushedSig = null
 
 // --- IPC --------------------------------------------------------------------
 
@@ -660,21 +657,23 @@ const methods = {
     // "Play here". Items go as { trackId, ...meta } (id -> trackId is the host contract); no
     // stream URLs (the receiver re-resolves via urlFor, exactly as launch-restore does; the art
     // shim URL is port-rewritten on the receiver). A rejected push means we were superseded -
-    // report lostSession so the shell pauses (lazy presence). Only push on a STRUCTURAL change.
+    // report lostSession so the shell pauses (lazy presence).
+    //
+    // This pushes on EVERY snapshot (the shell already throttles saveQueueState to ~4s), NOT
+    // only on a structural change - because the push IS the lazy-presence heartbeat: a steadily
+    // playing device with an unchanging queue must still periodically hear "you lost the token".
+    // Dedup-by-content would silence that and let two devices play at once. (Large-queue write
+    // cost is the proposal's deferred open question #2.)
     let lostSession = false
     if (sessionActive && sessionSupported && connected && client && snapshot) {
       const items = Array.isArray(snapshot.items) ? snapshot.items : []
-      const sig = JSON.stringify([items.map(t => t.id), snapshot.index || 0, !!snapshot.shuffle, Number(snapshot.repeat) || 0])
-      if (sig !== lastPushedSig) {
-        try {
-          const queue = items.map(t => ({ trackId: t.id, title: t.title, artist: t.artist, album: t.album, art: t.art, artFull: t.artFull, durationMs: t.durationMs }))
-          const r = await client.sessionSet({ queue, index: snapshot.index || 0, shuffle: !!snapshot.shuffle, repeat: Number(snapshot.repeat) || 0 })
-          if (r && r.ok === false) { sessionActive = false; lostSession = true } // superseded
-          else { lastPushedSig = sig }
-        } catch (e) {
-          if (e?.code === 'ENOMETHOD') sessionSupported = false
-          // offline / transient: keep the token, retry on the next snapshot
-        }
+      try {
+        const queue = items.map(t => ({ trackId: t.id, title: t.title, artist: t.artist, album: t.album, art: t.art, artFull: t.artFull, durationMs: t.durationMs }))
+        const r = await client.sessionSet({ queue, index: snapshot.index || 0, shuffle: !!snapshot.shuffle, repeat: Number(snapshot.repeat) || 0 })
+        if (r && r.ok === false) { sessionActive = false; lostSession = true } // superseded
+      } catch (e) {
+        if (e?.code === 'ENOMETHOD') sessionSupported = false
+        // offline / transient: keep the token, retry on the next snapshot
       }
     }
     return { ok: true, lostSession }
@@ -705,7 +704,7 @@ const methods = {
       for (let i = 0; i < 2; i++) {
         const cur = await client.sessionGet()
         const r = await client.sessionClaim({ generation: cur?.generation || 0 })
-        if (r?.ok) { sessionActive = true; sessionGen = r.session.generation; lastPushedSig = null; return { active: true } }
+        if (r?.ok) { sessionActive = true; sessionGen = r.session.generation; return { active: true } }
       }
       return { active: false }
     } catch (e) {
@@ -750,7 +749,7 @@ const methods = {
         if (!s || !Array.isArray(s.queue) || !s.queue.length) return { ok: false, empty: true }
         const r = await client.sessionClaim({ generation: s.generation })
         if (r?.ok) {
-          sessionActive = true; sessionGen = r.session.generation; lastPushedSig = null
+          sessionActive = true; sessionGen = r.session.generation
           const items = r.session.queue.map(t => ({ id: t.trackId, title: t.title, artist: t.artist, album: t.album, art: t.art, artFull: t.artFull, durationMs: t.durationMs }))
           const cur = items[r.session.index || 0]
           let positionMs = 0
