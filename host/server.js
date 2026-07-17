@@ -30,7 +30,15 @@ const EXPIRY_SWEEP_MS = 30_000
 const { serveMedia } = require('./media')
 const { PairSession } = require('./pair')
 const { SourceStore, buildAdapter } = require('./source')
+const { pruneRocksLogs } = require('./logprune')
 const { PAIR_PROTOCOL, MEDIA_PROTOCOL } = require('../protocol/constants')
+
+// Keep this many of RocksDB's rotated info logs (store/db/LOG.old.*) for debugging; prune the
+// rest. RocksDB rotates them only on reopen, so pruning at startup keeps the count bounded; the
+// 12h re-prune is cheap insurance. See host/logprune.js. NOT data - the .sst/.log/MANIFEST are
+// never touched.
+const ROCKS_LOG_KEEP = 3
+const ROCKS_LOG_PRUNE_MS = 12 * 60 * 60_000
 
 class PearTuneHost {
   constructor ({ dataDir, musicDir, libraryName = 'My Library', subsonic = null, dht = null, bootstrap = null, log = () => {} }) {
@@ -203,12 +211,25 @@ class PearTuneHost {
     this._sweep = setInterval(() => { this._sweepExpired().catch(() => {}) }, EXPIRY_SWEEP_MS)
     if (this._sweep.unref) this._sweep.unref()
 
+    // Prune RocksDB's rotated info logs (LOG.old.*) - once now (clears what prior restarts
+    // left), then periodically. unref'd, same as the sweep.
+    this._pruneRocksLogs()
+    this._logPrune = setInterval(() => this._pruneRocksLogs(), ROCKS_LOG_PRUNE_MS)
+    if (this._logPrune.unref) this._logPrune.unref()
+
     this.log('host:listening', {
       hostKey: z32.encode(this.identity.publicKey),
       libraryId: this.libraryId
     })
 
     return this
+  }
+
+  // Delete all but the most-recent RocksDB info logs (store/db/LOG.old.*) so they do not
+  // grow without bound. Safe: only LOG.old.* is ever touched - no data, no WAL, no MANIFEST.
+  _pruneRocksLogs () {
+    const deleted = pruneRocksLogs(path.join(this.dataDir, 'store', 'db'), ROCKS_LOG_KEEP)
+    if (deleted) this.log('host:log-pruned', { deleted, kept: ROCKS_LOG_KEEP })
   }
 
   // Walk the live-connection devices and kill any whose grant decide() now refuses -
@@ -426,6 +447,7 @@ class PearTuneHost {
   async close () {
     this.stopPairing()
     if (this._sweep) clearInterval(this._sweep)
+    if (this._logPrune) clearInterval(this._logPrune)
     if (this.server) await this.server.close()
     await this.bee.close()
     await this.stateBee.close()
