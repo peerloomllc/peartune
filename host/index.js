@@ -12,37 +12,10 @@
 // is what gates access behind the Umbrel login, which is why there is no
 // separate auth here (same posture as the PearCircle seeder).
 
-const fs = require('fs')
 const path = require('path')
 const qrcode = require('qrcode-terminal')
 const z32 = require('z32')
-
-// StartOS (0.3.x compat) reads a service's Properties from <volume>/start9/stats.yaml
-// (version 2 format). We write just the dashboard password, masked + copyable, so it
-// shows in the Properties page. Best-effort: a failure here must never stop the host.
-function writeStartosStats (file, password, source) {
-  try {
-    const note = source === 'generated' || source === 'file'
-      ? 'Generated on first run. Change it in the PearTune dashboard (Maintenance).'
-      : 'Log in to the PearTune dashboard with this.'
-    const yaml = [
-      'version: 2',
-      'data:',
-      '  Dashboard Password:',
-      '    type: string',
-      '    value: ' + JSON.stringify(String(password)),
-      '    description: ' + JSON.stringify(note),
-      '    copyable: true',
-      '    qr: false',
-      '    masked: true',
-      ''
-    ].join('\n')
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, yaml, { mode: 0o600 })
-  } catch (e) {
-    console.error('warning: could not write StartOS stats:', e.message)
-  }
-}
+const { writeStartosStats } = require('./startos-stats')
 
 const { PearTuneHost } = require('./server')
 const { startDashboard } = require('./ui/server')

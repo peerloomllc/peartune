@@ -34,6 +34,7 @@ const LOGIN_PAGE = require('./login')
 const { createAuth, requireSafeBind, PASSWORD_FILE } = require('./auth')
 const { browse } = require('../browse')
 const { detectSources } = require('../detect')
+const { writeStartosStats } = require('../startos-stats')
 
 function json (res, code, body) {
   const buf = Buffer.from(JSON.stringify(body))
@@ -182,6 +183,10 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         }
         auth.setPassword(clean)
         pwSource = 'file'
+        // Keep StartOS's Properties display in step with the change (else it shows
+        // the startup password until a restart). Best-effort, gated the same way the
+        // startup write is (PEARTUNE_STATS, set by the s9pk entrypoint).
+        if (process.env.PEARTUNE_STATS) writeStartosStats(process.env.PEARTUNE_STATS, clean, 'file')
         return json(res, 200, { ok: true })
       }
 
