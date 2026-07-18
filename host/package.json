@@ -1,6 +1,6 @@
 {
   "name": "peartune-host",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "The PearTune host: an always-on daemon that serves a self-hosted music library over HyperDHT.",
   "license": "MIT",
   "private": true,

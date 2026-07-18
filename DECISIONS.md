@@ -2,6 +2,54 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-18 - Start9 (StartOS) s9pk packaging
+Tier: T2 (packaging; no wire/host-logic change). Branch feature/host-start9. Third step of the
+host-platform-expansion proposal. start9/ adapts the PROVEN pearcircle-seeder StartOS package
+(0.3.5.x: manifest.yaml + per-arch docker tars + deno-bundled TS procedures, `start-sdk pack`),
+wrapping the same digest-pinned 0.2.0 host image. Built + `start-sdk verify`-passed locally
+(1.0 GB universal s9pk, x86_64 + aarch64, podman + qemu for the arm64 apt step).
+Two deliberate departures from the seeder package:
+- KEEP OUR PASSWORD (seeder disables its auth via SEEDER_NO_AUTH and trusts the StartOS
+  interface). PearTune's dashboard is a revoke button, so the entrypoint leaves PEARTUNE_PASSWORD
+  unset and lets generate-and-print (PR #60) mint one on the 0.0.0.0 bind, printed to the service
+  logs. Not clear StartOS gates a LAN interface behind a login at all; a revoke button should carry
+  its own lock regardless. Costs nothing (the feature already exists).
+- NO CONFIG FORM (`config: ~`, like the seeder). Source (Jellyfin/Nextcloud/Subsonic), library
+  name, and pairing are all done in PearTune's own dashboard, same as on Umbrel - avoids the
+  setConfig->container plumbing and the env-vs-source.json conflict. On Start9 the source is a
+  Jellyfin/Nextcloud library already on the box (the only music servers in the Start9 registry).
+NETWORKING (the crux the proposal flagged): the seeder's README documents that StartOS's podman
+bridge gives the container an endpoint-independent CONE NAT mapping that DHT holepunching survives
+FROM CELLULAR/REMOTE (unlike Umbrel's Docker bridge, which killed inbound holepunch and forced
+network_mode host). So standard StartOS networking should carry the primary pitch; we reuse the
+seeder's net config rather than reaching for host networking (which 0.3.5.x doesn't expose). KNOWN
+CAVEAT inherited: a phone on the SAME WIFI as the server often can't reach it (LAN discovery doesn't
+cross the bridge; routers rarely hairpin) - documented in instructions.md as "turn off WiFi to
+pair." This bites a music player more than a seeder (home listening), so it's called out prominently.
+Distribution: SIDELOAD for v1 (Tim, 2026-07-18), not a registry publish.
+IMAGE BUMP 0.2.0 -> 0.2.1 (forced by the first sideload): the first sideloaded s9pk CRASH-LOOPED
+on returned-feline with "refusing to start ... 0.0.0.0 with NO password". Root cause: the 0.2.0
+image (published in PR #59) PREDATES generate-and-print (PR #60), so the entrypoint's passwordless
+0.0.0.0 bind hit the old fail-closed requireSafeBind instead of minting a password. #60's code was
+merged to master but not in any published image. Fix: rebuilt + published peartune-host:0.2.1
+(digest sha256:034dad99...) WITH generate-and-print, re-pinned all consumers (start9/Dockerfile,
+both composes, docs, host/Dockerfile comments), and rebuilt the s9pk against it. Verified the 0.2.1
+image locally mints the password and starts clean (no crash). Lesson: a host-code change is not
+"shipped" until it is in a published image - the image lags master until rebuilt. The running
+Umbrel stays on 0.2.0 (it always sets PEARTUNE_PASSWORD, so it never needed generate-and-print; the
+revoke/media code is byte-identical between 0.2.0 and 0.2.1); the compose points at 0.2.1 for fresh
+installs.
+STATUS: HARDWARE-VALIDATED end to end on returned-feline.local (StartOS 0.3.5.1, 2026-07-18) with
+the 0.2.1 s9pk. Install + generated password (from service logs) + Jellyfin source
+(http://jellyfin.embassy:8096) + pair-from-cellular + browse + stream + revoke gate ALL passed (host
+logs: host:pairing-connection -> pair:granted{label:TCL} -> host:connected; then killedConnections:1
++ gate:deny device-revoked). The SAME-WIFI caveat is CONFIRMED, not theoretical: a phone on the box's
+WiFi got gate:allow-for-pairing then the connection died before the pair channel opened (the bridge-
+NAT symptom); cellular worked every time (tested via the TCL on the Pixel's hotspot, since the TCL has
+no SIM). This is the main open question for a Start9 RELEASE - home-WiFi listening is a core music-
+player case and it does not work; host networking would fix it but 0.3.5.x doesn't expose it (revisit
+on 0.4.x SDK). s9pk + docker-images/ are gitignored. Distribution stays SIDELOAD for v1.
+
 ## 2026-07-18 - Linux host packaging + generate-and-print dashboard password
 Tier: T2 (packaging + a host-code change that does NOT weaken the security model).
 Branch feature/host-linux-packaging. Second step of the host-platform-expansion proposal.
