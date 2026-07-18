@@ -16,7 +16,7 @@ services:
   # umbrelOS fills with the app password shown next to PearTune in the app list.
   # The host refuses to start on a non-loopback bind without it.
   app:
-    image: ghcr.io/peerloomllc/peartune-host:0.1.0@sha256:64b22106a50bef4c4e3d92de1d19f3998813b9e765cef24961aa308c44a6eacb
+    image: ghcr.io/peerloomllc/peartune-host:0.2.0@sha256:b8816c2549e4641f08db64a2d93470d891b4533246aedbcbb446b87b977f39b5
     restart: on-failure
     stop_grace_period: 1m
     network_mode: host
