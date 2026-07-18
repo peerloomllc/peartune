@@ -48,7 +48,7 @@ body {
 }
 /* 16px, always: anything smaller makes iOS zoom the page on focus. */
 input { font-size: 16px; -webkit-user-select: text; user-select: text; }
-h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 .2rem; }
+h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 .1rem; }
 h2 {
   font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
   color: var(--color-text-muted); margin: 1.4rem 0 .6rem; font-weight: 600;
@@ -60,10 +60,10 @@ h2 {
   justify-content: center; min-height: 100vh; padding: 2rem; text-align: center;
 }
 .center-p { text-align: center; padding: 2rem 0; }
-.app { padding: 1rem 1rem calc(var(--dock-h) + 1rem); max-width: 560px; margin: 0 auto; }
+.app { padding: .6rem 1rem calc(var(--dock-h) + 1rem); max-width: 560px; margin: 0 auto; }
 /* Page titles (Library, You, Queue, Settings) are centered - the h1 and its muted
    count line. The controls below (search, pickers, cards) stay left-aligned. */
-header { padding: .5rem 0 .55rem; text-align: center; }
+header { padding: .35rem 0 .3rem; text-align: center; }
 
 button {
   font: inherit; font-weight: 500; padding: .7rem 1.2rem; border-radius: 10px;
@@ -358,7 +358,7 @@ button.more { width: 100%; margin: 1.2rem 0 0; }
 .sticky {
   position: sticky; top: 0; z-index: 20;
   background: var(--color-surface-base);
-  padding: .35rem 0 .5rem;
+  padding: .1rem 0 .45rem;
 }
 .pickrow { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; }
 .pickrow .seg { flex: 1; }
