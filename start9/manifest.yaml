@@ -74,10 +74,14 @@ health-checks:
     type: script
 # No StartOS config form for v1: the source (Jellyfin/Nextcloud/Subsonic), the
 # library name, and pairing are all done in PearTune's own dashboard - the same
-# way they are done on Umbrel. The dashboard password is generated on first run
-# and printed to this service's logs.
+# way they are done on Umbrel.
 config: ~
-properties: ~
+# Properties surfaces the generated dashboard password (masked + copyable) so the
+# operator isn't digging through the service logs for it. The host writes it to
+# <volume>/start9/stats.yaml; compat.properties (scripts/procedures/properties.ts)
+# returns it.
+properties:
+  type: script
 volumes:
   main:
     type: data

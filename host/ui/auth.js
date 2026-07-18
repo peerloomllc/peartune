@@ -40,8 +40,9 @@ function createAuth (password) {
 
   // Hash both sides to a fixed width before comparing. timingSafeEqual THROWS on a
   // length mismatch, which would itself leak the password's length - hashing makes
-  // every comparison the same shape.
-  const secret = crypto.createHash('sha256').update(String(password)).digest()
+  // every comparison the same shape. `secret` is mutable so a dashboard password
+  // change takes effect live, without a restart (see setPassword).
+  let secret = crypto.createHash('sha256').update(String(password)).digest()
   const matches = (given) => {
     const got = crypto.createHash('sha256').update(String(given ?? '')).digest()
     return crypto.timingSafeEqual(secret, got)
@@ -141,6 +142,18 @@ function createAuth (password) {
       }
 
       return false
+    },
+
+    // Verify a plain password against the live secret (for confirming the CURRENT
+    // password before a change). Timing-safe, same hashing as login.
+    verify (given) { return matches(given) },
+
+    // Swap the live secret so a password change takes effect immediately, with no
+    // restart. Existing sessions are kept (the operator who just changed it stays
+    // logged in); only future logins use the new password. Persisting the new
+    // value to disk is the caller's job (server.js /api/password).
+    setPassword (next) {
+      secret = crypto.createHash('sha256').update(String(next)).digest()
     }
   }
 }

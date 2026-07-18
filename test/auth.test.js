@@ -94,6 +94,38 @@ test('generatePassword is grouped and uses only unambiguous z32 characters', () 
   assert.notEqual(generatePassword(), generatePassword(), 'each call is random')
 })
 
+// --- live password change (dashboard change/reset) ---------------------------
+
+test('setPassword swaps the live secret; the old password stops working', () => {
+  const auth = createAuth('hunter2')
+  assert.equal(auth.verify('hunter2'), true)
+  assert.equal(auth.verify('nope'), false)
+
+  auth.setPassword('new-secret-1')
+  assert.equal(auth.verify('hunter2'), false, 'the old password must not still work')
+  assert.equal(auth.verify('new-secret-1'), true, 'the new password takes effect immediately')
+})
+
+test('a live-changed password logs in through the real server flow', async (t) => {
+  // Drive login before and after a setPassword on the SAME auth the server uses.
+  const auth = createAuth('hunter2')
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost')
+    if (url.pathname === '/api/setpw') { auth.setPassword('rotated-pw'); res.end('ok'); return }
+    if (auth.handle(req, res, url)) return
+    res.writeHead(auth.guard(req) ? 200 : 401); res.end('x')
+  })
+  await new Promise(r => server.listen(0, '127.0.0.1', r))
+  t.after(() => server.close())
+  const base = `http://127.0.0.1:${server.address().port}`
+  const login = (pw) => fetch(base + '/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: pw }) })
+
+  assert.equal((await login('hunter2')).status, 200)
+  await fetch(base + '/api/setpw')
+  assert.equal((await login('hunter2')).status, 401, 'old password rejected after change')
+  assert.equal((await login('rotated-pw')).status, 200, 'new password accepted after change')
+})
+
 // --- the gate ----------------------------------------------------------------
 
 const reqOf = (cookie) => ({
