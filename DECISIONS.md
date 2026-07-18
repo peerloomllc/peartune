@@ -2,6 +2,32 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-18 - Fresh multi-arch host image 0.2.0 (build tooling, version, deploy)
+Tier: T2 (packaging; no wire/host-logic/JS change). Branch release/host-image-0.2.0. First step of
+the 2026-07-18 host-platform-expansion proposal.
+- BUILD TOOLING: no docker on the dev box, so built with PODMAN + qemu-user-static (both present)
+  as a `--manifest` list across linux/amd64,linux/arm64. arm64 built under emulation; npm ci for the
+  native addons (rocksdb, sodium) succeeded emulated. This is the reusable recipe for future host
+  images (recorded in host/Dockerfile's header). A GitHub Actions buildx workflow (native arm64
+  runners) is the eventual cleaner path but was NOT needed to unblock now.
+- VERSION 0.1.0 -> 0.2.0 (Tim's call): a new tag reflecting all the source-picker + M3 + dashboard
+  work since the 0.1.0 publish, leaving the old digest intact in history rather than overwriting a
+  published tag. Compose pins the manifest-LIST digest (sha256:b8816c25...), an OCI image index, so
+  an amd64 Umbrel and an arm64 Pi both resolve the right arch from one pin.
+- DEPLOY METHOD: recreated the Umbrel container from the real image (not another docker cp), keeping
+  the old container as peartune-host-old for one-command rollback. Preserving the /data mount kept
+  the host identity (same hostKey) so no phone had to re-pair - the whole point of being careful
+  about the swap. The box's run config (env, /music:ro mount, network_mode host) was read off the
+  live container and reproduced exactly.
+- REVOKE GATE re-run on 0.2.0 rather than trusting that "packaging can't break it": revoke killed
+  the live connection and the reconnect was denied within a second (gate:deny device-revoked ~0.86s
+  after revoke), buffered track played on. Re-admit needed the tombstone deleted first (fail-closed,
+  as designed) + a fresh pair; drove the app's paste-a-link path to do it headlessly (no QR/camera),
+  same deviceKey came back. Confirms the load-bearing security invariant holds on the shipped image.
+Verify: npm run verify green (289 tests + builds) before build; hardware smoke on the Umbrel + TCL
+after. Rollback: `docker stop peartune-host && docker rename peartune-host-old peartune-host &&
+docker start peartune-host`.
+
 ## 2026-07-18 - Custom cold-launch splash (was the grey Expo default)
 Tier: T1 (Android splash assets + config; no wire/host/JS change). Branch: feature/custom-splash
 (PR #57).
