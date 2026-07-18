@@ -27,3 +27,6 @@ host-data/
 # Local-only docs (per CLAUDE.md)
 TODO.md
 DONE.md
+
+# deno bundle lockfile (start9 s9pk procedures)
+/deno.lock

@@ -15,9 +15,11 @@ publish - see Open items).
 
 - `manifest.yaml` - metadata, entrypoint, interface (Tor + LAN), health check,
   backup, migrations.
-- `Dockerfile` - `FROM` the same digest-pinned `ghcr.io/peerloomllc/peartune-host:0.2.0`
+- `Dockerfile` - `FROM` the same digest-pinned `ghcr.io/peerloomllc/peartune-host:0.2.1`
   image the Umbrel app runs, plus `tini` and the StartOS entrypoint. Reuses the
-  published multi-arch image instead of rebuilding.
+  published multi-arch image instead of rebuilding. (0.2.1 is the first image to
+  carry generate-and-print, which this package relies on for its dashboard
+  password - see `docker_entrypoint.sh`.)
 - `docker_entrypoint.sh` - binds `0.0.0.0:8741` and points `PEARTUNE_DATA` at the
   mounted volume.
 - `scripts/` - deno-bundled TS procedures (config, health, migrations,

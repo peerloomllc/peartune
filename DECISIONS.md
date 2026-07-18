@@ -27,9 +27,22 @@ CAVEAT inherited: a phone on the SAME WIFI as the server often can't reach it (L
 cross the bridge; routers rarely hairpin) - documented in instructions.md as "turn off WiFi to
 pair." This bites a music player more than a seeder (home listening), so it's called out prominently.
 Distribution: SIDELOAD for v1 (Tim, 2026-07-18), not a registry publish.
-STATUS: NOT yet hardware-verified - needs the sideload smoke on returned-feline.local (StartOS
-0.3.5.1): install, log in with the generated password, set a Jellyfin/Nextcloud source, pair the
-TCL from cellular, run the revoke gate. s9pk + docker-images/ are gitignored build artifacts.
+IMAGE BUMP 0.2.0 -> 0.2.1 (forced by the first sideload): the first sideloaded s9pk CRASH-LOOPED
+on returned-feline with "refusing to start ... 0.0.0.0 with NO password". Root cause: the 0.2.0
+image (published in PR #59) PREDATES generate-and-print (PR #60), so the entrypoint's passwordless
+0.0.0.0 bind hit the old fail-closed requireSafeBind instead of minting a password. #60's code was
+merged to master but not in any published image. Fix: rebuilt + published peartune-host:0.2.1
+(digest sha256:034dad99...) WITH generate-and-print, re-pinned all consumers (start9/Dockerfile,
+both composes, docs, host/Dockerfile comments), and rebuilt the s9pk against it. Verified the 0.2.1
+image locally mints the password and starts clean (no crash). Lesson: a host-code change is not
+"shipped" until it is in a published image - the image lags master until rebuilt. The running
+Umbrel stays on 0.2.0 (it always sets PEARTUNE_PASSWORD, so it never needed generate-and-print; the
+revoke/media code is byte-identical between 0.2.0 and 0.2.1); the compose points at 0.2.1 for fresh
+installs.
+STATUS: still needs the sideload smoke on returned-feline.local (StartOS 0.3.5.1) with the 0.2.1
+s9pk: install, log in with the generated password (from the service logs), set a Jellyfin/Nextcloud
+source, pair the TCL... but the TCL has NO SIM and same-WiFi is the known caveat, so pairing needs a
+phone on CELLULAR (Tim's Pixel), then run the revoke gate. s9pk + docker-images/ are gitignored.
 
 ## 2026-07-18 - Linux host packaging + generate-and-print dashboard password
 Tier: T2 (packaging + a host-code change that does NOT weaken the security model).
