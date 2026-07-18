@@ -3562,6 +3562,7 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
 
       <div className='settings-acc'>
         <Section id='appearance' title='Appearance' Icon={Palette} open={open === 'appearance'} onToggle={toggle}>
+          <div className='label'>Theme</div>
           <div className='seg'>
             {[['dark', 'Dark'], ['light', 'Light'], ['system', 'System']].map(([k, l]) => (
               <button
