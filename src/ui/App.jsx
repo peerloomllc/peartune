@@ -95,6 +95,7 @@ export default function App () {
   const [note, setNote] = useState(null) // a transient confirmation
   const [viewing, setViewing] = useState(null) // artwork, full screen
   const [expanded, setExpanded] = useState(false) // the player: mini vs full
+  const [skin, setSkin] = useState('modern') // player skin: modern | classic (the retro Winamp-style face)
   const [albumsLoaded, setAlbumsLoaded] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
   const [shuffle, setShuffle] = useState(false)
@@ -122,6 +123,7 @@ export default function App () {
       .then((s) => {
         setState({ ...s, loading: false })
         if (s.settings?.density) setDensity(String(s.settings.density))
+        if (s.settings?.skin) setSkin(String(s.settings.skin))
         // Restore the persisted per-view sort. Held in a local, not read back from state,
         // for the load below: setSort has not committed yet in this same tick, so the
         // first albums load must take its params directly (same reason applySort does).
@@ -744,6 +746,14 @@ export default function App () {
     call('setSettings', { density: v }).catch(() => {})
   }
 
+  // The player skin (modern | classic). Same worklet-settings home as density/theme, so it
+  // survives a relaunch. Classic is the retro Winamp-style face on the EXPANDED player only.
+  function setSkinValue (v) {
+    haptic('light')
+    setSkin(v)
+    call('setSettings', { skin: v }).catch(() => {})
+  }
+
   // Pull to refresh. The host does not push us anything when its library changes -
   // someone drops an album on the NAS and Navidrome rescans, and we would go on
   // showing yesterday's shelf until the app restarted. This is the gesture people
@@ -1135,6 +1145,7 @@ export default function App () {
       <QueueScreen
         items={queue?.items || []}
         index={queue?.index ?? 0}
+        skin={skin}
         onJump={jumpTo}
         onMove={moveInQueue}
         onRemove={removeFromQueue}
@@ -1146,6 +1157,7 @@ export default function App () {
       <Settings
         state={state} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
         ident={ident} onSaveIdentity={saveIdentity} onQuality={changeQuality}
+        skin={skin} onSkin={setSkinValue}
       />
     )
   } else if (tab === 'about') {
@@ -1191,11 +1203,11 @@ export default function App () {
     <>
       {screen}
 
-      <div className='dock' ref={dockRef}>
+      <div className={'dock' + (now && skin === 'classic' ? ' dock-retro' : '')} ref={dockRef}>
         {ident?.expiresAt && state.connected && <GuestBanner expiresAt={ident.expiresAt} />}
         {now && (
           <Player
-            now={now} status={status} expanded={expanded}
+            now={now} status={status} expanded={expanded} skin={skin}
             shuffle={shuffle} repeat={repeat} onQueue={() => goTab('queue')}
             onShuffle={toggleShuffle} onRepeat={cycleRepeat} onStop={stopPlayback}
             onExpand={() => { haptic('light'); setExpanded(true) }}
@@ -1348,9 +1360,10 @@ function usePress (onPress, onLongPress) {
 // owns the shuffled order). A copy kept in the UI would drift the moment shuffle is
 // on or a track auto-advances - so this screen ASKS, every time it is opened and
 // every time the track changes.
-function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
+function QueueScreen ({ items, index, skin, onJump, onMove, onRemove, onClear }) {
   const [editing, setEditing] = useState(false)
   const [drag, setDrag] = useState(null)
+  const retro = skin === 'classic'
 
   if (!items.length) {
     return (
@@ -1406,12 +1419,12 @@ function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
   const sub = (t) => [t.artist, t.album].filter(Boolean).join(' · ')
 
   return (
-    <div className='app queuescreen'>
+    <div className={'app queuescreen' + (retro ? ' retroq' : '')}>
       {/* The header stays put (flex:none at the top of the fixed-height column) while the
           list scrolls below it. The action icons are absolutely positioned top-right so
           "Queue" stays centered like every other page header. */}
       <header className='queuehead'>
-        <h1>Queue</h1>
+        <h1>{retro ? 'Playlist' : 'Queue'}</h1>
         <p className='muted sm'>
           {items.length} {items.length === 1 ? 'track' : 'tracks'}
           {left > 0 ? ` · ${left} still to play` : ' · last track'}
@@ -3074,13 +3087,40 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
 // extra half grows and fades, and the dock (which measures itself) carries the
 // content padding along with it.
 function Player ({
-  now, status, expanded, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
+  now, status, expanded, skin, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
   onViewArt, onQueue, onStop
 }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
   const qlen = status?.queueLength ?? now.queueLength ?? 0
+
+  // The classic skin only re-faces the EXPANDED player - the mini bar stays the same compact
+  // control, so collapsing always lands somewhere familiar. It is a distinct tree (not a
+  // restyle of the modern expando), so the grow/shrink tween does not carry across the swap -
+  // acceptable for a skin the user deliberately switches to.
+  if (expanded && skin === 'classic') {
+    return (
+      <div className='player open retroplayer'>
+        <RetroPlayer
+          now={now} status={status} shuffle={shuffle} repeat={repeat}
+          onShuffle={onShuffle} onRepeat={onRepeat} onStop={onStop} onViewArt={onViewArt}
+          onCollapse={onCollapse}
+        />
+      </div>
+    )
+  }
+
+  // Classic + collapsed = "windowshade": the whole player squashed to a thin metal strip
+  // (tiny LCD, scrolling title, mini spectrum, play/pause), so collapsing keeps the retro
+  // illusion instead of dropping back to the modern amber bar. Tap it to expand.
+  if (!expanded && skin === 'classic') {
+    return (
+      <div className='player mini retromini' onClick={onExpand}>
+        <RetroMini now={now} status={status} />
+      </div>
+    )
+  }
 
   // Tap anywhere on the bar to seek. The seek goes out over P2P as a byte-range
   // request, which is why range support had to be right from day one.
@@ -3196,6 +3236,203 @@ function Player ({
   )
 }
 
+// The classic skin's player face: a retro amplifier window - LCD time, a scrolling title,
+// a live spectrum, chunky transport. It reads the SAME now/status and drives the SAME controls
+// as the modern player (call('toggle'|'prev'|'next'|'seekTo'), onShuffle/onRepeat/onStop), so it
+// is purely a re-facing. An original look inspired by the classic player, not anyone's artwork.
+function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onStop, onViewArt, onCollapse }) {
+  const dur = status?.durationMs || now.durationMs || 0
+  const pos = status?.positionMs || 0
+  const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
+  const playing = !!status?.playing
+  const idx = (status?.index ?? now.index ?? 0) + 1
+  const s = Math.floor(pos / 1000)
+  const mm = String(Math.floor(s / 60)).padStart(2, '0')
+  const ss = String(s % 60).padStart(2, '0')
+
+  const vizRef = useRef(null)
+  const playRef = useRef(playing); playRef.current = playing
+
+  // The spectrum. Simulated (playback runs through native ExoPlayer, not Web Audio, so the
+  // WebView cannot FFT the real signal without a native Visualizer hook - a later add). Bass-
+  // heavy, jittery bars with falling peak caps; frozen and decaying while paused; a static
+  // silhouette under prefers-reduced-motion (no animation loop at all).
+  useEffect(() => {
+    const c = vizRef.current
+    if (!c) return
+    const x = c.getContext('2d')
+    const W = c.width, H = c.height, N = 19, bw = W / N
+    const vals = new Array(N).fill(0)
+    const peaks = new Array(N).fill(0)
+    const reduce = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+    let raf = 0, t = 0
+
+    const paint = () => {
+      x.clearRect(0, 0, W, H)
+      for (let i = 0; i < N; i++) {
+        const bh = vals[i]
+        for (let y = 0; y < bh; y += 3) {
+          const f = y / H
+          x.fillStyle = f > 0.75 ? '#ff5a5a' : f > 0.5 ? '#e8e04a' : '#3fe08a'
+          x.fillRect(i * bw + 1, H - y - 3, bw - 2, 2)
+        }
+        x.fillStyle = '#bafcd6'
+        x.fillRect(i * bw + 1, H - peaks[i] - 1, bw - 2, 2)
+      }
+    }
+
+    if (reduce) {
+      for (let i = 0; i < N; i++) vals[i] = peaks[i] = (Math.sin(i * 0.7) * 0.5 + 0.5) * (1 - i / N * 0.6) * H * 0.6
+      paint()
+      return
+    }
+
+    const tick = () => {
+      t += 0.05
+      for (let i = 0; i < N; i++) {
+        const target = playRef.current
+          ? Math.max(0, (Math.sin(t + i * 0.7) * 0.5 + 0.5) * (1 - i / N * 0.6) * H * (0.5 + Math.random() * 0.6))
+          : 0
+        vals[i] += (target - vals[i]) * 0.35
+        peaks[i] = Math.max(peaks[i] - 0.8, vals[i])
+      }
+      paint()
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  const scrub = (e) => {
+    if (!dur) return
+    const r = e.currentTarget.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+    call('seekTo', { ms: Math.round(ratio * dur) })
+  }
+
+  return (
+    <div className='retro'>
+      <div className='rt-win'>
+        {/* Tapping anywhere on the titlebar collapses to the shade strip - the whole banner is
+            the grab bar, not just the arrow. The buttons stopPropagation so each does its own thing. */}
+        <div className='rt-title' onClick={() => { haptic('light'); onCollapse() }}>
+          <span className='rt-dots'><i /><i /><i /></span>
+          <span className='rt-wm'>PEARTUNE</span>
+          <span className='rt-tbtns'>
+            {/* The titlebar buttons live where Winamp's did: shade (collapse to the strip) + close (stop). */}
+            <button className='rt-x' onClick={(e) => { e.stopPropagation(); haptic('light'); onCollapse() }} aria-label='Collapse player'>▾</button>
+            <button className='rt-x' onClick={(e) => { e.stopPropagation(); haptic('light'); onStop() }} aria-label='Stop'>×</button>
+          </span>
+        </div>
+
+        <div className='rt-body'>
+          <div className='rt-left'>
+            <div className='rt-lcd rt-time'>{mm}<span className={playing ? 'rt-col' : 'rt-col off'}>:</span>{ss}</div>
+            <div className='rt-kbps'><span>kbps <b>—</b></span><span>kHz <b>44</b></span></div>
+            <div className='rt-stereo'><span>mono</span><span className='on'>stereo</span></div>
+          </div>
+
+          <div className='rt-right'>
+            <div className='rt-marq'>
+              {/* Two identical copies back-to-back + a -50% scroll = a seamless marquee with the
+                  title always on screen somewhere (a single copy leaves the strip blank half the time). */}
+              <div className='rt-track'>
+                <span>{idx}. {now.title}{now.artist ? ' — ' + now.artist : ''} &nbsp;★&nbsp; PearTune &nbsp;★&nbsp; </span>
+                <span>{idx}. {now.title}{now.artist ? ' — ' + now.artist : ''} &nbsp;★&nbsp; PearTune &nbsp;★&nbsp; </span>
+              </div>
+            </div>
+            <canvas ref={vizRef} className='rt-viz' width='300' height='40' onClick={onViewArt} />
+          </div>
+
+          <div className='rt-seek' onClick={scrub}>
+            <div className='rt-prog' style={{ width: pct + '%' }} />
+            <div className='rt-knob' style={{ left: pct + '%' }} />
+          </div>
+
+          <div className='rt-transport'>
+            <button className='rt-btn' onClick={() => { haptic('light'); call('prev') }} aria-label='Previous'>⏮</button>
+            <button className={'rt-btn rt-play' + (playing ? ' lit' : '')} onClick={() => { haptic('light'); call('toggle') }} aria-label='Play/pause'>{playing ? '❚❚' : '▶'}</button>
+            <button className='rt-btn' onClick={() => { haptic('light'); call('next') }} aria-label='Next'>⏭</button>
+            <span className='rt-sp' />
+            <button className={'rt-btn rt-tg' + (shuffle ? ' lit' : '')} onClick={onShuffle}>SHUF</button>
+            <button className={'rt-btn rt-tg' + (repeat ? ' lit' : '')} onClick={onRepeat}>{repeat === 1 ? 'REP1' : 'REP'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// The classic skin's collapsed face: "windowshade" - the player as a thin metal strip.
+// Tiny LCD time, a scrolling title, a mini spectrum, and play/pause. Tapping the strip (handled
+// by the parent) expands to the full RetroPlayer; the play button stops propagation so it does
+// not also expand. Reads the same now/status as everything else.
+function RetroMini ({ now, status }) {
+  const dur = status?.durationMs || now.durationMs || 0
+  const pos = status?.positionMs || 0
+  const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
+  const playing = !!status?.playing
+  const idx = (status?.index ?? now.index ?? 0) + 1
+  const s = Math.floor(pos / 1000)
+  const mm = String(Math.floor(s / 60)).padStart(2, '0')
+  const ss = String(s % 60).padStart(2, '0')
+
+  const vizRef = useRef(null)
+  const playRef = useRef(playing); playRef.current = playing
+  useEffect(() => {
+    const c = vizRef.current
+    if (!c) return
+    const x = c.getContext('2d')
+    const W = c.width, H = c.height, N = 13, bw = W / N
+    const vals = new Array(N).fill(0)
+    const reduce = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+    let raf = 0, t = 0
+    const paint = () => {
+      x.clearRect(0, 0, W, H)
+      for (let i = 0; i < N; i++) {
+        for (let y = 0; y < vals[i]; y += 2) {
+          const f = y / H
+          x.fillStyle = f > 0.7 ? '#ff5a5a' : f > 0.45 ? '#e8e04a' : '#3fe08a'
+          x.fillRect(i * bw + 1, H - y - 2, bw - 1.5, 1.5)
+        }
+      }
+    }
+    if (reduce) { for (let i = 0; i < N; i++) vals[i] = (Math.sin(i * 0.7) * 0.5 + 0.5) * (1 - i / N * 0.6) * H * 0.6; paint(); return }
+    const tick = () => {
+      t += 0.06
+      for (let i = 0; i < N; i++) {
+        const target = playRef.current ? Math.max(0, (Math.sin(t + i * 0.7) * 0.5 + 0.5) * (1 - i / N * 0.6) * H * (0.5 + Math.random() * 0.6)) : 0
+        vals[i] += (target - vals[i]) * 0.35
+      }
+      paint()
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  return (
+    <div className='retro rm'>
+      <div className='rm-win'>
+        <div className='rt-lcd rm-time'>{mm}<span className={playing ? 'rt-col' : 'rt-col off'}>:</span>{ss}</div>
+        <div className='rm-marq'>
+          <div className='rt-track'>
+            <span>{idx}. {now.title}{now.artist ? ' — ' + now.artist : ''} &nbsp;★&nbsp; </span>
+            <span>{idx}. {now.title}{now.artist ? ' — ' + now.artist : ''} &nbsp;★&nbsp; </span>
+          </div>
+        </div>
+        <canvas ref={vizRef} className='rm-viz' width='120' height='20' />
+        <button
+          className={'rt-btn rm-pp' + (playing ? ' lit' : '')}
+          onClick={(e) => { e.stopPropagation(); haptic('light'); call('toggle') }}
+          aria-label='Play/pause'
+        >{playing ? '❚❚' : '▶'}</button>
+        <div className='rm-prog' style={{ width: pct + '%' }} />
+      </div>
+    </div>
+  )
+}
+
 function fmt (ms) {
   if (!ms && ms !== 0) return '--:--'
   const s = Math.floor(ms / 1000)
@@ -3272,7 +3509,7 @@ function OptionList ({ options, value, onChange }) {
   )
 }
 
-function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality }) {
+function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality, skin, onSkin }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [copied, setCopied] = useState(false)
   const [dev, setDev] = useState(null)
@@ -3325,12 +3562,25 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
 
       <div className='settings-acc'>
         <Section id='appearance' title='Appearance' Icon={Palette} open={open === 'appearance'} onToggle={toggle}>
+          <div className='label'>Theme</div>
           <div className='seg'>
             {[['dark', 'Dark'], ['light', 'Light'], ['system', 'System']].map(([k, l]) => (
               <button
                 key={k} className={themePref === k ? 'on' : ''}
                 aria-pressed={themePref === k}
                 onClick={() => { haptic('light'); onTheme(k) }}
+              >{l}</button>
+            ))}
+          </div>
+          {/* Player skin. Classic is a retro amplifier-style face on the full-screen player -
+              LCD readout, scrolling title, a live spectrum. The library stays as it is. */}
+          <div className='label' style={{ marginTop: '.7rem' }}>Player skin</div>
+          <div className='seg'>
+            {[['modern', 'Modern'], ['classic', 'Classic']].map(([k, l]) => (
+              <button
+                key={k} className={skin === k ? 'on' : ''}
+                aria-pressed={skin === k}
+                onClick={() => onSkin(k)}
               >{l}</button>
             ))}
           </div>

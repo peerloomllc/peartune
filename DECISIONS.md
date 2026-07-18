@@ -2,6 +2,66 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-17 - A "classic" player skin: the WebView UI makes a retro amplifier face cheap
+Tier: T1 (client UI only; a new persisted setting `skin`, no wire/host change). Branch:
+feature/retro-skin.
+Context: Tim asked "is a classic Winamp skin possible?". The load-bearing finding: PearTune's UI
+is a WEBVIEW (arbitrary HTML/CSS/canvas), so a pixel-faithful vintage-amplifier player is cheap and
+fully in our control - unlike the HOME-SCREEN WIDGET version, which is boxed in by Android's
+RemoteViews (no canvas; a faithful look needs pre-rendered bitmap sprites, and live spectrum bars
+fight the widget update throttle). So the two are separable, and the in-app skin is the high-value
+one. Built a browser POC first (shown to Tim), then shipped it.
+What it is: a `skin` preference (modern | classic) beside theme/density in the worklet settings.json.
+Classic re-faces ONLY the EXPANDED player - a metal-chrome window with a green LCD time, a scrolling
+title marquee, a live spectrum, and beveled transport. The mini bar and the rest of the app stay on
+the amber theme, so collapsing always lands somewhere familiar. The RetroPlayer reads the SAME
+now/status and drives the SAME controls (call('toggle'|'prev'|'next'|'seekTo'), onShuffle/onRepeat/
+onStop) - it is purely presentational, no new playback surface.
+Deliberate choices:
+- The skin is theme-INDEPENDENT (fixed metal + green LCD hexes, not var() tokens): a skin is its own
+  world, and the iconic green LCD is the point. It sits inside the amber app unapologetically.
+- ORIGINAL look inspired by the classic player - PearTune-branded ("PEARTUNE" titlebar), no Nullsoft
+  artwork/bitmaps (the trademark/asset line flagged in TODO).
+- The spectrum is SIMULATED (bass-heavy jitter + falling peak caps, frozen/decaying when paused,
+  static under prefers-reduced-motion). A REAL audio-reactive spectrum needs a native hook (Android's
+  Visualizer on ExoPlayer's session, streamed over the shell->WebView bridge) - deferred, noted; most
+  skins were simulated anyway.
+- The marquee renders the title TWICE back-to-back with a -50% scroll, so the loop is seamless and the
+  title is always on screen (a single copy left the LCD blank half the time - caught on hardware).
+- It is a distinct tree from the modern expando, so the grow/shrink tween does not carry across the
+  swap - acceptable for a skin the user deliberately switches to.
+The MINI bar got its own classic "windowshade" face (Tim asked): when classic + collapsed, the
+player is a thin metal strip - tiny green LCD time, scrolling title, a mini spectrum, play/pause, a
+hairline progress line - tapping it expands to the full window. So the retro illusion holds in both
+states instead of collapsing back to the modern amber bar.
+The expanded window FILLS the sheet edge-to-edge (Tim asked): it was a rounded metal box floating
+in the amber dock (amber caret strip above, amber padding around) - a "window in a window". Now the
+metal chrome is full-bleed and square-cornered, the collapse (▾) + close (×) sit in the titlebar
+where Winamp's minimize/close were, and the dock goes metal-dark under it (.dock-retro, toggled
+from App - not :has(), for older-WebView safety) so nothing amber peeks at the seams. Reads as a
+deliberate retro takeover, not a contained widget. The SHADE strip got the same full-bleed
+treatment (Tim asked): it is edge-to-edge and square too, and .dock-retro applies whenever the
+classic player is showing (mini OR expanded), so the dock is metal-dark under the strip as well -
+not just the full window. (The strip's padding override needs .player.mini.retromini specificity,
+since the base .player.mini padding would otherwise win.) Switching back to Modern / stopping
+restores the amber dock.
+The QUEUE tab became a green "Playlist Editor" when classic is on (Tim asked how far to reskin
+beyond the player; chose Queue over the album grid / settings). This is the one non-player surface
+with a real Winamp counterpart - its playlist window - and it is a LIST, so green-on-black reads
+fine where a cover-art grid would fight the art. Deliberately CSS-forward: a `retroq` class restyles
+the existing QueueScreen (metal titlebar, green numbered rows via a CSS COUNTER so no markup change,
+the current row on Winamp's selection bar, played rows dimmed, times right-aligned) and EVERY
+interaction is unchanged - tap-to-jump, edit, drag-reorder, remove, clear. The album/artist grid,
+Settings, About, and the dashboard stay amber on purpose: no Winamp analog, and the green chrome
+would clash with cover art + cramp tap targets (the opposite of why the amber-neutral chrome exists).
+Deferred follow-ups (not built): the real Visualizer spectrum; a playlist window docked INSIDE the
+player; the home-screen Winamp WIDGET (its own bitmap-sprite + media-session project, separate
+surface).
+Verify: 289 tests (UI-only; no test surface for the player face) + builds. On the TCL: switched
+Settings -> Appearance -> Player skin -> Classic, expanded the player - LCD ticks, the title marquee
+scrolls and stays visible, the spectrum bounces while playing and freezes when paused, and prev/play/
+next/seek/shuffle/repeat all drive the real player.
+
 ## 2026-07-17 - Palette rework: "analog amber" replaces the spruce-green, across phone + dashboard
 Tier: T1 (pure token values; no wire/host/persisted-shape change - the [data-theme] contract and
 every var() are unchanged, only their values). Branch: feature/theme-analog-amber.
