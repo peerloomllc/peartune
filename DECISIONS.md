@@ -2,6 +2,30 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-18 - Linux host packaging + generate-and-print dashboard password
+Tier: T2 (packaging + a host-code change that does NOT weaken the security model).
+Branch feature/host-linux-packaging. Second step of the host-platform-expansion proposal.
+GENERATE-AND-PRINT (the one real code change): requireSafeBind still fails closed - a
+non-loopback bind with no password does not serve. But "refuse to start" is the wrong
+behaviour for a bare NAS/Linux install, which (unlike Umbrel/Start9) has no platform to
+mint ${APP_PASSWORD}. So `resolveDashboardPassword` (host/ui/auth.js) runs first and, for a
+non-loopback bind with nothing set, MINTS a ~80-bit password, persists it 0600 to
+<data>/dashboard-password (stable across restarts, like host.seed), and prints it. Order of
+precedence: an explicit env/flag password always wins; loopback stays password-free; only the
+non-loopback-and-unset case generates. The invariant is preserved BECAUSE the minted password
+then satisfies requireSafeBind - a LAN dashboard is still never unauthenticated. Password shape:
+z32 alphabet (no 0/o/1/l/i to misread off a terminal), grouped xxxx-xxxx-xxxx-xxxx. This keeps
+the T3 dashboard-auth model intact (2026-07-14) rather than adding a new one - hence T2.
+Verified at runtime, not just unit tests: ran the host on 0.0.0.0 with no password -> it printed
+the box + saved the file 0600; restart read the SAME password back (prints a one-liner hint, not
+the box); the minted password logged in (HTTP 200), a wrong one 401'd, /api/state was 401 without
+a session. 5 new unit tests (294 total).
+PACKAGING (no code): host/deploy/ ships a generic (non-Umbrel) docker-compose.yml pinned to the
+0.2.0 digest with network_mode: host, a systemd unit (peartune-host.service) + env example, and
+docs/host-linux.md documents Compose / `docker run` / native+systemd, each ending in the CLAUDE.md
+revoke-gate acceptance test. NOT shipping a bundled single-file binary in v1 (Tim, 2026-07-18):
+Docker + the `bin` CLI is enough. Native upgrades track the git repo (no npm publish yet).
+
 ## 2026-07-18 - Fresh multi-arch host image 0.2.0 (build tooling, version, deploy)
 Tier: T2 (packaging; no wire/host-logic/JS change). Branch release/host-image-0.2.0. First step of
 the 2026-07-18 host-platform-expansion proposal.

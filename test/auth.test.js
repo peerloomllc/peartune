@@ -12,8 +12,14 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const http = require('http')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 
-const { createAuth, requireSafeBind, MAX_FAILURES } = require('../host/ui/auth')
+const {
+  createAuth, requireSafeBind, resolveDashboardPassword, generatePassword,
+  MAX_FAILURES, PASSWORD_FILE
+} = require('../host/ui/auth')
 
 // --- fail closed -------------------------------------------------------------
 
@@ -33,6 +39,59 @@ test('loopback with no password is fine (today, and after an SSH tunnel)', () =>
 
 test('a non-loopback bind WITH a password is allowed - that is the Umbrel app', () => {
   assert.doesNotThrow(() => requireSafeBind('0.0.0.0', 'hunter2'))
+})
+
+// --- generate-and-print (proposal 2026-07-18 host-platform-expansion) ---------
+//
+// A bare non-loopback install (a NAS `docker run`, systemd) has no platform to
+// mint ${APP_PASSWORD}, so instead of requireSafeBind refusing to start, the host
+// mints a password. The invariant that must survive: whatever this returns for a
+// non-loopback bind, requireSafeBind then ACCEPTS - a LAN dashboard is never open.
+
+const freshDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'peartune-auth-'))
+
+test('an explicitly-set password always wins (never generates), on any bind', () => {
+  const dataDir = freshDataDir()
+  const r = resolveDashboardPassword({ password: 'chosen', bind: '0.0.0.0', dataDir })
+  assert.deepEqual(r, { password: 'chosen', source: 'explicit' })
+  assert.equal(fs.existsSync(path.join(dataDir, PASSWORD_FILE)), false, 'must not write a file when one is set')
+})
+
+test('loopback with no password stays password-free (the no-gate path)', () => {
+  const dataDir = freshDataDir()
+  const r = resolveDashboardPassword({ password: '', bind: '127.0.0.1', dataDir })
+  assert.deepEqual(r, { password: '', source: 'none' })
+  assert.equal(fs.existsSync(path.join(dataDir, PASSWORD_FILE)), false)
+})
+
+test('a non-loopback bind with no password GENERATES one, and requireSafeBind then accepts it', () => {
+  const dataDir = freshDataDir()
+  const r = resolveDashboardPassword({ password: '', bind: '0.0.0.0', dataDir })
+  assert.equal(r.source, 'generated')
+  assert.ok(r.password.length >= 16, 'a generated password should carry real entropy')
+  // The whole point: the fail-closed guard must now PASS with the minted password.
+  assert.doesNotThrow(() => requireSafeBind('0.0.0.0', r.password))
+})
+
+test('the generated password is persisted 0600 and STABLE across restarts', () => {
+  const dataDir = freshDataDir()
+  const first = resolveDashboardPassword({ password: '', bind: '0.0.0.0', dataDir })
+  const file = path.join(dataDir, PASSWORD_FILE)
+
+  const mode = fs.statSync(file).mode & 0o777
+  assert.equal(mode, 0o600, 'a dashboard credential must not sit world-readable')
+
+  // A restart reads the SAME password back (source: file), not a new one - otherwise
+  // every restart would silently lock out every browser.
+  const second = resolveDashboardPassword({ password: '', bind: '0.0.0.0', dataDir })
+  assert.equal(second.source, 'file')
+  assert.equal(second.password, first.password)
+})
+
+test('generatePassword is grouped and uses only unambiguous z32 characters', () => {
+  const pw = generatePassword()
+  assert.match(pw, /^[ybndrfg8ejkmcpqxot1uwisza345h769]{4}(-[ybndrfg8ejkmcpqxot1uwisza345h769]{4})+$/)
+  assert.notEqual(generatePassword(), generatePassword(), 'each call is random')
 })
 
 // --- the gate ----------------------------------------------------------------
