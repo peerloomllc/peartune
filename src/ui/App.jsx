@@ -1202,7 +1202,7 @@ export default function App () {
     <>
       {screen}
 
-      <div className='dock' ref={dockRef}>
+      <div className={'dock' + (now && expanded && skin === 'classic' ? ' dock-retro' : '')} ref={dockRef}>
         {ident?.expiresAt && state.connected && <GuestBanner expiresAt={ident.expiresAt} />}
         {now && (
           <Player
@@ -3100,12 +3100,10 @@ function Player ({
   if (expanded && skin === 'classic') {
     return (
       <div className='player open retroplayer'>
-        <button className='grip' onClick={onCollapse} aria-label='Collapse player'>
-          <CaretDown size={16} weight='bold' />
-        </button>
         <RetroPlayer
           now={now} status={status} shuffle={shuffle} repeat={repeat}
           onShuffle={onShuffle} onRepeat={onRepeat} onStop={onStop} onViewArt={onViewArt}
+          onCollapse={onCollapse}
         />
       </div>
     )
@@ -3240,7 +3238,7 @@ function Player ({
 // a live spectrum, chunky transport. It reads the SAME now/status and drives the SAME controls
 // as the modern player (call('toggle'|'prev'|'next'|'seekTo'), onShuffle/onRepeat/onStop), so it
 // is purely a re-facing. An original look inspired by the classic player, not anyone's artwork.
-function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onStop, onViewArt }) {
+function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onStop, onViewArt, onCollapse }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
@@ -3316,7 +3314,11 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
         <div className='rt-title'>
           <span className='rt-dots'><i /><i /><i /></span>
           <span className='rt-wm'>PEARTUNE</span>
-          <button className='rt-x' onClick={() => { haptic('light'); onStop() }} aria-label='Stop'>×</button>
+          <span className='rt-tbtns'>
+            {/* The titlebar buttons live where Winamp's did: shade (collapse to the strip) + close (stop). */}
+            <button className='rt-x' onClick={() => { haptic('light'); onCollapse() }} aria-label='Collapse player'>▾</button>
+            <button className='rt-x' onClick={() => { haptic('light'); onStop() }} aria-label='Stop'>×</button>
+          </span>
         </div>
 
         <div className='rt-body'>

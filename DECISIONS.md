@@ -34,6 +34,13 @@ The MINI bar got its own classic "windowshade" face (Tim asked): when classic + 
 player is a thin metal strip - tiny green LCD time, scrolling title, a mini spectrum, play/pause, a
 hairline progress line - tapping it expands to the full window. So the retro illusion holds in both
 states instead of collapsing back to the modern amber bar.
+The expanded window FILLS the sheet edge-to-edge (Tim asked): it was a rounded metal box floating
+in the amber dock (amber caret strip above, amber padding around) - a "window in a window". Now the
+metal chrome is full-bleed and square-cornered, the collapse (▾) + close (×) sit in the titlebar
+where Winamp's minimize/close were, and the dock goes metal-dark under it (.dock-retro, toggled
+from App - not :has(), for older-WebView safety) so nothing amber peeks at the seams. Reads as a
+deliberate retro takeover, not a contained widget. Collapsing drops the class and the dock is amber
+again under the shade strip.
 Deferred follow-ups (not built): the real Visualizer spectrum; a playlist window (the queue is not
 currently plumbed into the player); the home-screen Winamp WIDGET (its own bitmap-sprite +
 media-session project, separate surface).
