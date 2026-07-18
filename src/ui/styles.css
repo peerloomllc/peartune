@@ -617,11 +617,16 @@ button.icon.mode.on { color: var(--color-primary); }
    meeting the dock edges - so it reads as a deliberate retro takeover, not a box floating in
    the app's own chrome. The dock goes metal-dark under it so nothing amber peeks at the seams. */
 /* The classic expanded player is a separate tree (not the .expando transition), so it would
-   otherwise snap in - give it the same slide-up as a bottom sheet so expanding feels smooth. */
+   otherwise snap in. GROW it (max-height), not slide it: the dock is bottom-anchored, so the
+   growing player extends the dock upward with the navbar fixed at the bottom - exactly the
+   modern expand. A slide (translate) would instead reveal the dock's own background in the
+   space the player is about to fill, since the dock is full height the instant it mounts. */
 .retroplayer {
   padding: 0; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
-  animation: pt-sheet-up .44s cubic-bezier(.32, .72, 0, 1) both;
+  overflow: hidden;
+  animation: pt-retro-grow .44s cubic-bezier(.32, .72, 0, 1) both;
 }
+@keyframes pt-retro-grow { from { max-height: 44px; } to { max-height: 440px; } }
 @media (prefers-reduced-motion: reduce) { .retroplayer { animation: none; } }
 .dock.dock-retro { background: #17181b; border-top-color: #0d0e10; }
 .retro { --rt-lcd: #3fe08a; --rt-dim: #1f6b45; }

@@ -1193,7 +1193,16 @@ button.icon.mode.on {
     Menlo,
     Consolas,
     monospace;
-  animation: pt-sheet-up .44s cubic-bezier(.32, .72, 0, 1) both;
+  overflow: hidden;
+  animation: pt-retro-grow .44s cubic-bezier(.32, .72, 0, 1) both;
+}
+@keyframes pt-retro-grow {
+  from {
+    max-height: 44px;
+  }
+  to {
+    max-height: 440px;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .retroplayer {
