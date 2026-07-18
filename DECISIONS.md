@@ -2,6 +2,29 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-18 - Custom cold-launch splash (was the grey Expo default)
+Tier: T1 (Android splash assets + config; no wire/host/JS change). Branch: feature/custom-splash
+(PR #57).
+Context: Tim noticed the cold-launch screen was Expo's stock grey concentric-circles-on-grid
+placeholder on a WHITE background. Root cause: there was NO splash config in app.json at all, so a
+past `expo prebuild` generated Expo's default splashscreen_logo + a white windowSplashScreenBackground.
+Fix (mirrors how the app icon was done - direct committed assets + config as source of truth):
+- Regenerated all 5 density splashscreen_logo.png from the pear mark, REUSING assets/adaptive-
+  foreground.svg (the launcher adaptive foreground at 52%). 52% is deliberate: Android 12's
+  SplashScreen API circle-masks the icon (~192dp visible of the 288dp canvas), and 52% sits inside
+  that so the leaf/stem/disc don't clip. Same asset as the launcher icon = one source of truth.
+- splashscreen_background #FFFFFF -> #17140f (warm graphite) in colors.xml, so it flows into the
+  dark app instead of flashing white.
+- Added the expo-splash-screen plugin to app.json (image=./assets/adaptive-icon.png, imageWidth=288,
+  backgroundColor=#17140f, resizeMode=contain). This is NECESSARY, not decorative: without a splash
+  config the next prebuild (e.g. the M4 image work) would regenerate the grey default again. Now the
+  committed assets and the config agree.
+Android-only (no iOS build). ANIMATING the logo's spectrum bars during load was considered and
+DECLINED (Tim): Android 12 splash animation is time-capped (~1s), OEM/launcher-inconsistent, and only
+covers the ~1-2s cold-launch window - not worth the flipbook/AVD machinery for that payoff.
+Verify: 289 tests + builds green (asset-only). ON DEVICE (TCL + Pixel, debug APK): cold launch shows
+the pear on warm graphite, no grey placeholder, no white flash.
+
 ## 2026-07-18 - Retro follow-up: a docked "Playlist" window under the classic player
 Tier: T1 (client UI only; no wire/host/persisted-shape change). Branch: feature/retro-playlist-window
 (PR #56). Delivers one of the two deferred PR-#54 retro follow-ups.
