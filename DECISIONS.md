@@ -2,6 +2,31 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-18 - Dashboard password change/reset + source autodetect (items 1 & 9), image 0.2.2
+Tier: T2 (host + dashboard; a security-relevant control done conservatively). Branch
+feature/dashboard-password (PR #63). Two Start9-polish items that share a deploy.
+ITEM 1 - CHANGE/RESET THE DASHBOARD PASSWORD. createAuth's secret is now mutable
+(setPassword/verify); POST /api/password swaps it live + writes the dashboard-password
+file (0600). Decisions: (a) NO current-password re-prompt - the handler only runs for an
+already-authenticated request (auth.handle 401s the rest), and the case this exists for is
+a GENERATED password nobody memorised, so re-asking is friction, not security; the session
+IS the trust boundary (a hijacked session can already revoke everything). (b) REFUSED when
+PEARTUNE_PASSWORD is set ('explicit' source) - the env wins on restart (resolveDashboardPassword),
+so a change would silently vanish; the UI says to change the env instead. /api/state carries
+passwordSource. ITEM 1a - Start9 PROPERTIES: the host writes <data>/start9/stats.yaml (compat
+v2, masked+copyable) when PEARTUNE_STATS is set (s9pk entrypoint sets it, manifest enables the
+properties action), so the generated password shows in StartOS Properties, not just logs.
+ITEM 9 - SOURCE AUTODETECT. host/detect.js probes BOTH <pkg-id>.embassy:<port> (Start9) and
+localhost:<port> (Umbrel host-net / bare) for known music servers and recognises each from a
+public no-auth endpoint (Jellyfin /System/Info/Public; a Subsonic ping envelope). No platform
+flag - wrong addresses fail fast, the marker check kills false positives. GET /api/source/detect;
+the dashboard Music Source panel auto-detects on open and shows found servers as pre-fill chips.
+Grounded in reality: on returned-feline, jellyfin.embassy:8096 resolves (running) while
+nextcloud.embassy does NOT (not running) - so probing naturally finds exactly what's reachable.
+IMAGE 0.2.2 cut with both (podman+qemu), re-pinned all consumers. Verified locally end to end
+(password change/refuse; 5 detect probe tests; 301 total). Hardware-pending: Start9 Properties
+display + detect finding jellyfin.embassy, on the 0.2.2 s9pk re-sideload.
+
 ## 2026-07-18 - Start9 (StartOS) s9pk packaging
 Tier: T2 (packaging; no wire/host-logic change). Branch feature/host-start9. Third step of the
 host-platform-expansion proposal. start9/ adapts the PROVEN pearcircle-seeder StartOS package
