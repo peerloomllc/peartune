@@ -420,7 +420,6 @@ button.icon.dens:disabled { opacity: .4; }
 .dock {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
   background: var(--color-surface-card); border-top: 1px solid var(--color-border);
-  padding-bottom: var(--pear-safe-bottom);
   max-width: 560px; margin: 0 auto;
 }
 /* A guest device's time-limited-access strip, at the top of the dock (above the
@@ -442,6 +441,9 @@ button.icon.dens:disabled { opacity: .4; }
 .navbar {
   display: flex; border-top: 1px solid var(--color-divider);
   position: relative; z-index: 1; background: var(--color-surface-card);
+  /* Carry the safe-area inset here (moved off the dock) so the navbar's OPAQUE background
+     reaches the very bottom edge - otherwise the player shows through the gap below it. */
+  padding-bottom: var(--pear-safe-bottom);
 }
 .dock.dock-retro .navbar { background: #17181b; }
 /* No player above it means the navbar IS the top of the dock, and a second
