@@ -1,0 +1,144 @@
+# PearTune host packaged as a StartOS (Start9) service.
+#
+# Targets StartOS 0.3.5.x (the stable channel; the packaging model here is
+# manifest.yaml + a Docker image tar + deno-bundled TS procedures, packed with
+# `start-sdk pack`). Modeled on pearcircle-seeder's package, which is a proven
+# working StartOS P2P service - the whole point of reusing it is its networking.
+#
+# Distribution for v1 is SIDELOAD (not a community-registry publish); see README.
+
+# Community-registry apps do not require a store prefix the way Umbrel does.
+id: peartune
+title: "PearTune"
+# emver: kept in lockstep with the host image tag it wraps.
+version: 0.2.0
+release-notes: |
+  First StartOS release of the PearTune host. Runs the always-on daemon that
+  serves your self-hosted music library over HyperDHT, with a dashboard for
+  pairing phones and revoking them. Wraps the same published, digest-pinned host
+  image as the Umbrel app. Point it at a Jellyfin or Nextcloud Music library you
+  already run on this server, then pair your phone by QR.
+license: MIT
+wrapper-repo: "https://github.com/peerloomllc/peartune"
+upstream-repo: "https://github.com/peerloomllc/peartune"
+support-site: "https://github.com/peerloomllc/peartune/issues"
+marketing-site: "https://peerloomllc.com"
+build: ["make"]
+description:
+  short: Your music collection, playable anywhere, without exposing your server.
+  long: |
+    PearTune turns this server into the home of your music: a self-hosted library
+    you can play from your phone anywhere, without port forwarding, a VPN, dynamic
+    DNS, an account, or any cloud copy of your files.
+
+    Your phone reaches this host directly over an encrypted peer-to-peer connection
+    (HyperDHT), authenticated by device key - there is no password, token, or
+    connection string anywhere in the design. The host holds the allow-list and is
+    the sole authority on who gets in: revoke a phone from the dashboard and its
+    access is cut within a second, mid-song.
+
+    Point PearTune at a music library you already run on this server - Jellyfin,
+    Nextcloud Music, or any Subsonic-compatible server - and it serves that library
+    to your paired phones. On first run it prints a generated dashboard password to
+    this service's logs; open the dashboard, set your source, and pair a phone by
+    scanning the QR.
+assets:
+  license: LICENSE
+  icon: icon.png
+  instructions: instructions.md
+# The host is a long-running daemon. StartOS keeps the container alive for the
+# lifetime of the service.
+main:
+  type: docker
+  image: main
+  entrypoint: "docker_entrypoint.sh"
+  args: []
+  mounts:
+    # Persistence volume. The host writes its identity seed, the grant store
+    # (host-local, NEVER replicated - see CLAUDE.md), the generated dashboard
+    # password, and source/library config under here; the entrypoint points
+    # PEARTUNE_DATA at the mount.
+    main: /data
+  gpu-acceleration: false
+# The pinned base image is a multi-arch manifest list (amd64 + arm64), so both a
+# typical x86 Start9 server and an arm one are supported.
+hardware-requirements:
+  arch:
+    - x86_64
+    - aarch64
+# HTTP GET against the dashboard proves the host is up and serving.
+health-checks:
+  web-ui:
+    name: Web Interface
+    success-message: The PearTune dashboard is reachable
+    type: script
+# No StartOS config form for v1: the source (Jellyfin/Nextcloud/Subsonic), the
+# library name, and pairing are all done in PearTune's own dashboard - the same
+# way they are done on Umbrel. The dashboard password is generated on first run
+# and printed to this service's logs.
+config: ~
+properties: ~
+volumes:
+  main:
+    type: data
+# Dashboard interface. StartOS terminates TLS and makes the dashboard reachable
+# on the LAN / over Tor. UNLIKE the seeder, PearTune keeps its OWN dashboard
+# password (generated on first run) rather than disabling it - the dashboard is a
+# revoke button, so it is defended even behind the StartOS proxy.
+interfaces:
+  main:
+    name: PearTune Dashboard
+    description: Pair phones, choose your music source, and revoke devices.
+    tor-config:
+      port-mapping:
+        80: "8741"
+    lan-config:
+      443:
+        ssl: true
+        internal: 8741
+    ui: true
+    protocols:
+      - tcp
+      - http
+dependencies: {}
+# Encrypted backups of the host state via the StartOS-provided duplicity image.
+# Backs up /data (identity seed + grant store + source config). This is a LOCAL
+# backup of the host's own state - it is NOT the replicated ledger the two
+# load-bearing rules forbid; the grant store still never leaves this host on the
+# wire.
+backup:
+  create:
+    type: docker
+    image: compat
+    system: true
+    entrypoint: compat
+    args:
+      - duplicity
+      - create
+      - /mnt/backup
+      - /data
+    mounts:
+      BACKUP: "/mnt/backup"
+      main: "/data"
+  restore:
+    type: docker
+    image: compat
+    system: true
+    entrypoint: compat
+    args:
+      - duplicity
+      - restore
+      - /mnt/backup
+      - /data
+    mounts:
+      BACKUP: "/mnt/backup"
+      main: "/data"
+migrations:
+  from:
+    "*":
+      type: script
+      args: ["from"]
+  to:
+    "*":
+      type: script
+      args: ["to"]
