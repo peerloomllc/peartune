@@ -686,7 +686,8 @@ button.icon.mode.on { color: var(--color-primary); }
   border-top-color: #0d0e10; border-left-color: #0d0e10; box-shadow: inset 0 2px 4px rgba(0,0,0,.5);
 }
 .rt-play.lit { color: var(--rt-lcd); text-shadow: 0 0 6px rgba(63,224,138,.5); }
-.rt-tg { font-size: 9px; letter-spacing: .5px; min-width: 30px; }
+/* Fixed width so SHUF and REP are equal AND the button does not resize when REP -> REP1. */
+.rt-tg { font-size: 9px; letter-spacing: .5px; width: 46px; min-width: 0; padding: 0; }
 .rt-tg.lit { color: var(--rt-lcd); text-shadow: 0 0 5px rgba(63,224,138,.5); }
 .rt-sp { flex: 1; }
 @media (prefers-reduced-motion: reduce) { .rt-track { animation: none; } }
@@ -724,7 +725,7 @@ button.icon.mode.on { color: var(--color-primary); }
    change was needed. Kept OFF the album grid / settings on purpose - those have no analog and the
    green chrome would fight the cover art. */
 .queuescreen.retroq {
-  --rt-lcd: #3fe08a; --rt-dim: #1f6b45; background: #0b0e0c;
+  --rt-lcd: #3fe08a; --rt-dim: #1f6b45; background: #0b0e0c; padding: 0;
   font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
 }
 .retroq .queuehead {
@@ -757,7 +758,7 @@ button.icon.mode.on { color: var(--color-primary); }
 .retroq .tracks > li { counter-increment: qn; }
 .retroq .queuelist li, .retroq .tracks.editing .editrow {
   border-bottom: 1px solid #10201700; border-top: 1px solid #0e1a13;
-  padding: .5rem .7rem; color: var(--rt-lcd);
+  padding: .5rem 1rem; color: var(--rt-lcd);
 }
 .retroq .queuelist li::before {
   content: counter(qn) "."; flex: none; width: 2.4em; margin-right: .5rem; text-align: right;

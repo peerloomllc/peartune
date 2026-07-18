@@ -1448,7 +1448,9 @@ button.icon.mode.on {
 .rt-tg {
   font-size: 9px;
   letter-spacing: .5px;
-  min-width: 30px;
+  width: 46px;
+  min-width: 0;
+  padding: 0;
 }
 .rt-tg.lit {
   color: var(--rt-lcd);
@@ -1538,6 +1540,7 @@ button.icon.mode.on {
   --rt-lcd: #3fe08a;
   --rt-dim: #1f6b45;
   background: #0b0e0c;
+  padding: 0;
   font-family:
     "SF Mono",
     ui-monospace,
@@ -1615,7 +1618,7 @@ button.icon.mode.on {
 .retroq .tracks.editing .editrow {
   border-bottom: 1px solid #10201700;
   border-top: 1px solid #0e1a13;
-  padding: .5rem .7rem;
+  padding: .5rem 1rem;
   color: var(--rt-lcd);
 }
 .retroq .queuelist li::before {
