@@ -23,9 +23,14 @@ flag - wrong addresses fail fast, the marker check kills false positives. GET /a
 the dashboard Music Source panel auto-detects on open and shows found servers as pre-fill chips.
 Grounded in reality: on returned-feline, jellyfin.embassy:8096 resolves (running) while
 nextcloud.embassy does NOT (not running) - so probing naturally finds exactly what's reachable.
-IMAGE 0.2.2 cut with both (podman+qemu), re-pinned all consumers. Verified locally end to end
-(password change/refuse; 5 detect probe tests; 301 total). Hardware-pending: Start9 Properties
-display + detect finding jellyfin.embassy, on the 0.2.2 s9pk re-sideload.
+IMAGE 0.2.2 cut with both, re-pinned all consumers; Tim hardware-validated items 1+9 on Start9.
+FOLLOW-UP FIX (0.2.3): he found the Properties password went STALE after an in-app change - the host
+wrote start9/stats.yaml only at startup. Extracted writeStartosStats to host/startos-stats.js and
+call it from POST /api/password too, so Properties mirrors the live password. Kept the app as the one
+control + Properties a read-only mirror (chosen over moving password management into a StartOS Config
+form, which would split it from PearTune's config:~ "everything in the dashboard" model). 0.2.3 cut
+for it. Verified locally end to end (change/refuse; stats.yaml resyncs on change; 5 detect probe
+tests; 301 total).
 
 ## 2026-07-18 - Start9 (StartOS) s9pk packaging
 Tier: T2 (packaging; no wire/host-logic change). Branch feature/host-start9. Third step of the

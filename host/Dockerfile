@@ -4,16 +4,16 @@
 # and two PeerLoom apps on one box cannot share a port.
 #
 # Build from the REPO ROOT:
-#   docker build -f host/Dockerfile -t ghcr.io/peerloomllc/peartune-host:0.2.2 .
+#   docker build -f host/Dockerfile -t ghcr.io/peerloomllc/peartune-host:0.2.3 .
 #
 # Multi-arch (Umbrel Home is x86_64; a Pi-class Umbrel is arm64):
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -f host/Dockerfile -t ghcr.io/peerloomllc/peartune-host:0.2.2 --push .
+#     -f host/Dockerfile -t ghcr.io/peerloomllc/peartune-host:0.2.3 --push .
 #
 # No Docker on hand? podman + qemu-user-static builds the same manifest list:
 #   podman build --platform linux/amd64,linux/arm64 --manifest \
-#     ghcr.io/peerloomllc/peartune-host:0.2.2 -f host/Dockerfile .
-#   podman manifest push --all ghcr.io/peerloomllc/peartune-host:0.2.2
+#     ghcr.io/peerloomllc/peartune-host:0.2.3 -f host/Dockerfile .
+#   podman manifest push --all ghcr.io/peerloomllc/peartune-host:0.2.3
 #
 # Simpler than PearCircle's seeder image on purpose: the seeder has to stage a
 # Bare runtime + a bare-pack'd worklet bundle because it runs the APP's worklet.
