@@ -2,6 +2,49 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-18 - App icon redesign: a Winamp-flavoured pear, centred by CROPPING TO THE BBOX
+Tier: T1 (assets + a dashboard-UI recolour/logo; no wire/host-logic/persisted-shape change). Branch:
+feature/app-icon-redesign (PR #55).
+Context: Tim picked "app icon redesign" off the design-refresh list. The old mark (a green vinyl +
+tonearm + node) was off-palette after the analog-amber rework, AND it rendered OFF-CENTRE on his Pixel.
+Direction: I first rendered a hand-built 3-direction studio (amber-evolution of the old mark / a lit-VU
+meter / a "pear-record"); Tim steered toward "more Winamp", so I wrote Recraft prompts (green-LCD
+spectrum + metal chrome, trademark-safe - no Nullsoft lightning/llama) and he generated 7. Chosen: icon3
+- a PEAR whose belly is a chrome-bezelled green-LCD spectrum analyzer. It keeps brand ownership (the app
+name IS the mark; unmistakably PearTune, not a generic player) while carrying the retro-skin's green LCD,
+so the launcher icon and the classic in-app skin rhyme. The pure-Winamp options (a player window, a
+spectrum-in-a-frame) were rejected as too generic for a launcher icon.
+The load-bearing fix - CENTRING BY BBOX, not a hardcoded transform. The OLD master centred the mark with
+a baked translate/scale tuned to a specific Recraft export; when the artwork changed, the mark sat
+off-centre (what Tim saw on the Pixel). The new pipeline instead measures the mark's true bounding box
+(inkscape --query on the amber pear path, which encloses everything), drops Recraft's own landscape
+background path, and places the bbox in a square tile via a nested <svg> with preserveAspectRatio - so
+the mark is ALWAYS exactly centred regardless of the source art. Verified numerically (rendered the 52%
+foreground, trimmed: margins L=R=345, T=B=245, zero diff on both axes) and visually against the Android
+72dp-viewport / 66dp-safe-zone rings. Mark fills 64% of the master (inside Android's 66% adaptive crop),
+52% on the adaptive foreground (launcher zoom/mask headroom). The two documented traps are honoured: iOS
+PNGs have the alpha channel stripped (Apple rejects alpha), the Android foreground is padded to 52%.
+Derived-asset set unchanged in shape: assets/icon.svg (master, opaque #17140f), adaptive-foreground.svg
++ adaptive-icon.png, icon.png/icon-1024.png (iOS), icon-512.png (Play), umbrel/icon.svg, all android
+mipmaps, and the icon background moved #181419 -> #17140f (colors.xml iconBackground + app.json). Nested-
+<svg> cropping (over a hand-computed matrix) also keeps Recraft's userSpaceOnUse gradients consistent -
+they resolve inside the inner viewport, so they scale/position with the mark.
+Bundled two dashboard tweaks (same visual-refresh intent, same PR):
+- The connected/online `.live` dot is GREEN again. It had gone amber because it reads --primary; the
+  palette rework left green only as the semantic --good. Repointed .live to --good and recoloured --glow
+  (the pulse ring) to match in all three theme blocks. Safe because --glow is used ONLY by this dot - the
+  radial background glow is a separate token - so nothing else changed. This restores traffic-light
+  semantics: online=green, revoked=amber(warn), offline=grey.
+- The dashboard's top-left brand logo is now the app icon, embedded as a 128px PNG data URI in a new
+  host/ui/app/icon.js (NOT the 34KB Recraft SVG, and NOT an external file - dashboard.html must stay one
+  self-contained string). .brand-mark became an <img>; the MusicNotes import stays (still used by the
+  Music-source panel h2).
+Verify: 289 tests + all builds green (icon assets have no test surface; the dashboard-is-a-built-artifact
+test still passes). ON DEVICE: built + installed the debug APK to the TCL (new icon centred on the
+launcher) and the Pixel; deployed the dashboard to the Umbrel (docker cp + restart, since server.js
+readFileSync's dashboard.html at boot) and verified live - green dot beside "1 online", new pear logo
+top-left.
+
 ## 2026-07-17 - A "classic" player skin: the WebView UI makes a retro amplifier face cheap
 Tier: T1 (client UI only; a new persisted setting `skin`, no wire/host change). Branch:
 feature/retro-skin.
