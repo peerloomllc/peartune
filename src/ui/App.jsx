@@ -1145,6 +1145,7 @@ export default function App () {
       <QueueScreen
         items={queue?.items || []}
         index={queue?.index ?? 0}
+        skin={skin}
         onJump={jumpTo}
         onMove={moveInQueue}
         onRemove={removeFromQueue}
@@ -1359,9 +1360,10 @@ function usePress (onPress, onLongPress) {
 // owns the shuffled order). A copy kept in the UI would drift the moment shuffle is
 // on or a track auto-advances - so this screen ASKS, every time it is opened and
 // every time the track changes.
-function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
+function QueueScreen ({ items, index, skin, onJump, onMove, onRemove, onClear }) {
   const [editing, setEditing] = useState(false)
   const [drag, setDrag] = useState(null)
+  const retro = skin === 'classic'
 
   if (!items.length) {
     return (
@@ -1417,12 +1419,12 @@ function QueueScreen ({ items, index, onJump, onMove, onRemove, onClear }) {
   const sub = (t) => [t.artist, t.album].filter(Boolean).join(' · ')
 
   return (
-    <div className='app queuescreen'>
+    <div className={'app queuescreen' + (retro ? ' retroq' : '')}>
       {/* The header stays put (flex:none at the top of the fixed-height column) while the
           list scrolls below it. The action icons are absolutely positioned top-right so
           "Queue" stays centered like every other page header. */}
       <header className='queuehead'>
-        <h1>Queue</h1>
+        <h1>{retro ? 'Playlist' : 'Queue'}</h1>
         <p className='muted sm'>
           {items.length} {items.length === 1 ? 'track' : 'tracks'}
           {left > 0 ? ` · ${left} still to play` : ' · last track'}

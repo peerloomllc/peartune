@@ -45,9 +45,18 @@ classic player is showing (mini OR expanded), so the dock is metal-dark under th
 not just the full window. (The strip's padding override needs .player.mini.retromini specificity,
 since the base .player.mini padding would otherwise win.) Switching back to Modern / stopping
 restores the amber dock.
-Deferred follow-ups (not built): the real Visualizer spectrum; a playlist window (the queue is not
-currently plumbed into the player); the home-screen Winamp WIDGET (its own bitmap-sprite +
-media-session project, separate surface).
+The QUEUE tab became a green "Playlist Editor" when classic is on (Tim asked how far to reskin
+beyond the player; chose Queue over the album grid / settings). This is the one non-player surface
+with a real Winamp counterpart - its playlist window - and it is a LIST, so green-on-black reads
+fine where a cover-art grid would fight the art. Deliberately CSS-forward: a `retroq` class restyles
+the existing QueueScreen (metal titlebar, green numbered rows via a CSS COUNTER so no markup change,
+the current row on Winamp's selection bar, played rows dimmed, times right-aligned) and EVERY
+interaction is unchanged - tap-to-jump, edit, drag-reorder, remove, clear. The album/artist grid,
+Settings, About, and the dashboard stay amber on purpose: no Winamp analog, and the green chrome
+would clash with cover art + cramp tap targets (the opposite of why the amber-neutral chrome exists).
+Deferred follow-ups (not built): the real Visualizer spectrum; a playlist window docked INSIDE the
+player; the home-screen Winamp WIDGET (its own bitmap-sprite + media-session project, separate
+surface).
 Verify: 289 tests (UI-only; no test surface for the player face) + builds. On the TCL: switched
 Settings -> Appearance -> Player skin -> Classic, expanded the player - LCD ticks, the title marquee
 scrolls and stays visible, the spectrum bounces while playing and freezes when paused, and prev/play/

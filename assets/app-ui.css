@@ -1534,6 +1534,113 @@ button.icon.mode.on {
   background: var(--rt-lcd);
   box-shadow: 0 0 5px rgba(63, 224, 138, .5);
 }
+.queuescreen.retroq {
+  --rt-lcd: #3fe08a;
+  --rt-dim: #1f6b45;
+  background: #0b0e0c;
+  font-family:
+    "SF Mono",
+    ui-monospace,
+    Menlo,
+    Consolas,
+    monospace;
+}
+.retroq .queuehead {
+  background:
+    linear-gradient(
+      180deg,
+      #3a3d42,
+      #26282c 60%,
+      #1b1c1f);
+  border-bottom: 1px solid #0d0e10;
+  padding-top: .6rem;
+  padding-bottom: .5rem;
+}
+.retroq .queuehead h1 {
+  font-size: .82rem;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: #c3c7cd;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, .4);
+}
+.retroq .queuehead .muted {
+  color: var(--rt-dim);
+}
+.retroq .qtrash,
+.retroq .qedit {
+  color: #cdd0d5;
+}
+.retroq .qedit.on {
+  color: var(--rt-lcd);
+}
+.retroq .tracks {
+  counter-reset: qn;
+  background: #0b0e0c;
+}
+.retroq .tracks > li {
+  counter-increment: qn;
+}
+.retroq .queuelist li,
+.retroq .tracks.editing .editrow {
+  border-bottom: 1px solid #10201700;
+  border-top: 1px solid #0e1a13;
+  padding: .5rem .7rem;
+  color: var(--rt-lcd);
+}
+.retroq .queuelist li::before {
+  content: counter(qn) ".";
+  flex: none;
+  width: 2.4em;
+  margin-right: .5rem;
+  text-align: right;
+  color: var(--rt-dim);
+  font-size: .85rem;
+}
+.retroq .queuelist .cover {
+  display: none;
+}
+.retroq .queuelist li .t,
+.retroq .editrow .t {
+  color: var(--rt-lcd);
+  font-weight: 400;
+  letter-spacing: .3px;
+}
+.retroq .queuelist li .sub,
+.retroq .editrow .sub {
+  color: var(--rt-dim);
+}
+.retroq .queuelist li.on {
+  background: #0c2f1e;
+}
+.retroq .queuelist li.on .t {
+  color: #8affc0;
+  text-shadow: 0 0 5px rgba(63, 224, 138, .4);
+}
+.retroq .queuelist li.played .t {
+  color: #2a7a52;
+}
+.retroq .queuelist .dur {
+  color: var(--rt-dim);
+  font-variant-numeric: tabular-nums;
+}
+.retroq .queuelist .cur {
+  color: var(--rt-lcd);
+}
+.retroq .tracks.editing .plgrip {
+  color: var(--rt-dim);
+}
+.retroq .tracks.editing .editrow.lifted {
+  background: #0c2f1e;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .6);
+}
+.retroq .tracks.editing .drophl {
+  background: rgba(63, 224, 138, .08);
+  border: 1px dashed var(--rt-lcd);
+}
+.retroq .tracks.editing .rm {
+  color: #e0705f;
+}
 .card {
   background: var(--color-surface-card);
   border: 1px solid var(--color-border);
