@@ -30,9 +30,13 @@ Deliberate choices:
   title is always on screen (a single copy left the LCD blank half the time - caught on hardware).
 - It is a distinct tree from the modern expando, so the grow/shrink tween does not carry across the
   swap - acceptable for a skin the user deliberately switches to.
-Deferred follow-ups (not built): a retro MINI bar (classic "shade mode"); the real Visualizer
-spectrum; a playlist window (the queue is not currently plumbed into the player); the home-screen
-Winamp WIDGET (its own bitmap-sprite + media-session project, separate surface).
+The MINI bar got its own classic "windowshade" face (Tim asked): when classic + collapsed, the
+player is a thin metal strip - tiny green LCD time, scrolling title, a mini spectrum, play/pause, a
+hairline progress line - tapping it expands to the full window. So the retro illusion holds in both
+states instead of collapsing back to the modern amber bar.
+Deferred follow-ups (not built): the real Visualizer spectrum; a playlist window (the queue is not
+currently plumbed into the player); the home-screen Winamp WIDGET (its own bitmap-sprite +
+media-session project, separate surface).
 Verify: 289 tests (UI-only; no test surface for the player face) + builds. On the TCL: switched
 Settings -> Appearance -> Player skin -> Classic, expanded the player - LCD ticks, the title marquee
 scrolls and stays visible, the spectrum bounces while playing and freezes when paused, and prev/play/

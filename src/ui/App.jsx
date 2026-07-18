@@ -3111,6 +3111,17 @@ function Player ({
     )
   }
 
+  // Classic + collapsed = "windowshade": the whole player squashed to a thin metal strip
+  // (tiny LCD, scrolling title, mini spectrum, play/pause), so collapsing keeps the retro
+  // illusion instead of dropping back to the modern amber bar. Tap it to expand.
+  if (!expanded && skin === 'classic') {
+    return (
+      <div className='player mini retromini' onClick={onExpand}>
+        <RetroMini now={now} status={status} />
+      </div>
+    )
+  }
+
   // Tap anywhere on the bar to seek. The seek goes out over P2P as a byte-range
   // request, which is why range support had to be right from day one.
   const scrub = (e) => {
@@ -3341,6 +3352,76 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
             <button className={'rt-btn rt-tg' + (repeat ? ' lit' : '')} onClick={onRepeat}>{repeat === 1 ? 'REP1' : 'REP'}</button>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// The classic skin's collapsed face: "windowshade" - the player as a thin metal strip.
+// Tiny LCD time, a scrolling title, a mini spectrum, and play/pause. Tapping the strip (handled
+// by the parent) expands to the full RetroPlayer; the play button stops propagation so it does
+// not also expand. Reads the same now/status as everything else.
+function RetroMini ({ now, status }) {
+  const dur = status?.durationMs || now.durationMs || 0
+  const pos = status?.positionMs || 0
+  const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
+  const playing = !!status?.playing
+  const idx = (status?.index ?? now.index ?? 0) + 1
+  const s = Math.floor(pos / 1000)
+  const mm = String(Math.floor(s / 60)).padStart(2, '0')
+  const ss = String(s % 60).padStart(2, '0')
+
+  const vizRef = useRef(null)
+  const playRef = useRef(playing); playRef.current = playing
+  useEffect(() => {
+    const c = vizRef.current
+    if (!c) return
+    const x = c.getContext('2d')
+    const W = c.width, H = c.height, N = 13, bw = W / N
+    const vals = new Array(N).fill(0)
+    const reduce = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+    let raf = 0, t = 0
+    const paint = () => {
+      x.clearRect(0, 0, W, H)
+      for (let i = 0; i < N; i++) {
+        for (let y = 0; y < vals[i]; y += 2) {
+          const f = y / H
+          x.fillStyle = f > 0.7 ? '#ff5a5a' : f > 0.45 ? '#e8e04a' : '#3fe08a'
+          x.fillRect(i * bw + 1, H - y - 2, bw - 1.5, 1.5)
+        }
+      }
+    }
+    if (reduce) { for (let i = 0; i < N; i++) vals[i] = (Math.sin(i * 0.7) * 0.5 + 0.5) * (1 - i / N * 0.6) * H * 0.6; paint(); return }
+    const tick = () => {
+      t += 0.06
+      for (let i = 0; i < N; i++) {
+        const target = playRef.current ? Math.max(0, (Math.sin(t + i * 0.7) * 0.5 + 0.5) * (1 - i / N * 0.6) * H * (0.5 + Math.random() * 0.6)) : 0
+        vals[i] += (target - vals[i]) * 0.35
+      }
+      paint()
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  return (
+    <div className='retro rm'>
+      <div className='rm-win'>
+        <div className='rt-lcd rm-time'>{mm}<span className={playing ? 'rt-col' : 'rt-col off'}>:</span>{ss}</div>
+        <div className='rm-marq'>
+          <div className='rt-track'>
+            <span>{idx}. {now.title}{now.artist ? ' — ' + now.artist : ''} &nbsp;★&nbsp; </span>
+            <span>{idx}. {now.title}{now.artist ? ' — ' + now.artist : ''} &nbsp;★&nbsp; </span>
+          </div>
+        </div>
+        <canvas ref={vizRef} className='rm-viz' width='120' height='20' />
+        <button
+          className={'rt-btn rm-pp' + (playing ? ' lit' : '')}
+          onClick={(e) => { e.stopPropagation(); haptic('light'); call('toggle') }}
+          aria-label='Play/pause'
+        >{playing ? '❚❚' : '▶'}</button>
+        <div className='rm-prog' style={{ width: pct + '%' }} />
       </div>
     </div>
   )
