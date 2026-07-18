@@ -1567,11 +1567,41 @@ button.icon.mode.on {
 .retroq .queuehead .muted {
   color: var(--rt-dim);
 }
-.retroq .qtrash,
-.retroq .qedit {
+.retroq .qacts {
+  right: 9px;
+  top: 7px;
+  gap: 5px;
+}
+.retroq .qacts button {
+  width: auto;
+  height: 26px;
+  min-width: 30px;
+  padding: 0 7px;
+  border-radius: 3px;
+  background:
+    linear-gradient(
+      180deg,
+      #4c4f55,
+      #303237);
+  border-top: 1px solid #62666d;
+  border-left: 1px solid #52555b;
+  border-right: 1px solid #0d0e10;
+  border-bottom: 1px solid #0d0e10;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1);
   color: #cdd0d5;
 }
-.retroq .qedit.on {
+.retroq .qacts button.qtrash {
+  color: #e0705f;
+}
+.retroq .qacts button.qedit.on {
+  background:
+    linear-gradient(
+      180deg,
+      #26282c,
+      #34373c);
+  border-top-color: #0d0e10;
+  border-left-color: #0d0e10;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, .5);
   color: var(--rt-lcd);
 }
 .retroq .tracks {
