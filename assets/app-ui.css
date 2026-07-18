@@ -1031,7 +1031,7 @@ button.more.danger {
   max-height: 0;
   opacity: 0;
   overflow: hidden;
-  transition: max-height .3s cubic-bezier(.4, 0, .2, 1), opacity .18s ease-out;
+  transition: max-height .46s cubic-bezier(.32, .72, 0, 1), opacity .3s ease-out;
 }
 .player.open .expando {
   max-height: 260px;
@@ -1043,7 +1043,7 @@ button.more.danger {
   margin-top: .5rem;
   border-radius: 2px;
   background: var(--color-track);
-  transition: opacity .18s ease-out, margin .3s cubic-bezier(.4, 0, .2, 1);
+  transition: opacity .3s ease-out, margin .46s cubic-bezier(.32, .72, 0, 1);
 }
 .hairline .fill {
   position: absolute;
@@ -1066,7 +1066,7 @@ button.grip {
   background: transparent;
   border-color: transparent;
   color: var(--color-text-muted);
-  transition: opacity .18s ease-out, max-height .3s cubic-bezier(.4, 0, .2, 1);
+  transition: opacity .3s ease-out, max-height .46s cubic-bezier(.32, .72, 0, 1);
   max-height: 2rem;
   overflow: hidden;
 }
@@ -1187,6 +1187,12 @@ button.icon.mode.on {
     Menlo,
     Consolas,
     monospace;
+  animation: pt-sheet-up .44s cubic-bezier(.32, .72, 0, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .retroplayer {
+    animation: none;
+  }
 }
 .dock.dock-retro {
   background: #17181b;
@@ -2043,6 +2049,7 @@ button.shead .caret.open {
   display: flex;
   align-items: flex-end;
   background: rgba(0, 0, 0, .75);
+  animation: pt-backdrop .34s ease both;
 }
 .sheet {
   width: 100%;
@@ -2054,6 +2061,29 @@ button.shead .caret.open {
   border-top: 1px solid var(--color-border);
   border-radius: 20px 20px 0 0;
   padding: 1.25rem 1rem calc(1.25rem + var(--pear-safe-bottom));
+  animation: pt-sheet-up .46s cubic-bezier(.32, .72, 0, 1) both;
+}
+@keyframes pt-backdrop {
+  from {
+    background: rgba(0, 0, 0, 0);
+  }
+  to {
+    background: rgba(0, 0, 0, .75);
+  }
+}
+@keyframes pt-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sheetwrap,
+  .sheet {
+    animation: none;
+  }
 }
 .sheet h1 {
   font-size: 1.05rem;
