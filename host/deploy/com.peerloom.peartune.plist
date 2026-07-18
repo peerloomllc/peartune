@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PearTune host as a macOS LaunchAgent (runs at login, restarts on crash).
+
+  Node 20+ must be installed. Copy the repo somewhere stable, install the host's
+  deps once (`cd /opt/peartune/host && npm ci --omit=dev`), edit the paths + env
+  below, then:
+
+    cp com.peerloom.peartune.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.peerloom.peartune.plist
+
+  The generated dashboard password is printed to the StandardOut log below on
+  first run (also saved to <PEARTUNE_DATA>/dashboard-password).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.peerloom.peartune</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/opt/peartune/host/index.js</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Your music (a folder this user can read), and a writable data dir for the
+         identity + grant store + generated password. Edit both. -->
+    <key>PEARTUNE_MUSIC</key>
+    <string>/Users/you/Music</string>
+    <key>PEARTUNE_DATA</key>
+    <string>/Users/you/Library/Application Support/PearTune</string>
+    <key>PEARTUNE_NAME</key>
+    <string>My Library</string>
+    <!-- 0.0.0.0 to reach the dashboard from your LAN (a password is generated on
+         first run); 127.0.0.1 to keep it local. -->
+    <key>PEARTUNE_HTTP_HOST</key>
+    <string>0.0.0.0</string>
+    <key>PEARTUNE_HTTP_PORT</key>
+    <string>8741</string>
+    <!-- Optional: your own password instead of the generated one.
+    <key>PEARTUNE_PASSWORD</key>
+    <string>choose-your-own</string> -->
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/you/Library/Logs/peartune.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/Library/Logs/peartune.log</string>
+</dict>
+</plist>

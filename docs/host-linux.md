@@ -8,6 +8,8 @@ PearTune's host is a small always-on daemon: it holds the allow-list, gates conn
 and serves your library over HyperDHT. Your phone reaches it with no port forwarding, no
 VPN, no account. This page covers three ways to run it on a plain Linux box, easiest first.
 
+> On **macOS or Windows**? See [`host-macos-windows.md`](host-macos-windows.md).
+
 ## The one thing that is not optional: outbound UDP
 
 The host reaches the DHT by **outbound UDP holepunching** — that is the whole "no port
