@@ -51,6 +51,15 @@
           }
         }
       ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/adaptive-icon.png",
+          "imageWidth": 288,
+          "backgroundColor": "#17140f",
+          "resizeMode": "contain"
+        }
+      ],
       "./plugins/with-android-abis",
       "./plugins/with-android-queries",
       "./plugins/with-android-debug-app-id",
