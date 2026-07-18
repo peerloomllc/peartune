@@ -18,7 +18,7 @@ const z32 = require('z32')
 
 const { PearTuneHost } = require('./server')
 const { startDashboard } = require('./ui/server')
-const { requireSafeBind } = require('./ui/auth')
+const { requireSafeBind, resolveDashboardPassword, PASSWORD_FILE } = require('./ui/auth')
 
 function parseArgs (argv) {
   const args = {
@@ -60,8 +60,9 @@ PearTune host - serve a self-hosted music library over P2P.
   --name,  -n <name>  library name shown on pair (default: My Library)
   --http-host <addr>  dashboard bind address     (default: 127.0.0.1)
   --password <pw>     dashboard password         (env: PEARTUNE_PASSWORD)
-                      REQUIRED to bind anything but loopback - the host refuses
-                      to serve the revoke button on a LAN with no password.
+                      Any non-loopback bind needs one. If you do not set it, the
+                      host GENERATES one on first run, prints it, and saves it to
+                      <data>/dashboard-password. Set this to choose your own.
   --port,  -p <port>  dashboard port             (default: 8741)
   --quiet, -q         suppress the event log
 `)
@@ -81,7 +82,32 @@ async function main () {
   // was exposed (the P2P gate is separate), but a refusal that happens after you
   // have joined the DHT is a refusal that happened too late. Check the config
   // first, then build things.
+  //
+  // Resolve the password first: on a bare non-loopback install with nothing set,
+  // this MINTS one (persisted to the data dir) rather than letting requireSafeBind
+  // refuse to start - an Umbrel/Start9 has ${APP_PASSWORD}, a NAS `docker run` does
+  // not. An explicit password still wins; loopback stays password-free. See the
+  // proposal 2026-07-18 host-platform-expansion.
+  const dataDir = path.resolve(args.data)
+  const pw = resolveDashboardPassword({ password: args.password, bind: args.host, dataDir })
+  args.password = pw.password
   requireSafeBind(args.host, args.password)
+
+  if (pw.source === 'generated') {
+    console.log(`
+  ┌─ DASHBOARD PASSWORD ──────────────────────────────────────
+  │  No password was set for a non-loopback bind (${args.host}),
+  │  so one was generated for you:
+  │
+  │      ${args.password}
+  │
+  │  Saved to ${path.join(dataDir, PASSWORD_FILE)} (0600).
+  │  Set PEARTUNE_PASSWORD (or --password) to choose your own.
+  └───────────────────────────────────────────────────────────
+`)
+  } else if (pw.source === 'file') {
+    console.log(`  dashboard password: using the generated one in ${path.join(dataDir, PASSWORD_FILE)}`)
+  }
 
   const log = args.quiet
     ? () => {}
@@ -100,7 +126,7 @@ async function main () {
   }
 
   const host = new PearTuneHost({
-    dataDir: path.resolve(args.data),
+    dataDir,
     musicDir: path.resolve(args.music),
     libraryName: args.name,
     subsonic,

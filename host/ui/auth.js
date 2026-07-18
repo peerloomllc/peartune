@@ -14,10 +14,14 @@
 // model. "Anyone on your wifi can take your music library" is the right one.
 
 const crypto = require('crypto')
+const fs = require('fs')
+const path = require('path')
+const z32 = require('z32')
 
 const COOKIE = 'peartune_session'
 const MAX_FAILURES = 5
 const LOCKOUT_MS = 60_000
+const PASSWORD_FILE = 'dashboard-password'
 
 function createAuth (password) {
   // No password: no gate. That is today's behaviour, and it is only safe because
@@ -141,15 +145,61 @@ function createAuth (password) {
   }
 }
 
+function isLoopback (bind) {
+  return bind === '127.0.0.1' || bind === 'localhost' || bind === '::1'
+}
+
+// A dashboard password worth typing once: ~80 bits, grouped for legibility, and
+// drawn from z32's alphabet (no 0/o/1/l/i ambiguity to misread off a terminal).
+function generatePassword () {
+  return z32.encode(crypto.randomBytes(10))       // 10 bytes -> 16 z32 chars
+    .slice(0, 16)
+    .replace(/(.{4})(?=.)/g, '$1-')               // xxxx-xxxx-xxxx-xxxx
+}
+
+// GENERATE-AND-PRINT (proposal 2026-07-18 host-platform-expansion).
+//
+// requireSafeBind fails closed: a non-loopback bind with no password does not
+// start. That is right for Umbrel/Start9, where the platform mints ${APP_PASSWORD}.
+// But a bare `docker run`/systemd install on a NAS has no platform to mint one, so
+// "refuse to start" becomes "the install is broken". This mints one instead:
+//
+//   - an explicitly-set password (env/flag) ALWAYS wins, on any bind;
+//   - a loopback bind stays password-free (the createAuth no-gate path);
+//   - a non-loopback bind with no password gets a generated one, PERSISTED to the
+//     data dir (0600) so it is stable across restarts, and printed on first mint.
+//
+// The result still satisfies requireSafeBind, so the fail-closed invariant holds:
+// a LAN-exposed dashboard is never unauthenticated.
+//
+// Returns { password, source }, source in {explicit, none, generated, file}.
+function resolveDashboardPassword ({ password, bind, dataDir }) {
+  if (password) return { password, source: 'explicit' }
+  if (isLoopback(bind)) return { password: '', source: 'none' }
+
+  const file = path.join(dataDir, PASSWORD_FILE)
+  try {
+    const saved = fs.readFileSync(file, 'utf8').trim()
+    if (saved) return { password: saved, source: 'file' }
+  } catch {}
+
+  const minted = generatePassword()
+  fs.mkdirSync(dataDir, { recursive: true })
+  // 0600 via the write, like host.seed - a credential should never sit
+  // world-readable, not even for the instant before a chmod.
+  fs.writeFileSync(file, minted + '\n', { mode: 0o600 })
+  return { password: minted, source: 'generated' }
+}
+
 // FAIL CLOSED, AND LOUDLY.
 //
 // A warning in a log nobody reads is not a control. If the host is told to serve
 // the control plane on anything but loopback without a password, it does not start.
 // Every "just expose it for a minute" is how a revoke button ends up on an open
-// port forever.
+// port forever. (resolveDashboardPassword runs first and mints one for a bare
+// non-loopback install, so this refusal is now only reached if that was bypassed.)
 function requireSafeBind (bind, password) {
-  const loopback = bind === '127.0.0.1' || bind === 'localhost' || bind === '::1'
-  if (loopback || password) return
+  if (isLoopback(bind) || password) return
 
   throw new Error(
     `refusing to start: the dashboard would listen on ${bind} with NO password.\n` +
@@ -158,4 +208,7 @@ function requireSafeBind (bind, password) {
   )
 }
 
-module.exports = { createAuth, requireSafeBind, COOKIE, MAX_FAILURES }
+module.exports = {
+  createAuth, requireSafeBind, resolveDashboardPassword, generatePassword,
+  isLoopback, COOKIE, MAX_FAILURES, PASSWORD_FILE
+}

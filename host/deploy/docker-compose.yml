@@ -1,0 +1,49 @@
+# PearTune host on a plain Docker / Linux box.
+#
+# This is the NON-Umbrel compose. Umbrel has its own under peartune/umbrel/ (it
+# wires the platform's ${APP_PASSWORD} and mount paths); use THIS one on a NAS,
+# an old desktop, a VPS, or anywhere `docker` runs.
+#
+# network_mode: host is REQUIRED, not a preference. The host reaches HyperDHT by
+# outbound UDP holepunching, and Docker's default bridge is a second layer of NAT
+# that kills it (measured on Umbrel, twice - see umbrel/docker-compose.yml). With
+# host networking there is no `ports:` mapping: PEARTUNE_HTTP_PORT binds directly
+# on the machine.
+#
+# The dashboard binds 0.0.0.0 so you can reach it from your LAN. That page can
+# revoke every device and open a pairing window onto your whole library, so it
+# needs a password. Set PEARTUNE_PASSWORD (below, or in a .env file), OR leave it
+# unset and the host GENERATES one on first run - printed to `docker compose logs`
+# and saved to ./data/dashboard-password.
+
+services:
+  peartune-host:
+    image: ghcr.io/peerloomllc/peartune-host:0.2.0@sha256:b8816c2549e4641f08db64a2d93470d891b4533246aedbcbb446b87b977f39b5
+    container_name: peartune-host
+    restart: unless-stopped
+    stop_grace_period: 1m
+    network_mode: host
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PEARTUNE_HTTP_HOST: 0.0.0.0
+      PEARTUNE_HTTP_PORT: "8741"
+      PEARTUNE_NAME: "My Library"
+      PEARTUNE_DATA: /data
+      PEARTUNE_MUSIC: /music
+      # Optional: set your own dashboard password. Unset on a 0.0.0.0 bind = one is
+      # generated on first run (printed to the logs, saved to /data).
+      PEARTUNE_PASSWORD: "${PEARTUNE_PASSWORD:-}"
+      # Optional: serve an existing Subsonic/Navidrome (or Jellyfin/Emby) library
+      # instead of the /music folder. Uncomment and fill in.
+      # PEARTUNE_NAVIDROME_URL: "http://localhost:4533"
+      # PEARTUNE_NAVIDROME_USER: "you"
+      # PEARTUNE_NAVIDROME_PASS: "your-password"
+    volumes:
+      # Identity seed + grant store + the generated dashboard password. BACK THIS
+      # UP: losing it means every phone must re-pair; leaking it means someone can
+      # impersonate your library.
+      - ./data:/data
+      # Your music. Read-only, always - PearTune serves music, it never writes it.
+      # Change the left side to wherever your library actually lives.
+      - /srv/music:/music:ro
