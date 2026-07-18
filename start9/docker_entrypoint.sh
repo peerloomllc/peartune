@@ -17,6 +17,9 @@ mkdir -p "$DATA_DIR"
 export PEARTUNE_HTTP_HOST=0.0.0.0
 export PEARTUNE_HTTP_PORT=8741
 export PEARTUNE_DATA="$DATA_DIR"
+# Surface the generated dashboard password in StartOS's Properties page: the host
+# writes it to this stats.yaml (version 2), which the `properties` procedure reads.
+export PEARTUNE_STATS="$DATA_DIR/start9/stats.yaml"
 
 printf "\n [i] Starting PearTune host (data: %s) ...\n\n" "$DATA_DIR"
 

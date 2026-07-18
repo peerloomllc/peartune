@@ -437,8 +437,25 @@ function SourcePanel ({ state, refresh, toast }) {
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(null) // 'test' | 'save' | 'rescan' | null
   const [browse, setBrowse] = useState(null)
+  const [detected, setDetected] = useState(null) // null=not scanned, []=none, [...]=found
   const dirtyRef = useRef(false)
   dirtyRef.current = dirty
+
+  // Look for a Jellyfin/Nextcloud/Subsonic server co-located on this box, once, so
+  // the operator can pre-fill its internal address instead of having to know it
+  // (jellyfin.embassy:8096 and friends). Best-effort: a failure just shows nothing.
+  useEffect(() => {
+    let live = true
+    api('/api/source/detect').then(r => { if (live) setDetected((r && r.sources) || []) })
+    return () => { live = false }
+  }, [])
+
+  // Pre-fill a detected server: switch to its tab and drop in its URL. Sets cfg for
+  // the target kind directly (not via `set`, which closes over the old `kind`).
+  const useDetected = (d) => {
+    setKind(d.kind); setDirty(true); setBrowse(null)
+    setCfg(c => ({ ...c, [d.kind]: { ...(c[d.kind] || {}), url: d.url } }))
+  }
 
   useEffect(() => {
     if (dirtyRef.current) return
@@ -524,6 +541,17 @@ function SourcePanel ({ state, refresh, toast }) {
           <button className={kind === 'subsonic' ? 'on' : ''} onClick={() => pick('subsonic')}>Subsonic</button>
           <button className={kind === 'jellyfin' ? 'on' : ''} onClick={() => pick('jellyfin')}>Jellyfin / Emby</button>
         </div>
+
+        {detected && detected.length > 0 &&
+          <div className='srcdetect'>
+            <span className='subtle'>Found on this server — tap to use its address:</span>
+            <div className='srcdetect-row'>
+              {detected.map((d, i) =>
+                <button key={i} className='detectchip' onClick={() => useDetected(d)} title={d.url}>
+                  {d.server} · {d.name}
+                </button>)}
+            </div>
+          </div>}
 
         <div className='srcfields'>
           {kind === 'folder'
@@ -680,8 +708,62 @@ function MaintenanceModal ({ state, onClose, onSaved, toast }) {
     <Modal title='Maintenance' onClose={onClose}>
       <div className='maint'>
         <LibraryNameSection state={state} onSaved={onSaved} toast={toast} />
+        <PasswordSection state={state} onSaved={onSaved} toast={toast} />
       </div>
     </Modal>
+  )
+}
+
+// A readable random password (no 0/o/1/l/i to misread). Fills the New field so the
+// operator can set a strong one without inventing it.
+function suggestPassword () {
+  const a = 'abcdefghjkmnpqrstuvwxyz23456789'
+  const r = new Uint8Array(16)
+  ;(window.crypto || window.msCrypto).getRandomValues(r)
+  let s = ''
+  for (let i = 0; i < 16; i++) { s += a[r[i] % a.length]; if (i % 4 === 3 && i < 15) s += '-' }
+  return s
+}
+
+function PasswordSection ({ state, onSaved, toast }) {
+  const src = state.passwordSource
+  const [next, setNext] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  // Loopback with no gate: nothing to manage.
+  if (src === 'none' || src == null) return null
+
+  // Platform-owned (PEARTUNE_PASSWORD): a change here would be lost on restart, so
+  // say where to change it instead of offering a control that silently no-ops.
+  if (src === 'explicit') {
+    return (
+      <section className='maint-section'>
+        <h4>Dashboard password</h4>
+        <p className='hint'>Set by your platform (the <code>PEARTUNE_PASSWORD</code> environment variable). Change it there — a change here would be overwritten on the next restart.</p>
+      </section>
+    )
+  }
+
+  const canSave = next.trim().length >= 6 && !busy
+  const change = async () => {
+    setBusy(true)
+    const r = await api('/api/password', { next: next.trim() })
+    setBusy(false)
+    if (!r.ok) return toast('Failed: ' + (r.error || 'could not change the password'), true)
+    setNext('')
+    onSaved()
+    toast('Dashboard password changed.')
+  }
+
+  return (
+    <section className='maint-section'>
+      <h4>Dashboard password</h4>
+      <p className='hint'>The lock on this dashboard. Anyone with it can revoke devices and open a pairing window. You are signed in, so you don’t need the old one to set a new one.</p>
+      <input value={next} maxLength={64} placeholder='New password (min 6)' autoComplete='new-password'
+        onChange={e => setNext(e.target.value)} onKeyDown={e => e.key === 'Enter' && canSave && change()} />
+      <div className='srcdiscard'><button className='link' onClick={() => setNext(suggestPassword())}>Suggest a strong one</button></div>
+      <button className='block' style={{ marginTop: 4 }} onClick={change} disabled={!canSave}>{busy ? 'Changing…' : 'Change password'}</button>
+    </section>
   )
 }
 

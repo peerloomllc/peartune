@@ -31,8 +31,10 @@ const z32 = require('z32')
 // request. The login page is still a small hand-written string (host/ui/login.js).
 const PAGE = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8')
 const LOGIN_PAGE = require('./login')
-const { createAuth, requireSafeBind } = require('./auth')
+const { createAuth, requireSafeBind, PASSWORD_FILE } = require('./auth')
 const { browse } = require('../browse')
+const { detectSources } = require('../detect')
+const { writeStartosStats } = require('../startos-stats')
 
 function json (res, code, body) {
   const buf = Buffer.from(JSON.stringify(body))
@@ -55,12 +57,17 @@ async function readBody (req) {
   }
 }
 
-async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '' }) {
+async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '', passwordSource = 'none' }) {
   // Before anything listens. A control plane on a LAN with no password is not a
   // configuration we are willing to run, so this throws rather than warns.
   requireSafeBind(bind, password)
 
   const auth = createAuth(password)
+  // Where the current password came from: 'explicit' (env/flag - the operator
+  // cannot change it here, the platform owns it), 'generated'/'file' (a
+  // dashboard-password file WE own - changeable), or 'none' (loopback, no gate).
+  // A successful change makes it file-backed.
+  let pwSource = passwordSource
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost')
@@ -99,6 +106,10 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
           hostKey: z32.encode(host.publicKey),
           stats,
           pairing: host.pairing,
+          // Drives the dashboard's password controls: 'generated'/'file' = the
+          // operator can change it here; 'explicit' = set via PEARTUNE_PASSWORD, so
+          // the UI tells them to change it there instead; 'none' = no gate (loopback).
+          passwordSource: pwSource,
           devices: devices.map(d => ({
             deviceKey: d.deviceKey,
             label: d.label,
@@ -148,6 +159,37 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         }
       }
 
+      // Change/reset the dashboard password. This handler only runs for an already-
+      // authenticated request (auth.handle 401s everyone else), so the session is the
+      // authorization - we do NOT re-ask for the current password, which would be
+      // friction exactly in the case this exists for: a GENERATED password the
+      // operator never memorised. Only for a password WE own (a dashboard-password
+      // file); if PEARTUNE_PASSWORD is set the platform owns it and a change here would
+      // be overwritten on the next restart (env wins in resolveDashboardPassword), so
+      // we refuse and say where to change it.
+      if (req.method === 'POST' && url.pathname === '/api/password') {
+        if (!auth.enabled) return json(res, 400, { error: 'no dashboard password is set (loopback bind)' })
+        if (pwSource === 'explicit') {
+          return json(res, 400, { error: 'this password is set by PEARTUNE_PASSWORD; change it there' })
+        }
+        const { next } = await readBody(req)
+        const clean = String(next || '')
+        if (clean.length < 6) return json(res, 400, { error: 'new password must be at least 6 characters' })
+        try {
+          fs.mkdirSync(host.dataDir, { recursive: true })
+          fs.writeFileSync(path.join(host.dataDir, PASSWORD_FILE), clean + '\n', { mode: 0o600 })
+        } catch (e) {
+          return json(res, 500, { error: 'could not save the new password: ' + e.message })
+        }
+        auth.setPassword(clean)
+        pwSource = 'file'
+        // Keep StartOS's Properties display in step with the change (else it shows
+        // the startup password until a restart). Best-effort, gated the same way the
+        // startup write is (PEARTUNE_STATS, set by the s9pk entrypoint).
+        if (process.env.PEARTUNE_STATS) writeStartosStats(process.env.PEARTUNE_STATS, clean, 'file')
+        return json(res, 200, { ok: true })
+      }
+
       // Rename the library. Persisted host-side (library.json); shown on the dashboard
       // and sent to a pairing device. The host sanitizes the name.
       if (req.method === 'POST' && url.pathname === '/api/library') {
@@ -156,6 +198,18 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
           return json(res, 200, { ok: true, libraryName: host.setLibraryName(name) })
         } catch (e) {
           return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      // Autodetect a music server running alongside the host (Jellyfin/Nextcloud/
+      // Subsonic on this Start9 or Umbrel), so the operator does not have to know its
+      // internal address (jellyfin.embassy:8096 etc.). Returns the reachable ones for
+      // the dashboard to pre-fill. Behind the dashboard password like everything here.
+      if (req.method === 'GET' && url.pathname === '/api/source/detect') {
+        try {
+          return json(res, 200, { sources: await detectSources() })
+        } catch (e) {
+          return json(res, 200, { sources: [], error: e.message })
         }
       }
 

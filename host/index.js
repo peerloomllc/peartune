@@ -15,6 +15,7 @@
 const path = require('path')
 const qrcode = require('qrcode-terminal')
 const z32 = require('z32')
+const { writeStartosStats } = require('./startos-stats')
 
 const { PearTuneHost } = require('./server')
 const { startDashboard } = require('./ui/server')
@@ -137,8 +138,17 @@ async function main () {
 
   const stats = await host.adapter.stats().catch(() => ({ source: host.adapter.kind, tracks: 0 }))
   const dashboard = await startDashboard({
-    host, bind: args.host, port: args.port, password: args.password
+    host, bind: args.host, port: args.port, password: args.password, passwordSource: pw.source
   })
+
+  // StartOS Properties: surface the generated dashboard password in the service's
+  // Properties page so a Start9 user is not digging through service logs for it.
+  // Gated on PEARTUNE_STATS (the s9pk entrypoint sets it) so we only write StartOS's
+  // stats.yaml on StartOS. Written once at startup with the CURRENT password; a
+  // later in-dashboard change updates the file the operator already knows, not this.
+  if (process.env.PEARTUNE_STATS && args.password) {
+    writeStartosStats(process.env.PEARTUNE_STATS, args.password, pw.source)
+  }
 
   const where = host.source.url || host.source.root || args.music
 

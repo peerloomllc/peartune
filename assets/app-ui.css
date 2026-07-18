@@ -1941,6 +1941,9 @@ button.wide {
 .wordmark .name .tune {
   color: var(--color-primary);
 }
+h1 .tune {
+  color: var(--color-primary);
+}
 .version {
   text-align: center;
   color: var(--color-text-muted);
