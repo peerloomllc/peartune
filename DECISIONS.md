@@ -2,6 +2,31 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-18 - Desktop tray app (Electron), Windows + Linux built
+Tier: T2 (packaging surface; no wire/host-logic change - it wraps host/ unchanged). Branch
+feature/desktop-app (PR #65). The deferred desktop follow-on from the platform-expansion proposal.
+- FRAMEWORK: Electron + electron-builder, modeled on pearcal-native/electron (the suite standard).
+  KEY SIMPLIFICATION: PearTune's host is plain Node, so the Electron main REQUIRES it directly - no
+  Bare worklet / barekit-shim / bare-bridge that PearCal needs. scripts/prepack.js stages ../host,
+  ../protocol, ../client into desktop/vendor/ (preserving the relative requires) so the subproject is
+  self-contained for electron-builder.
+- DASHBOARD ON LOOPBACK: binds 127.0.0.1 and opens in the app's own window, so there is NO password
+  (passwordSource 'none'). The P2P host runs regardless of that bind, so phones pair/stream normally.
+  Simplest good desktop UX; a LAN-exposed dashboard (0.0.0.0 + generated password) could be a setting
+  later.
+- BUILD STORY: electron-builder cross-builds the Windows NSIS .exe FROM LINUX via wine - works because
+  the P2P native deps (sodium-native, rocksdb-native, hyperdht) ship win32/darwin/linux prebuilds
+  (verified: their prebuilds/ dirs carry win32-x64, darwin-arm64, etc.), so no per-platform compile.
+  Linux is native (AppImage + deb). macOS CANNOT be built from Linux - runs on the mac-mini the other
+  apps use (build:mac), same as PearCircle/PearCal.
+- SIGNING: UNSIGNED for v1 (Tim). Windows -> SmartScreen "unknown publisher"; macOS unsigned would be
+  Gatekeeper-blocked (so the mac build waits on the mac-mini's identity). package.json#build.mac has
+  identity:null, notarize:false as placeholders to wire later.
+- VERIFIED on this box: the app launches, the host reaches host:listening in-process, the dashboard
+  serves 200 on loopback with no auth, autodetect responds. Produced PearTune Setup 0.2.3.exe (129M,
+  PE32 NSIS) + PearTune-0.2.3.AppImage (176M) + .deb. Install-test on real Windows + the mac build are
+  the open items. dist/node_modules/vendor gitignored.
+
 ## 2026-07-18 - Dashboard password change/reset + source autodetect (items 1 & 9), image 0.2.2
 Tier: T2 (host + dashboard; a security-relevant control done conservatively). Branch
 feature/dashboard-password (PR #63). Two Start9-polish items that share a deploy.
