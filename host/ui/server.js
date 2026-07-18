@@ -33,6 +33,7 @@ const PAGE = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8')
 const LOGIN_PAGE = require('./login')
 const { createAuth, requireSafeBind, PASSWORD_FILE } = require('./auth')
 const { browse } = require('../browse')
+const { detectSources } = require('../detect')
 
 function json (res, code, body) {
   const buf = Buffer.from(JSON.stringify(body))
@@ -192,6 +193,18 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
           return json(res, 200, { ok: true, libraryName: host.setLibraryName(name) })
         } catch (e) {
           return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      // Autodetect a music server running alongside the host (Jellyfin/Nextcloud/
+      // Subsonic on this Start9 or Umbrel), so the operator does not have to know its
+      // internal address (jellyfin.embassy:8096 etc.). Returns the reachable ones for
+      // the dashboard to pre-fill. Behind the dashboard password like everything here.
+      if (req.method === 'GET' && url.pathname === '/api/source/detect') {
+        try {
+          return json(res, 200, { sources: await detectSources() })
+        } catch (e) {
+          return json(res, 200, { sources: [], error: e.message })
         }
       }
 

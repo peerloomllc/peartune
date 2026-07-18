@@ -437,8 +437,25 @@ function SourcePanel ({ state, refresh, toast }) {
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(null) // 'test' | 'save' | 'rescan' | null
   const [browse, setBrowse] = useState(null)
+  const [detected, setDetected] = useState(null) // null=not scanned, []=none, [...]=found
   const dirtyRef = useRef(false)
   dirtyRef.current = dirty
+
+  // Look for a Jellyfin/Nextcloud/Subsonic server co-located on this box, once, so
+  // the operator can pre-fill its internal address instead of having to know it
+  // (jellyfin.embassy:8096 and friends). Best-effort: a failure just shows nothing.
+  useEffect(() => {
+    let live = true
+    api('/api/source/detect').then(r => { if (live) setDetected((r && r.sources) || []) })
+    return () => { live = false }
+  }, [])
+
+  // Pre-fill a detected server: switch to its tab and drop in its URL. Sets cfg for
+  // the target kind directly (not via `set`, which closes over the old `kind`).
+  const useDetected = (d) => {
+    setKind(d.kind); setDirty(true); setBrowse(null)
+    setCfg(c => ({ ...c, [d.kind]: { ...(c[d.kind] || {}), url: d.url } }))
+  }
 
   useEffect(() => {
     if (dirtyRef.current) return
@@ -524,6 +541,17 @@ function SourcePanel ({ state, refresh, toast }) {
           <button className={kind === 'subsonic' ? 'on' : ''} onClick={() => pick('subsonic')}>Subsonic</button>
           <button className={kind === 'jellyfin' ? 'on' : ''} onClick={() => pick('jellyfin')}>Jellyfin / Emby</button>
         </div>
+
+        {detected && detected.length > 0 &&
+          <div className='srcdetect'>
+            <span className='subtle'>Found on this server — tap to use its address:</span>
+            <div className='srcdetect-row'>
+              {detected.map((d, i) =>
+                <button key={i} className='detectchip' onClick={() => useDetected(d)} title={d.url}>
+                  {d.server} · {d.name}
+                </button>)}
+            </div>
+          </div>}
 
         <div className='srcfields'>
           {kind === 'folder'
