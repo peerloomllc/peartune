@@ -1,0 +1,99 @@
+{
+  "name": "peartune-desktop",
+  "version": "0.2.3",
+  "description": "PearTune host as a desktop tray app (macOS / Windows / Linux).",
+  "license": "MIT",
+  "private": true,
+  "main": "src/main/index.js",
+  "author": "PeerLoom LLC <peerloomllc@proton.me>",
+  "scripts": {
+    "prepack:vendor": "node scripts/prepack.js",
+    "postinstall": "node scripts/prepack.js",
+    "start": "npm run prepack:vendor && electron .",
+    "start:dev-linux": "npm run prepack:vendor && ELECTRON_DISABLE_SANDBOX=1 electron --disable-gpu --disable-software-rasterizer .",
+    "build:linux": "bash scripts/build-linux.sh",
+    "build:windows": "bash scripts/build-windows.sh",
+    "build:mac": "bash scripts/build-mac.sh"
+  },
+  "//": [
+    "These are the HOST's runtime dependencies (kept in step with host/package.json),",
+    "not the phone app's. The Electron main process requires the host code directly",
+    "(it is plain Node - no Bare worklet, unlike PearCal), so the host's native deps",
+    "live here and get packed into the app. They ship cross-platform prebuilds, which",
+    "is what lets electron-builder cross-build the Windows target from Linux."
+  ],
+  "dependencies": {
+    "b4a": "^1.6.7",
+    "compact-encoding": "^2.16.0",
+    "corestore": "^7.4.4",
+    "hyperbee": "^2.24.2",
+    "hypercore-crypto": "^3.6.1",
+    "hyperdht": "^6.20.3",
+    "music-metadata": "^11.14.0",
+    "protomux": "^3.10.1",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "sodium-universal": "^5.0.1",
+    "z32": "^1.1.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.peartune.desktop",
+    "productName": "PearTune",
+    "copyright": "Copyright © 2026 PeerLoom LLC",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "vendor/**/*",
+      "build/icon.png",
+      "build/tray-icon.png",
+      "package.json",
+      "!**/*.test.js",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples,docs,doc,.bin}"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/sodium-native/**/*",
+      "**/node_modules/*/build/Release/*.node",
+      "**/node_modules/*/prebuilds/**/*"
+    ],
+    "protocols": [
+      { "name": "PearTune", "schemes": ["peartune"] }
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+      "icon": "build/icon.png",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null,
+      "notarize": false
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "PearTune"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "build/icon.png",
+      "category": "AudioVideo",
+      "maintainer": "PeerLoom LLC <peerloomllc@proton.me>",
+      "synopsis": "Self-hosted music, playable anywhere",
+      "desktop": { "Name": "PearTune", "StartupWMClass": "peartune" }
+    }
+  }
+}
