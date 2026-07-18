@@ -901,6 +901,8 @@ button.wide { width: 100%; }
 .wordmark { text-align: center; margin: .5rem 0 1rem; }
 .wordmark .name { font-size: 1.35rem; font-weight: 600; letter-spacing: -.01em; }
 .wordmark .name .tune { color: var(--color-primary); }
+/* Same two-tone wordmark on the onboarding + pairing screens (Pear white, Tune amber). */
+h1 .tune { color: var(--color-primary); }
 .version { text-align: center; color: var(--color-text-muted); font-size: .8rem;
            margin-top: .5rem; }
 .key {

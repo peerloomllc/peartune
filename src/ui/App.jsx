@@ -88,6 +88,12 @@ export default function App () {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
   const [scanning, setScanning] = useState(false)
+  // Names live HERE, not inside Welcome, so a failed scan/pair that unmounts the
+  // form does not wipe what you typed. `pairing` is the in-flight state between
+  // "link accepted" and "host answered" - without it, pairing looked like nothing
+  // was happening (you were dropped back on the onboarding screen mid-handshake).
+  const [pairNames, setPairNames] = useState({ deviceName: '', userName: '' })
+  const [pairing, setPairing] = useState(false)
   const [donate, setDonate] = useState(false)
   const [confirming, setConfirming] = useState(null)
   const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
@@ -831,6 +837,7 @@ export default function App () {
   async function onPaired (link, names = {}) {
     setScanning(false)
     setError(null)
+    setPairing(true)
     try {
       const host = await call('pair', { link, label: names.deviceName, userName: names.userName })
       setState(s => ({ ...s, host, connected: true }))
@@ -839,6 +846,10 @@ export default function App () {
     } catch (e) {
       setError(pairError(e.message))
       haptic('warn')
+    } finally {
+      // Back to the form (with the typed names intact) on failure; the success
+      // path has already swapped in the library, so this just tidies the flag.
+      setPairing(false)
     }
   }
 
@@ -1052,20 +1063,23 @@ export default function App () {
   // Pairing is a wall: with no library there is nothing to navigate, so there is
   // no navbar until there is.
   if (!state.host) {
+    if (pairing) return <Pairing />
     return scanning
       ? (
         <Scanner
-          onScan={(link) => onPaired(link, scanning)}
+          onScan={(link) => onPaired(link, pairNames)}
           onCancel={() => { setError(null); setScanning(false) }}
           error={error}
         />
         )
       : (
         <Welcome
+          names={pairNames}
+          setNames={setPairNames}
           // Clear any stale error when opening the scanner - a failure from a
           // PREVIOUS attempt must not greet you on the fresh one.
-          onScan={(names) => { setError(null); setScanning(names || {}) }}
-          onPaste={onPaired}
+          onScan={() => { setError(null); setScanning(true) }}
+          onPaste={(link) => onPaired(link, pairNames)}
           error={error}
         />
         )
@@ -3925,16 +3939,17 @@ function DonationSheet ({ onClose }) {
 // alternative is what we shipped until now: every device on the operator's
 // dashboard called "Android phone", telling them nothing about which phone to
 // revoke.
-function Welcome ({ onScan, onPaste, error }) {
+function Welcome ({ names, setNames, onScan, onPaste, error }) {
   const [link, setLink] = useState('')
-  const [deviceName, setDeviceName] = useState('')
-  const [userName, setUserName] = useState('')
 
-  const names = { deviceName: deviceName.trim(), userName: userName.trim() }
+  // Your name is REQUIRED: on the host it is the human a device is confirmed as
+  // (per-person revoke needs a person), so an unnamed device is a worse dashboard
+  // for the operator. The device name stays optional - it has a sensible fallback.
+  const named = names.userName.trim().length > 0
 
   return (
     <div className='center'>
-      <h1>PearTune</h1>
+      <h1>Pear<span className='tune'>Tune</span></h1>
       <p className='muted'>
         Your self-hosted music, anywhere. Open the PearTune dashboard on your
         server and show the pairing code.
@@ -3944,16 +3959,16 @@ function Welcome ({ onScan, onPaste, error }) {
       <div className='namebox'>
         <label className='muted sm'>This device</label>
         <input
-          value={deviceName}
-          onChange={e => setDeviceName(e.target.value)}
-          placeholder="Tim's Pixel"
+          value={names.deviceName}
+          onChange={e => setNames({ ...names, deviceName: e.target.value })}
+          placeholder='This phone'
           maxLength={64}
         />
-        <label className='muted sm'>Your name (optional)</label>
+        <label className='muted sm'>Your name</label>
         <input
-          value={userName}
-          onChange={e => setUserName(e.target.value)}
-          placeholder='Tim'
+          value={names.userName}
+          onChange={e => setNames({ ...names, userName: e.target.value })}
+          placeholder='Your name'
           maxLength={64}
         />
         <p className='muted sm hint'>
@@ -3962,12 +3977,25 @@ function Welcome ({ onScan, onPaste, error }) {
         </p>
       </div>
 
-      <button className='primary' onClick={() => onScan(names)}>Scan pairing code</button>
+      <button className='primary' onClick={onScan} disabled={!named}>Scan pairing code</button>
       <details>
         <summary className='muted sm'>Paste a link instead</summary>
         <input value={link} onChange={e => setLink(e.target.value)} placeholder='pear://peartune/pair?…' />
-        <button onClick={() => onPaste(link.trim(), names)} disabled={!link.trim()}>Pair</button>
+        <button onClick={() => onPaste(link.trim())} disabled={!named || !link.trim()}>Pair</button>
       </details>
+    </div>
+  )
+}
+
+// The in-flight pairing screen. Between accepting a link and the host answering
+// there is a real, sometimes multi-second, holepunch; showing the onboarding form
+// there read as "nothing happened". A spinner says the opposite.
+function Pairing () {
+  return (
+    <div className='center'>
+      <h1>Pear<span className='tune'>Tune</span></h1>
+      <CircleNotch size={40} weight='bold' className='spin' />
+      <p className='muted'>Pairing with your library…</p>
     </div>
   )
 }
