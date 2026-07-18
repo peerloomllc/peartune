@@ -17,7 +17,7 @@
   --surface: #201c15; --surface-2: #221e17; --surface-hover: #2a251d;
   --border: #39332a; --border-strong: #4a4237;
   --text: #f3ede1; --muted: #c3b7a3; --subtle: #948a76;
-  --primary: #e6b24e; --primary-strong: #c8933a; --on-primary: #1c1305; --glow: #e6b24e66;
+  --primary: #e6b24e; --primary-strong: #c8933a; --on-primary: #1c1305; --glow: #8bb87766;
   --good: #8bb877; --warn: #f2b544; --bad: #e0705f; --accent: #d17a4a;
   --shadow: 0 1px 2px #00000040, 0 8px 24px #00000030;
   --radius: 14px; --radius-sm: 10px;
@@ -29,7 +29,7 @@
     --surface: #ffffff; --surface-2: #f3ecdf; --surface-hover: #f0e9db;
     --border: #ddd2bf; --border-strong: #ccbfa6;
     --text: #1c1710; --muted: #4d4638; --subtle: #7d7360;
-    --primary: #9c6a12; --primary-strong: #7a5210; --on-primary: #ffffff; --glow: #9c6a1240;
+    --primary: #9c6a12; --primary-strong: #7a5210; --on-primary: #ffffff; --glow: #3f7d3a40;
     --good: #3f7d3a; --warn: #8a5a10; --bad: #c1362b; --accent: #a85631;
     --shadow: 0 1px 2px #1b1a1614, 0 10px 30px #26241f14;
   }
@@ -40,7 +40,7 @@
   --surface: #ffffff; --surface-2: #f3ecdf; --surface-hover: #f0e9db;
   --border: #ddd2bf; --border-strong: #ccbfa6;
   --text: #1c1710; --muted: #4d4638; --subtle: #7d7360;
-  --primary: #9c6a12; --primary-strong: #7a5210; --on-primary: #ffffff; --glow: #9c6a1240;
+  --primary: #9c6a12; --primary-strong: #7a5210; --on-primary: #ffffff; --glow: #3f7d3a40;
   --good: #3f7d3a; --warn: #8a5a10; --bad: #c1362b; --accent: #a85631;
   --shadow: 0 1px 2px #1b1a1614, 0 10px 30px #26241f14;
 }
@@ -69,8 +69,7 @@ a { color: var(--primary-strong); }
 .topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 16px 2px 14px; }
 .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .brand-mark {
-  width: 32px; height: 32px; flex: 0 0 auto; border-radius: 9px; display: grid; place-items: center;
-  background: linear-gradient(150deg, var(--primary), var(--primary-strong)); color: var(--on-primary);
+  width: 32px; height: 32px; flex: 0 0 auto; border-radius: 9px; object-fit: cover;
   box-shadow: 0 1px 6px #0000003a;
 }
 .brand-name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
@@ -167,7 +166,7 @@ a { color: var(--primary-strong); }
 .pend-claim b { color: var(--warn); font-weight: 700; }
 .pend-acts { display: flex; gap: 8px; margin-top: 11px; }
 .pend-acts button { flex: 1 1 0; }
-.live { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: var(--primary); box-shadow: 0 0 0 0 var(--glow); animation: beat 2.4s ease-in-out infinite; }
+.live { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: var(--good); box-shadow: 0 0 0 0 var(--glow); animation: beat 2.4s ease-in-out infinite; }
 .live.off { background: var(--subtle); box-shadow: none; animation: none; }
 .live.rev { background: var(--warn); box-shadow: none; animation: none; }
 @keyframes beat { 0%, 100% { box-shadow: 0 0 0 0 var(--glow); } 50% { box-shadow: 0 0 0 6px transparent; } }

@@ -7,6 +7,7 @@ import {
 import QRCode from 'qrcode'
 import { api, copyText, ago, until, fmtDur, platformLabel, DONATE } from './api'
 import { loadThemePref, applyThemePref, resolveTheme } from './theme'
+import { PEAR_MARK } from './icon'
 
 // The operator control plane, as an app shell adapted from the PearCircle seeder's
 // #153 redesign: a fixed top bar, a scrollable middle (stats + the people-first
@@ -149,7 +150,7 @@ function TopBar ({ state, isDark, onTheme, onOpen }) {
   return (
     <header className='topbar'>
       <div className='brand'>
-        <div className='brand-mark'><MusicNotes size={18} weight='fill' /></div>
+        <img className='brand-mark' src={PEAR_MARK} alt='' aria-hidden='true' />
         <div>
           <div className='brand-name'>Pear<span>Tune</span></div>
           <div className='brand-sub'>{state.libraryName || 'Your music, anywhere'}</div>
