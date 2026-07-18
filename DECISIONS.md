@@ -2,6 +2,39 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-18 - Retro follow-up: a docked "Playlist" window under the classic player
+Tier: T1 (client UI only; no wire/host/persisted-shape change). Branch: feature/retro-playlist-window
+(PR #56). Delivers one of the two deferred PR-#54 retro follow-ups.
+Context: Tim picked the retro-skin follow-up and asked to weigh the options first. The other candidate -
+a REAL audio-reactive spectrum - was rejected for now because the only path (Android's Visualizer on
+ExoPlayer's session) REQUIRES the RECORD_AUDIO permission, which is a credibility hit for a
+privacy-first, self-hosted music app (a "record audio / microphone" prompt to make bars wiggle) plus a
+Play-Store review flag, and it grows the already-fragile Android-only expo-audio Kotlin patch - a lot of
+cost for a cosmetic gain over the existing convincing simulation. The playlist window is the opposite
+profile: pure WebView/React, no permission, no native, no patch. So we built it and DEFERRED the real
+spectrum (revisit only as opt-in / default-OFF behind a permission gate, if ever).
+What it is: a second metal window docked UNDER the classic player (RetroPlayer), faithful to Winamp's
+separate PL editor. Its green-LCD list is the SAME up-next queue the Queue tab shows - now loaded
+whenever the classic player is expanded (the queue-load effect gained a `retroPlaylistOpen = expanded &&
+skin==='classic' && now` condition), not only on the Queue tab. Numbered rows, durations right-aligned,
+the current track on Winamp's selection bar (reusing the retroq green-LCD palette), played rows dimmed.
+Tap a row to jump (reuses the existing jumpTo, threaded RetroPlayer <- Player <- App as items/index/
+onJump). Auto-scrolls the current row into view (scrollIntoView block:'nearest', so only the list moves).
+Deliberate scope: it is a COMPACT JUKEBOX list - tap-to-jump only. Reorder / remove / clear stay on the
+Queue tab, which already has the full retro "Playlist Editor" (drag, edit, trash). Duplicating the editor
+inside the tiny docked window would fight the space and the tap targets.
+Height/layout: the list has its own max-height:40vh + overflow scroll (overscroll-behavior:contain so it
+doesn't scroll the page), which is what actually bounds the player height; the .retroplayer grow keyframe
+end-cap was raised 440px -> 720px so the docked window is not clipped by the open animation. The main
+window stays fixed while the list scrolls.
+Verify: 289 tests + all builds green (UI-only; no test surface for the player face). ON THE TCL (debug
+APK, classic skin, a real 100-track queue via "Play here"): the PLAYLIST window renders under the player
+("100 TRACKS", green LCD rows), the current track sits on the selection bar, TAP-TO-JUMP moved playback
+to the tapped row and dimmed the now-played rows, long titles ellipsize, and the list scrolls internally
+while the player window stays put. Also installed to the Pixel. STILL DEFERRED (retro): the real
+audio-reactive spectrum (permission cost above); the home-screen Winamp WIDGET (separate RemoteViews
+project).
+
 ## 2026-07-18 - App icon redesign: a Winamp-flavoured pear, centred by CROPPING TO THE BBOX
 Tier: T1 (assets + a dashboard-UI recolour/logo; no wire/host-logic/persisted-shape change). Branch:
 feature/app-icon-redesign (PR #55).

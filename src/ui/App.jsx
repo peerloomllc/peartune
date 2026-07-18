@@ -912,10 +912,14 @@ export default function App () {
     }
   }
 
+  // Load the queue whenever the Queue tab is open OR the classic player is expanded (its
+  // docked "Playlist" window shows the same up-next list). Re-fetch on track change / queue
+  // length change, same as the tab - the shell owns the authoritative order.
+  const retroPlaylistOpen = expanded && skin === 'classic' && !!now
   useEffect(() => {
-    if (tab !== 'queue') return
+    if (tab !== 'queue' && !retroPlaylistOpen) return
     loadQueue()
-  }, [tab, now?.trackId, status?.queueLength])
+  }, [tab, now?.trackId, status?.queueLength, retroPlaylistOpen])
 
   function jumpTo (index) {
     haptic('light')
@@ -1209,6 +1213,7 @@ export default function App () {
           <Player
             now={now} status={status} expanded={expanded} skin={skin}
             shuffle={shuffle} repeat={repeat} onQueue={() => goTab('queue')}
+            queueItems={queue?.items || []} queueIndex={queue?.index ?? 0} onJump={jumpTo}
             onShuffle={toggleShuffle} onRepeat={cycleRepeat} onStop={stopPlayback}
             onExpand={() => { haptic('light'); setExpanded(true) }}
             onCollapse={() => { haptic('light'); setExpanded(false) }}
@@ -3088,7 +3093,7 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
 // content padding along with it.
 function Player ({
   now, status, expanded, skin, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
-  onViewArt, onQueue, onStop
+  onViewArt, onQueue, onStop, queueItems, queueIndex, onJump
 }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
@@ -3106,6 +3111,7 @@ function Player ({
           now={now} status={status} shuffle={shuffle} repeat={repeat}
           onShuffle={onShuffle} onRepeat={onRepeat} onStop={onStop} onViewArt={onViewArt}
           onCollapse={onCollapse}
+          items={queueItems} index={queueIndex} onJump={onJump}
         />
       </div>
     )
@@ -3240,7 +3246,7 @@ function Player ({
 // a live spectrum, chunky transport. It reads the SAME now/status and drives the SAME controls
 // as the modern player (call('toggle'|'prev'|'next'|'seekTo'), onShuffle/onRepeat/onStop), so it
 // is purely a re-facing. An original look inspired by the classic player, not anyone's artwork.
-function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onStop, onViewArt, onCollapse }) {
+function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onStop, onViewArt, onCollapse, items = [], index = 0, onJump }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
@@ -3252,6 +3258,11 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
 
   const vizRef = useRef(null)
   const playRef = useRef(playing); playRef.current = playing
+
+  // Keep the current row in view in the docked playlist (block:'nearest' scrolls only the
+  // list, not the whole sheet). Re-runs when the track or the list changes.
+  const curRef = useRef(null)
+  useEffect(() => { curRef.current?.scrollIntoView({ block: 'nearest' }) }, [index, items.length])
 
   // The spectrum. Simulated (playback runs through native ExoPlayer, not Web Audio, so the
   // WebView cannot FFT the real signal without a native Visualizer hook - a later add). Bass-
@@ -3358,6 +3369,32 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
             <button className={'rt-btn rt-tg' + (repeat ? ' lit' : '')} onClick={onRepeat}>{repeat === 1 ? 'REP1' : 'REP'}</button>
           </div>
         </div>
+      </div>
+
+      {/* The docked "Playlist" window, faithful to Winamp's separate PL editor sitting under the
+          main window. Reads the SAME up-next list as the Queue tab (loaded when the classic player
+          expands); tap a row to jump. Reorder/remove stay on the Queue tab - this is a compact
+          jukebox list, not the editor. */}
+      <div className='rt-plwin'>
+        <div className='rt-pltitle'>
+          <span className='rt-wm'>PLAYLIST</span>
+          <span className='rt-plcount'>{items.length} {items.length === 1 ? 'track' : 'tracks'}</span>
+        </div>
+        <ul className='rt-pl'>
+          {items.map((t, i) => (
+            <li
+              key={`${t.id}:${i}`}
+              ref={i === index ? curRef : null}
+              className={i === index ? 'cur' : (i < index ? 'played' : '')}
+              onClick={() => { haptic('light'); onJump && onJump(i) }}
+            >
+              <span className='rt-pln'>{i + 1}</span>
+              <span className='rt-plt'>{t.title}{t.artist ? ' — ' + t.artist : ''}</span>
+              <span className='rt-pld'>{t.durationMs ? fmt(t.durationMs) : ''}</span>
+            </li>
+          ))}
+          {!items.length && <li className='rt-plempty'>nothing queued</li>}
+        </ul>
       </div>
     </div>
   )
