@@ -617,7 +617,7 @@ button.icon.mode.on { color: var(--color-primary); }
 }
 .rt-title {
   height: 28px; display: flex; align-items: center; justify-content: space-between;
-  padding: 0 9px; border-bottom: 1px solid #0d0e10;
+  padding: 0 9px; border-bottom: 1px solid #0d0e10; cursor: pointer;
   background: linear-gradient(180deg, #53575e, #34373c 60%, #2a2c30);
 }
 .rt-tbtns { display: flex; gap: 5px; }

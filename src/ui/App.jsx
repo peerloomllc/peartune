@@ -3311,13 +3311,15 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
   return (
     <div className='retro'>
       <div className='rt-win'>
-        <div className='rt-title'>
+        {/* Tapping anywhere on the titlebar collapses to the shade strip - the whole banner is
+            the grab bar, not just the arrow. The buttons stopPropagation so each does its own thing. */}
+        <div className='rt-title' onClick={() => { haptic('light'); onCollapse() }}>
           <span className='rt-dots'><i /><i /><i /></span>
           <span className='rt-wm'>PEARTUNE</span>
           <span className='rt-tbtns'>
             {/* The titlebar buttons live where Winamp's did: shade (collapse to the strip) + close (stop). */}
-            <button className='rt-x' onClick={() => { haptic('light'); onCollapse() }} aria-label='Collapse player'>▾</button>
-            <button className='rt-x' onClick={() => { haptic('light'); onStop() }} aria-label='Stop'>×</button>
+            <button className='rt-x' onClick={(e) => { e.stopPropagation(); haptic('light'); onCollapse() }} aria-label='Collapse player'>▾</button>
+            <button className='rt-x' onClick={(e) => { e.stopPropagation(); haptic('light'); onStop() }} aria-label='Stop'>×</button>
           </span>
         </div>
 

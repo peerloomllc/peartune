@@ -1214,6 +1214,7 @@ button.icon.mode.on {
   justify-content: space-between;
   padding: 0 9px;
   border-bottom: 1px solid #0d0e10;
+  cursor: pointer;
   background:
     linear-gradient(
       180deg,
