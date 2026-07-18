@@ -88,16 +88,29 @@ common case - so it is called out prominently for the user.
 
 ## Status
 
-**NOT YET HARDWARE-VERIFIED.** The package builds and `start-sdk verify` passes
-locally; it needs a sideload smoke on `returned-feline.local` (StartOS 0.3.5.1,
-where the seeder was validated). Acceptance, per the proposal:
+**HARDWARE-VALIDATED end to end on returned-feline.local** (StartOS 0.3.5.1,
+2026-07-18). The full acceptance passed:
 
-1. Sideload the s9pk; the service runs and the dashboard is reachable (log in
-   with the generated password from the service logs).
-2. Set the source to a Jellyfin/Nextcloud library on the box; albums appear.
-3. Pair the TCL by QR **from cellular** (per the caveat); browse, play, seek.
-4. Revoke it from the dashboard mid-song: next track / browse / art denied within
-   a second (the CLAUDE.md revoke gate).
+1. ✅ Sideloaded (0.2.1 s9pk); service runs; dashboard reachable; the dashboard
+   password is generated on first run and printed to the service logs (the 0.2.0
+   image crash-looped here because it predated generate-and-print - see the
+   0.2.1 bump in DECISIONS).
+2. ✅ Source set to the box's **Jellyfin** at `http://jellyfin.embassy:8096`
+   (the StartOS `<pkg-id>.embassy` internal address) - 2 albums, art, track lists.
+3. ✅ Paired the TCL **from cellular** (`host:pairing-connection` → `pair:granted`
+   → `host:connected`); browsed and streamed a track from Jellyfin over the DHT.
+4. ✅ Revoked mid-song: `killedConnections:1` + `gate:deny device-revoked`; the
+   buffered track played out, the next (un-buffered) track was refused - the
+   CLAUDE.md revoke gate, on Start9.
+
+**Same-WiFi caveat CONFIRMED, not theoretical:** a phone on the same WiFi as the
+box could not complete a pair or hold a connection (the firewall admitted it -
+`gate:allow-for-pairing` - then the connection died before the pair channel
+opened, the classic bridge-NAT symptom). Cellular worked every time. On a phone
+that keeps auto-rejoining the home WiFi this means dropping out whenever it does.
+For a music player, home-WiFi listening is a core case, so this limitation is the
+main open question for a Start9 release (host networking would fix it but 0.3.5.x
+does not expose it; revisit on the 0.4.x SDK).
 
 ## Architectures
 

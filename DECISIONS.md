@@ -39,10 +39,16 @@ image locally mints the password and starts clean (no crash). Lesson: a host-cod
 Umbrel stays on 0.2.0 (it always sets PEARTUNE_PASSWORD, so it never needed generate-and-print; the
 revoke/media code is byte-identical between 0.2.0 and 0.2.1); the compose points at 0.2.1 for fresh
 installs.
-STATUS: still needs the sideload smoke on returned-feline.local (StartOS 0.3.5.1) with the 0.2.1
-s9pk: install, log in with the generated password (from the service logs), set a Jellyfin/Nextcloud
-source, pair the TCL... but the TCL has NO SIM and same-WiFi is the known caveat, so pairing needs a
-phone on CELLULAR (Tim's Pixel), then run the revoke gate. s9pk + docker-images/ are gitignored.
+STATUS: HARDWARE-VALIDATED end to end on returned-feline.local (StartOS 0.3.5.1, 2026-07-18) with
+the 0.2.1 s9pk. Install + generated password (from service logs) + Jellyfin source
+(http://jellyfin.embassy:8096) + pair-from-cellular + browse + stream + revoke gate ALL passed (host
+logs: host:pairing-connection -> pair:granted{label:TCL} -> host:connected; then killedConnections:1
++ gate:deny device-revoked). The SAME-WIFI caveat is CONFIRMED, not theoretical: a phone on the box's
+WiFi got gate:allow-for-pairing then the connection died before the pair channel opened (the bridge-
+NAT symptom); cellular worked every time (tested via the TCL on the Pixel's hotspot, since the TCL has
+no SIM). This is the main open question for a Start9 RELEASE - home-WiFi listening is a core music-
+player case and it does not work; host networking would fix it but 0.3.5.x doesn't expose it (revisit
+on 0.4.x SDK). s9pk + docker-images/ are gitignored. Distribution stays SIDELOAD for v1.
 
 ## 2026-07-18 - Linux host packaging + generate-and-print dashboard password
 Tier: T2 (packaging + a host-code change that does NOT weaken the security model).
