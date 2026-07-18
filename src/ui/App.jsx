@@ -3949,7 +3949,7 @@ function Welcome ({ names, setNames, onScan, onPaste, error }) {
 
   return (
     <div className='center'>
-      <h1>PearTune</h1>
+      <h1>Pear<span className='tune'>Tune</span></h1>
       <p className='muted'>
         Your self-hosted music, anywhere. Open the PearTune dashboard on your
         server and show the pairing code.
@@ -3993,7 +3993,7 @@ function Welcome ({ names, setNames, onScan, onPaste, error }) {
 function Pairing () {
   return (
     <div className='center'>
-      <h1>PearTune</h1>
+      <h1>Pear<span className='tune'>Tune</span></h1>
       <CircleNotch size={40} weight='bold' className='spin' />
       <p className='muted'>Pairing with your library…</p>
     </div>
