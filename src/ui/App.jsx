@@ -1202,7 +1202,7 @@ export default function App () {
     <>
       {screen}
 
-      <div className={'dock' + (now && expanded && skin === 'classic' ? ' dock-retro' : '')} ref={dockRef}>
+      <div className={'dock' + (now && skin === 'classic' ? ' dock-retro' : '')} ref={dockRef}>
         {ident?.expiresAt && state.connected && <GuestBanner expiresAt={ident.expiresAt} />}
         {now && (
           <Player

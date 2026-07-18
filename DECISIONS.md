@@ -39,8 +39,12 @@ in the amber dock (amber caret strip above, amber padding around) - a "window in
 metal chrome is full-bleed and square-cornered, the collapse (▾) + close (×) sit in the titlebar
 where Winamp's minimize/close were, and the dock goes metal-dark under it (.dock-retro, toggled
 from App - not :has(), for older-WebView safety) so nothing amber peeks at the seams. Reads as a
-deliberate retro takeover, not a contained widget. Collapsing drops the class and the dock is amber
-again under the shade strip.
+deliberate retro takeover, not a contained widget. The SHADE strip got the same full-bleed
+treatment (Tim asked): it is edge-to-edge and square too, and .dock-retro applies whenever the
+classic player is showing (mini OR expanded), so the dock is metal-dark under the strip as well -
+not just the full window. (The strip's padding override needs .player.mini.retromini specificity,
+since the base .player.mini padding would otherwise win.) Switching back to Modern / stopping
+restores the amber dock.
 Deferred follow-ups (not built): the real Visualizer spectrum; a playlist window (the queue is not
 currently plumbed into the player); the home-screen Winamp WIDGET (its own bitmap-sprite +
 media-session project, separate surface).
