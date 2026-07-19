@@ -20,6 +20,19 @@ REFINEMENT (during build): audio/art BLOB caches stay SHARED at the root, NOT na
 already libraryId-scoped so nothing collides and bytes de-dupe; crucially, re-pointing the audio cache on
 switch would stall an in-flight track and break the very "keep the buffered track" behavior we chose.
 removeHost still reclaims a host's downloads (deletes its pinned audio by id, which is host-unique).
+ON-DEVICE VALIDATION + FIXES (TCL + Umbrel + Mac-mini folder host, 2026-07-19): pair a 2nd host, per-host
+browse, and round-trip switching all work. Two bugs fixed on hardware (commit e045941): (a) stale active
+indicator - derive "active" from state.host.hostKey + optimistic UI on tap, don't depend on the host:switched
+event; (b) a switch aborting on a transient connect failure - switchHost swallows a failed first dial and
+emits host:switched anyway (on-demand reconnect recovers).
+SHARED DHT NODE (commit de3ddcf): the transient "host refused" on switch was NOT a host duplicate-refusal
+(the host admits duplicates); it was each reconnect building a fresh HyperDHT node and dialing off a COLD,
+un-bootstrapped node (first dial races its own bootstrap, fails fast; retry off the warm node succeeds). Fix:
+ONE shared HyperDHT node for the worklet, passed to every PearTuneClient (close() leaves it alone; destroyed
+only on forget). Eliminates the transient and speeds up EVERY reconnect. Exposed + fixed a latent connectTo
+race (switchHost's direct connect vs ensureConnected's parallel single-flight both racing the `client` global)
+by pinning the dialed client to a local ref and bailing if superseded. Verified: 4 rapid switches, zero
+refuse / zero race errors.
 OPEN (on-device, TCL): the "buffered track drains then auto-advances into the new library's queue while a
 player is LIVE" continuity - a new ExoPlayer queue-swap flow to validate on hardware. Today a playing track
 is left untouched (never stops) and the new queue loads when nothing is playing. Everything else is done.
