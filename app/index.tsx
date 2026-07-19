@@ -19,6 +19,7 @@ import * as Linking from 'expo-linking'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
 import * as Network from 'expo-network'
+import * as ImagePicker from 'expo-image-picker'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Worklet } from 'react-native-bare-kit'
 // expo-audio, not expo-av: av is deprecated as of SDK 54.
@@ -995,6 +996,21 @@ export default function App () {
           else await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
         } catch {}
         return reply({ result: { ok: true } })
+      }
+      // Pick a profile photo from the gallery (permissionless on modern Android via
+      // the system photo picker), square-cropped and small. Returns a JPEG data URL;
+      // the WebView resizes it further before sending. Same shape as the sibling apps.
+      if (msg.method === 'avatar:pickPhoto') {
+        const res = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          aspect: [1, 1],
+          quality: 0.85,
+          base64: true
+        })
+        const a = res.canceled ? null : res.assets?.[0]
+        if (!a?.base64) return reply({ result: { canceled: true } })
+        return reply({ result: { dataUrl: `data:${a.mimeType || 'image/jpeg'};base64,${a.base64}` } })
       }
     } catch (err: any) {
       return reply({ error: err?.message ?? String(err) })

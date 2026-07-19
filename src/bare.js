@@ -70,7 +70,7 @@ const LEASE_GRACE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 const PINS_FILE = path.join(DATA_DIR, 'pins.json')
 
 const DEFAULT_SETTINGS = {
-  theme: 'system', deviceName: '', userName: '', streamQuality: 'auto',
+  theme: 'system', deviceName: '', userName: '', avatar: '', streamQuality: 'auto',
   cacheCap: DEFAULT_CACHE_CAP, downloadCellular: false
 }
 
@@ -694,11 +694,13 @@ const methods = {
   },
 
   // Set (or clear) this device's avatar - `avatar` is base64 JPEG bytes (the UI
-  // resizes to ~200px first), or empty/null to remove it. Shows on the host dashboard.
+  // resizes to ~200px first), or empty to remove it. Saved locally so the profile
+  // header shows it even offline, and pushed to the host (shown on its dashboard).
   async setAvatar ({ avatar }) {
-    await ensureConnected()
-    await client.setAvatar({ avatar: avatar || '' })
-    return { ok: true }
+    const a = avatar || ''
+    saveSettings({ avatar: a })
+    try { await ensureConnected(); await client.setAvatar({ avatar: a }) } catch {}
+    return { ok: true, avatar: a }
   },
 
   async setSettings (patch) {
