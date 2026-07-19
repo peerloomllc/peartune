@@ -55,8 +55,17 @@ test("THE OPERATOR'S CHOICE BEATS THE CONTAINER'S", async (t) => {
 
 test('a saved source survives a restart', async (t) => {
   const d = await dir(t)
-  store(d).save({ kind: 'folder', root: '/mnt/music' })
-  assert.equal(store(d).active().root, '/mnt/music')
+  store(d).save({ kind: 'folder', root: '/mnt/music' }) // legacy single root accepted
+  assert.deepEqual(store(d).active().roots, ['/mnt/music']) // normalised to a roots list
+})
+
+test('a folder source can hold MULTIPLE roots, and they survive a restart', async (t) => {
+  const d = await dir(t)
+  store(d).save({ kind: 'folder', roots: ['/mnt/music', '/mnt/audiobooks'] })
+  assert.deepEqual(store(d).active().roots, ['/mnt/music', '/mnt/audiobooks'])
+  // Blanks/dupes are cleaned on save.
+  store(d).save({ kind: 'folder', roots: ['/a', '', '/a', '/b'] })
+  assert.deepEqual(store(d).active().roots, ['/a', '/b'])
 })
 
 // THE BUG THIS FEATURE EXISTS FOR.
@@ -160,7 +169,7 @@ test('migrate() handles the shapes it will actually meet', () => {
   const v1 = migrate({ kind: 'folder', root: '/music' })
   assert.equal(v1.version, 2)
   assert.equal(v1.active, 'folder')
-  assert.equal(v1.sources.folder.root, '/music')
+  assert.deepEqual(v1.sources.folder.roots, ['/music']) // legacy single root -> roots list
 
   // Already v2.
   const v2 = migrate({ version: 2, active: 'subsonic', sources: { subsonic: { url: 'u', username: 'n', password: 'p' } } })

@@ -60,7 +60,9 @@ const FIELDS = {
   // username/password (Nextcloud/ownCloud Music, Ampache 7). A secret, like password.
   subsonic: ['url', 'username', 'password', 'apiKey'],
   jellyfin: ['url', 'username', 'password'],
-  folder: ['root']
+  // A folder source can point at SEVERAL directories now. `roots` is the canonical
+  // field; the legacy single `root` is migrated into it (see pick()).
+  folder: ['roots']
 }
 
 // The secrets. Never sent to the browser, and preserved when the browser sends the
@@ -72,6 +74,16 @@ function pathOf (dataDir) {
 }
 
 function pick (kind, cfg) {
+  // Folder is special: normalise the legacy single `root` and the new `roots` list
+  // into one clean `roots` array, trimmed and de-blanked. This is where a v1/v2
+  // `{ root: '/music' }` on disk becomes `{ roots: ['/music'] }` on read.
+  if (kind === 'folder') {
+    const list = Array.isArray(cfg.roots) ? cfg.roots : (cfg.root != null ? [cfg.root] : [])
+    // Trim, drop blanks, and de-dupe exact repeats. (The adapter additionally drops
+    // roots NESTED inside another at scan time - that needs path logic and lives there.)
+    const roots = [...new Set(list.map(r => String(r ?? '').trim()).filter(Boolean))]
+    return roots.length ? { roots } : {}
+  }
   const out = {}
   for (const f of FIELDS[kind] || []) {
     if (cfg[f] !== undefined && cfg[f] !== null) out[f] = cfg[f]
@@ -147,7 +159,7 @@ class SourceStore {
       return { kind: 'subsonic', ...pick('subsonic', this.env.subsonic), from: 'env' }
     }
 
-    return { kind: 'folder', root: this.musicDir, from: 'default' }
+    return { kind: 'folder', roots: [this.musicDir], from: 'default' }
   }
 
   // What the dashboard should PREFILL the form for this kind with, whether or not it
@@ -155,7 +167,7 @@ class SourceStore {
   configFor (kind) {
     if (this.data.sources[kind]) return { ...this.data.sources[kind] }
     if (kind === 'subsonic' && this.env?.subsonic?.url) return pick('subsonic', this.env.subsonic)
-    if (kind === 'folder') return { root: this.musicDir }
+    if (kind === 'folder') return { roots: [this.musicDir] }
     return {}
   }
 
@@ -197,6 +209,7 @@ class SourceStore {
       const pub = {}
       for (const f of FIELDS[kind]) {
         if (SECRETS.includes(f)) pub[`has${f[0].toUpperCase()}${f.slice(1)}`] = !!cfg[f]
+        else if (Array.isArray(cfg[f])) pub[f] = cfg[f] // folder roots - an array, not a string
         else pub[f] = cfg[f] || ''
       }
       kinds[kind] = pub
@@ -226,7 +239,11 @@ function buildAdapter (cfg, { libraryId, musicDir, log }) {
     })
   }
 
-  return new FolderAdapter({ root: cfg.root || musicDir, libraryId, log })
+  return new FolderAdapter({
+    roots: (cfg.roots && cfg.roots.length) ? cfg.roots : [cfg.root || musicDir],
+    libraryId,
+    log
+  })
 }
 
 module.exports = { SourceStore, buildAdapter, KINDS, migrate }

@@ -2,6 +2,27 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-18 - Folder source: multiple roots
+Tier: T2 (host adapter + source config + dashboard). Branch feature/folder-multi-root. The FOLDER
+source can point at several directories now (e.g. /music AND /audiobooks). Simpler than cross-KIND
+combinations (still deferred - trackId is source-scoped): a folder is a folder, one adapter, one id
+scheme.
+THE LOAD-BEARING DECISION is trackId stability. Ids are hashed from the file's path relative to its
+root. With one root that was the bare relPath; with several, two files could share a relPath and
+collide. Fix: the FIRST (primary) root keeps BARE relPaths - so an existing single-/music library
+does NOT re-key (orphaning favourites/resume/counts) when a second folder is added - and every
+additional root prefixes a short, stable, PATH-DERIVED tag (sha256(root)[:12]) onto its relPaths.
+Path-derived (not index-derived) so a root keeps its ids as others are added/removed around it; the
+one caveat is that removing/replacing the PRIMARY re-keys the additional roots (documented; rare).
+Also: album keys are root-scoped for the directory-based cases (an "Album X" folder in two roots is
+two albums), but the albumartist-tag case stays root-agnostic (the same album split across two roots
+merges); covers resolve against each album's own root (absDir); nested roots are dropped at scan
+(walked once) and exact dupes/blanks cleaned at save; a missing root is skipped-with-a-log on scan
+(an unplugged drive does not blank the library) but named on Test. source.json folder config moved
+`root` -> `roots` (migrated on read). Dashboard: the folder panel is now an add/remove list of
+folders. 7 new tests (folder-multi + source), verified end to end (set 2 roots via the API -> both
+scanned + merged).
+
 ## 2026-07-18 - Desktop tray app (Electron), Windows + Linux built
 Tier: T2 (packaging surface; no wire/host-logic change - it wraps host/ unchanged). Branch
 feature/desktop-app (PR #65). The deferred desktop follow-on from the platform-expansion proposal.

@@ -22,6 +22,7 @@
 const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
+const crypto = require('crypto')
 const { Readable } = require('stream')
 const { spawn } = require('child_process')
 const { trackId, groupId } = require('../../protocol/ids')
@@ -98,9 +99,43 @@ const clean = (s) => {
 const lower = (s) => String(s || '').toLowerCase()
 const cmp = (a, b) => String(a || '').localeCompare(String(b || ''), undefined, { sensitivity: 'base', numeric: true })
 
+// A folder source can point at SEVERAL directories (e.g. /music AND /audiobooks).
+// Normalise the list: resolve, drop exact duplicates, and drop any root nested
+// inside another kept root - otherwise the nested tree is walked twice and the same
+// file lands under two ids. INPUT ORDER IS PRESERVED, on purpose: the first root is
+// the "primary" and keeps bare, un-prefixed ids (see rootTags), so an existing
+// single-/music install does not re-key its whole library when a second folder is
+// added later.
+function normalizeRoots (roots) {
+  const seen = new Set()
+  const kept = []
+  for (const raw of roots) {
+    if (raw == null || raw === '') continue
+    const r = path.resolve(String(raw))
+    if (seen.has(r)) continue
+    seen.add(r)
+    kept.push(r)
+  }
+  return kept.filter(r => !kept.some(other => other !== r && r.startsWith(other + path.sep)))
+}
+
 class FolderAdapter {
-  constructor ({ root, libraryId, log = () => {} }) {
-    this.root = path.resolve(root || '/music')
+  constructor ({ roots, root, libraryId, log = () => {} }) {
+    // Accept either `roots` (a list) or the legacy single `root`. Always at least one.
+    const list = (roots && roots.length ? roots : [root || '/music'])
+    this.roots = normalizeRoots(list)
+    if (!this.roots.length) this.roots = [path.resolve('/music')]
+    // The primary root (index 0) gets NO tag, so its files keep the exact trackIds a
+    // single-root library had (relPath alone). Additional roots get a short, stable,
+    // path-derived tag prefixed onto their relPaths so ids stay unique across roots
+    // even when two roots share a directory layout. Path-derived (not index-derived)
+    // so a root keeps its ids when others are added/removed around it - as long as it
+    // stays the primary, index 0 keeps the empty tag.
+    this.rootTags = this.roots.map((r, i) =>
+      i === 0 ? '' : crypto.createHash('sha256').update(r).digest('hex').slice(0, 12))
+    // Kept for the many call sites + tests that still speak of a single root; it is
+    // just the primary now.
+    this.root = this.roots[0]
     this.libraryId = libraryId
     this.kind = 'folder'
     this.log = log
@@ -135,18 +170,18 @@ class FolderAdapter {
   // mistake, because the operator is looking at their host's filesystem - looked
   // exactly like an empty library. It cost a real evening. The dashboard's Test
   // button now gets a sentence it can show a human.
-  async _checkRoot () {
+  async _checkRoot (root) {
     let st
     try {
-      st = await fsp.stat(this.root)
+      st = await fsp.stat(root)
     } catch {
       const visible = await visibleMounts()
       throw new Error(
-        `${this.root} does not exist inside the PearTune container. Only folders MOUNTED into the container are visible` +
+        `${root} does not exist inside the PearTune container. Only folders MOUNTED into the container are visible` +
         (visible.length ? `. I can see: ${visible.join(', ')}` : '') + '.'
       )
     }
-    if (!st.isDirectory()) throw new Error(`${this.root} is a file, not a folder.`)
+    if (!st.isDirectory()) throw new Error(`${root} is a file, not a folder.`)
   }
 
   async scan () {
@@ -159,11 +194,27 @@ class FolderAdapter {
   }
 
   async _scan () {
-    await this._checkRoot()
-
+    // Resilient across roots: a single missing/unreadable root (an unplugged drive)
+    // must not take the whole library down, so we skip it with a log rather than
+    // throwing. If NONE of the roots are usable, that IS an error - _checkRoot on the
+    // first gives the operator a sentence to act on.
     const files = []
-    await this._walk(this.root, files)
-    this.log('folder:walked', { files: files.length })
+    let usable = 0
+    for (let i = 0; i < this.roots.length; i++) {
+      const root = this.roots[i]
+      try {
+        await this._checkRoot(root)
+      } catch (e) {
+        this.log('folder:root-skipped', { root, err: e.message })
+        continue
+      }
+      usable++
+      const found = []
+      await this._walk(root, found)
+      for (const abs of found) files.push({ abs, root, tag: this.rootTags[i] })
+    }
+    if (!usable) await this._checkRoot(this.roots[0]) // throws with the helpful message
+    this.log('folder:walked', { files: files.length, roots: this.roots.length })
 
     const parsed = await this._parseAll(files)
     this._build(parsed)
@@ -182,10 +233,16 @@ class FolderAdapter {
   // button. Counts the audio files; does NOT read their tags. Testing a folder
   // should not parse ten thousand files to tell you the folder is there.
   async probe () {
-    await this._checkRoot() // throws, with a sentence a human can act on
-    const files = []
-    await this._walk(this.root, files)
-    return { tracks: files.length }
+    // Test is strict, unlike scan: every configured folder is checked, so a bad one
+    // is named while the operator is looking, not silently skipped.
+    let count = 0
+    for (const root of this.roots) {
+      await this._checkRoot(root) // throws, with a sentence a human can act on
+      const found = []
+      await this._walk(root, found)
+      count += found.length
+    }
+    return { tracks: count }
   }
 
   async _walk (dir, out) {
@@ -233,13 +290,18 @@ class FolderAdapter {
     return out
   }
 
-  async _parseOne (abs) {
+  async _parseOne (file) {
+    const { abs, root, tag } = file
     const stat = await fsp.stat(abs).catch(() => null)
     if (!stat) return null
 
-    const relPath = path.relative(this.root, abs)
+    const relPath = path.relative(root, abs)
+    // The sourceKey is what trackId hashes: the primary root's files use relPath
+    // alone (unchanged from single-root), additional roots prefix a stable per-root
+    // tag so two files with the same relPath under different roots do not collide.
+    const sourceKey = tag ? `${tag}/${relPath}` : relPath
     const ext = path.extname(abs)
-    const base = { relPath, absPath: abs, size: stat.size, suffix: ext.slice(1).toLowerCase() }
+    const base = { relPath, sourceKey, root, absPath: abs, size: stat.size, suffix: ext.slice(1).toLowerCase() }
 
     let md = null
     try {
@@ -304,9 +366,13 @@ class FolderAdapter {
   //    folder named after the album roughly always.
   _albumKeyOf (t) {
     const dir = path.dirname(t.relPath)
+    // Case 1 (albumartist) stays root-agnostic: the SAME album split across two of
+    // the configured folders should merge into one. The directory-based cases include
+    // the root, so an "Album X" folder in /music and another in /audiobooks are two
+    // albums, not one merged mess.
     if (t.album && t.albumArtist) return `t|${lower(t.albumArtist)}|${lower(t.album)}`
-    if (t.album) return `d|${dir}|${lower(t.album)}`
-    return `f|${dir}`
+    if (t.album) return `d|${t.root}|${dir}|${lower(t.album)}`
+    return `f|${t.root}|${dir}`
   }
 
   _build (rows) {
@@ -316,11 +382,11 @@ class FolderAdapter {
     this._sortCache = new Map() // the library changed; old sorted permutations are stale
 
     // Pass 1: bucket the files into albums.
-    const buckets = new Map() // albumKey -> { rows, dir }
+    const buckets = new Map() // albumKey -> { rows, dir, root }
     for (const r of rows) {
       const key = this._albumKeyOf(r)
       let b = buckets.get(key)
-      if (!b) buckets.set(key, (b = { key, rows: [], dir: path.dirname(r.relPath) }))
+      if (!b) buckets.set(key, (b = { key, rows: [], dir: path.dirname(r.relPath), root: r.root }))
       b.rows.push(r)
     }
 
@@ -354,6 +420,9 @@ class FolderAdapter {
         coverId: id, // an album IS the unit of artwork here; art() resolves it lazily
         songCount: b.rows.length,
         dir: b.dir,
+        // The ABSOLUTE cover directory, resolved against this album's own root - a
+        // relative dir alone is ambiguous once there is more than one root.
+        absDir: path.resolve(b.root, b.dir),
         trackIds: []
       }
       this.albums.set(id, album)
@@ -372,11 +441,12 @@ class FolderAdapter {
         (x, y) => (x.disc ?? 1) - (y.disc ?? 1) || (x.track ?? 9999) - (y.track ?? 9999) || cmp(x.title, y.title)
       )
       for (const r of sorted) {
-        // The relative path is the sourceKey, so an id is stable across rescans and
-        // across host restarts as long as the file does not move. NOT the tags: a
-        // library whose track ids changed when someone fixed a typo in a title
-        // would orphan that track's play count and resume position.
-        const tid = trackId(this.libraryId, this.kind, r.relPath)
+        // sourceKey (the relPath, plus a per-root tag for non-primary roots) is what
+        // makes an id stable across rescans and restarts as long as the file does not
+        // move, and unique across roots. NOT the tags: a library whose track ids
+        // changed when someone fixed a typo in a title would orphan that track's play
+        // count and resume position.
+        const tid = trackId(this.libraryId, this.kind, r.sourceKey)
         const track = {
           id: tid,
           title: r.title,
@@ -438,7 +508,8 @@ class FolderAdapter {
     return {
       source: this.kind,
       sourceName: 'Folder',
-      root: this.root,
+      root: this.root, // the primary, for anything still expecting a single root
+      roots: this.roots,
       tracks: this.tracks.size,
       albums: this.albums.size,
       artists: this.artists.size,
@@ -597,8 +668,8 @@ class FolderAdapter {
     const album = this.albums.get(coverId)
     if (!album) return null
 
-    // 1. An image file next to the music.
-    const file = await this._coverFile(path.resolve(this.root, album.dir))
+    // 1. An image file next to the music (resolved against this album's own root).
+    const file = await this._coverFile(album.absDir || path.resolve(this.root, album.dir))
     if (file) {
       const buf = await fsp.readFile(file).catch(() => null)
       if (buf) return buf
@@ -731,4 +802,4 @@ async function visibleMounts () {
   }
 }
 
-module.exports = { FolderAdapter, AUDIO_EXT, visibleMounts }
+module.exports = { FolderAdapter, AUDIO_EXT, visibleMounts, normalizeRoots }
