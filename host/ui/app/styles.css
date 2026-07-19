@@ -233,6 +233,9 @@ label { display: block; margin: 10px 0 4px; color: var(--subtle); font-size: 12p
 .srcdetect-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .detectchip { border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: 999px; padding: 5px 11px; font-size: 12px; font-weight: 500; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detectchip:hover { border-color: var(--primary); color: var(--primary); }
+.rootlist { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.rootrow { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 6px 6px 11px; }
+.rootpath { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .srcfields { min-height: 278px; }
 .srcactions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
 .srcactions button { width: 100%; }

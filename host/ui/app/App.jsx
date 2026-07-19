@@ -437,6 +437,7 @@ function SourcePanel ({ state, refresh, toast }) {
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(null) // 'test' | 'save' | 'rescan' | null
   const [browse, setBrowse] = useState(null)
+  const [newRoot, setNewRoot] = useState('') // the "add a folder" input
   const [detected, setDetected] = useState(null) // null=not scanned, []=none, [...]=found
   const dirtyRef = useRef(false)
   dirtyRef.current = dirty
@@ -461,10 +462,11 @@ function SourcePanel ({ state, refresh, toast }) {
     if (dirtyRef.current) return
     const kinds = (state.source && state.source.kinds) || {}
     setKind((state.source && state.source.active) || 'folder')
+    const roots = (kinds.folder && kinds.folder.roots && kinds.folder.roots.length) ? kinds.folder.roots : ['/music']
     setCfg({
       subsonic: { url: '', username: '', ...(kinds.subsonic || {}) },
       jellyfin: { url: '', username: '', ...(kinds.jellyfin || {}) },
-      folder: { root: '/music', ...(kinds.folder || {}) }
+      folder: { roots }
     })
   }, [state.source])
 
@@ -482,9 +484,44 @@ function SourcePanel ({ state, refresh, toast }) {
     return parts.join(' · ')
   }
 
+  // A folder source is a LIST of directories now. Add/remove operate on that list;
+  // duplicates are ignored so tapping "Choose this folder" on one you already have
+  // is a no-op rather than a double entry.
+  const roots = () => (cfg.folder && cfg.folder.roots) || []
+  const addRoot = (p) => {
+    const clean = String(p || '').trim()
+    if (!clean) return
+    const existing = roots()
+    if (existing.includes(clean)) return // exact duplicate: silently ignored
+    // Overlapping folders are either redundant (a subfolder of one you already have)
+    // or would supersede others (a parent of ones you have - which the scan drops,
+    // and if that drops your PRIMARY folder every track id re-keys). Block both with
+    // a reason rather than silently doing something surprising. Container paths are posix.
+    const norm = s => s.replace(/\/+$/, '')
+    const inside = (a, b) => norm(a) === norm(b) || norm(a).startsWith(norm(b) + '/')
+    const parent = existing.find(r => inside(clean, r))
+    if (parent) {
+      notify('Already covered', <>That folder is inside <span className='hl'>{parent}</span>, which you already have — its music is already included.</>)
+      return
+    }
+    const children = existing.filter(r => inside(r, clean))
+    if (children.length) {
+      const hitsPrimary = children.includes(existing[0])
+      notify('Folders overlap', <>
+        <span className='hl'>{clean}</span> contains {children.length === 1 ? 'a folder' : 'folders'} you already have ({children.join(', ')}). Remove {children.length === 1 ? 'it' : 'them'} first if you want to use the parent instead.
+        {hitsPrimary ? <> That would also re-key your library, since it replaces your primary folder.</> : null}
+      </>)
+      return
+    }
+    setCfg(c => ({ ...c, folder: { roots: [...existing, clean] } })); touch()
+  }
+  const removeRoot = (p) => {
+    setCfg(c => ({ ...c, folder: { roots: roots().filter(r => r !== p) } })); touch()
+  }
+
   const form = () => {
     const c = cfg[kind] || {}
-    if (kind === 'folder') return { kind: 'folder', root: (c.root || '').trim() }
+    if (kind === 'folder') return { kind: 'folder', roots: roots().map(r => r.trim()).filter(Boolean) }
     const out = { kind, url: (c.url || '').trim(), username: (c.username || '').trim() }
     if (c.password) out.password = c.password
     if (kind === 'subsonic' && c.apiKey) out.apiKey = c.apiKey
@@ -520,7 +557,7 @@ function SourcePanel ({ state, refresh, toast }) {
     notify('Rescan complete', <>The library was rescanned and now contains <span className='hl'>{summary(r)}</span>.</>)
   }
   const openBrowse = async path => {
-    const start = path || (cfg.folder && cfg.folder.root) || '/'
+    const start = path || roots()[roots().length - 1] || '/'
     // Keep the path in the loading state so the modal's header does not flicker
     // or resize while the next listing loads.
     setBrowse(b => ({ loading: true, path: start, dirs: (b && b.dirs) || [], parent: b && b.parent }))
@@ -556,10 +593,20 @@ function SourcePanel ({ state, refresh, toast }) {
         <div className='srcfields'>
           {kind === 'folder'
             ? <>
-                <label>Folder <span className='subtle'>— a path inside the PearTune container</span></label>
+                <label>Folders <span className='subtle'>— paths inside the PearTune container</span></label>
+                <div className='rootlist'>
+                  {roots().length
+                    ? roots().map((r, i) =>
+                        <div className='rootrow' key={r}>
+                          <span className='rootpath' title={r}>{r}{i === 0 && roots().length > 1 && <span className='subtle'> · primary</span>}</span>
+                          <button className='iconbtn' aria-label={'Remove ' + r} onClick={() => removeRoot(r)}><X size={13} /></button>
+                        </div>)
+                    : <div className='rootrow'><span className='subtle'>No folders yet — add one below.</span></div>}
+                </div>
                 <div className='pick'>
-                  <input value={c.root || ''} placeholder='/music' onChange={e => set('root', e.target.value)} />
-                  <button className='ghost' onClick={() => openBrowse()}>Browse…</button>
+                  <input value={newRoot} placeholder='/music' onChange={e => setNewRoot(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && newRoot.trim()) { addRoot(newRoot); setNewRoot('') } }} />
+                  <button className='ghost' onClick={() => { if (newRoot.trim()) { addRoot(newRoot); setNewRoot('') } else openBrowse() }}>{newRoot.trim() ? 'Add' : 'Browse…'}</button>
                 </div>
               </>
             : <>
@@ -586,7 +633,7 @@ function SourcePanel ({ state, refresh, toast }) {
       </div>
       {browse &&
         <Modal title='Choose a Folder' onClose={() => setBrowse(null)}>
-          <FolderBrowser browse={browse} onOpen={openBrowse} onUse={p => { set('root', p); setBrowse(null) }} />
+          <FolderBrowser browse={browse} onOpen={openBrowse} onUse={p => { addRoot(p); setBrowse(null) }} />
         </Modal>}
     </div>
   )
