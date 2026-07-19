@@ -75,6 +75,19 @@ export default function App () {
   const posRef = useRef(0) // last known position (ms), from the status listener
   const lastPersist = useRef(0) // throttle disk writes from the frequent status listener
   const wasPlaying = useRef(false) // playing-edge detection, to claim the session-handoff token
+  // Sleep timer. It lives HERE, in the native shell, not in the WebView: the whole
+  // point is the screen is off while you drift off, and a WebView JS timer gets
+  // throttled or frozen when the app is backgrounded. The foreground-service audio
+  // keeps this process (and its setTimeout) alive. sleepDeadline is epoch-ms for the
+  // UI's countdown; sleepEndOfTrack arms the "stop when this song finishes" mode.
+  const sleepTimeout = useRef<any>(null)
+  const sleepFade = useRef<any>(null)
+  const sleepDeadline = useRef(0)
+  const sleepMinutes = useRef(0) // the chosen duration, so the UI can highlight it
+  const sleepEndOfTrack = useRef(false)
+  // Set by next/prev/playIndex so the status listener can tell a user skip from a
+  // track ending on its own - only the latter should trip end-of-track sleep.
+  const manualNav = useRef(false)
   const netSub = useRef<{ remove: () => void } | null>(null)
   // Are we currently disconnected from the host? On a drop we do NOT tear the
   // player down (a network switch and a revoke look identical here) - we keep the
@@ -154,9 +167,23 @@ export default function App () {
         // next track. Trust its index rather than counting didJustFinish events.
         const i = p.currentQueueIndex ?? indexRef.current
         if (i !== indexRef.current) {
+          const natural = !manualNav.current
+          manualNav.current = false
           indexRef.current = i
           announce(i)
           persistQueue(true) // a track advanced - save the new index right away
+
+          // Sleep timer, end-of-track mode: the previous song finished ON ITS OWN
+          // (not a user skip), so pause at the top of this next track - the natural
+          // "stop after the song ends". The index is the trustworthy signal here
+          // (see above); didJustFinish is only reliable at the very end of the queue,
+          // where stop() below ends things and clears the timer anyway.
+          if (sleepEndOfTrack.current && natural) {
+            sleepEndOfTrack.current = false
+            try { p.pause() } catch {}
+            persistQueue(true)
+            pushSleep(true)
+          }
         }
 
         // STARVATION. A drop is not a stop, so we kept the buffer playing - but a
@@ -402,6 +429,74 @@ export default function App () {
     persistQueue(true)
   }
 
+  // --- sleep timer ---------------------------------------------------------
+
+  // Cancel any armed timer / mid-flight fade and restore full volume (a fade may have
+  // left it partway down). Leaves playback exactly as it is.
+  function clearSleep () {
+    if (sleepTimeout.current) { clearTimeout(sleepTimeout.current); sleepTimeout.current = null }
+    if (sleepFade.current) { clearInterval(sleepFade.current); sleepFade.current = null }
+    sleepDeadline.current = 0
+    sleepMinutes.current = 0
+    sleepEndOfTrack.current = false
+    try { if (player.current) player.current.volume = 1 } catch {}
+  }
+
+  // Push the current sleep state so the UI can light the moon and count down. `fired`
+  // marks the transition where the timer just stopped playback (so the UI can toast).
+  function pushSleep (fired = false) {
+    toWeb('sleep:state', {
+      active: !!sleepTimeout.current || sleepEndOfTrack.current,
+      endOfTrack: sleepEndOfTrack.current,
+      deadline: sleepDeadline.current || null,
+      minutes: sleepMinutes.current || null,
+      fired
+    })
+  }
+
+  // The timed-mode deadline arrived: ease the volume down over ~5s, then pause. We
+  // fade rather than cut so it does not jolt you awake, and restore volume to 1 after
+  // so a later manual resume is not silent. Not used for end-of-track (that stops at a
+  // real track boundary, where a fade would be pointless).
+  function fadeAndPause () {
+    sleepTimeout.current = null
+    sleepDeadline.current = 0
+    const p = player.current
+    if (!p) { clearSleep(); pushSleep(true); return }
+    let v = 1
+    if (sleepFade.current) clearInterval(sleepFade.current)
+    sleepFade.current = setInterval(() => {
+      v -= 0.1
+      try { p.volume = Math.max(0, v) } catch {}
+      if (v <= 0) {
+        clearInterval(sleepFade.current); sleepFade.current = null
+        try { p.pause() } catch {}
+        try { p.volume = 1 } catch {}
+        persistQueue(true)
+        pushSleep(true)
+      }
+    }, 500)
+  }
+
+  // Arm/disarm from the UI. { off } cancels; { endOfTrack } stops when the current song
+  // finishes on its own (the status listener watches didJustFinish); { minutes } counts
+  // down then fades out. One mode at a time - each call clears the last.
+  function setSleep ({ minutes, endOfTrack, off }: any) {
+    clearSleep()
+    if (off) { pushSleep(); return }
+    if (endOfTrack) {
+      sleepEndOfTrack.current = true
+      pushSleep()
+      return
+    }
+    const mins = Math.max(1, Number(minutes) || 0)
+    const ms = mins * 60000
+    sleepMinutes.current = mins
+    sleepDeadline.current = Date.now() + ms
+    sleepTimeout.current = setTimeout(fadeAndPause, ms)
+    pushSleep()
+  }
+
   // setQueueSources / skipToNext / skipToPrevious / currentQueueIndex come from
   // patches/expo-audio+1.1.1.patch. We patched the Kotlin, NOT the .d.ts, so
   // TypeScript does not know about them - reach them through a cast rather than
@@ -411,6 +506,7 @@ export default function App () {
   // Delegated to ExoPlayer, so the lock-screen buttons and the in-app buttons go
   // down exactly the same path.
   function next () {
+    manualNav.current = true
     px()?.skipToNext()
   }
 
@@ -418,6 +514,7 @@ export default function App () {
   // uses: restart the current track unless you are near its start, in which case
   // step back one.
   function prev () {
+    manualNav.current = true
     px()?.skipToPrevious()
   }
 
@@ -489,6 +586,7 @@ export default function App () {
   }
 
   function stop () {
+    clearSleep() // no queue to fall asleep to
     stopPlayer()
     queueRef.current = []
     indexRef.current = 0
@@ -832,6 +930,7 @@ export default function App () {
         const i = Number(msg.args?.index) || 0
         const p = px()
         if (!p) return
+        manualNav.current = true
         p.seekToQueueIndex(i)
         p.play()
       },
@@ -847,6 +946,7 @@ export default function App () {
       seekTo: () => seekTo(msg.args.ms ?? 0),
       shuffle: () => setShuffle(!!msg.args.on),
       repeat: () => setRepeat(Number(msg.args.mode) || 0),
+      sleep: () => setSleep(msg.args || {}),
 
       // The UI resolved its theme ('system' against the OS scheme we pushed it)
       // and is telling us what it painted, so the status bar and the strip behind
