@@ -600,6 +600,14 @@ function SourcePanel ({ state, refresh, toast }) {
     if (!r.ok) return notify('Rescan failed', r.error || 'The library could not be rescanned.')
     notify('Rescan complete', <>The library was rescanned and now contains <span className='hl'>{summary(r)}</span>.</>)
   }
+  const setAutoRescan = async (e) => {
+    const min = Number(e.target.value)
+    const r = await api('/api/rescan-interval', { minutes: min })
+    if (r.error || r.ok === false) return toast('Failed: ' + (r.error || 'could not set auto-rescan'), true)
+    await refresh()
+    const label = { 0: 'off', 15: 'every 15 minutes', 30: 'every 30 minutes', 60: 'every hour', 360: 'every 6 hours' }[min] || `every ${min} minutes`
+    toast(min ? `Auto-rescan ${label}.` : 'Auto-rescan off.')
+  }
   const openBrowse = async path => {
     const start = path || roots()[roots().length - 1] || '/'
     // Keep the path in the loading state so the modal's header does not flicker
@@ -672,6 +680,18 @@ function SourcePanel ({ state, refresh, toast }) {
           <button onClick={save} disabled={!!busy}>{busy === 'save' ? 'Saving…' : 'Save'}</button>
           <button className='ghost' onClick={rescan} disabled={!!busy}>{busy === 'rescan' ? 'Rescanning…' : 'Rescan'}</button>
         </div>
+        {/* Scheduled auto-rescan: pick it up without a manual Rescan when files land.
+            Most useful for a folder library (a server watches its own). */}
+        <label className='autoscan'>
+          <span>Auto-rescan</span>
+          <select value={state.rescanIntervalMin || 0} onChange={setAutoRescan}>
+            <option value={0}>Off</option>
+            <option value={15}>Every 15 minutes</option>
+            <option value={30}>Every 30 minutes</option>
+            <option value={60}>Every hour</option>
+            <option value={360}>Every 6 hours</option>
+          </select>
+        </label>
         {/* Always rendered so its appearance/disappearance never resizes the panel. */}
         <div className='srcdiscard'>{dirty && <button className='link' onClick={cancel}>Discard changes</button>}</div>
       </div>
