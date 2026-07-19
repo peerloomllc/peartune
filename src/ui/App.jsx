@@ -234,9 +234,10 @@ export default function App () {
         if (liveRef.current?.connected) {
           loadAlbums(0); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadPlaylists(true)
         }
-        // Load the new library's saved queue - but only if nothing is playing (restoreQueue
-        // guards on a live player), so a mid-play track is never interrupted by the switch.
-        call('restore').catch(() => {})
+        // Swap the play queue to the new library: if a track is playing it drains first, then
+        // the new library's queue takes over; if nothing is playing it swaps straight over
+        // (the shell decides - see switchQueue). A mid-play track is never cut off.
+        call('switchQueue').catch(() => {})
       }),
 
       // Back from the background, where the link almost certainly died. Reconnect
