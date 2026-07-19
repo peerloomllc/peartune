@@ -507,3 +507,34 @@ function withTimeout (promise, ms) {
     new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms).unref?.())
   ])
 }
+
+// --- dashboard now-playing (per-device, off the play session) ----------------
+
+test('listDevices surfaces now-playing on the active device only, with a coverId', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  const deviceKey = z32.encode(client.keyPair.publicKey)
+  const ownerId = 'd:' + deviceKey // an unclaimed device is its own owner
+  const { items } = await client.list({ type: 'tracks' })
+  const track = items[0]
+
+  // No session yet -> nothing playing, even though the device is connected.
+  let me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
+  assert.equal(me.nowPlaying, null)
+
+  // Claim the session for THIS device and report a track.
+  await host.userState.claimSession(ownerId, deviceKey, 0)
+  await host.userState.setSession(ownerId, deviceKey, {
+    queue: [{ trackId: track.id, title: 'Test Song', artist: 'Test Artist', durationMs: 1000 }],
+    index: 0, shuffle: false, repeat: 0, positionMs: 0, playing: true
+  })
+
+  me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
+  assert.ok(me.nowPlaying, 'the active device carries now-playing')
+  assert.equal(me.nowPlaying.title, 'Test Song')
+  assert.equal(me.nowPlaying.artist, 'Test Artist')
+  assert.equal(me.nowPlaying.playing, true)
+  assert.ok(me.nowPlaying.coverId, 'a coverId is resolved for the /api/art thumbnail')
+})

@@ -316,6 +316,10 @@ function AccessPanel ({ state, refresh, toast, online }) {
                 const expandable = live.length + revoked.length > 0
                 const isOpen = expandable && open[p.id]
                 const editing = renaming?.id === p.id
+                // At most one of a person's devices is the active player (host model).
+                // Surface it on the collapsed row so you can see who's listening without
+                // expanding; the device rows carry it once open.
+                const playing = live.map(d => d.nowPlaying).find(Boolean)
                 return (
                   <div className='person' key={p.id}>
                     <div className={'prow' + (expandable ? '' : ' flat')} onClick={() => !editing && expandable && setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
@@ -338,6 +342,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
                             <div className='who'>
                               <div className='name'>{p.name}</div>
                               <div className='sub'>{live.length} device{live.length === 1 ? '' : 's'}{on ? ` · ${on} online` : ''}{p.createdAt ? ` · added ${ago(p.createdAt)}` : ''}</div>
+                              {!isOpen && playing && <NowPlaying np={playing} />}
                             </div>
                             <button className='ghost small' onClick={e => { e.stopPropagation(); startRename(p) }}>Rename</button>
                             {live.length
@@ -385,6 +390,23 @@ function AccessPanel ({ state, refresh, toast, online }) {
 
 // Every device row is exactly two lines (name + status) - no claim chip. A device
 // with an unconfirmed claim is handled by PendingCard instead (see AccessPanel).
+// What a device is playing right now: a small album thumbnail (off /api/art) + the
+// track, tinted primary while playing and tagged when paused. Renders nothing when
+// the device is idle (np is null - only the session's active device carries one).
+function NowPlaying ({ np }) {
+  if (!np) return null
+  const label = [np.title || 'Unknown track', np.artist].filter(Boolean).join(' — ')
+  return (
+    <div className={'nowplaying' + (np.playing ? ' on' : '')}>
+      {np.coverId
+        ? <img className='np-art' src={'/api/art?id=' + encodeURIComponent(np.coverId)} alt='' aria-hidden='true' />
+        : <span className='np-art blank' aria-hidden='true'><MusicNotes size={11} weight='fill' /></span>}
+      <span className='np-track' title={label}>{label}</span>
+      {!np.playing && <span className='np-paused'>paused</span>}
+    </div>
+  )
+}
+
 function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, loose }) {
   const guest = !!d.expiresAt && !d.revokedAt
   const expired = guest && Date.now() > d.expiresAt
@@ -404,6 +426,7 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, loose 
             {!d.revokedAt && d.grantedAt && <span>{`· paired ${ago(d.grantedAt)}`}</span>}
             {guest && <span>{expired ? ' · pass expired' : ` · expires in ${until(d.expiresAt)}`}</span>}
           </div>
+          <NowPlaying np={d.nowPlaying} />
         </div>
         {onAssign && !d.revokedAt &&
           <select className='assign' value={d.personId || ''} onChange={e => onAssign(d, e.target.value)}>

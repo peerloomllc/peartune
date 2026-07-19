@@ -447,10 +447,45 @@ class PearTuneHost {
 
   async listDevices () {
     const rows = await this.grants.list()
-    return rows.map(r => ({
-      ...r,
-      online: this.connections.count(r.deviceKey) > 0
+    // The play session is per OWNER (a person, or an unclaimed device is its own
+    // owner) and names ONE activeDeviceKey - only that device is playing. Load each
+    // owner's session once, then attach now-playing to the device that holds it; every
+    // other device is idle. Best-effort: a session read failing just omits the track.
+    const sessions = new Map()
+    const sessionFor = async (ownerId) => {
+      if (!sessions.has(ownerId)) sessions.set(ownerId, await this.userState.getSession(ownerId).catch(() => null))
+      return sessions.get(ownerId)
+    }
+    return Promise.all(rows.map(async r => {
+      const online = this.connections.count(r.deviceKey) > 0
+      let nowPlaying = null
+      if (online && !r.revokedAt) {
+        const s = await sessionFor(r.personId ? 'p:' + r.personId : 'd:' + r.deviceKey)
+        if (s && s.activeDeviceKey === r.deviceKey && Array.isArray(s.queue) && s.queue.length) {
+          const t = s.queue[s.index] || s.queue[0]
+          if (t) {
+            // The session carries the phone's own loopback art URL, useless here, but
+            // it has the trackId - resolve its coverId once (cached; covers are stable
+            // per id) so the dashboard can load a thumbnail off /api/art without a
+            // per-poll source lookup (matters for the network-backed adapters).
+            nowPlaying = { title: t.title || null, artist: t.artist || null, playing: !!s.playing, coverId: await this._coverIdFor(t.trackId) }
+          }
+        }
+      }
+      return { ...r, online, nowPlaying }
     }))
+  }
+
+  // trackId -> coverId, cached: a track's cover is stable, so a network-backed source
+  // (Subsonic/Jellyfin) is asked at most once per track rather than every 3s poll.
+  async _coverIdFor (trackId) {
+    if (!trackId || !this.adapter) return null
+    if (!this._coverIdCache) this._coverIdCache = new Map()
+    if (this._coverIdCache.has(trackId)) return this._coverIdCache.get(trackId)
+    const t = await this.adapter.get({ id: trackId }).catch(() => null)
+    const coverId = t?.coverId || null
+    this._coverIdCache.set(trackId, coverId)
+    return coverId
   }
 
   async close () {

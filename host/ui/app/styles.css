@@ -166,6 +166,16 @@ a { color: var(--primary-strong); }
 .pend-claim b { color: var(--warn); font-weight: 700; }
 .pend-acts { display: flex; gap: 8px; margin-top: 11px; }
 .pend-acts button { flex: 1 1 0; }
+/* now-playing: a thumbnail + track under a device's status (or on a collapsed person
+   row). Tinted primary while playing; the track ellipsises so a long title never
+   reflows the row. */
+.nowplaying { display: flex; align-items: center; gap: 7px; margin-top: 4px; min-width: 0; font-size: 12.5px; color: var(--muted); }
+.nowplaying.on { color: var(--primary); }
+.nowplaying .np-art { width: 22px; height: 22px; flex: 0 0 auto; border-radius: 4px; object-fit: cover; background: var(--surface-2); }
+.nowplaying .np-art.blank { display: grid; place-items: center; color: var(--subtle); border: 1px solid var(--border); }
+.nowplaying .np-track { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.nowplaying .np-paused { flex: 0 0 auto; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--subtle); text-transform: uppercase; }
+
 .live { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: var(--good); box-shadow: 0 0 0 0 var(--glow); animation: beat 2.4s ease-in-out infinite; }
 .live.off { background: var(--subtle); box-shadow: none; animation: none; }
 .live.rev { background: var(--warn); box-shadow: none; animation: none; }

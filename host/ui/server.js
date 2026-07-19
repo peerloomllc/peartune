@@ -86,6 +86,17 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         return res.end(body)
       }
 
+      // --- album art (the now-playing thumbnails on People & devices) ---
+      // Behind the same auth as everything else (auth.handle 401s the unauthenticated
+      // above); an <img> carries the session cookie. Covers only - no track data.
+      if (req.method === 'GET' && url.pathname === '/api/art') {
+        const coverId = url.searchParams.get('id')
+        const stream = coverId && host.adapter ? await host.adapter.art({ coverId }).catch(() => null) : null
+        if (!stream) { res.writeHead(404); return res.end() }
+        res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'private, max-age=300' })
+        return stream.pipe(res)
+      }
+
       // --- state ---
       if (req.method === 'GET' && url.pathname === '/api/state') {
         // A BROKEN SOURCE MUST NOT BREAK THE DASHBOARD. stats() talks to the source,
@@ -127,7 +138,11 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
             expiresAt: d.expiresAt || null,
             lastSeenAt: d.lastSeenAt,
             revokedAt: d.revokedAt,
-            online: d.online
+            online: d.online,
+            // What this device is playing RIGHT NOW, or null. Only ever set on the one
+            // device that holds its owner's session (see listDevices) - { title, artist,
+            // playing, coverId }; coverId loads via /api/art.
+            nowPlaying: d.nowPlaying || null
           }))
         })
       }
