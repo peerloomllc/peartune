@@ -26,7 +26,7 @@ const crypto = require('crypto')
 const { Readable } = require('stream')
 const { spawn } = require('child_process')
 const { trackId, groupId } = require('../../protocol/ids')
-const { TRACK_CMP, ALBUM_CMP, ARTIST_CMP, FULL_SORTS, sortRows } = require('./sort')
+const { TRACK_CMP, ALBUM_CMP, ARTIST_CMP, GENRE_CMP, FULL_SORTS, sortRows } = require('./sort')
 
 // The transcoder. `PEARTUNE_FFMPEG` overrides the binary (a bundled static build,
 // say); otherwise we trust PATH. Adding ffmpeg to the host image is what turns
@@ -143,6 +143,7 @@ class FolderAdapter {
     this.tracks = new Map() // trackId  -> track
     this.albums = new Map() // albumId  -> album
     this.artists = new Map() // artistId -> artist
+    this.genres = new Map() // genreId  -> genre
 
     // Sorted ONCE, at scan. Every list() page and every search re-derived these,
     // which is a full sort of the library per request - invisible at 8 tracks and
@@ -379,6 +380,7 @@ class FolderAdapter {
     this.tracks.clear()
     this.albums.clear()
     this.artists.clear()
+    this.genres.clear()
     this._sortCache = new Map() // the library changed; old sorted permutations are stale
 
     // Pass 1: bucket the files into albums.
@@ -479,8 +481,29 @@ class FolderAdapter {
       a.coverId = a.albumIds[0] || null
     }
 
+    // Genres, the broadest way in: a genre is the set of albums (and their tracks)
+    // tagged with it. A track carries one genre; an album shows under every genre
+    // its tracks name (usually just the one). The id is derived from the lowercased
+    // name, so "Rock" and "rock" merge; the cover is the genre's first album, like
+    // an artist's - so the genre grid is real artwork, not a wall of grey.
+    for (const t of this.tracks.values()) {
+      if (!t.genre) continue
+      const gid = groupId(this.libraryId, this.kind, 'genre', lower(t.genre))
+      let g = this.genres.get(gid)
+      if (!g) this.genres.set(gid, (g = { id: gid, name: t.genre, albumIds: [], _albumSet: new Set(), trackIds: [], albumCount: 0, coverId: null }))
+      if (!g._albumSet.has(t.albumId)) { g._albumSet.add(t.albumId); g.albumIds.push(t.albumId) }
+      g.trackIds.push(t.id)
+    }
+    for (const g of this.genres.values()) {
+      g.albumIds.sort((x, y) => cmp(this.albums.get(x)?.name, this.albums.get(y)?.name))
+      g.albumCount = g.albumIds.length
+      g.coverId = g.albumIds[0] || null
+      delete g._albumSet
+    }
+
     this._sortedAlbums = [...this.albums.values()].sort((a, b) => cmp(a.name, b.name))
     this._sortedArtists = [...this.artists.values()].sort((a, b) => cmp(a.name, b.name))
+    this._sortedGenres = [...this.genres.values()].sort((a, b) => cmp(a.name, b.name))
 
     // The library in the order a person would shelve it: by artist, then album,
     // then disc and track. The old adapter answered in readdir order, which is to
@@ -513,6 +536,7 @@ class FolderAdapter {
       tracks: this.tracks.size,
       albums: this.albums.size,
       artists: this.artists.size,
+      genres: this.genres.size,
       // The whole library is in memory, so every field sorts for free, both ways.
       sorts: FULL_SORTS,
       scannedAt: this.scannedAt
@@ -551,6 +575,14 @@ class FolderAdapter {
       // and the app's artist grid asks for the lot).
       const items = this._order('artists', this._sortedArtists, ARTIST_CMP, sort, order).map(a => ({
         id: a.id, name: a.name, albumCount: a.albumCount, coverId: a.coverId
+      }))
+      return { type, items, nextCursor: null }
+    }
+
+    if (type === 'genres') {
+      // One shot, like artists - the genre grid asks for the lot.
+      const items = this._order('genres', this._sortedGenres, GENRE_CMP, sort, order).map(g => ({
+        id: g.id, name: g.name, albumCount: g.albumCount, coverId: g.coverId
       }))
       return { type, items, nextCursor: null }
     }
@@ -595,6 +627,23 @@ class FolderAdapter {
         // Navidrome's composite-tag artists, so answer it rather than leaving it
         // undefined and making the client guess.
         tracks: []
+      }
+    }
+
+    if (type === 'genre') {
+      const g = this.genres.get(id)
+      if (!g) return null
+      return {
+        id: g.id,
+        name: g.name,
+        coverId: g.coverId,
+        albums: g.albumIds.map(x => {
+          const al = this.albums.get(x)
+          return al && {
+            id: al.id, name: al.name, artist: al.artist, year: al.year, songCount: al.songCount, coverId: al.coverId
+          }
+        }).filter(Boolean),
+        tracks: [] // every genre track has an album here, so the album grid is enough
       }
     }
 

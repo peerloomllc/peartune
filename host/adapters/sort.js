@@ -36,13 +36,17 @@ const ALBUM_CMP = {
 const ARTIST_CMP = {
   name: (a, b) => collator(a.name, b.name)
 }
+const GENRE_CMP = {
+  name: (a, b) => collator(a.name, b.name)
+}
 
 // The capability a source with in-memory or fully server-sortable data advertises:
 // every canonical key, reversible in both directions. Folder and Jellyfin use this.
 const FULL_SORTS = {
   tracks: { keys: ['title', 'artist', 'album', 'year', 'duration'], reversible: true },
   albums: { keys: ['name', 'artist', 'year'], reversible: true },
-  artists: { keys: ['name'], reversible: true }
+  artists: { keys: ['name'], reversible: true },
+  genres: { keys: ['name'], reversible: true }
 }
 
 // In-memory sort of `rows` by a canonical key. An unknown or absent key returns the
@@ -56,4 +60,4 @@ function sortRows (rows, table, sort, order) {
   return [...rows].sort((a, b) => dir * base(a, b))
 }
 
-module.exports = { TRACK_CMP, ALBUM_CMP, ARTIST_CMP, FULL_SORTS, sortRows, collator }
+module.exports = { TRACK_CMP, ALBUM_CMP, ARTIST_CMP, GENRE_CMP, FULL_SORTS, sortRows, collator }

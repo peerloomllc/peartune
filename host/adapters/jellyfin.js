@@ -229,6 +229,17 @@ class JellyfinAdapter {
     }
   }
 
+  _genre (item) {
+    return {
+      id: item.Id,
+      name: item.Name || 'Unknown Genre',
+      // Same as artists: no album count without a per-genre query. Most genres carry
+      // no image, so the grid falls back to a placeholder.
+      albumCount: null,
+      coverId: item.ImageTags?.Primary ? item.Id : null
+    }
+  }
+
   // --- the interface --------------------------------------------------------
 
   async ping () {
@@ -318,6 +329,17 @@ class JellyfinAdapter {
         SortOrder: sortOrder(order)
       })
       return { type, items: (body.Items || []).map(i => this._artist(i)), nextCursor: null }
+    }
+
+    if (type === 'genres') {
+      // MusicGenres, the music-scoped genre list. One shot, alphabetical, like artists.
+      const body = await this._call('/MusicGenres', {
+        userId: this.userId,
+        Recursive: true,
+        SortBy: 'SortName',
+        SortOrder: sortOrder(order)
+      })
+      return { type, items: (body.Items || []).map(i => this._genre(i)), nextCursor: null }
     }
 
     if (type === 'albums') {
@@ -423,6 +445,42 @@ class JellyfinAdapter {
         out.tracks = (songs?.Items || []).map(i => this._track(i))
       }
 
+      return out
+    }
+
+    if (type === 'genre') {
+      // A genre IS its albums (GenreIds filters by the genre item's id). If the genre
+      // only tags loose tracks (no album carries it), fall back to those songs so the
+      // page is not a dead end - the same shape as the artist fallback above.
+      const [genre, albums] = await Promise.all([
+        this._call(`/Users/${this.userId}/Items/${id}`).catch(() => null),
+        this._call('/Items', {
+          userId: this.userId,
+          IncludeItemTypes: 'MusicAlbum',
+          Recursive: true,
+          GenreIds: id,
+          SortBy: 'AlbumArtist,SortName',
+          SortOrder: 'Ascending',
+          Fields: ALBUM_FIELDS
+        })
+      ])
+      const out = {
+        ...(genre ? this._genre(genre) : { id, name: id, coverId: null }),
+        albums: (albums?.Items || []).map(a => this._album(a)),
+        tracks: []
+      }
+      if (!out.albums.length) {
+        const songs = await this._call('/Items', {
+          userId: this.userId,
+          IncludeItemTypes: 'Audio',
+          Recursive: true,
+          GenreIds: id,
+          SortBy: 'Album,ParentIndexNumber,IndexNumber',
+          Fields: TRACK_FIELDS,
+          Limit: 200
+        }).catch(() => null)
+        out.tracks = (songs?.Items || []).map(i => this._track(i))
+      }
       return out
     }
 

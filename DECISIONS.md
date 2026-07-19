@@ -2,6 +2,29 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-19 - Genres: a fourth browse view (least → most granular)
+Tier: T2 (additive, read-only browse - no wire method, no grant/revoke surface). Branch
+feature/genre-browse. The library picker is now Genres · Artists · Albums · Songs, ordered least →
+most granular (a genre holds artists, an artist albums, an album songs). Genres is the broadest way
+in: the grid lists genres, tapping one drills into that genre's ALBUMS (album-first, like an artist
+page), with a loose-track fallback for a genre no album carries. Play/Shuffle/Queue on a genre plays
+all its tracks in album order (genreTracks, mirroring artistTracks).
+NO WIRE CHANGE: the protocol is generic - `library.list`/`library.get` already forward a `type`
+discriminator - so genres reuse them with `type:'genres'`/`'genre'`. The edits are the worklet method
+table (src/bare.js: genres/genre/genreTracks), each adapter's list/get type-switch, and the App.jsx UI.
+- FOLDER (primary): builds a `genres` index at scan from the track `genre` tag - genre id is
+  groupId('genre', lower(name)) so "Rock"/"rock" merge; a genre's cover is its first album's, so the
+  grid is real artwork not grey. Genreless tracks are skipped (no null bucket). Advertises a name sort
+  (FULL_SORTS.genres, reversible).
+- SUBSONIC: getGenres (optional → empty tab if absent); the genre NAME is its id (what byGenre /
+  getSongsByGenre take); get uses getAlbumList2 type=byGenre with a getSongsByGenre fallback. No genre
+  sort advertised (getGenres is alphabetical-only, like getArtists).
+- JELLYFIN/EMBY: /MusicGenres for the list; get filters albums by GenreIds with an Audio fallback;
+  uses FULL_SORTS (name sort). NOT yet verified against a live Jellyfin/Emby - folder is validated by
+  tests + on-device; the server adapters follow the documented API and mirror the artists path.
+UI: the browse `.seg` now holds four pills; padding tightened (scoped to `.pickrow`) + `min-width:0`
+so the Display button stays on one row. 9 new tests (folder/subsonic/jellyfin). verify green (316).
+
 ## 2026-07-18 - Host image 0.2.4 + clean Umbrel redeploy (retires the cp drift)
 Tier: T2 (packaging/deploy). Branch release/host-image-0.2.4. Cut a fresh multi-arch image from
 current master - the first image with EVERYTHING accumulated since 0.2.3: multi-folder + its overlap

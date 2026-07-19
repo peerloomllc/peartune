@@ -726,11 +726,12 @@ button.more {
 .pickrow {
   display: flex;
   align-items: center;
-  gap: .5rem;
+  gap: .4rem;
   margin-top: .4rem;
 }
 .pickrow .seg {
   flex: 1;
+  min-width: 0;
 }
 button.icon.dens {
   flex: none;
@@ -796,6 +797,13 @@ button.icon.dens:disabled {
 .seg button.on {
   background: var(--color-primary);
   color: var(--color-text-on-primary);
+}
+.pickrow .seg button {
+  padding: .5rem .4rem;
+  font-size: .8rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .seg.scroll {
   overflow-x: auto;
