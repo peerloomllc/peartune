@@ -2,6 +2,26 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-19 - Queue-on-switch continuity (multi-host step 1 polish)
+Tier: T2 (client/shell only; no wire/host/grant change). Branch feature/queue-on-switch. Closes the last
+open multi-host item: switching libraries WHILE a track plays now drains the current track then advances
+into the NEW library's saved queue, instead of loading the new queue only when idle.
+DESIGN (deferred drain): on host:switched, the WebView calls a new shell method `switchQueue`. If a track is
+playing, collapse the ExoPlayer queue to just that track (queueClearKeepCurrent - no old-library "next"
+blip) and hold the new library's snapshot in `switchDrain`; persistence is SUPPRESSED while draining so the
+new library's queue.json isn't clobbered by the transient one-foreign-track state. When the current track
+ends (didJustFinish at end-of-queue) OR its buffer runs dry (a new helper reuses decideStarve with
+dropped:true, since an uncached foreign track can't refill from the new host), `finishDrain` loads + plays
+the new library's queue. If nothing is playing, switchQueue swaps straight to the new library's queue paused
+(loadQueueOnPlayer, restoreQueue's guts minus the "don't clobber" guard). Explicit user actions
+(play/enqueue/stop/playSession) cancel a pending drain.
+VERIFIED on the TCL (Umbrel + Mac mini, both directions): play -> switch -> current track keeps playing;
+drain to natural end -> new library's queue plays ("Courtesy Call" on Mac drained, then Umbrel's "Hide No
+More" took over); drain into an EMPTY new library -> graceful stop. 334 tests, verify green.
+NOTE: the "keep the buffered track" caveat stands - an uncached foreign track only plays what's buffered/
+cached, then the drain-stall advances early rather than freezing (a net improvement over the pre-feature
+buffer-freeze).
+
 ## 2026-07-19 - Multi-host: the library switcher (step 1 of 2)
 Tier: T2 (client-side storage + UX; no wire/grant/revoke/host change). Branch proposal/multi-host-switcher.
 Proposal proposals/2026-07-19-multi-host-switcher.md. One phone can now pair to MORE THAN ONE host (an

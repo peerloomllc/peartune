@@ -88,6 +88,12 @@ export default function App () {
   // Set by next/prev/playIndex so the status listener can tell a user skip from a
   // track ending on its own - only the latter should trip end-of-track sleep.
   const manualNav = useRef(false)
+  // A pending queue swap after a LIBRARY SWITCH while a track is playing (multi-host). Holds
+  // the NEW library's saved queue snapshot; the current track is left to play out (drain),
+  // and when it ends we load + play this snapshot. Null when not draining. While set,
+  // persistence is suppressed so the new library's queue.json is not clobbered by the
+  // transient collapsed-to-one-foreign-track state.
+  const switchDrain = useRef<any>(null)
   const netSub = useRef<{ remove: () => void } | null>(null)
   // Are we currently disconnected from the host? On a drop we do NOT tear the
   // player down (a network switch and a revoke look identical here) - we keep the
@@ -97,6 +103,10 @@ export default function App () {
   // Progress watchdog for the starvation case: { pos, at }. If we are dropped and
   // buffering with pos frozen past STARVE_MS, the buffer has run dry.
   const starve = useRef({ pos: -1, at: 0 })
+  // Same watchdog shape, for a switch-drain: the foreign track can't refill past its buffer
+  // (the new host doesn't have it), so a dry buffer means "end the drain, bring up the new
+  // library" rather than freeze.
+  const drainStall = useRef({ pos: -1, at: 0 })
   const [uiHtml, setUiHtml] = useState<string | null>(null)
   const [scheme, setScheme] = useState<'light' | 'dark'>('dark')
   // Whether the UI has a screen or overlay to pop. Suite convention
@@ -191,6 +201,24 @@ export default function App () {
         // waiting for bytes it cannot get) must end cleanly, not freeze. decideStarve
         // owns that call and is unit-tested per branch (app/starve.js, test/starve).
         const posMs = Math.round((s.currentTime ?? 0) * 1000)
+
+        // Switch-drain: if the buffered foreign track runs dry (new host can't serve it), don't
+        // hang on "buffering" - reuse decideStarve (dropped:true forces its idle/stall timing)
+        // to detect the dry buffer, then advance into the new library instead of freezing.
+        if (switchDrain.current) {
+          const ds = decideStarve({
+            dropped: true,
+            playbackState: s.playbackState,
+            isBuffering: !!s.isBuffering,
+            positionMs: posMs,
+            now: Date.now(),
+            starve: drainStall.current,
+            graceMs: STARVE_MS
+          })
+          drainStall.current = ds.starve
+          if (ds.starved) { drainStall.current = { pos: -1, at: 0 }; finishDrain(); return }
+        }
+
         const d = decideStarve({
           dropped: dropped.current,
           playbackState: s.playbackState,
@@ -203,8 +231,12 @@ export default function App () {
         starve.current = d.starve
         if (d.starved) { onStarved(d.reason); return }
 
-        // The playlist ran out.
-        if (s.didJustFinish && indexRef.current >= queueRef.current.length - 1) stop()
+        // The playlist ran out. Normally that is a stop() - but if we're DRAINING the last
+        // track of the old library after a switch, this "end" is the cue to bring up the new
+        // library's queue instead (unless a sleep-end-of-track is armed, which wins - stop).
+        if (s.didJustFinish && indexRef.current >= queueRef.current.length - 1) {
+          if (switchDrain.current && !sleepEndOfTrack.current) { finishDrain() } else { stop() }
+        }
 
         toWeb('play:status', {
           playing: !!s.playing,
@@ -281,6 +313,10 @@ export default function App () {
   // were superseded. Throttled, because the status listener fires several times a second;
   // `force` bypasses it for structural changes (play / enqueue / index advance / mode).
   function persistQueue (force = false) {
+    // Mid library-switch drain: the queue is transiently a single foreign track from the OLD
+    // library, and queue.json is now the NEW library's. Don't overwrite it with the drain
+    // state - finishDrain writes the correct new-library queue once the current track ends.
+    if (switchDrain.current) return
     const t = Date.now()
     if (!force && t - lastPersist.current < 4000) return
     lastPersist.current = t
@@ -298,6 +334,7 @@ export default function App () {
   }
 
   async function play ({ queue, index = 0 }: any) {
+    switchDrain.current = null // an explicit play cancels a pending switch-drain
     const q = Array.isArray(queue) ? queue : []
     queueRef.current = q
     indexRef.current = index
@@ -330,6 +367,7 @@ export default function App () {
   // and restart buffering - the user asked to queue a record for later, not to
   // interrupt the song they are in the middle of.
   async function enqueue ({ queue }: any) {
+    switchDrain.current = null // building the queue cancels a pending switch-drain
     const q = Array.isArray(queue) ? queue : []
     if (!q.length) return
 
@@ -586,6 +624,7 @@ export default function App () {
   }
 
   function stop () {
+    switchDrain.current = null // a stop cancels any pending switch-drain
     clearSleep() // no queue to fall asleep to
     stopPlayer()
     queueRef.current = []
@@ -663,11 +702,85 @@ export default function App () {
     }
   }
 
+  // Build the ACTIVE library's saved queue onto the player - like restoreQueue but WITHOUT the
+  // "don't clobber active playback" guard, so it can REPLACE a queue on a library switch.
+  // `play` controls whether it comes up playing (a drain finishing) or paused (a switch while
+  // idle). Reuses the live player via ensurePlayer, so the swap is in-place.
+  async function loadQueueOnPlayer (saved: any, play: boolean) {
+    const q = Array.isArray(saved?.items) ? saved.items : []
+    if (!q.length) return { ok: false }
+    try {
+      const index = Math.min(Math.max(0, Number(saved.index) || 0), q.length - 1)
+      const urls: string[] = []
+      let port: number | null = null
+      for (const t of q) {
+        const r: any = await call('urlFor', { trackId: t.id })
+        urls.push(r.url)
+        if (r.port) port = r.port
+      }
+      if (port) {
+        const fix = (u: any) => (typeof u === 'string' ? u.replace(/(127\.0\.0\.1:)\d+/, `$1${port}`) : u)
+        for (const t of q) { t.art = fix(t.art); t.artFull = fix(t.artFull) }
+      }
+      queueRef.current = q
+      indexRef.current = index
+      shuffleRef.current = !!saved.shuffle
+      repeatRef.current = Number(saved.repeat) || 0
+      const p = await ensurePlayer(urls, index)
+      px()?.setShuffle(shuffleRef.current)
+      px()?.setRepeatMode(repeatRef.current)
+      announce(index)
+      if (saved.positionMs) p.seekTo(Math.max(0, saved.positionMs / 1000))
+      toWeb('play:mode', { shuffle: shuffleRef.current, repeat: repeatRef.current })
+      if (play) p.play()
+      persistQueue(true)
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
+  }
+
+  // The current (old-library) track finished draining after a switch: bring up the new
+  // library's queue and keep the music going. Clearing the flag FIRST re-enables persistence
+  // so loadQueueOnPlayer's write lands. Nothing to advance into -> stop cleanly.
+  async function finishDrain () {
+    const snap = switchDrain.current
+    switchDrain.current = null
+    if (!snap || !Array.isArray(snap.items) || !snap.items.length) { stop(); return }
+    const r = await loadQueueOnPlayer(snap, true) // the user was listening - come up playing
+    if (!r.ok) stop()
+  }
+
+  // A library switch happened (multi-host). queue.json is already the NEW library's (the
+  // worklet re-points it before host:switched). If a track is PLAYING, keep it playing and let
+  // it DRAIN: collapse the queue to just that track so no old-library "next" plays, and hold
+  // the new library's queue for when it ends (finishDrain). If nothing is playing, there is no
+  // music to protect - swap straight to the new library's queue, paused.
+  async function switchQueue () {
+    let saved: any
+    try { saved = await call('loadQueueState') } catch { saved = null }
+
+    if (player.current?.playing) {
+      switchDrain.current = saved || { items: [] } // suppresses persistQueue until it drains
+      if (queueRef.current.length > 1) queueClearKeepCurrent()
+      return { draining: true }
+    }
+
+    switchDrain.current = null
+    const nq = Array.isArray(saved?.items) ? saved.items : []
+    if (nq.length) { await loadQueueOnPlayer(saved, false); return { swapped: true } }
+    // New library has no saved queue: drop any stale paused queue so the mini-player doesn't
+    // keep showing an old-library track. (queue.json for the new library is already empty.)
+    if (player.current) stop()
+    return { swapped: false }
+  }
+
   // "Play here" (session handoff): adopt a session handed over from another device. Same rebuild
   // as restoreQueue - re-resolve URLs from IDs, port-rewrite the art (it carried the OTHER
   // device's shim port) - but it PLAYS, REPLACES any current playback, and seeks to the handed
   // position. The worklet already claimed the token (sessionTakeover); this just plays it.
   async function playSession (snap: any) {
+    switchDrain.current = null // adopting another device's session cancels a pending switch-drain
     const q = Array.isArray(snap?.items) ? snap.items : []
     if (!q.length) return { ok: false }
     try {
@@ -940,6 +1053,9 @@ export default function App () {
       prev,
       stop,
       restore: () => restoreQueue(),
+      // A library switch (multi-host): drain the current track then bring up the new library's
+      // queue, or swap straight to it if nothing is playing. Called by the UI on host:switched.
+      switchQueue: () => switchQueue(),
       // Session handoff: "Play here" adopts the session another device is holding.
       playHere: () => playHere(),
       seekBy: () => seekBy(msg.args.seconds ?? SEEK_STEP),
