@@ -2,6 +2,22 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-18 - Host image 0.2.4 + clean Umbrel redeploy (retires the cp drift)
+Tier: T2 (packaging/deploy). Branch release/host-image-0.2.4. Cut a fresh multi-arch image from
+current master - the first image with EVERYTHING accumulated since 0.2.3: multi-folder + its overlap
+guard, plus items 1/9, generate-and-print, the favicon/wordmark, etc. Digest
+sha256:ff98c7e43c11e49d13c7872c46f9fe8d8e246b49a52a7a7ef4caceada5b1e411. Re-pinned all consumers and
+rebuilt the s9pk (0.2.4).
+WHY NOW: Tim's Umbrel had drifted badly - the 0.2.0 image with the whole current host/ docker-cp'd on
+top (for the live previews) + a hand-changed mount. Redeployed it CLEANLY off the 0.2.4 image (no cp),
+preserving /data, so the two-folder library (/library/music primary + /library/downtify, 1670 tracks),
+the identity, and pairings all survived - and folder.js now hash-MATCHES the repo inside the container
+(the drift is gone, the image is the source of truth again). The umbrel compose already mounted the
+whole Downloads -> /library with PEARTUNE_MUSIC=/library/music, so a fresh install sees ALL the
+Downloads subfolders (music, podcasts, audiobooks, downtify, metube), not just music/ - that narrow
+/music mount was only on the hand-created running container, never the compose.
+Start9: 0.2.4 s9pk built + verified; re-sideload when convenient (not yet redeployed to returned-feline).
+
 ## 2026-07-18 - Folder source: multiple roots
 Tier: T2 (host adapter + source config + dashboard). Branch feature/folder-multi-root. The FOLDER
 source can point at several directories now (e.g. /music AND /audiobooks). Simpler than cross-KIND
