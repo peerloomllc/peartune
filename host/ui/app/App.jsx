@@ -490,8 +490,30 @@ function SourcePanel ({ state, refresh, toast }) {
   const roots = () => (cfg.folder && cfg.folder.roots) || []
   const addRoot = (p) => {
     const clean = String(p || '').trim()
-    if (!clean || roots().includes(clean)) return
-    setCfg(c => ({ ...c, folder: { roots: [...roots(), clean] } })); touch()
+    if (!clean) return
+    const existing = roots()
+    if (existing.includes(clean)) return // exact duplicate: silently ignored
+    // Overlapping folders are either redundant (a subfolder of one you already have)
+    // or would supersede others (a parent of ones you have - which the scan drops,
+    // and if that drops your PRIMARY folder every track id re-keys). Block both with
+    // a reason rather than silently doing something surprising. Container paths are posix.
+    const norm = s => s.replace(/\/+$/, '')
+    const inside = (a, b) => norm(a) === norm(b) || norm(a).startsWith(norm(b) + '/')
+    const parent = existing.find(r => inside(clean, r))
+    if (parent) {
+      notify('Already covered', <>That folder is inside <span className='hl'>{parent}</span>, which you already have — its music is already included.</>)
+      return
+    }
+    const children = existing.filter(r => inside(r, clean))
+    if (children.length) {
+      const hitsPrimary = children.includes(existing[0])
+      notify('Folders overlap', <>
+        <span className='hl'>{clean}</span> contains {children.length === 1 ? 'a folder' : 'folders'} you already have ({children.join(', ')}). Remove {children.length === 1 ? 'it' : 'them'} first if you want to use the parent instead.
+        {hitsPrimary ? <> That would also re-key your library, since it replaces your primary folder.</> : null}
+      </>)
+      return
+    }
+    setCfg(c => ({ ...c, folder: { roots: [...existing, clean] } })); touch()
   }
   const removeRoot = (p) => {
     setCfg(c => ({ ...c, folder: { roots: roots().filter(r => r !== p) } })); touch()
