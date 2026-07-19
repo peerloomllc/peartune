@@ -2,6 +2,18 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-19 - Host image 0.2.5 (tabbed dashboard + genre browse baked in)
+Tier: T2 (packaging/deploy). Branch release/host-image-0.2.5. Cut a fresh multi-arch image from master -
+the first with the tabbed operator dashboard (PR #70) AND genre-browse host support (PR #72), retiring
+the two Umbrel cp/bind-mount previews those rode on. Digest
+sha256:4e90d25a411e0062c2fd042b5bdab219f51de8011a5c1ef1ac003a6334e5b6d3 (OCI image index, amd64+arm64,
+verified via the GHCR registry API). Built with podman + qemu-user-static, pushed to GHCR. Re-pinned all
+consumers (umbrel + host/deploy composes, start9/Dockerfile FROM, start9/README, docs/host-linux,
+host/Dockerfile comments) and rebuilt the s9pk (0.2.5, x86_64+aarch64, start-sdk verify passed).
+DEPLOY (open, needs Tim): redeploy the Umbrel off 0.2.5 to replace the running preview container (sudo
+docker), and re-sideload the 0.2.5 s9pk to returned-feline (Start9 GUI). Publishing the Umbrel store
+listing (still on 0.1.0) remains a separate M4 item.
+
 ## 2026-07-19 - Genres: a fourth browse view (least → most granular)
 Tier: T2 (additive, read-only browse - no wire method, no grant/revoke surface). Branch
 feature/genre-browse. The library picker is now Genres · Artists · Albums · Songs, ordered least →
