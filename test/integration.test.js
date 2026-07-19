@@ -562,3 +562,26 @@ test('scheduled rescan: persists, clamps, arms a timer, and shares library.json 
   assert.equal(host.setRescanIntervalMin(-5), 0)
   assert.equal(host._rescanTimer, null, 'off clears the timer')
 })
+
+// --- person avatars ----------------------------------------------------------
+
+test('person avatars: set / get / has, rejects bad input, and cleans up on delete', async (t) => {
+  const { host } = await scaffold(t)
+  const person = await host.grants.addPerson('Ada')
+
+  assert.equal(host.hasPersonAvatar(person.id), false)
+  assert.equal(host.getPersonAvatar(person.id), null)
+
+  const img = Buffer.from('pretend-jpeg-bytes')
+  await host.setPersonAvatar(person.id, img)
+  assert.equal(host.hasPersonAvatar(person.id), true)
+  assert.deepEqual(host.getPersonAvatar(person.id), img)
+
+  await assert.rejects(host.setPersonAvatar('nobody', img), /no such person/)
+  await assert.rejects(host.setPersonAvatar(person.id, Buffer.alloc(0)), /empty/)
+  await assert.rejects(host.setPersonAvatar(person.id, Buffer.alloc(600 * 1024)), /too large/)
+
+  // Deleting the person removes the orphaned photo file.
+  await host.deletePerson(person.id)
+  assert.equal(host.hasPersonAvatar(person.id), false)
+})

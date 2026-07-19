@@ -209,6 +209,26 @@ class PearTuneHost {
     }
   }
 
+  // Person avatars: a small operator-supplied photo per person, shown on the
+  // dashboard. Stored as a plain file in the data dir (NOT the grant bee, which is
+  // scanned on every list) - the dashboard resizes to ~200px before upload, so these
+  // are tens of KB. The id is a host-minted person id, but encode it anyway so it can
+  // never escape the avatars dir.
+  _avatarDir () { return path.join(this.dataDir, 'avatars') }
+  _avatarFile (personId) { return path.join(this._avatarDir(), encodeURIComponent(String(personId))) }
+  hasPersonAvatar (personId) { try { return !!personId && fs.existsSync(this._avatarFile(personId)) } catch { return false } }
+  getPersonAvatar (personId) { try { return fs.readFileSync(this._avatarFile(personId)) } catch { return null } }
+  deletePersonAvatar (personId) { try { fs.unlinkSync(this._avatarFile(personId)) } catch {} }
+  async setPersonAvatar (personId, buffer) {
+    const person = await this.grants.getPerson(personId)
+    if (!person) throw new Error('no such person')
+    if (!Buffer.isBuffer(buffer) || !buffer.length) throw new Error('empty image')
+    if (buffer.length > 512 * 1024) throw new Error('image too large (max 512KB; it should be resized to ~200px first)')
+    fs.mkdirSync(this._avatarDir(), { recursive: true })
+    fs.writeFileSync(this._avatarFile(personId), buffer, { mode: 0o600 })
+    return { ok: true }
+  }
+
   get sourceView () {
     return this.sources.view()
   }
@@ -473,6 +493,7 @@ class PearTuneHost {
   async deletePerson (personId) {
     const person = await this.grants.deletePerson(personId)
     if (!person) return { deleted: null }
+    this.deletePersonAvatar(personId) // don't orphan the photo file
     this.log('host:person-deleted', { personId })
     return { deleted: person }
   }

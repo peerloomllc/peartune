@@ -57,6 +57,19 @@ async function readBody (req) {
   }
 }
 
+// Raw request body as a Buffer, capped - for the avatar image upload. The host caps
+// again at 512KB; this is a first fence so a huge upload never buffers fully.
+async function readRaw (req, max = 768 * 1024) {
+  const chunks = []
+  let n = 0
+  for await (const c of req) {
+    n += c.length
+    if (n > max) throw new Error('image too large')
+    chunks.push(c)
+  }
+  return Buffer.concat(chunks)
+}
+
 async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '', passwordSource = 'none' }) {
   // Before anything listens. A control plane on a LAN with no password is not a
   // configuration we are willing to run, so this throws rather than warns.
@@ -109,7 +122,7 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         const devices = await host.listDevices()
         const persons = await host.grants.listPersons()
         return json(res, 200, {
-          persons,
+          persons: persons.map(p => ({ ...p, hasAvatar: host.hasPersonAvatar(p.id) })),
           source: host.sourceView,
           sourceError: host.sourceError || null,
           libraryName: host.libraryName,
@@ -331,6 +344,26 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
       // Delete an EMPTY person (one holding no un-revoked device) from the store, so
       // the People list does not fill with dead rows. Refused for a person who still
       // holds a live device - revoke them first.
+      // Person avatar: GET serves the photo (an <img> carries the session cookie, so
+      // it is behind the same auth); POST sets it from raw image bytes (the dashboard
+      // resizes to ~200px JPEG first).
+      if (url.pathname === '/api/person/avatar') {
+        const id = url.searchParams.get('id')
+        if (req.method === 'GET') {
+          const buf = id ? host.getPersonAvatar(id) : null
+          if (!buf) { res.writeHead(404); return res.end() }
+          res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'private, no-cache' })
+          return res.end(buf)
+        }
+        if (req.method === 'POST') {
+          try {
+            return json(res, 200, await host.setPersonAvatar(id, await readRaw(req)))
+          } catch (e) {
+            return json(res, 400, { ok: false, error: e.message })
+          }
+        }
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/person/delete') {
         const { personId } = await readBody(req)
         if (!personId) return json(res, 400, { error: 'personId required' })

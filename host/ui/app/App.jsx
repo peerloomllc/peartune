@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   MusicNotes, UsersThree, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
   CaretRight, Plus, X, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
-  Lightning, CheckCircle, Folder, CaretLeft, Wrench
+  Lightning, CheckCircle, Folder, CaretLeft, Wrench, Camera
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
 import { api, copyText, ago, until, fmtDur, platformLabel, DONATE } from './api'
@@ -216,12 +216,53 @@ function Identity ({ hostKey }) {
   )
 }
 
+// Center-crop an image file to a square and re-encode it small (JPEG), entirely in
+// the browser, so an avatar upload is tens of KB and the host needs no image library.
+function resizeImage (file, size = 200) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const s = Math.min(img.width, img.height)
+      const c = document.createElement('canvas')
+      c.width = c.height = size
+      c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size)
+      URL.revokeObjectURL(img.src)
+      c.toBlob(b => b ? resolve(b) : reject(new Error('could not encode the image')), 'image/jpeg', 0.85)
+    }
+    img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error('that file is not an image')) }
+    img.src = URL.createObjectURL(file)
+  })
+}
+
+// A person's avatar: their photo if set, else a monogram on a colour derived from the
+// name (so the same person is always the same colour). A green corner dot marks online.
+// When editable, the whole circle is a file picker + a camera badge.
+function PersonAvatar ({ person, bust, online, onUpload }) {
+  const initial = (person.name || '?').trim().charAt(0).toUpperCase() || '?'
+  const hue = [...(person.name || '')].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 360, 7)
+  const pick = (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onUpload(f) }
+  const src = `/api/person/avatar?id=${encodeURIComponent(person.id)}${bust ? '&v=' + bust : ''}`
+  return (
+    <label className='avatar' style={{ '--hue': hue }} onClick={e => e.stopPropagation()}>
+      {person.hasAvatar
+        ? <img className='avatar-img' src={src} alt='' />
+        : <span className='avatar-mono' aria-hidden='true'>{initial}</span>}
+      {online > 0 && <span className='avatar-live' aria-hidden='true' />}
+      {onUpload && <>
+        <input type='file' accept='image/*' onChange={pick} hidden />
+        <span className='avatar-edit' aria-hidden='true'><Camera size={10} weight='fill' /></span>
+      </>}
+    </label>
+  )
+}
+
 /* ---- people-first access -------------------------------------------------- */
 function AccessPanel ({ state, refresh, toast, online }) {
   const [open, setOpen] = useState({})
   const [showRevoked, setShowRevoked] = useState(false)
   const [pname, setPname] = useState('')
   const [renaming, setRenaming] = useState(null) // { id, draft } while editing a person's name
+  const [bust, setBust] = useState({}) // personId -> nonce, to reload an <img> after re-upload
 
   const persons = (state.persons || []).filter(p => !p.revokedAt)
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
@@ -245,6 +286,19 @@ function AccessPanel ({ state, refresh, toast, online }) {
     if (r.error) return toast('Failed: ' + r.error, true)
     if (ok) toast(ok(r))
     refresh()
+  }
+  // Upload a person's photo: resize in the browser to a small square JPEG, POST the
+  // raw bytes, then bump the person's cache-bust nonce so the <img> reloads at once.
+  const uploadAvatar = async (personId, file) => {
+    try {
+      const blob = await resizeImage(file, 200)
+      const res = await fetch('/api/person/avatar?id=' + encodeURIComponent(personId), { method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob })
+      const r = await res.json().catch(() => ({}))
+      if (!res.ok || r.ok === false) return toast('Failed: ' + (r.error || 'could not save the photo'), true)
+      setBust(b => ({ ...b, [personId]: Date.now() }))
+      refresh()
+      toast('Photo updated.')
+    } catch (e) { toast('Failed: ' + e.message, true) }
   }
   const addPerson = () => {
     const name = pname.trim()
@@ -324,7 +378,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
                   <div className='person' key={p.id}>
                     <div className={'prow' + (expandable ? '' : ' flat')} onClick={() => !editing && expandable && setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
                       <CaretRight size={14} weight='bold' className={'caret' + (isOpen ? ' open' : '') + (expandable ? '' : ' hidden')} />
-                      <span className={'live' + (on ? '' : ' off')} aria-hidden='true' />
+                      <PersonAvatar person={p} bust={bust[p.id]} online={on} onUpload={f => uploadAvatar(p.id, f)} />
                       {editing
                         ? <>
                             <input
