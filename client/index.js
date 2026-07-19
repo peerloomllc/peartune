@@ -227,6 +227,8 @@ class PearTuneClient {
   // the operator decides who it belongs to (proposal 2026-07-14).
   getIdentity () { return this._request('identity.get') }
   setIdentity (params) { return this._request('identity.set', params) }
+  // Set (or clear) this device's own avatar - a small JPEG, base64 in params.avatar.
+  setAvatar (params) { return this._request('identity.avatar', params) }
 
   // Favorites (host-as-hub, milestone 3). No owner param: the host takes it from the
   // Noise-authenticated connection, exactly like identity above.

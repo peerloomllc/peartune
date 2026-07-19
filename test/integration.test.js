@@ -562,3 +562,27 @@ test('scheduled rescan: persists, clamps, arms a timer, and shares library.json 
   assert.equal(host.setRescanIntervalMin(-5), 0)
   assert.equal(host._rescanTimer, null, 'off clears the timer')
 })
+
+// --- device avatars (set by the device, over the identity channel) -----------
+
+test('a device sets and clears its own avatar over the wire, stored per deviceKey', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  const deviceKey = z32.encode(client.keyPair.publicKey)
+  assert.equal(host.avatars.has(deviceKey), false)
+
+  const bytes = Buffer.from('pretend-jpeg-bytes')
+  await client.setAvatar({ avatar: bytes.toString('base64') })
+  assert.equal(host.avatars.has(deviceKey), true)
+  assert.deepEqual(host.avatars.get(deviceKey), bytes)
+
+  // it surfaces on the dashboard device list
+  const dev = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
+  assert.equal(dev.hasAvatar, true)
+
+  // an empty avatar clears it
+  await client.setAvatar({ avatar: '' })
+  assert.equal(host.avatars.has(deviceKey), false)
+})

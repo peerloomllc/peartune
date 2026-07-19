@@ -216,6 +216,22 @@ function Identity ({ hostKey }) {
   )
 }
 
+// A device's avatar (the photo its user set on the phone, via /api/device/avatar),
+// else a monogram on a colour derived from a name. Display-only - the DEVICE sets the
+// photo, not the operator. `keyId` is the deviceKey; `name` seeds the fallback + colour.
+function Avatar ({ keyId, hasAvatar, name, online }) {
+  const initial = (name || '?').trim().charAt(0).toUpperCase() || '?'
+  const hue = [...(name || '')].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 360, 7)
+  return (
+    <span className={'avatar' + (online ? '' : ' idle')} style={{ '--hue': hue }}>
+      {hasAvatar && keyId
+        ? <img className='avatar-img' src={'/api/device/avatar?id=' + encodeURIComponent(keyId)} alt='' />
+        : <span className='avatar-mono' aria-hidden='true'>{initial}</span>}
+      {online && <span className='avatar-live' aria-hidden='true' />}
+    </span>
+  )
+}
+
 /* ---- people-first access -------------------------------------------------- */
 function AccessPanel ({ state, refresh, toast, online }) {
   const [open, setOpen] = useState({})
@@ -320,11 +336,16 @@ function AccessPanel ({ state, refresh, toast, online }) {
                 // Surface it on the collapsed row so you can see who's listening without
                 // expanding; the device rows carry it once open.
                 const playing = live.map(d => d.nowPlaying).find(Boolean)
+                // The person's "face" is their connected device with a photo, else the
+                // most-recently-seen one that has a photo; the monogram (person name)
+                // otherwise. Their avatar stands in for the person on this row.
+                const face = live.find(d => d.online && d.hasAvatar) ||
+                  [...live].filter(d => d.hasAvatar).sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0))[0] || null
                 return (
                   <div className='person' key={p.id}>
                     <div className={'prow' + (expandable ? '' : ' flat')} onClick={() => !editing && expandable && setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
                       <CaretRight size={14} weight='bold' className={'caret' + (isOpen ? ' open' : '') + (expandable ? '' : ' hidden')} />
-                      <span className={'live' + (on ? '' : ' off')} aria-hidden='true' />
+                      <Avatar keyId={face?.deviceKey} hasAvatar={!!face} name={p.name} online={on > 0} />
                       {editing
                         ? <>
                             <input
@@ -413,7 +434,7 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, loose 
   return (
     <div className='dev'>
       <div className='drow'>
-        {loose && <span className={'live' + (d.revokedAt ? ' rev' : (d.online ? '' : ' off'))} aria-hidden='true' />}
+        <Avatar keyId={d.deviceKey} hasAvatar={d.hasAvatar && !d.revokedAt} name={d.label} online={d.online && !d.revokedAt} />
         <div className='who'>
           <div className='name'>
             {d.label}

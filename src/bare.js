@@ -693,6 +693,14 @@ const methods = {
     }
   },
 
+  // Set (or clear) this device's avatar - `avatar` is base64 JPEG bytes (the UI
+  // resizes to ~200px first), or empty/null to remove it. Shows on the host dashboard.
+  async setAvatar ({ avatar }) {
+    await ensureConnected()
+    await client.setAvatar({ avatar: avatar || '' })
+    return { ok: true }
+  },
+
   async setSettings (patch) {
     return saveSettings(patch || {})
   },

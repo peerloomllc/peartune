@@ -145,6 +145,14 @@ a { color: var(--primary-strong); }
 .prow .caret.hidden { visibility: hidden; } /* keep the row's alignment, hide the toggle */
 .prow .caret.open { transform: rotate(90deg); }
 .who { flex: 1; min-width: 0; }
+
+/* device/person avatar: the photo the user set on their device, else a name-coloured
+   monogram, with a green corner dot when the device (or person) is online. */
+.avatar { position: relative; flex: 0 0 auto; width: 32px; height: 32px; display: grid; place-items: center; }
+.avatar-img { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; display: block; }
+.avatar-mono { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 600; color: #fff; background: hsl(var(--hue, 30) 45% 42%); }
+.avatar.idle .avatar-img, .avatar.idle .avatar-mono { opacity: .7; }
+.avatar-live { position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; border-radius: 50%; background: var(--good); border: 2px solid var(--surface); }
 .rename-input { flex: 1; min-width: 0; margin: 0; }
 /* The person-row actions sit side by side (Rename + Revoke all / Delete, or Save +
    Cancel while editing). A shared min-width lines them up instead of each button
