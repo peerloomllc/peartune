@@ -3827,20 +3827,38 @@ function OptionList ({ options, value, onChange }) {
   )
 }
 
-// Resize a data-URL image to a square JPEG in a canvas and return its base64 (no
-// data: prefix) - keeps an avatar tens of KB, so the host needs no image library.
-function resizeToBase64 (dataUrl, size = 200) {
+// A picked file as a data URL, via FileReader (the PearCircle path - a plain WebView
+// <input type=file>, no native picker/crop).
+function readFileDataUrl (file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result)
+    r.onerror = () => reject(r.error || new Error('read failed'))
+    r.readAsDataURL(file)
+  })
+}
+
+// Center-crop the image to a square and JPEG-compress in a canvas, stepping quality
+// down until it is comfortably small. Returns the base64 (no data: prefix) - the host
+// stores the raw JPEG and serves it back, so no image library is needed either side.
+function compressToAvatarB64 (dataUrl, size = 256) {
   return new Promise((resolve, reject) => {
     const img = new Image()
     img.onload = () => {
-      const s = Math.min(img.width, img.height)
       const c = document.createElement('canvas')
       c.width = c.height = size
-      c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size)
-      const out = c.toDataURL('image/jpeg', 0.85)
+      const sw = img.naturalWidth || img.width
+      const sh = img.naturalHeight || img.height
+      const crop = Math.min(sw, sh)
+      c.getContext('2d').drawImage(img, (sw - crop) / 2, (sh - crop) / 2, crop, crop, 0, 0, size, size)
+      let out = c.toDataURL('image/jpeg', 0.85)
+      for (const q of [0.85, 0.7, 0.55, 0.4]) {
+        out = c.toDataURL('image/jpeg', q)
+        if (out.length - out.indexOf(',') - 1 <= 300000) break // ~300KB base64 ceiling
+      }
       resolve(out.slice(out.indexOf(',') + 1))
     }
-    img.onerror = () => reject(new Error('bad image'))
+    img.onerror = () => reject(new Error('decode failed'))
     img.src = dataUrl
   })
 }
@@ -3897,13 +3915,17 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
   const [avatarLocal, setAvatarLocal] = useState(null)
   const avatar = avatarLocal ?? state.settings?.avatar ?? ''
   const initial = (userName || deviceName || '?').trim().charAt(0).toUpperCase() || '?'
-  const pickAvatar = async () => {
+  const fileRef = useRef(null)
+  // Plain WebView file picker (opens the gallery) + a canvas compress - the PearCircle
+  // path, no native crop. The picked photo shows at once and is pushed to the host.
+  const onPickFile = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-picking the same file
+    if (!file) return
     haptic('light')
     try {
-      const picked = await call('avatar:pickPhoto')
-      if (!picked || picked.canceled || !picked.dataUrl) return
-      const base64 = await resizeToBase64(picked.dataUrl, 200)
-      setAvatarLocal(base64) // show it at once
+      const base64 = await compressToAvatarB64(await readFileDataUrl(file), 256)
+      setAvatarLocal(base64)
       await call('setAvatar', { avatar: base64 }) // saves locally + pushes to the host
     } catch { haptic('warn') }
   }
@@ -3915,12 +3937,13 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
       {/* Profile header - always visible, like the other apps. Your photo, your name,
           and this device's name; it is what the server operator sees on their dashboard. */}
       <div className='profile'>
-        <button className='profile-av' onClick={pickAvatar} aria-label='Change your photo'>
+        <button className='profile-av' onClick={() => fileRef.current?.click()} aria-label='Change your photo'>
           {avatar
-            ? <img src={'data:image/jpeg;base64,' + avatar} alt='' />
+            ? <img src={avatar.startsWith('data:') ? avatar : 'data:image/jpeg;base64,' + avatar} alt='' />
             : <span className='profile-mono'>{initial}</span>}
           <span className='profile-cam' aria-hidden='true'><Camera size={13} weight='fill' /></span>
         </button>
+        <input ref={fileRef} type='file' accept='image/*' style={{ display: 'none' }} onChange={onPickFile} />
         <div className='profile-fields'>
           <input
             className='profile-name' value={userName} onChange={e => setUsr(e.target.value)}
