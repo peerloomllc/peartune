@@ -24,6 +24,7 @@ const { PearTuneClient } = require('../client')
 const { createAudioShim, mimeFor, DEFAULT_ART_SIZE } = require('../worklet/shim')
 const { streamParams } = require('../worklet/quality')
 const { isPairLink } = require('../protocol/link')
+const hostList = require('../worklet/hosts')
 const { coalesce, clientCall } = require('../worklet/outbox')
 const { AudioCache } = require('../worklet/cache')
 const { ArtStore } = require('../worklet/art-cache')
@@ -32,22 +33,37 @@ const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
 const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
 const HOSTS_FILE = path.join(DATA_DIR, 'hosts.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
+
+// PER-HOST state lives under DATA_DIR/lib/<libraryId>/ (multi-host, proposal 2026-07-19),
+// so switching libraries shows the right favorites, queue, playlists, pins, lease and
+// outbox instead of one host's state bleeding into another's. The AUDIO and ART blob
+// caches deliberately stay SHARED at the root (see AUDIO_DIR/ART_DIR below): their ids are
+// already namespaced by libraryId (protocol/ids.js) so nothing collides, the bytes de-dupe,
+// and - crucially - a track that is mid-play when you switch keeps streaming from the same
+// cache. A switch swaps the queue but never stops the music.
+const LIB_ROOT = path.join(DATA_DIR, 'lib')
+let activeLibraryId = null
+function libDir () {
+  if (!activeLibraryId) throw new Error('No active library.')
+  return path.join(LIB_ROOT, activeLibraryId)
+}
+
 // The persisted PLAY QUEUE, so a force-stop or a relaunch does not lose it. Holds
 // track IDs + render metadata (the shell's toQueue shape) + index + position +
 // shuffle/repeat - NEVER the loopback URLs, which carry the shim's port and change
 // every launch. On boot the shell rebuilds the paused queue and re-resolves URLs.
-const QUEUE_FILE = path.join(DATA_DIR, 'queue.json')
+const queueFile = () => path.join(libDir(), 'queue.json')
 // A read-through cache of THIS device's favorite trackIds. The host is the source of
 // truth (host-as-hub); this only lets the hearts render instantly and offline. Writes
 // still go to the host (favorites need a connection in Phase 1).
-const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json')
+const favoritesFile = () => path.join(libDir(), 'favorites.json')
 // A read-through cache of THIS device's playlist SUMMARIES ([{ id, name, count }]), so
 // the Playlists list renders instantly and offline. The host owns the truth; a
 // playlist's tracks and every edit still need a connection (Phase 4, like favorites).
-const PLAYLISTS_FILE = path.join(DATA_DIR, 'playlists.json')
+const playlistsFile = () => path.join(libDir(), 'playlists.json')
 // The offline write-queue: state writes (favorite / resume / count) made while the host
 // was unreachable, replayed in order on the next connect (milestone 3, phase 5).
-const OUTBOX_FILE = path.join(DATA_DIR, 'outbox.json')
+const outboxFile = () => path.join(libDir(), 'outbox.json')
 // The on-disk AUDIO cache: tracks played to the end, kept for offline playback and
 // evicted oldest-first under a size cap (milestone 3, phase 5B).
 const AUDIO_DIR = path.join(DATA_DIR, 'audio')
@@ -61,13 +77,13 @@ const DEFAULT_CACHE_CAP = 1024 * 1024 * 1024 // 1 GB
 // re-authorizes, so its downloads go dark after the grace; a device whose server is off
 // re-authorizes the moment it is back. Files are NOT deleted on expiry - re-pairing (a
 // fresh authorization) makes them playable again.
-const LEASE_FILE = path.join(DATA_DIR, 'lease.json')
+const leaseFile = () => path.join(libDir(), 'lease.json')
 const LEASE_GRACE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 // The PINNED-ALBUM registry (milestone 3, phase 5C): what the user explicitly downloaded,
 // separate from the auto-LRU cache. Maps albumId -> { id, name, artist, coverId, trackIds,
 // addedAt, complete }. The bytes live in the audio cache (marked pinned); this is the
 // human-facing list the Downloads view shows and unpins.
-const PINS_FILE = path.join(DATA_DIR, 'pins.json')
+const pinsFile = () => path.join(libDir(), 'pins.json')
 
 const DEFAULT_SETTINGS = {
   theme: 'system', deviceName: '', userName: '', avatar: '', streamQuality: 'auto',
@@ -133,17 +149,77 @@ function loadIdentity () {
   }
 }
 
-function loadHost () {
+// The paired-host LIST (multi-host, 2026-07-19). hosts.json holds the canonical v2 shape
+// { version, hosts:[{hostKey,libraryId,libraryName,addedAt}], activeHostKey }; the pure list
+// logic (including the v1 single-object upgrade) lives in worklet/hosts.js so it is tested
+// without a disk. Here we just read/normalize and write.
+function loadHostsFile () {
   try {
-    return JSON.parse(fs.readFileSync(HOSTS_FILE, 'utf8'))
+    return hostList.normalize(JSON.parse(fs.readFileSync(HOSTS_FILE, 'utf8')))
   } catch {
-    return null
+    return hostList.empty()
   }
 }
 
-function saveHost (h) {
+function saveHostsFile (f) {
   fs.mkdirSync(DATA_DIR, { recursive: true })
-  fs.writeFileSync(HOSTS_FILE, JSON.stringify(h))
+  fs.writeFileSync(HOSTS_FILE, JSON.stringify(f))
+}
+
+// The currently-active host object, or null. Everything that used to call loadHost() (one
+// host) now asks for the active one.
+function loadActiveHost () {
+  return hostList.activeHost(loadHostsFile())
+}
+
+// Adopt a library as the active one: point activeLibraryId at it, ensure its per-host dir
+// exists, migrate any pre-multi-host flat files into it, and (re)load its outbox. Cheap and
+// idempotent - a no-op when the library is already active - so connect/init/switch can all
+// call it freely. Called BEFORE any per-host state read/write.
+function useLibrary (libraryId) {
+  if (activeLibraryId === libraryId) return
+  activeLibraryId = libraryId
+  fs.mkdirSync(libDir(), { recursive: true })
+  migrateLegacyState()
+  outbox = loadOutbox()
+}
+
+// One-time upgrade from the pre-multi-host flat layout: the six per-host state files used to
+// sit directly in DATA_DIR. On the first load under multi-host there is exactly one host (the
+// v1 file upgraded to a one-element list), so move those files into ITS lib dir. Idempotent:
+// a file already migrated (or never present) is skipped; a dest that somehow exists is left
+// untouched and the stray root copy is dropped. The shared audio/art dirs are NOT touched -
+// they stay at the root by design.
+function migrateLegacyState () {
+  for (const n of ['queue.json', 'favorites.json', 'playlists.json', 'outbox.json', 'lease.json', 'pins.json']) {
+    const from = path.join(DATA_DIR, n)
+    let data
+    try { data = fs.readFileSync(from) } catch { continue } // nothing at the root to migrate
+    let destExists = true
+    try { fs.statSync(path.join(libDir(), n)) } catch { destExists = false }
+    if (!destExists) fs.writeFileSync(path.join(libDir(), n), data)
+    try { fs.unlinkSync(from) } catch {}
+    log('lib:migrated', { file: n })
+  }
+}
+
+// Remove ONE library's local state: delete its per-host dir, and reclaim its downloaded
+// audio from the SHARED cache. Track ids are host-unique (namespaced by libraryId), so a
+// removed host's cached/pinned bytes are unambiguously its own and safe to drop; its plain
+// LRU entries that we do not have listed just age out under the cap. Does not touch identity
+// or other libraries.
+function purgeLibrary (libraryId) {
+  const dir = path.join(LIB_ROOT, libraryId)
+  try {
+    const pins = JSON.parse(fs.readFileSync(path.join(dir, 'pins.json'), 'utf8'))
+    for (const alb of Object.values(pins || {})) {
+      for (const tid of (alb.trackIds || [])) { try { audioCache.remove(tid) } catch {} }
+    }
+  } catch {}
+  for (const n of ['queue.json', 'favorites.json', 'playlists.json', 'outbox.json', 'lease.json', 'pins.json']) {
+    try { fs.unlinkSync(path.join(dir, n)) } catch {}
+  }
+  try { fs.rmdirSync(dir) } catch {}
 }
 
 // --- settings ---------------------------------------------------------------
@@ -173,7 +249,7 @@ function saveSettings (patch) {
 // corrupt file is simply "no favorites cached yet".
 function loadFavCache () {
   try {
-    const o = JSON.parse(fs.readFileSync(FAVORITES_FILE, 'utf8'))
+    const o = JSON.parse(fs.readFileSync(favoritesFile(), 'utf8'))
     return { track: o.track || [], album: o.album || [], artist: o.artist || [] }
   } catch {
     return { track: [], album: [], artist: [] }
@@ -181,8 +257,8 @@ function loadFavCache () {
 }
 
 function saveFavCache (g) {
-  fs.mkdirSync(DATA_DIR, { recursive: true })
-  fs.writeFileSync(FAVORITES_FILE, JSON.stringify({
+  fs.mkdirSync(libDir(), { recursive: true })
+  fs.writeFileSync(favoritesFile(), JSON.stringify({
     track: g.track || [], album: g.album || [], artist: g.artist || []
   }))
 }
@@ -190,7 +266,7 @@ function saveFavCache (g) {
 // Same disposable-mirror deal for playlist summaries.
 function loadPlaylistCache () {
   try {
-    const o = JSON.parse(fs.readFileSync(PLAYLISTS_FILE, 'utf8'))
+    const o = JSON.parse(fs.readFileSync(playlistsFile(), 'utf8'))
     return Array.isArray(o) ? o : []
   } catch {
     return []
@@ -198,8 +274,8 @@ function loadPlaylistCache () {
 }
 
 function savePlaylistCache (items) {
-  fs.mkdirSync(DATA_DIR, { recursive: true })
-  fs.writeFileSync(PLAYLISTS_FILE, JSON.stringify(items || []))
+  fs.mkdirSync(libDir(), { recursive: true })
+  fs.writeFileSync(playlistsFile(), JSON.stringify(items || []))
 }
 
 // --- offline write-queue (milestone 3, phase 5) -----------------------------
@@ -208,7 +284,9 @@ function savePlaylistCache (items) {
 // replayed, in order, the next time we connect. The coalescing (a favorite/resume keeps
 // only its latest, a play count accumulates) lives in worklet/outbox.js so it is testable;
 // here we just persist it and drive the client.
-let outbox = loadOutbox()
+// Loaded per-active-library by useLibrary() - an unsent write targets a SPECIFIC host, so
+// it must not leak across a switch. Empty until a library is adopted.
+let outbox = []
 let flushing = false
 
 // The audio cache singleton. Its cap comes from settings (a Storage choice); the shim
@@ -225,7 +303,7 @@ const artStore = new ArtStore({ dir: ART_DIR })
 
 function loadOutbox () {
   try {
-    const o = JSON.parse(fs.readFileSync(OUTBOX_FILE, 'utf8'))
+    const o = JSON.parse(fs.readFileSync(outboxFile(), 'utf8'))
     return Array.isArray(o) ? o : []
   } catch {
     return []
@@ -233,8 +311,8 @@ function loadOutbox () {
 }
 
 function saveOutbox () {
-  fs.mkdirSync(DATA_DIR, { recursive: true })
-  fs.writeFileSync(OUTBOX_FILE, JSON.stringify(outbox))
+  fs.mkdirSync(libDir(), { recursive: true })
+  fs.writeFileSync(outboxFile(), JSON.stringify(outbox))
 }
 
 function enqueue (method, params) {
@@ -271,12 +349,12 @@ async function flushOutbox () {
 
 // --- the offline lease (phase 5B) -------------------------------------------
 function loadLastAuth () {
-  try { return Number(JSON.parse(fs.readFileSync(LEASE_FILE, 'utf8')).lastAuth) || 0 } catch { return 0 }
+  try { return Number(JSON.parse(fs.readFileSync(leaseFile(), 'utf8')).lastAuth) || 0 } catch { return 0 }
 }
 function stampAuth () {
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    fs.writeFileSync(LEASE_FILE, JSON.stringify({ lastAuth: Date.now() }))
+    fs.mkdirSync(libDir(), { recursive: true })
+    fs.writeFileSync(leaseFile(), JSON.stringify({ lastAuth: Date.now() }))
   } catch {}
 }
 // Cached audio plays only while the last successful authorization is inside the grace
@@ -290,24 +368,26 @@ function leaseValid () {
 // --- pinned-album registry (phase 5C) ---------------------------------------
 function loadPins () {
   try {
-    const o = JSON.parse(fs.readFileSync(PINS_FILE, 'utf8'))
+    const o = JSON.parse(fs.readFileSync(pinsFile(), 'utf8'))
     return o && typeof o === 'object' ? o : {}
   } catch {
     return {}
   }
 }
 function savePins (pins) {
-  fs.mkdirSync(DATA_DIR, { recursive: true })
-  fs.writeFileSync(PINS_FILE, JSON.stringify(pins))
+  fs.mkdirSync(libDir(), { recursive: true })
+  fs.writeFileSync(pinsFile(), JSON.stringify(pins))
 }
 
-// Wipe every local copy: downloaded audio, cached favorites/playlists, unsent writes, the
-// lease, and the pin registry. Used on UNPAIR (a deliberate, reliable purge point) - NOT on
-// a reconnect failure, which cannot tell a revoke from a server that is simply off.
-function purgeAll () {
+// Full account reset: wipe EVERY local copy - the shared audio/art blob caches plus every
+// paired library's per-host dir (favorites, playlists, queue, unsent writes, lease, pins).
+// Used by forget() (a deliberate goodbye) - NOT on a reconnect failure, which cannot tell a
+// revoke from a server that is simply off. Per-host removal (one library, identity kept)
+// goes through purgeLibrary() instead.
+function purgeAllLibraries (libraryIds) {
   try { audioCache.clear() } catch {}
   try { artStore.clear() } catch {}
-  for (const f of [FAVORITES_FILE, PLAYLISTS_FILE, OUTBOX_FILE, LEASE_FILE, PINS_FILE]) { try { fs.unlinkSync(f) } catch {} }
+  for (const id of libraryIds) purgeLibrary(id)
   outbox = []
   log('local:purged')
 }
@@ -360,6 +440,8 @@ async function ensureShim () {
 }
 
 async function connectTo (host) {
+  // Adopt this library BEFORE anything reads or writes per-host state (lease, outbox, queue).
+  useLibrary(host.libraryId)
   await ensureClient()
   await client.connect({ hostKey: host.hostKey, libraryId: host.libraryId })
   currentHost = host
@@ -414,7 +496,7 @@ async function connectTo (host) {
 async function ensureConnected () {
   if (connected && client) return
 
-  const host = loadHost()
+  const host = loadActiveHost()
   if (!host) throw new Error('Not paired with a library.')
 
   if (!reconnecting) {
@@ -455,7 +537,8 @@ const withBigArt = (x) => ({
 const methods = {
   async init () {
     identity = loadIdentity()
-    const host = loadHost()
+    const f = loadHostsFile()
+    const host = hostList.activeHost(f)
     const state = {
       deviceKey: b4a.toString(identity.publicKey, 'hex'),
       // The SAME encoding the host's dashboard prints in its device rows (grants
@@ -463,10 +546,16 @@ const methods = {
       // to revoke can match the phone in their hand to a line on the screen.
       deviceKeyZ32: z32.encode(identity.publicKey),
       host: host || null,
+      // The full paired-library list (active flagged), so Settings can render the switcher
+      // on launch without a second round-trip.
+      hosts: f.hosts.map((h) => ({ ...h, active: h.hostKey === f.activeHostKey })),
       settings: loadSettings(),
       connected: false
     }
     if (host) {
+      // Adopt the active library synchronously (paths + outbox) BEFORE the shim comes up or
+      // any per-host state is read; the background connect below also calls this, idempotently.
+      useLibrary(host.libraryId)
       // Bring the shim up FIRST, so its port and art base exist (and cached tracks can
       // play) even when the connect below fails - a cold launch offline still plays
       // your downloads.
@@ -509,7 +598,9 @@ const methods = {
       libraryId: paired.libraryId,
       libraryName: paired.libraryName
     }
-    saveHost(host)
+    // Additive, not overwriting: a second pairing ADDS a library and makes it active (a
+    // re-pair of a known host just refreshes + re-activates it, never duplicates the row).
+    saveHostsFile(hostList.addHost(loadHostsFile(), host, Date.now()))
 
     await connectTo(host)
     return { ...host, shimPort }
@@ -714,8 +805,8 @@ const methods = {
   // it, PAUSED, seeked to where you were. IDs + metadata only, never URLs.
   async saveQueueState (snapshot) {
     try {
-      fs.mkdirSync(DATA_DIR, { recursive: true })
-      fs.writeFileSync(QUEUE_FILE, JSON.stringify(snapshot || {}))
+      fs.mkdirSync(libDir(), { recursive: true })
+      fs.writeFileSync(queueFile(), JSON.stringify(snapshot || {}))
     } catch {}
 
     // If we hold the session token, mirror the queue to the host so another device can
@@ -749,13 +840,13 @@ const methods = {
   },
   async loadQueueState () {
     try {
-      return JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'))
+      return JSON.parse(fs.readFileSync(queueFile(), 'utf8'))
     } catch {
       return null
     }
   },
   async clearQueueState () {
-    try { fs.unlinkSync(QUEUE_FILE) } catch {}
+    try { fs.unlinkSync(queueFile()) } catch {}
     return { ok: true }
   },
 
@@ -1259,21 +1350,87 @@ const methods = {
     return { downloadCellular: s.downloadCellular }
   },
 
-  // Unpair. Forgets the host and drops the connection.
+  // The paired libraries, the active one flagged - Settings renders the switcher from this.
+  listHosts () {
+    const f = loadHostsFile()
+    return {
+      hosts: f.hosts.map((h) => ({ ...h, active: h.hostKey === f.activeHostKey })),
+      activeHostKey: f.activeHostKey
+    }
+  },
+
+  // Switch the active library. Tear down the current connection and dial the new host; the
+  // shim (and its stable loopback port) SURVIVES, and a track already streaming keeps playing
+  // from the shared, content-addressed audio cache - a switch swaps the queue but does not
+  // stop the music (proposal 2026-07-19; the same decoupling graceful-reconnect relies on).
+  // The shell reloads the new library's saved queue when it hears host:switched.
+  async switchHost ({ hostKey }) {
+    const f = hostList.setActive(loadHostsFile(), hostKey) // throws if not paired with it
+    saveHostsFile(f)
+    const host = hostList.activeHost(f)
+    if (client) { try { await client.close() } catch {} ; client = null }
+    connected = false
+    useLibrary(host.libraryId)
+    await connectTo(host)
+    emit('host:switched', { hostKey: host.hostKey, libraryId: host.libraryId, libraryName: host.libraryName, shimPort })
+    return { ...host, shimPort }
+  },
+
+  // Remove ONE library (per-host unpair). Purges just that library's local state and its
+  // downloaded audio; the device identity and every OTHER library are untouched - so re-adding
+  // it later reuses the same grant row rather than littering the operator's dashboard. If it
+  // was the active library, retarget to whatever remains (or fall back to the un-paired state
+  // when it was the last one). Full "forget everything" stays a separate reset (forget()).
+  async removeHost ({ hostKey }) {
+    const before = loadHostsFile()
+    const wasActive = before.activeHostKey === hostKey
+    const { file, removed } = hostList.removeHost(before, hostKey)
+    saveHostsFile(file)
+    if (removed) purgeLibrary(removed.libraryId)
+
+    if (wasActive) {
+      if (client) { try { await client.close() } catch {} ; client = null }
+      connected = false
+      const next = hostList.activeHost(file)
+      if (next) {
+        useLibrary(next.libraryId)
+        // Reconnect in the background so the RPC returns promptly; the shell swaps to the new
+        // library on host:switched and reloads its queue.
+        connectTo(next).catch((e) => {
+          log('remove:reconnect-failed', { err: e.message })
+          emit('host:disconnected', { hostKey: next.hostKey })
+        })
+        emit('host:switched', { hostKey: next.hostKey, libraryId: next.libraryId, libraryName: next.libraryName, shimPort })
+      } else {
+        // No libraries left: back to un-paired. The shim keeps listening (its port is stable
+        // and harmless); the shell shows the pairing wall.
+        activeLibraryId = null
+        emit('host:disconnected', { hostKey })
+      }
+    }
+
+    return this.listHosts()
+  },
+
+  // Unpair EVERYTHING (full account reset). Forgets every paired library and drops the
+  // connection.
   //
   // Note what this does NOT do: it does not touch the device identity. The
-  // keypair stays, so re-pairing to the same host reuses the same grant row
+  // keypair stays, so re-pairing to a host reuses the same grant row
   // rather than littering the operator's dashboard with a new device every time
   // someone unpairs and pairs again. The host still holds the old grant; it can
-  // revoke it if it wants the row gone.
+  // revoke it if it wants the row gone. (To drop a SINGLE library, use removeHost.)
   async forget () {
+    // Grab the list BEFORE we drop it, so every per-host dir gets purged too.
+    const all = loadHostsFile().hosts
     try {
       fs.unlinkSync(HOSTS_FILE)
     } catch {}
 
     // Unpair is a deliberate goodbye: wipe every local copy (downloads, cached state,
-    // the lease). This is the reliable purge point a reconnect failure could never be.
-    purgeAll()
+    // the lease) across all libraries. The reliable purge point a reconnect failure never is.
+    purgeAllLibraries(all.map((h) => h.libraryId))
+    activeLibraryId = null
 
     // Close the shim's HTTP server, not just the reference. Dropping the
     // reference alone would leave the loopback port bound for the life of the
