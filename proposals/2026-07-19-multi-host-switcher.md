@@ -4,6 +4,16 @@
 say) and switch between them like Plexamp switches servers. One library is
 active at a time; you manage the set from Settings.
 
+**Status (2026-07-19):** Implemented. Worklet layer (host list + per-library
+state + `listHosts`/`switchHost`/`removeHost`) and the Settings Libraries UI are
+both in, `npm run verify` green (334 tests). One piece is on-device follow-up: the
+"buffered track drains, then playback auto-advances into the new library's queue"
+continuity across a live switch — a track already playing is left untouched
+(music never stops) and the new library's saved queue loads when nothing is
+playing, but stitching the two while a player is live is ExoPlayer queue surgery
+to validate on the TCL, not blind-coded. Everything else (list, switch, add,
+remove, browse swap) is done.
+
 This is deliberately **switcher-first**. The full "gateway to multi-source"
 vision — connect to every host at once and present one blended library — is
 step 2 (its own proposal). The switcher is the small, safe first half, and the
@@ -118,22 +128,34 @@ This is the same "a transport change must not stop the music" principle as
 graceful-reconnect — a switch is an *intentional* transport change, so it reuses
 that decoupling rather than fighting it.
 
-### 4. Offline caches get namespaced by library (the real work)
+### 4. Per-host STATE gets namespaced; the blob caches stay shared (refined during build)
 
-Per-host state moves under `DATA_DIR/lib/<libraryId>/`:
-`favorites.json`, `playlists.json`, `queue.json`, `pins.json`, `lease.json`,
-`outbox.json`, the audio cache dir, and the art store. Account-level state
-(`identity.json`, `settings.json`, `hosts.json`) stays at the root.
+Per-host **state** moves under `DATA_DIR/lib/<libraryId>/`: `favorites.json`,
+`playlists.json`, `queue.json`, `pins.json`, `lease.json`, `outbox.json`.
+Account-level state (`identity.json`, `settings.json`, `hosts.json`) stays at the
+root.
 
-**Migration** (one-time, on first multi-host load): if legacy flat files exist,
-move them into the (single, pre-existing) active host's `lib/<libraryId>/` dir.
-Because track/art ids are already `libraryId`-scoped, the cached *content* is
-already unambiguous — this is purely relocating the index/pin/queue files so a
-switch shows the right library's favorites and queue.
+The **audio and art BLOB caches stay shared at the root** — a refinement from the
+original "namespace everything." The reasoning, which only became clear while
+wiring it: track/art ids are *already* `hash(libraryId + …)`, so a shared cache
+can never serve one host's bytes for another's request (no collision), the bytes
+**de-dupe** across libraries, and — the load-bearing reason — a track that is
+**mid-play when you switch keeps streaming from the same cache object**. If we
+re-pointed the audio cache to a new dir on switch, an in-flight (not-yet-fully-
+buffered) track would miss and stall — breaking the exact "keep the buffered
+track" behavior we chose. Sharing the blobs sidesteps that entirely. Removal
+still reclaims a host's downloads: `removeHost` deletes that library's pinned
+audio by id (ids are host-unique) and drops its state dir; its plain-LRU bytes
+age out under the cap.
 
-`purgeAll()` splits: **`removeHost(hostKey)`** purges just that host's
-`lib/<libraryId>/` dir and drops it from the list (identity kept); a separate
-**"Reset app"** still forgets everything (identity included).
+**Migration** (one-time, on first multi-host load): the v1 `hosts.json` upgrades
+to a one-element list, and the six legacy flat state files move into that host's
+`lib/<libraryId>/` dir. The shared audio/art dirs don't move.
+
+The old `purgeAll()` splits in two: **`removeHost(hostKey)`** purges just that
+library's state dir + its downloaded audio and drops it from the list (identity
+kept); **`forget()`** still forgets *everything* (all libraries + shared caches +
+identity untouched — same as before).
 
 ### 5. UI: pairing is no longer a wall; Settings grows a Libraries section
 
