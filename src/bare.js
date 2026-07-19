@@ -1371,7 +1371,17 @@ const methods = {
     if (client) { try { await client.close() } catch {} ; client = null }
     connected = false
     useLibrary(host.libraryId)
-    await connectTo(host)
+    // Dial the new host now, but do NOT let a transient failure abort the switch: tearing the
+    // old link down and immediately dialing can lose a race with the teardown (a one-off
+    // "host refused"). The active library is ALREADY switched (activeHostKey persisted), so on
+    // a failed first dial we just let the next request's ensureConnected reconnect and fire
+    // host:connected - exactly the app's normal offline-tolerant path. Either way we emit
+    // host:switched so the UI swaps and the new library's queue is offered.
+    try {
+      await connectTo(host)
+    } catch (e) {
+      log('switch:connect-deferred', { err: e.message })
+    }
     emit('host:switched', { hostKey: host.hostKey, libraryId: host.libraryId, libraryName: host.libraryName, shimPort })
     return { ...host, shimPort }
   },

@@ -938,8 +938,23 @@ export default function App () {
   async function switchLibrary (hostKey) {
     if (!hostKey || hostKey === state.host?.hostKey) return
     haptic('light')
+    // Update the UI optimistically from the tap, so the switcher and the Library header
+    // reflect the new library at once and never wait on (or drift with) a host event. The
+    // worklet's connect then drives the browse reload via host:connected.
+    setState(s => {
+      const target = (s.hosts || []).find(h => h.hostKey === hostKey)
+      return {
+        ...s,
+        host: target
+          ? { ...s.host, hostKey, libraryId: target.libraryId, libraryName: target.libraryName }
+          : s.host,
+        hosts: (s.hosts || []).map(h => ({ ...h, active: h.hostKey === hostKey })),
+        connected: false
+      }
+    })
+    setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery('')
     try {
-      await call('switchHost', { hostKey }) // host:switched updates state + reloads views
+      await call('switchHost', { hostKey })
     } catch (e) { setError(e.message) }
   }
 
@@ -2590,12 +2605,17 @@ function sourceText (state) {
   return sourceLabel(state.source)
 }
 
-// The paired libraries for the Settings switcher, active one flagged (multi-host,
-// 2026-07-19). init/listHosts/removeHost supply state.hosts; fall back to the single active
-// host so the section still renders on any pre-hosts state shape.
+// The paired libraries for the Settings switcher (multi-host, 2026-07-19). init/listHosts/
+// removeHost supply state.hosts; fall back to the single active host so the section still
+// renders on any pre-hosts state shape. ACTIVE is derived from state.host.hostKey - the one
+// source of truth the switch always updates - rather than a stored flag, so the indicator can
+// never drift from the library actually connected.
 function libsOf (state) {
-  if (Array.isArray(state.hosts) && state.hosts.length) return state.hosts
-  return state.host ? [{ ...state.host, active: true }] : []
+  const list = Array.isArray(state.hosts) && state.hosts.length
+    ? state.hosts
+    : (state.host ? [state.host] : [])
+  const activeKey = state.host?.hostKey
+  return list.map(h => ({ ...h, active: h.hostKey === activeKey }))
 }
 
 function sourceLabel (kind) {
