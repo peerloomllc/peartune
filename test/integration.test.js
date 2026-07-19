@@ -538,3 +538,27 @@ test('listDevices surfaces now-playing on the active device only, with a coverId
   assert.equal(me.nowPlaying.playing, true)
   assert.ok(me.nowPlaying.coverId, 'a coverId is resolved for the /api/art thumbnail')
 })
+
+// --- scheduled auto-rescan (host setting + timer) ----------------------------
+
+test('scheduled rescan: persists, clamps, arms a timer, and shares library.json without clobber', async (t) => {
+  const { host } = await scaffold(t)
+
+  assert.equal(host.getRescanIntervalMin(), 0) // default off
+  assert.equal(host._rescanTimer ?? null, null)
+
+  assert.equal(host.setRescanIntervalMin(30), 30)
+  assert.equal(host.getRescanIntervalMin(), 30)
+  assert.ok(host._rescanTimer, 'a positive interval arms the timer')
+
+  // name and interval share library.json - neither write may wipe the other.
+  host.setLibraryName('My Music')
+  assert.equal(host.getRescanIntervalMin(), 30, 'setLibraryName kept the interval')
+  host.setRescanIntervalMin(60)
+  assert.equal(host._readSettings().name, 'My Music', 'setRescanIntervalMin kept the name')
+
+  // clamps out of range, and off disarms.
+  assert.equal(host.setRescanIntervalMin(99999), 1440)
+  assert.equal(host.setRescanIntervalMin(-5), 0)
+  assert.equal(host._rescanTimer, null, 'off clears the timer')
+})

@@ -167,17 +167,46 @@ class PearTuneHost {
   // survives a restart (mirrors host/source.js). Sanitised the same way device/person
   // names are (trim, cap 64, strip control chars) - it is shown on the dashboard and
   // sent to a pairing device.
-  _libraryFile () { return path.join(this.dataDir, 'library.json') }
-  _readLibraryName () {
-    try { return JSON.parse(fs.readFileSync(this._libraryFile(), 'utf8')).name || null } catch { return null }
+  // A read-modify-write settings file { name, rescanIntervalMin }, so setting one
+  // never clobbers the other.
+  _settingsFile () { return path.join(this.dataDir, 'library.json') }
+  _readSettings () {
+    try { return JSON.parse(fs.readFileSync(this._settingsFile(), 'utf8')) || {} } catch { return {} }
   }
+  _writeSettings (patch) {
+    const next = { ...this._readSettings(), ...patch }
+    fs.mkdirSync(this.dataDir, { recursive: true })
+    fs.writeFileSync(this._settingsFile(), JSON.stringify(next, null, 2), { mode: 0o600 })
+    return next
+  }
+  _readLibraryName () { return this._readSettings().name || null }
   setLibraryName (name) {
     const clean = String(name == null ? '' : name).replace(/[\u0000-\u001f]/g, '').trim().slice(0, 64)
     if (!clean) throw new Error('library name required')
-    fs.mkdirSync(this.dataDir, { recursive: true })
-    fs.writeFileSync(this._libraryFile(), JSON.stringify({ name: clean }, null, 2))
+    this._writeSettings({ name: clean })
     this.libraryName = clean
     return clean
+  }
+
+  // Scheduled auto-rescan. 0 = off. Mostly for the FOLDER source: files dropped on
+  // the NAS appear without a manual Rescan (Navidrome/Jellyfin watch their own
+  // libraries, so for them the timer is just a periodic stats refresh). Coarse
+  // choices - a short interval re-parses every tag, real work on a big library.
+  getRescanIntervalMin () { return Number(this._readSettings().rescanIntervalMin) || 0 }
+  setRescanIntervalMin (min) {
+    const n = Math.max(0, Math.min(1440, Math.round(Number(min) || 0)))
+    this._writeSettings({ rescanIntervalMin: n })
+    this._armRescan(n)
+    return n
+  }
+  _armRescan (min = this.getRescanIntervalMin()) {
+    if (this._rescanTimer) { clearInterval(this._rescanTimer); this._rescanTimer = null }
+    if (min > 0) {
+      this._rescanTimer = setInterval(() => {
+        this.rescan().catch(e => this.log('host:auto-rescan-failed', { err: e.message }))
+      }, min * 60000)
+      this._rescanTimer.unref?.() // a background timer must not keep the process alive
+    }
   }
 
   get sourceView () {
@@ -205,6 +234,9 @@ class PearTuneHost {
       this.sourceError = e.message
       this.log('host:source-failed', { source: this.adapter.kind, err: e.message })
     }
+
+    // Arm the scheduled auto-rescan from the persisted setting (a no-op when off).
+    this._armRescan()
 
     this.server = this.dht.createServer({
       firewall: (remotePublicKey) => this._firewall(remotePublicKey)
@@ -492,6 +524,7 @@ class PearTuneHost {
     this.stopPairing()
     if (this._sweep) clearInterval(this._sweep)
     if (this._logPrune) clearInterval(this._logPrune)
+    if (this._rescanTimer) clearInterval(this._rescanTimer)
     if (this.server) await this.server.close()
     await this.bee.close()
     await this.stateBee.close()

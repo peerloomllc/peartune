@@ -115,6 +115,9 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
           libraryName: host.libraryName,
           libraryId: host.libraryId,
           hostKey: z32.encode(host.publicKey),
+          // Scheduled auto-rescan cadence in minutes (0 = off). Drives the source
+          // panel's Auto-rescan control.
+          rescanIntervalMin: host.getRescanIntervalMin(),
           stats,
           pairing: host.pairing,
           // Drives the dashboard's password controls: 'generated'/'file' = the
@@ -211,6 +214,17 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         const { name } = await readBody(req)
         try {
           return json(res, 200, { ok: true, libraryName: host.setLibraryName(name) })
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      // Set the scheduled auto-rescan cadence (minutes; 0 = off). Persisted host-side;
+      // the host clamps and re-arms its timer.
+      if (req.method === 'POST' && url.pathname === '/api/rescan-interval') {
+        const { minutes } = await readBody(req)
+        try {
+          return json(res, 200, { ok: true, rescanIntervalMin: host.setRescanIntervalMin(minutes) })
         } catch (e) {
           return json(res, 400, { ok: false, error: e.message })
         }

@@ -248,6 +248,8 @@ label { display: block; margin: 10px 0 4px; color: var(--subtle); font-size: 12p
 .rootpath { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .srcfields { min-height: 278px; }
 .srcactions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.autoscan { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; font-size: 13px; color: var(--muted); }
+.autoscan select { width: auto; min-width: 156px; }
 .srcactions button { width: 100%; }
 .srcmsg { text-align: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
 .srcmsg.ok { color: var(--good); }
