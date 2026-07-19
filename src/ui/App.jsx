@@ -19,7 +19,7 @@ import {
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
-  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders
+  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -106,6 +106,8 @@ export default function App () {
   const [reconnecting, setReconnecting] = useState(false)
   const [shuffle, setShuffle] = useState(false)
   const [repeat, setRepeat] = useState(0) // 0 off, 1 one, 2 all
+  const [sleep, setSleep] = useState(null) // sleep timer: { active, endOfTrack, deadline } from the shell
+  const [sleepOpen, setSleepOpen] = useState(false) // the sleep-timer picker sheet
   const [themePref, setThemePref] = useState(() => loadThemePref())
   // Favorited ids, grouped by kind (track / album / artist). Sets for O(1) heart checks.
   const [favs, setFavs] = useState(() => ({ track: new Set(), album: new Set(), artist: new Set() }))
@@ -159,7 +161,13 @@ export default function App () {
       // follows - update the length the navbar badge reads from this event instead,
       // or the badge stays stale until the next status tick.
       on('play:queued', (d) => setStatus(s => ({ ...(s || {}), queueLength: d.queueLength }))),
-      on('play:stopped', () => { setNow(null); setStatus(null); loadContinue(); loadHandoff() }),
+      on('play:stopped', () => { setNow(null); setStatus(null); setSleep(null); loadContinue(); loadHandoff() }),
+      // Sleep timer state from the shell (where the countdown actually lives). `fired`
+      // means the timer just stopped playback; the deadline drives the UI countdown.
+      on('sleep:state', (d) => {
+        setSleep(d.active ? d : null)
+        if (d.fired) toast('Sleep timer — playback paused.')
+      }),
       on('play:error', (d) => setError(d.error)),
       // The buffer ran dry while we were disconnected and could not get back in - a
       // revoke, or a network hole. play:stopped clears the player; this just says why,
@@ -1228,6 +1236,7 @@ export default function App () {
             now={now} status={status} expanded={expanded} skin={skin}
             shuffle={shuffle} repeat={repeat} onQueue={() => goTab('queue')}
             queueItems={queue?.items || []} queueIndex={queue?.index ?? 0} onJump={jumpTo}
+            sleep={sleep} onSleep={() => { haptic('light'); setSleepOpen(true) }}
             onShuffle={toggleShuffle} onRepeat={cycleRepeat} onStop={stopPlayback}
             onExpand={() => { haptic('light'); setExpanded(true) }}
             onCollapse={() => { haptic('light'); setExpanded(false) }}
@@ -1280,6 +1289,13 @@ export default function App () {
         />
       )}
       {viewing && <ArtViewer {...viewing} onClose={() => setViewing(null)} />}
+      {sleepOpen && (
+        <SleepSheet
+          sleep={sleep}
+          onClose={() => setSleepOpen(false)}
+          onPick={(opts) => { call('sleep', opts).catch(() => {}); setSleepOpen(false) }}
+        />
+      )}
       {donate && <DonationSheet onClose={() => setDonate(false)} />}
       {confirming && (
         <Confirm
@@ -3107,7 +3123,7 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
 // content padding along with it.
 function Player ({
   now, status, expanded, skin, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
-  onViewArt, onQueue, onStop, queueItems, queueIndex, onJump
+  onViewArt, onQueue, onStop, queueItems, queueIndex, onJump, sleep, onSleep
 }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
@@ -3124,7 +3140,7 @@ function Player ({
         <RetroPlayer
           now={now} status={status} shuffle={shuffle} repeat={repeat}
           onShuffle={onShuffle} onRepeat={onRepeat} onStop={onStop} onViewArt={onViewArt}
-          onCollapse={onCollapse}
+          onCollapse={onCollapse} sleep={sleep} onSleep={onSleep}
           items={queueItems} index={queueIndex} onJump={onJump}
         />
       </div>
@@ -3247,9 +3263,69 @@ function Player ({
           <button className='icon' onClick={() => call('seekBy', { seconds: -15 })} aria-label='Back 15 seconds'>
             <ArrowCounterClockwise size={15} /> 15
           </button>
+          <button
+            className={'icon sleepbtn' + (sleep?.active ? ' on' : '')}
+            onClick={() => { haptic('light'); onSleep() }}
+            aria-label='Sleep timer'
+          >
+            <Moon size={16} weight={sleep?.active ? 'fill' : 'regular'} />
+            {sleep?.active && <SleepCountdown sleep={sleep} />}
+          </button>
           <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds'>
             15 <ArrowClockwise size={15} />
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// The little countdown next to the moon. The AUTHORITATIVE timer runs in the shell (so it
+// survives the screen going off); this is display-only, ticking against the deadline the
+// shell handed us. If the WebView was frozen while backgrounded it just resumes from the
+// real remaining time when it wakes.
+function SleepCountdown ({ sleep }) {
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => tick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
+  if (sleep.endOfTrack) return <span className='sleeplabel'>end</span>
+  const s = Math.max(0, Math.round(((sleep.deadline || 0) - Date.now()) / 1000))
+  return <span className='sleeplabel'>{Math.floor(s / 60)}:{String(s % 60).padStart(2, '0')}</span>
+}
+
+// Pick how long until playback fades out and pauses. The choice goes to the shell
+// (call('sleep', ...)), which owns the countdown; this sheet only shows what is armed.
+function SleepSheet ({ sleep, onClose, onPick }) {
+  const cur = sleep?.active ? sleep.minutes : null
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Sleep timer</h1>
+        <p className='muted sm'>Fade out and pause after…</p>
+        <div className='acts'>
+          {[15, 30, 45, 60].map(m => (
+            <button
+              key={m}
+              className={'wide' + (cur === m ? ' on' : '')}
+              onClick={() => onPick({ minutes: m })}
+            >
+              <Moon size={16} weight='regular' /> {m} minutes
+            </button>
+          ))}
+          <button
+            className={'wide' + (sleep?.endOfTrack ? ' on' : '')}
+            onClick={() => onPick({ endOfTrack: true })}
+          >
+            <MusicNotes size={16} weight='regular' /> End of track
+          </button>
+          {sleep?.active && (
+            <button className='wide' onClick={() => onPick({ off: true })}>
+              Turn off timer
+            </button>
+          )}
+          <button className='wide' onClick={onClose}>Cancel</button>
         </div>
       </div>
     </div>
@@ -3260,7 +3336,7 @@ function Player ({
 // a live spectrum, chunky transport. It reads the SAME now/status and drives the SAME controls
 // as the modern player (call('toggle'|'prev'|'next'|'seekTo'), onShuffle/onRepeat/onStop), so it
 // is purely a re-facing. An original look inspired by the classic player, not anyone's artwork.
-function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onStop, onViewArt, onCollapse, items = [], index = 0, onJump }) {
+function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onStop, onViewArt, onCollapse, sleep, onSleep, items = [], index = 0, onJump }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
@@ -3269,6 +3345,22 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
   const s = Math.floor(pos / 1000)
   const mm = String(Math.floor(s / 60)).padStart(2, '0')
   const ss = String(s % 60).padStart(2, '0')
+
+  // The ZZZ toggle's face: ZZZ idle, whole minutes left when a timed sleep is armed, END
+  // for end-of-track. A 1s tick refreshes the minute readout while a timed one runs (the
+  // status ticks would already re-render mid-song, but this keeps it live while paused too).
+  const [, sleepTick] = useState(0)
+  const sleepTimed = sleep?.active && !sleep.endOfTrack
+  useEffect(() => {
+    if (!sleepTimed) return
+    const id = setInterval(() => sleepTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [sleepTimed])
+  const sleepLabel = !sleep?.active
+    ? 'ZZZ'
+    : sleep.endOfTrack
+      ? 'END'
+      : Math.max(0, Math.ceil(((sleep.deadline || 0) - Date.now()) / 60000)) + 'm'
 
   const vizRef = useRef(null)
   const playRef = useRef(playing); playRef.current = playing
@@ -3381,6 +3473,7 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
             <span className='rt-sp' />
             <button className={'rt-btn rt-tg' + (shuffle ? ' lit' : '')} onClick={onShuffle}>SHUF</button>
             <button className={'rt-btn rt-tg' + (repeat ? ' lit' : '')} onClick={onRepeat}>{repeat === 1 ? 'REP1' : 'REP'}</button>
+            <button className={'rt-btn rt-tg' + (sleep?.active ? ' lit' : '')} onClick={() => { haptic('light'); onSleep() }} aria-label='Sleep timer'>{sleepLabel}</button>
           </div>
         </div>
       </div>

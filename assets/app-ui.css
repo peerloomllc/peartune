@@ -1185,6 +1185,13 @@ button.icon.mode.on {
   color: var(--color-text-muted);
   gap: .25rem;
 }
+.sub-transport button.icon.sleepbtn.on {
+  color: var(--color-primary);
+}
+.sleeplabel {
+  font-variant-numeric: tabular-nums;
+  font-size: .72rem;
+}
 .retroplayer {
   padding: 0;
   font-family:
@@ -2000,6 +2007,10 @@ h1 .tune {
   align-items: center;
   justify-content: center;
   gap: .5rem;
+}
+.sheet .acts button.wide.on {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 button.icon.qpill {
   flex: none;

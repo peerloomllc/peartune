@@ -607,6 +607,9 @@ button.icon.mode.on { color: var(--color-primary); }
 .sub-transport button.icon {
   flex: none; font-size: .78rem; color: var(--color-text-muted); gap: .25rem;
 }
+/* Sleep timer: amber when armed, with a compact mm:ss (or "end") next to the moon. */
+.sub-transport button.icon.sleepbtn.on { color: var(--color-primary); }
+.sleeplabel { font-variant-numeric: tabular-nums; font-size: .72rem; }
 
 /* --- classic (retro) player skin ----------------------------------------- */
 /* A deliberately theme-INDEPENDENT face: fixed metal chrome + a green LCD, the look
@@ -928,6 +931,10 @@ h1 .tune { color: var(--color-primary); }
 .sheet .acts { display: flex; flex-direction: column; gap: .5rem; margin-top: .5rem; }
 .sheet .acts button {
   display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+}
+/* The armed sleep option, highlighted so you can see what is set at a glance. */
+.sheet .acts button.wide.on {
+  border-color: var(--color-primary); color: var(--color-primary);
 }
 
 /* The queue, made visible. Collapsed, a pill with the count; expanded, the
