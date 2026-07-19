@@ -65,7 +65,7 @@ docker run -d --name peartune-host \
   -e PEARTUNE_NAME="My Library" \
   -v "$PWD/data:/data" \
   -v /srv/music:/music:ro \
-  ghcr.io/peerloomllc/peartune-host:0.2.5
+  ghcr.io/peerloomllc/peartune-host:0.2.6
 docker logs peartune-host   # generated password
 ```
 
