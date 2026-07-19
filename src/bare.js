@@ -20,6 +20,7 @@ const b4a = require('b4a')
 const z32 = require('z32')
 const hcrypto = require('hypercore-crypto')
 
+const HyperDHT = require('hyperdht')
 const { PearTuneClient } = require('../client')
 const { createAudioShim, mimeFor, DEFAULT_ART_SIZE } = require('../worklet/shim')
 const { streamParams } = require('../worklet/quality')
@@ -95,6 +96,14 @@ const DEFAULT_SETTINGS = {
 // transcode and no surprise data use until we actually know we are on cellular.
 let networkType = 'wifi'
 
+// ONE HyperDHT node for the whole worklet, reused across every client instance. A client is
+// torn down and rebuilt on each reconnect and library switch; if each made (and destroyed)
+// its OWN dht node, every reconnect would dial from a COLD, un-bootstrapped node - and the
+// first connect off a cold node races its own bootstrap and fails fast as a "host refused"
+// (then the retry, off the now-warm node, succeeds). Sharing one warm node fixes that
+// transient at the source and makes every reconnect faster. Passed to PearTuneClient, so its
+// close() leaves the node alone (_ownDht=false); we only destroy it on a full account reset.
+let dht = null
 let client = null
 let shim = null
 let shimPort = null
@@ -396,7 +405,8 @@ function purgeAllLibraries (libraryIds) {
 
 async function ensureClient () {
   if (client) return client
-  client = new PearTuneClient({ keyPair: identity, log })
+  if (!dht) dht = new HyperDHT()
+  client = new PearTuneClient({ keyPair: identity, dht, log })
 
   // Instant presence: the host pushes 'session-superseded' the moment another of this
   // person's devices claims the play token, so we stop NOW instead of waiting for our next
@@ -442,8 +452,15 @@ async function ensureShim () {
 async function connectTo (host) {
   // Adopt this library BEFORE anything reads or writes per-host state (lease, outbox, queue).
   useLibrary(host.libraryId)
-  await ensureClient()
-  await client.connect({ hostKey: host.hostKey, libraryId: host.libraryId })
+  // Pin the client we're dialing to a LOCAL ref. A library switch calls connectTo directly
+  // while browse loaders can fire ensureConnected's single-flight reconnect in parallel (the
+  // window where `connected` is briefly false) - two connect paths racing on the `client`
+  // global. Whoever's dial the `client` global no longer points at has lost the race; it must
+  // drop its connection instead of publishing a stale one (that race was reading `.conn` off a
+  // client the winner had already nulled).
+  const c = await ensureClient()
+  await c.connect({ hostKey: host.hostKey, libraryId: host.libraryId })
+  if (client !== c) { try { await c.close() } catch {} ; return }
   currentHost = host
   connected = true
   // A successful connect IS a fresh authorization - renew the offline lease.
@@ -453,13 +470,17 @@ async function connectTo (host) {
   // THROUGH the live connection for anything not cached, which is what makes a revoke
   // stop the music.
   await ensureShim()
-  shim.setClient(client)
+  if (client !== c || !c.conn) { return } // swapped out (or torn down) during ensureShim
+
+  shim.setClient(c)
 
   // The connection is gone: revoked, or the host went away, or - by far the most
   // common - Android suspended this app in the background and the link timed out.
   // Those are indistinguishable from here, so do NOT guess at the reason. Say what
-  // happened and let whoever asks next reconnect.
-  client.conn.once('close', () => {
+  // happened and let whoever asks next reconnect. Ignore a close for a client we've
+  // already been superseded by - its disconnect is not ours to report.
+  c.conn.once('close', () => {
+    if (client !== c) return
     connected = false
     log('host:disconnected')
     emit('host:disconnected', { hostKey: host.hostKey })
@@ -1455,6 +1476,9 @@ const methods = {
 
     if (client) await client.close()
     client = null
+    // A full reset tears the shared dht node down too (a later pair recreates it). Client
+    // close() leaves it alone by design, so destroy it here or it would leak past a forget.
+    if (dht) { try { await dht.destroy() } catch {} ; dht = null }
     currentHost = null
 
     log('host:forgotten')
