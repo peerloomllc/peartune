@@ -354,6 +354,36 @@ button.destructive { background: var(--bad); color: #fff; }
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
 
+/* ---- tabs: People & Devices | Music Source --------------------------------
+   The stats rail stays pinned; the two panels become tabs so whichever is showing
+   gets the WHOLE height between the bars. This kills the old short-screen scrunch
+   at any resolution - the growing People list can no longer be squeezed by the
+   music-source panel below it, because that panel now lives on its own tab. The
+   tab labels carry the section name, so the in-panel heads are hidden here (and
+   the body's top padding restored). */
+.tabbar { flex: 0 0 auto; display: flex; gap: 8px; }
+.tabbar > button {
+  flex: 1 1 0; min-width: 0; display: inline-flex; align-items: center; justify-content: center;
+  gap: 7px; background: var(--surface); color: var(--muted); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 12px; font-size: 13.5px; font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tabbar > button:hover:not(.on) { background: var(--surface-hover); border-color: var(--border-strong); filter: none; }
+.tabbar > button.on { background: var(--primary); color: var(--on-primary); border-color: transparent; }
+/* a source problem shows on its tab even while you're on the People tab */
+.tabbar > button.warn:not(.on) { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+
+.tabpanes { flex: 1 1 auto; min-height: 0; display: flex; }
+.tabpane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.tabpane[hidden] { display: none; }
+/* People fills the tab (its inner .list scrolls); Music source keeps its natural
+   height and sits at the top with room below. */
+.tabpane > .panel.grow { flex: 1 1 auto; min-height: 0; }
+.tabpane > .panel:not(.grow) { flex: 0 0 auto; }
+.tabpane > .panel > .panel-head { display: none; }
+.tabpane > .panel > .list { padding-top: 14px; }
+.tabpane > .panel > .panel-body { padding-top: 14px; }
+
 /* ---- mobile --------------------------------------------------------------- */
 @media (max-width: 620px) {
   .app { padding: 0 12px; }
@@ -373,6 +403,11 @@ button.destructive { background: var(--bad); color: #fff; }
      pick Subsonic/Jellyfin (the taller forms). The top bar + action bar stay pinned. */
   .panel, .panel.grow { flex: 0 0 auto; }
   .list { overflow: visible; }
+  /* Tabs stay, but the active tab flows at natural height into the one page
+     scroll (rather than filling a fixed area) - matching the rest of mobile. */
+  .tabpanes, .tabpane { display: block; overflow: visible; }
+  .tabpane[hidden] { display: none; }
+  .tabpane > .panel.grow, .tabpane > .panel:not(.grow) { flex: 0 0 auto; }
   /* The folder browser's list is a fixed 244px on desktop; on a phone that can push
      the bottom-sheet taller than the screen, so cap it to the viewport. */
   .fb-list { height: auto; max-height: 40vh; min-height: 160px; }

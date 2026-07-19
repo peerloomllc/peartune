@@ -68,6 +68,7 @@ export default function App () {
   const [state, setState] = useState(null)
   const [note, setNote] = useState(null)
   const [modal, setModal] = useState(null) // 'pair' | 'support' | null
+  const [tab, setTab] = useState('people') // 'people' | 'source'
   const [pref, setPref] = useState(loadThemePref())
 
   useEffect(() => { applyThemePref(pref) }, [pref])
@@ -98,6 +99,7 @@ export default function App () {
 
   const st = state.stats || {}
   const liveDevices = (state.devices || []).filter(d => !d.revokedAt)
+  const online = liveDevices.filter(d => d.online).length
 
   return (
     <div className='app'>
@@ -113,8 +115,27 @@ export default function App () {
           <div className='stat'><div className='num'>{st.artists || 0}</div><div className='lbl'>artists</div></div>
         </div>
 
-        <AccessPanel state={state} refresh={refresh} toast={toast} online={liveDevices.filter(d => d.online).length} />
-        <SourcePanel state={state} refresh={refresh} toast={toast} />
+        <div className='tabbar' role='tablist' aria-label='Dashboard sections'>
+          <button role='tab' id='tab-people' aria-controls='pane-people' aria-selected={tab === 'people'}
+            className={tab === 'people' ? 'on' : ''} onClick={() => setTab('people')}>
+            People &amp; Devices
+          </button>
+          <button role='tab' id='tab-source' aria-controls='pane-source' aria-selected={tab === 'source'}
+            className={(tab === 'source' ? 'on' : '') + (state.sourceError ? ' warn' : '')} onClick={() => setTab('source')}>
+            Music Source
+          </button>
+        </div>
+
+        {/* Both panels stay mounted (hidden, not unmounted) so in-flight edits -
+            a renamed person, a half-filled source form - survive a tab switch. */}
+        <div className='tabpanes'>
+          <div className='tabpane' id='pane-people' role='tabpanel' aria-labelledby='tab-people' hidden={tab !== 'people'}>
+            <AccessPanel state={state} refresh={refresh} toast={toast} online={online} />
+          </div>
+          <div className='tabpane' id='pane-source' role='tabpanel' aria-labelledby='tab-source' hidden={tab !== 'source'}>
+            <SourcePanel state={state} refresh={refresh} toast={toast} />
+          </div>
+        </div>
       </div>
 
       <div className='actionbar'>
