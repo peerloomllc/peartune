@@ -302,7 +302,9 @@ class FolderAdapter {
     // tag so two files with the same relPath under different roots do not collide.
     const sourceKey = tag ? `${tag}/${relPath}` : relPath
     const ext = path.extname(abs)
-    const base = { relPath, sourceKey, root, absPath: abs, size: stat.size, suffix: ext.slice(1).toLowerCase() }
+    // mtime is our "date added" - for a self-hosted folder it is when the file
+    // landed (a download's write time), the best signal a plain directory offers.
+    const base = { relPath, sourceKey, root, absPath: abs, size: stat.size, addedAt: stat.mtimeMs ? Math.round(stat.mtimeMs) : null, suffix: ext.slice(1).toLowerCase() }
 
     let md = null
     try {
@@ -419,6 +421,9 @@ class FolderAdapter {
         artist,
         artistId,
         year: b.rows.find(r => r.year)?.year ?? null,
+        // "Added" = the newest file in the album, so dropping a track into an existing
+        // album floats it back up the Recently-Added shelf.
+        addedAt: Math.max(0, ...b.rows.map(r => r.addedAt || 0)) || null,
         coverId: id, // an album IS the unit of artwork here; art() resolves it lazily
         songCount: b.rows.length,
         dir: b.dir,

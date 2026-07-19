@@ -411,8 +411,16 @@ test('stats advertises album sorts but NO song sort (search3 has no order)', asy
   a._call = async () => ({})
   const { sorts } = await a.stats()
   assert.deepEqual(sorts.tracks.keys, [], 'no all-songs sort on Subsonic')
-  assert.deepEqual(sorts.albums.keys, ['name', 'artist', 'year'])
+  assert.deepEqual(sorts.albums.keys, ['name', 'artist', 'year', 'added'])
   assert.deepEqual(sorts.artists.keys, [])
+})
+
+test('the "added" album sort maps to getAlbumList2 type=newest', async () => {
+  const a = make()
+  let seen = null
+  a._call = async (method, params) => { seen = params; return { albumList2: { album: [] } } }
+  await a.list({ type: 'albums', sort: 'added' })
+  assert.equal(seen.type, 'newest')
 })
 
 test('album sort maps to a getAlbumList2 type; year passes a full year range', async () => {

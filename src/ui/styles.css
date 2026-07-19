@@ -296,6 +296,20 @@ summary { cursor: pointer; padding: .5rem; }
    width. A long nowrap album title ("LED Spirals" (Extended Version) [From
    "John Wick"]) therefore blows the column out past the screen edge - the
    classic CSS grid blowout. min-width:0 on the cell is the same guard. */
+/* Recently Added shelf: a horizontal strip of the newest albums above the grid. Fixed
+   tiles that scroll sideways, set apart from the grid so it reads as a shelf. */
+.shelf { margin: .3rem 0 1.2rem; }
+.shelf-head { font-size: .95rem; font-weight: 600; color: var(--color-text-primary); margin: 0 0 .6rem; }
+.shelf-row { display: flex; gap: .7rem; overflow-x: auto; padding-bottom: .35rem; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
+.shelf-row::-webkit-scrollbar { display: none; }
+.shelf-item {
+  flex: 0 0 auto; width: 128px; scroll-snap-align: start;
+  background: none; border: none; padding: 0; text-align: left; cursor: pointer; color: inherit;
+}
+.shelf-item .cover { width: 128px; height: 128px; }
+.shelf-t { margin-top: .4rem; font-size: .8rem; font-weight: 500; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shelf-a { font-size: .74rem; color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .grid {
   display: grid; grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
   gap: 1rem .9rem; margin-top: .5rem;
