@@ -6,8 +6,10 @@ non-technical user runs the always-on daemon without a terminal. It wraps the sa
 
 ## What it does
 
-- Runs the PearTune host in-process and opens its dashboard in the app window.
-- Lives in the tray/menubar (Open PearTune · Open in browser · Quit) and runs at login.
+- Runs the PearTune host in-process — a background service, no app window. Like the
+  PearCal/PearCircle seeders, you reach it through your browser.
+- Lives in the tray/menubar (Open dashboard · Quit) and runs at login. "Open
+  dashboard" (and a manual launch) opens `127.0.0.1:8741` in your real browser.
 - Binds the dashboard to **loopback** (`127.0.0.1`) — the control plane is only
   reachable from this machine, so there's no password to type. The P2P host
   (HyperDHT) runs regardless, so phones pair and stream from anywhere as usual.
