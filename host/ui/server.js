@@ -97,6 +97,16 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         return stream.pipe(res)
       }
 
+      // --- device avatar (a photo the user set on that device) ---
+      // Behind the same auth; an <img> carries the session cookie. Keyed by deviceKey.
+      if (req.method === 'GET' && url.pathname === '/api/device/avatar') {
+        const id = url.searchParams.get('id')
+        const buf = id ? host.avatars.get(id) : null
+        if (!buf) { res.writeHead(404); return res.end() }
+        res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'private, no-cache' })
+        return res.end(buf)
+      }
+
       // --- state ---
       if (req.method === 'GET' && url.pathname === '/api/state') {
         // A BROKEN SOURCE MUST NOT BREAK THE DASHBOARD. stats() talks to the source,
@@ -145,7 +155,9 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
             // What this device is playing RIGHT NOW, or null. Only ever set on the one
             // device that holds its owner's session (see listDevices) - { title, artist,
             // playing, coverId }; coverId loads via /api/art.
-            nowPlaying: d.nowPlaying || null
+            nowPlaying: d.nowPlaying || null,
+            // The user set a photo on this device; it loads via /api/device/avatar.
+            hasAvatar: !!d.hasAvatar
           }))
         })
       }

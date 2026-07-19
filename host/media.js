@@ -14,7 +14,7 @@ const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 // Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
 // so a new mutating method cannot accidentally ship without a scope check.
 const MUTATING = new Set([
-  'identity.set', 'fav.set', 'resume.set', 'count.bump',
+  'identity.set', 'identity.avatar', 'fav.set', 'resume.set', 'count.bump',
   'playlist.create', 'playlist.rename', 'playlist.delete', 'playlist.add', 'playlist.setTracks',
   'session.claim', 'session.set'
 ])
@@ -28,7 +28,7 @@ function ownerOf (grant) {
   return grant.personId ? 'p:' + grant.personId : 'd:' + grant.deviceKey
 }
 
-function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state = null, presence = null, log = () => {} }) {
+function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state = null, presence = null, avatars = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Set once the channel is open (below). Called on close to drop this connection's push
@@ -171,6 +171,24 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
         log('identity:set', { label: row.label, claims: row.claimedUser || null })
 
         return send.res.send({ id, body: { ok: true, ...(await identityOf(row)) } })
+      }
+
+      // A device sets its OWN avatar: a small JPEG, base64 in params.avatar. Keyed by
+      // grant.deviceKey (this connection's Noise-authenticated key), so a device can
+      // only ever set its own photo. The bytes go to the file-backed avatar store, not
+      // the grant bee. An empty/absent avatar clears it.
+      case 'identity.avatar': {
+        if (!grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!avatars) return safeErr(id, ERR.NOT_FOUND, 'avatars unavailable')
+        try {
+          const buf = params?.avatar ? Buffer.from(String(params.avatar), 'base64') : null
+          if (!buf || !buf.length) avatars.delete(grant.deviceKey)
+          else avatars.set(grant.deviceKey, buf)
+        } catch (e) {
+          return safeErr(id, ERR.BAD_PARAMS, e.message)
+        }
+        log('identity:avatar', { bytes: (params?.avatar || '').length })
+        return send.res.send({ id, body: { ok: true } })
       }
 
       // --- user state: favorites (host-as-hub, milestone 3) ------------------

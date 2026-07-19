@@ -23,6 +23,7 @@ const { Grants } = require('./grants')
 const { UserState } = require('./state')
 const { decide, sweepKills, Connections } = require('./gate')
 const { Presence } = require('./presence')
+const { AvatarStore } = require('./avatars')
 
 // How often to sweep live connections for an expired guest grant. `decide()` covers
 // connect; this covers a guest that expires WHILE connected. 30s is fine for a scheduled
@@ -80,6 +81,10 @@ class PearTuneHost {
     // token" to another device's connection (host/presence.js). Only ever holds channels the
     // firewall already admitted; a revoke destroys the connection, which unregisters here.
     this.presence = new Presence()
+
+    // Device avatars (a photo the user sets on their phone, sent over the identity
+    // channel). Files in the data dir, keyed by deviceKey - see host/avatars.js.
+    this.avatars = new AvatarStore(path.join(this.dataDir, 'avatars'))
 
     // One interface, two implementations. The app never learns which is behind the
     // media API, which is what keeps the raw-folder path a first-class citizen
@@ -387,6 +392,9 @@ class PearTuneHost {
         // So a session.claim here can push "you were superseded" to the device that
         // held the token (cross-device handoff, instant presence).
         presence: this.presence,
+        // A device sets its own avatar (identity.avatar), keyed by this connection's
+        // Noise-authenticated deviceKey - it can only ever write its own.
+        avatars: this.avatars,
         log: (msg, data) => this.log(msg, { device: short, ...data })
       })
     })
@@ -462,6 +470,7 @@ class PearTuneHost {
   async deleteDevice (deviceKey) {
     const row = await this.grants.deleteGrant(deviceKey)
     if (!row) return { deleted: null, killed: 0 }
+    this.avatars.delete(deviceKey) // don't orphan the photo file
     const killed = this.connections.kill(deviceKey)
     this.log('host:device-deleted', { device: Grants.keyOf(deviceKey).slice(0, 8), killed })
     return { deleted: row, killed }
@@ -504,7 +513,7 @@ class PearTuneHost {
           }
         }
       }
-      return { ...r, online, nowPlaying }
+      return { ...r, online, nowPlaying, hasAvatar: this.avatars.has(r.deviceKey) }
     }))
   }
 
