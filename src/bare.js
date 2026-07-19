@@ -597,6 +597,47 @@ const methods = {
     return { items }
   },
 
+  // Genres are the BROADEST way in - list them, then a genre page is a grid of its
+  // albums. Same wire methods as artists (library.list / library.get with a new
+  // `genres` / `genre` type); the host does the work, this just adds artwork.
+  async genres ({ sort, order } = {}) {
+    await ensureConnected()
+    const page = await client.list({ type: 'genres', sort, order })
+    return { ...page, items: page.items.map(withArt) }
+  },
+
+  // A genre page is a grid of its albums (tracks only for a loose-tagged genre with
+  // no album of its own - the same fallback artists use).
+  async genre ({ id }) {
+    await ensureConnected()
+    const g = await client.get({ id, type: 'genre' })
+    if (!g) return null
+    return {
+      ...withBigArt(g),
+      albums: (g.albums || []).map(withArt),
+      tracks: (g.tracks || []).map(withArt)
+    }
+  },
+
+  // Every track in a genre, in album order - what "Play" on a genre means. Mirrors
+  // artistTracks: one round trip per album, plus the loose-track fallback.
+  async genreTracks ({ id }) {
+    await ensureConnected()
+    const g = await client.get({ id, type: 'genre' })
+    if (!g) return { items: [] }
+    if (!(g.albums || []).length) return { items: (g.tracks || []).map(withArt) }
+
+    const items = []
+    for (const al of g.albums || []) {
+      const full = await client.get({ id: al.id, type: 'album' })
+      if (!full) continue
+      const art = full.coverId && shim ? shim.artUrlFor(full.coverId) : null
+      const artFull = full.coverId && shim ? shim.artUrlFor(full.coverId, 1200) : null
+      for (const t of full.tracks || []) items.push({ ...t, art, artFull })
+    }
+    return { items }
+  },
+
   async search ({ q }) {
     await ensureConnected()
     const r = await client.search({ q })

@@ -39,7 +39,9 @@ const { trackId } = require('../../protocol/ids')
 const SUBSONIC_SORTS = {
   tracks: { keys: [], reversible: false },
   albums: { keys: ['name', 'artist', 'year'], reversible: false },
-  artists: { keys: [], reversible: false }
+  artists: { keys: [], reversible: false },
+  // getGenres is alphabetical only (the default), like getArtists - offer none.
+  genres: { keys: [], reversible: false }
 }
 const ALBUM_LIST_TYPE = {
   name: 'alphabeticalByName',
@@ -284,6 +286,19 @@ class SubsonicAdapter {
       return { type, items, nextCursor: null }
     }
 
+    if (type === 'genres') {
+      // Optional: a subset server without getGenres gets an empty tab, not a crash.
+      // The genre's own NAME is its id (that is what byGenre / getSongsByGenre take).
+      const sr = await this._optional('getGenres')
+      const items = (sr?.genres?.genre || []).map(g => ({
+        id: g.value,
+        name: g.value,
+        albumCount: g.albumCount ?? null,
+        coverId: null // no per-genre art in Subsonic; the grid shows a placeholder
+      }))
+      return { type, items, nextCursor: null }
+    }
+
     if (type === 'albums') {
       const listType = ALBUM_LIST_TYPE[sort] || 'alphabeticalByName'
       // byYear is the one ordering that needs a range; without fromYear/toYear the
@@ -433,6 +448,27 @@ class SubsonicAdapter {
         coverId: a.coverArt || a.id,
         tracks: (a.song || []).map(s => this._track(s))
       }
+    }
+
+    // A genre IS its albums (id is the genre name). getAlbumList2 type=byGenre pages,
+    // but the genre grid asks for the lot, so pull a generous single page. A genre
+    // with albums shows the album grid; if a server only tags loose songs (no album
+    // per genre), fall back to getSongsByGenre so the page is not a dead end.
+    if (type === 'genre') {
+      const sr = await this._call('getAlbumList2', { type: 'byGenre', genre: id, size: 500, offset: 0 })
+      const albums = (sr.albumList2?.album || []).map(al => ({
+        id: al.id,
+        name: al.name,
+        artist: al.artist || null,
+        year: al.year ?? null,
+        songCount: al.songCount ?? null,
+        coverId: al.coverArt || al.id
+      }))
+      const out = { id, name: id, coverId: null, albums, tracks: [] }
+      if (albums.length) return out
+      const s = await this._optional('getSongsByGenre', { genre: id, count: 200 })
+      out.tracks = (s?.songsByGenre?.song || []).map(song => this._track(song))
+      return out
     }
 
     // A server-owned playlist, resolved to its tracks. Read-only (we do not write

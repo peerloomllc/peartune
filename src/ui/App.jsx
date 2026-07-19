@@ -72,6 +72,7 @@ export default function App () {
   const [albums, setAlbums] = useState([])
   const [cursor, setCursor] = useState(0)
   const [artists, setArtists] = useState(null)
+  const [genres, setGenres] = useState(null)
   const [songs, setSongs] = useState(null)
   const [songCursor, setSongCursor] = useState(0)
   const [density, setDensity] = useState('2')
@@ -423,7 +424,7 @@ export default function App () {
   // Which host capability key backs each browse view (the Songs view is 'tracks'
   // server-side), and the {sort,order} params for a view's active choice - empty
   // when none, so a call falls through to the source's default order.
-  const SORT_TYPE = { albums: 'albums', artists: 'artists', songs: 'tracks' }
+  const SORT_TYPE = { genres: 'genres', albums: 'albums', artists: 'artists', songs: 'tracks' }
   const sortParams = (view) => sortParamsFor(sortRef.current, view)
 
   // Change (or clear) the sort for a view and reload it from the top. The new params
@@ -440,6 +441,7 @@ export default function App () {
     haptic('light')
     if (view === 'albums') { setAlbums([]); setCursor(0); setAlbumsLoaded(false); loadAlbums(0, params) }
     else if (view === 'artists') { setArtists(null); loadArtists(params) }
+    else if (view === 'genres') { setGenres(null); loadGenres(params) }
     else if (view === 'songs') { setSongs(null); setSongCursor(0); loadSongs(0, params) }
   }
 
@@ -494,6 +496,22 @@ export default function App () {
     setBrowse('artists')
     if (artists && !force) return
     await loadArtists()
+  }
+
+  // Genres load once, like artists - the host returns the whole set in one call.
+  async function loadGenres (params) {
+    try {
+      const page = await call('genres', { ...(params ?? sortParams('genres')) })
+      setGenres(page.items)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  async function showGenres (force) {
+    setBrowse('genres')
+    if (genres && !force) return
+    await loadGenres()
   }
 
   // The Songs view. It exists because Navidrome answers an empty-query search3
@@ -1025,6 +1043,10 @@ export default function App () {
       const r = await call('artistTracks', { id: item.id })
       return r.items || []
     }
+    if (item.type === 'genre') {
+      const r = await call('genreTracks', { id: item.id })
+      return r.items || []
+    }
     return []
   }
 
@@ -1126,6 +1148,17 @@ export default function App () {
         favs={favs} onFav={favSupported ? onFav : null}
       />
     )
+  } else if (top?.type === 'genre') {
+    screen = (
+      <GenreScreen
+        id={top.id} name={top.name} now={now} onPlay={playFrom}
+        onBack={pop} onLong={setMenu}
+        onGenreAction={(genreId, action) => menuAction({ type: 'genre', id: genreId }, action)}
+        onOpenAlbum={(id) => push({ type: 'album', id })}
+        onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
+        favs={favs} onFav={favSupported ? onFav : null}
+      />
+    )
   } else if (top?.type === 'playlist') {
     // Two kinds share this screen: our own (editable) and the server's (read-only).
     // The `server` flag flips which worklet method fetches it and hides the edit tools.
@@ -1191,7 +1224,7 @@ export default function App () {
   } else {
     screen = (
       <Library
-        state={state} albums={albums} artists={artists} songs={songs}
+        state={state} albums={albums} artists={artists} genres={genres} songs={songs}
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
@@ -1207,6 +1240,7 @@ export default function App () {
           // Albums/Artists but "filter the loaded list" on Songs, so carrying a query
           // across that boundary would show a stale, wrong-shaped result.
           setQuery(''); setResults(null)
+          if (b === 'genres') return showGenres()
           if (b === 'artists') return showArtists()
           if (b === 'songs') return showSongs()
           return setBrowse('albums')
@@ -1219,6 +1253,7 @@ export default function App () {
         onMoreSongs={() => loadSongs(songCursor)}
         onOpenAlbum={(id) => push({ type: 'album', id })}
         onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
+        onOpenGenre={(g) => push({ type: 'genre', id: g.id, name: g.name })}
         onPlay={playFrom}
         onLong={setMenu}
       />
@@ -1735,11 +1770,11 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 }
 
 function Library ({
-  state, albums, artists, songs, cursor, songCursor, density,
+  state, albums, artists, genres, songs, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
-  onOpenAlbum, onOpenArtist, onPlay, onLong
+  onOpenAlbum, onOpenArtist, onOpenGenre, onPlay, onLong
 }) {
   // Bind the generic onFav(kind, item) to per-kind heart handlers for the leaves.
   const favTrack = onFav ? (t => onFav('track', t)) : null
@@ -1866,7 +1901,7 @@ function Library ({
         <p className='muted sm'>
           {songFilter
             ? `${shownSongs.length} of ${songs ? songs.length : 0} loaded songs`
-            : count(browse, { albums, artists, songs })}
+            : count(browse, { albums, artists, genres, songs })}
           {sourceText(state) && <> · {sourceText(state)}</>}
         </p>
       </header>
@@ -1887,9 +1922,12 @@ function Library ({
         </div>
         {!searching && (
           <div className='pickrow'>
+            {/* Ordered least → most granular: a genre holds artists, an artist holds
+                albums, an album holds songs. */}
             <div className='seg'>
-              <button className={browse === 'albums' ? 'on' : ''} onClick={() => onBrowse('albums')}>Albums</button>
+              <button className={browse === 'genres' ? 'on' : ''} onClick={() => onBrowse('genres')}>Genres</button>
               <button className={browse === 'artists' ? 'on' : ''} onClick={() => onBrowse('artists')}>Artists</button>
+              <button className={browse === 'albums' ? 'on' : ''} onClick={() => onBrowse('albums')}>Albums</button>
               <button className={browse === 'songs' ? 'on' : ''} onClick={() => onBrowse('songs')}>Songs</button>
             </div>
             {/* One "Display" control (layout + sort) instead of two. Stays PUT and
@@ -1968,6 +2006,10 @@ function Library ({
                       )
                     : <Empty />)
               : <SkeletonRows />)
+          : browse === 'genres'
+            ? (genres
+                ? <GenreGrid genres={genres} onOpen={onOpenGenre} d={D} />
+                : <SkeletonGrid d={D} />)
           : browse === 'artists'
             ? (artists
                 ? <ArtistGrid artists={artists} onOpen={onOpenArtist} onLong={onLong} d={D} favs={favs} onFav={onFav} />
@@ -2459,8 +2501,9 @@ function pairError (msg = '') {
   return 'Pairing failed. Show a fresh code on your server and try again.'
 }
 
-function count (browse, { albums, artists, songs }) {
+function count (browse, { albums, artists, genres, songs }) {
   if (browse === 'artists') return `${artists ? artists.length : 0} artists`
+  if (browse === 'genres') return `${genres ? genres.length : 0} genres`
   // "60 albums" is the whole truth; "100 songs" is not - it is the first page of a
   // list we are still walking. Say so rather than lying about the size of someone's
   // library.
@@ -2650,6 +2693,30 @@ function ArtistGrid ({ artists, onOpen, onLong, d = DENSITY[2], favs, onFav, emp
                 show their songs. */}
             {a.albumCount > 0 && (
               <div className='muted sm sub'>{a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'}</div>
+            )}
+          </div>
+        </Tile>
+      ))}
+    </div>
+  )
+}
+
+// Genres reuse the album (square) tile - a genre's cover is its first album's, so
+// the grid is real artwork, not a wall of grey. No long-press menu or heart: a genre
+// is a doorway to its albums, not a thing you favourite. Subsonic/Jellyfin genres
+// carry no art, so those fall back to the placeholder cover.
+function GenreGrid ({ genres, onOpen, d = DENSITY[2], empty = <p className='muted center-p'>No genres.</p> }) {
+  if (!genres.length) return empty
+  const list = d.cols === 1
+  return (
+    <div className={'grid' + (list ? ' aslist' : '')} style={{ '--cols': d.cols }}>
+      {genres.map(g => (
+        <Tile key={g.id} className='album' onPress={() => onOpen(g)}>
+          <Cover src={g.art} />
+          <div className='meta'>
+            <div className='t sm'>{g.name}</div>
+            {g.albumCount > 0 && (
+              <div className='muted sm sub'>{g.albumCount} {g.albumCount === 1 ? 'album' : 'albums'}</div>
             )}
           </div>
         </Tile>
@@ -2856,6 +2923,74 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
 // `_i` - see the worklet's playlistDetail - so a track that failed to resolve this
 // session is never dropped by reordering or by a neighbour's removal. React keys use the
 // STABLE `_k` (not `_i`, which reordering reassigns) so a drag animates a move.
+// A genre's own screen: a grid of its albums (a doorway one level broader than an
+// artist). No big cover header - a genre has no single face - just its name, a
+// Play/Shuffle/Queue bar, and the albums. A loose-tagged genre with no album of its
+// own falls back to its tracks, the same as an artist.
+function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay, onLong, onGenreAction, favs, onFav }) {
+  const [genre, setGenre] = useState(null)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    let live = true
+    call('genre', { id })
+      .then(g => {
+        if (!live) return
+        // A null means the host has no such genre - which is also what an older host
+        // says about a type it does not implement. Say so rather than spinning.
+        if (g) setGenre(g)
+        else setErr('This library cannot browse by genre. The server may be running an older version of PearTune.')
+      })
+      .catch(e => { if (live) setErr(e.message) })
+    return () => { live = false }
+  }, [id])
+
+  const hasContent = genre && (!!genre.albums.length || !!genre.tracks?.length)
+  return (
+    <div className='app'>
+      <Back onClick={onBack} />
+
+      <div className='plhead'>
+        <h1>{genre?.name || name}</h1>
+        {genre && (
+          <p className='muted sm'>
+            {genre.albums.length
+              ? `${genre.albums.length} ${genre.albums.length === 1 ? 'album' : 'albums'}`
+              : `${genre.tracks?.length || 0} ${genre.tracks?.length === 1 ? 'track' : 'tracks'}`}
+          </p>
+        )}
+      </div>
+
+      {hasContent && (
+        <Actions
+          onPlay={() => onGenreAction(id, 'play')}
+          onShuffle={() => onGenreAction(id, 'shuffle')}
+          onQueue={() => onGenreAction(id, 'queue')}
+        />
+      )}
+
+      {err && <div className='error'>{err}</div>}
+      {!genre && !err && <p className='muted center-p'>Loading…</p>}
+
+      {genre && (genre.albums.length
+        ? <Grid albums={genre.albums} onOpen={onOpenAlbum} onLong={onLong} favs={favs} onFav={onFav} />
+        : genre.tracks?.length
+          ? (
+            <ul className='tracks'>
+              {genre.tracks.map(t => (
+                <Row
+                  key={t.id} t={t} on={now?.trackId === t.id}
+                  onPlay={() => onPlay(genre.tracks, t)} onLong={onLong} art
+                  fav={favs?.track?.has(t.id)} onFav={onFav ? (x => onFav('track', x)) : null}
+                />
+              ))}
+            </ul>
+            )
+          : <p className='muted center-p'>Nothing here.</p>)}
+    </div>
+  )
+}
+
 function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onRename, onDelete, onSetTracks, server, sourceName }) {
   const [pl, setPl] = useState(null)
   const [err, setErr] = useState(null)

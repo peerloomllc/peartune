@@ -397,3 +397,37 @@ test('a sorted page is stable across repeated calls (the memo does not corrupt)'
   const two = (await a.list({ type: 'tracks', sort: 'year', order: 'desc' })).items.map(t => t.id)
   assert.deepEqual(one, two)
 })
+
+// --- genres: the broadest way in ------------------------------------------
+
+test('genres are indexed from tags: a genre is its albums, genreless tracks are skipped', async () => {
+  const a = await scanned()
+  const stats = await a.stats()
+
+  // Only Led Zeppelin IV carries a genre tag in the fixtures, so exactly one genre -
+  // proof that the 7 tracks WITHOUT a genre tag are not swept into an empty/"null"
+  // bucket (the `if (!t.genre) continue` guard).
+  assert.equal(stats.genres, 1)
+
+  const { items } = await a.list({ type: 'genres' })
+  assert.equal(items.length, 1)
+  const rock = byName(items, 'Rock')
+  assert.ok(rock, 'the ID3 genre, "Rock"')
+  assert.equal(rock.albumCount, 1)
+  assert.ok(rock.coverId, "a genre's cover is its first album's, not a grey placeholder")
+})
+
+test('a genre drills into its albums; an unknown genre id is a clean null', async () => {
+  const a = await scanned()
+  const { items } = await a.list({ type: 'genres' })
+  const g = await a.get({ id: items[0].id, type: 'genre' })
+  assert.equal(g.name, 'Rock')
+  assert.deepEqual(g.albums.map(al => al.name), ['Led Zeppelin IV'])
+  assert.equal(await a.get({ id: 'no-such-genre', type: 'genre' }), null)
+})
+
+test('genres advertise a name sort, reversible', async () => {
+  const a = await scanned()
+  const { sorts } = await a.stats()
+  assert.deepEqual(sorts.genres, { keys: ['name'], reversible: true })
+})

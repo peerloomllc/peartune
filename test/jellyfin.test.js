@@ -160,3 +160,34 @@ test('track and album sort map to SortBy/SortOrder; default is unchanged', async
   await a.list({ type: 'albums', sort: 'year' })
   assert.match(params.SortBy, /^ProductionYear/)
 })
+
+// --- genres ---------------------------------------------------------------
+
+test('list({type:"genres"}) maps MusicGenres', async () => {
+  const a = make()
+  a._call = async (path) => {
+    assert.equal(path, '/MusicGenres')
+    return { Items: [{ Id: 'g1', Name: 'Rock', ImageTags: { Primary: 'x' } }, { Id: 'g2', Name: 'Jazz' }] }
+  }
+  const r = await a.list({ type: 'genres' })
+  assert.equal(r.items.length, 2)
+  assert.equal(r.items[0].id, 'g1')
+  assert.equal(r.items[0].name, 'Rock')
+  assert.equal(r.items[0].coverId, 'g1') // has a Primary image
+  assert.equal(r.items[1].coverId, null) // none -> placeholder
+})
+
+test('get({type:"genre"}) returns the genre albums filtered by GenreIds', async () => {
+  const a = make()
+  a._call = async (path, params) => {
+    if (path === '/MusicGenres') return {} // not used here
+    if (path.startsWith('/Users/')) return { Id: 'g1', Name: 'Rock' }
+    assert.equal(params.IncludeItemTypes, 'MusicAlbum')
+    assert.equal(params.GenreIds, 'g1')
+    return { Items: [{ Id: 'al-1', Name: 'IV', ProductionYear: 1971 }] }
+  }
+  const r = await a.get({ id: 'g1', type: 'genre' })
+  assert.equal(r.name, 'Rock')
+  assert.equal(r.albums.length, 1)
+  assert.equal(r.albums[0].name, 'IV')
+})

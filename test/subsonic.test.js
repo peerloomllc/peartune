@@ -440,3 +440,54 @@ test('a song sort is silently ignored (search3 takes no order), not an error', a
   assert.equal(params.query, '', 'still the empty-query all-songs call')
   assert.equal('sort' in params, false, 'no sort leaks into the Subsonic request')
 })
+
+// --- genres ---------------------------------------------------------------
+
+test('list({type:"genres"}) maps getGenres; the genre name is its id', async () => {
+  const a = make()
+  a._call = async (method) => {
+    assert.equal(method, 'getGenres')
+    return { genres: { genre: [{ value: 'Rock', songCount: 10, albumCount: 2 }, { value: 'Jazz', albumCount: 1 }] } }
+  }
+  const r = await a.list({ type: 'genres' })
+  assert.equal(r.items.length, 2)
+  assert.deepEqual(r.items[0], { id: 'Rock', name: 'Rock', albumCount: 2, coverId: null })
+})
+
+test('a missing getGenres degrades to an empty tab, not a throw', async () => {
+  const a = make()
+  a._call = async (method) => {
+    if (method === 'getGenres') throw new Error('subsonic getGenres: not implemented (code 70)')
+    return {}
+  }
+  const r = await a.list({ type: 'genres' })
+  assert.deepEqual(r.items, [])
+})
+
+test('get({type:"genre"}) returns the genre\'s albums via byGenre', async () => {
+  const a = make()
+  a._call = async (method, params) => {
+    assert.equal(method, 'getAlbumList2')
+    assert.equal(params.type, 'byGenre')
+    assert.equal(params.genre, 'Rock')
+    return { albumList2: { album: [{ id: 'al-1', name: 'IV', artist: 'Zep', year: 1971, songCount: 8, coverArt: 'al-1' }] } }
+  }
+  const r = await a.get({ id: 'Rock', type: 'genre' })
+  assert.equal(r.name, 'Rock')
+  assert.equal(r.albums.length, 1)
+  assert.equal(r.albums[0].coverId, 'al-1')
+  assert.equal(r.albums[0].artist, 'Zep')
+})
+
+test('a genre with no albums falls back to its loose songs', async () => {
+  const a = make()
+  a._call = async (method, params) => {
+    if (method === 'getAlbumList2') return { albumList2: { album: [] } }
+    if (method === 'getSongsByGenre') { assert.equal(params.genre, 'Field Recordings'); return { songsByGenre: { song: [{ id: 's1', title: 'Birdsong' }] } } }
+    return {}
+  }
+  const r = await a.get({ id: 'Field Recordings', type: 'genre' })
+  assert.equal(r.albums.length, 0)
+  assert.equal(r.tracks.length, 1)
+  assert.equal(r.tracks[0].title, 'Birdsong')
+})

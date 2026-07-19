@@ -360,8 +360,10 @@ button.more { width: 100%; margin: 1.2rem 0 0; }
   background: var(--color-surface-base);
   padding: .1rem 0 .45rem;
 }
-.pickrow { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; }
-.pickrow .seg { flex: 1; }
+.pickrow { display: flex; align-items: center; gap: .4rem; margin-top: .4rem; }
+/* min-width:0 lets the four-pill segment shrink instead of shoving the Display
+   button onto a second line. */
+.pickrow .seg { flex: 1; min-width: 0; }
 /* The single Display icon (layout + sort). Disabled + faded when the active view has
    neither to offer, kept in place so the row does not reflow. */
 button.icon.dens {
@@ -402,6 +404,11 @@ button.icon.dens:disabled { opacity: .4; }
   font-weight: 500; background: transparent; color: var(--color-text-secondary);
 }
 .seg button.on { background: var(--color-primary); color: var(--color-text-on-primary); }
+/* The library browse segment carries FOUR pills (Genres / Artists / Albums / Songs)
+   next to the Display button, so it runs tighter than the default two/three-pill seg
+   - just enough that the Display button stays on the same row. Scoped to .pickrow so
+   the other segments (quality picker, You sub-picker) keep their roomier padding. */
+.pickrow .seg button { padding: .5rem .4rem; font-size: .8rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* The streaming-quality picker has five options (Auto / Original / 320k / 192k /
    128k) - too many to split the pill evenly without clipping the last one, so it
    keeps each button its natural width and scrolls instead. */
