@@ -19,7 +19,7 @@ import {
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
-  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon
+  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -3827,6 +3827,24 @@ function OptionList ({ options, value, onChange }) {
   )
 }
 
+// Resize a data-URL image to a square JPEG in a canvas and return its base64 (no
+// data: prefix) - keeps an avatar tens of KB, so the host needs no image library.
+function resizeToBase64 (dataUrl, size = 200) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const s = Math.min(img.width, img.height)
+      const c = document.createElement('canvas')
+      c.width = c.height = size
+      c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size)
+      const out = c.toDataURL('image/jpeg', 0.85)
+      resolve(out.slice(out.indexOf(',') + 1))
+    }
+    img.onerror = () => reject(new Error('bad image'))
+    img.src = dataUrl
+  })
+}
+
 function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality, skin, onSkin }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [copied, setCopied] = useState(false)
@@ -3874,9 +3892,67 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
   const [open, setOpen] = useState(null)
   const toggle = (id) => setOpen(o => (o === id ? null : id))
 
+  // The avatar shown in the profile header: the last-picked one (optimistic) else what
+  // the worklet persisted. `avatar` is base64 JPEG (no data: prefix).
+  const [avatarLocal, setAvatarLocal] = useState(null)
+  const avatar = avatarLocal ?? state.settings?.avatar ?? ''
+  const initial = (userName || deviceName || '?').trim().charAt(0).toUpperCase() || '?'
+  const pickAvatar = async () => {
+    haptic('light')
+    try {
+      const picked = await call('avatar:pickPhoto')
+      if (!picked || picked.canceled || !picked.dataUrl) return
+      const base64 = await resizeToBase64(picked.dataUrl, 200)
+      setAvatarLocal(base64) // show it at once
+      await call('setAvatar', { avatar: base64 }) // saves locally + pushes to the host
+    } catch { haptic('warn') }
+  }
+
   return (
     <div className='app'>
       <header><h1>Settings</h1></header>
+
+      {/* Profile header - always visible, like the other apps. Your photo, your name,
+          and this device's name; it is what the server operator sees on their dashboard. */}
+      <div className='profile'>
+        <button className='profile-av' onClick={pickAvatar} aria-label='Change your photo'>
+          {avatar
+            ? <img src={'data:image/jpeg;base64,' + avatar} alt='' />
+            : <span className='profile-mono'>{initial}</span>}
+          <span className='profile-cam' aria-hidden='true'><Camera size={13} weight='fill' /></span>
+        </button>
+        <div className='profile-fields'>
+          <input
+            className='profile-name' value={userName} onChange={e => setUsr(e.target.value)}
+            placeholder='Your name' maxLength={64} disabled={!state.connected} aria-label='Your name'
+          />
+          <input
+            className='profile-dev' value={deviceName} onChange={e => setDev(e.target.value)}
+            placeholder='This device' maxLength={64} disabled={!state.connected} aria-label='Device name'
+          />
+        </div>
+        {dirty && (
+          <button className='profile-save' onClick={save} disabled={saving || !state.connected}>
+            {saving ? '…' : 'Save'}
+          </button>
+        )}
+      </div>
+      {/* A claim grants nothing until the operator confirms it - say so honestly. */}
+      {ident?.userName && (
+        <div className='profile-note desc'>
+          {ident.confirmed
+            ? `Your server has confirmed this device belongs to ${ident.userName}.`
+            : ident.belongsTo
+              ? `Your server still has this device down as ${ident.belongsTo}. It is waiting to confirm you are ${ident.userName} — only the person running it can move a device to someone else.`
+              : `Waiting for your server to confirm you are ${ident.userName}. Until then this is only a label.`}
+        </div>
+      )}
+      {ident && ident.supported === false && (
+        <div className='profile-note desc'>
+          Your server is running an older PearTune and cannot be told about names yet.
+          Update it, or re-pair to set the device name.
+        </div>
+      )}
 
       <div className='settings-acc'>
         <Section id='appearance' title='Appearance' Icon={Palette} open={open === 'appearance'} onToggle={toggle}>
@@ -3938,60 +4014,6 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
               {cellular ? 'On' : 'Off'}
             </button>
           </div>
-        </Section>
-
-        <Section id='you' title='You and this device' Icon={UsersThree} open={open === 'you'} onToggle={toggle}>
-          <div className='desc'>
-            This is what the person running the server sees on their dashboard - it is
-            how they tell your phone apart from everyone else's.
-          </div>
-
-          <label className='flabel muted sm'>Device name</label>
-          <input
-            value={deviceName}
-            onChange={e => setDev(e.target.value)}
-            placeholder="Tim's Pixel"
-            maxLength={64}
-            disabled={!state.connected}
-          />
-
-          <label className='flabel muted sm'>Your name</label>
-          <input
-            value={userName}
-            onChange={e => setUsr(e.target.value)}
-            placeholder='Tim'
-            maxLength={64}
-            disabled={!state.connected}
-          />
-
-          {/* A claim grants nothing until the operator confirms it. Saying so is more
-              honest than a green tick that means "we told them". */}
-          {ident?.userName && (
-            <div className='desc'>
-              {ident.confirmed
-                ? `Your server has confirmed this device belongs to ${ident.userName}.`
-                : ident.belongsTo
-                  ? `Your server still has this device down as ${ident.belongsTo}. It is waiting to confirm you are ${ident.userName} - only the person running it can move a device to someone else.`
-                  : `Waiting for your server to confirm you are ${ident.userName}. Until then this is only a label.`}
-            </div>
-          )}
-
-          <div className='btnrow'>
-            <button
-              className='primary'
-              onClick={save}
-              disabled={!dirty || saving || !state.connected}
-            >
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-
-          {ident && ident.supported === false && (
-            <div className='desc'>
-              Your server is running an older PearTune and cannot be told about names
-              yet. Update it, or re-pair to set the device name.
-            </div>
-          )}
         </Section>
 
         <Section id='library' title='Library' Icon={MusicNotesSimple} open={open === 'library'} onToggle={toggle}>

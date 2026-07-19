@@ -903,6 +903,20 @@ button.wide { width: 100%; }
   padding: 0 1rem 1rem; display: flex; flex-direction: column; gap: .6rem;
   color: var(--color-text-secondary); font-size: .875rem; line-height: 1.5;
 }
+/* Settings profile header - always visible at the top: photo + your name + this
+   device's name, like the other apps. Tapping the photo opens the gallery picker. */
+.profile { display: flex; align-items: center; gap: .9rem; margin: .2rem 0 .6rem; }
+.profile-av { position: relative; flex: 0 0 auto; width: 64px; height: 64px; border: none; background: none; padding: 0; cursor: pointer; }
+.profile-av img { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; display: block; }
+.profile-mono { width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center; font-size: 26px; font-weight: 700; color: var(--color-text-on-primary); background: var(--color-primary); }
+.profile-cam { position: absolute; right: -2px; bottom: -2px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--color-surface-elevated); border: 1px solid var(--color-border); color: var(--color-text-secondary); }
+.profile-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .4rem; }
+.profile-fields input { margin: 0; }
+.profile-name { font-size: 1.02rem; font-weight: 600; }
+.profile-dev { font-size: .9rem; }
+.profile-save { flex: 0 0 auto; align-self: center; }
+.profile-note { margin: 0 0 .7rem; }
+
 /* Settings sections hold controls (inputs, pickers), not short About blurbs, so
    they need more room than the 640px About cap. */
 .settings-acc .acc .body.open { max-height: 1000px; }
