@@ -96,6 +96,9 @@ export default function App () {
   // was happening (you were dropped back on the onboarding screen mid-handshake).
   const [pairNames, setPairNames] = useState({ deviceName: '', userName: '' })
   const [pairing, setPairing] = useState(false)
+  // Adding ANOTHER library from Settings (multi-host, 2026-07-19). Shows the same pairing
+  // flow as onboarding, but over the running app instead of the pairing wall.
+  const [addingLibrary, setAddingLibrary] = useState(false)
   const [donate, setDonate] = useState(false)
   const [confirming, setConfirming] = useState(null)
   const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
@@ -214,6 +217,26 @@ export default function App () {
         loadContinue()
         loadHandoff(); setTimeout(loadHandoff, 2000) // retry: the active device may push its queue just after we connect
         loadPlaylists(true)
+      }),
+
+      // Switched to another paired library (multi-host, 2026-07-19). Swap the browse to the
+      // new library and flip the active flag; the currently-playing track is left ALONE (a
+      // switch must not stop the music - it plays out of the shared cache). If already
+      // connected (switchHost awaits the connect), pull the new library now; otherwise the
+      // host:connected that the background reconnect fires will.
+      on('host:switched', (d) => {
+        setState(s => ({
+          ...s,
+          host: { ...s.host, hostKey: d.hostKey, libraryId: d.libraryId, libraryName: d.libraryName },
+          hosts: (s.hosts || []).map(h => ({ ...h, active: h.hostKey === d.hostKey }))
+        }))
+        setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery(''); setError(null)
+        if (liveRef.current?.connected) {
+          loadAlbums(0); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadPlaylists(true)
+        }
+        // Load the new library's saved queue - but only if nothing is playing (restoreQueue
+        // guards on a live player), so a mid-play track is never interrupted by the switch.
+        call('restore').catch(() => {})
       }),
 
       // Back from the background, where the link almost certainly died. Reconnect
@@ -879,7 +902,15 @@ export default function App () {
     setPairing(true)
     try {
       const host = await call('pair', { link, label: names.deviceName, userName: names.userName })
-      setState(s => ({ ...s, host, connected: true }))
+      // pair() is additive now; refresh the full library list so Settings shows the new one
+      // (active). pair's own return has no list, so ask for it.
+      let hosts = null
+      try { hosts = (await call('listHosts')).hosts } catch {}
+      setState(s => ({ ...s, host, connected: true, hosts: hosts || s.hosts }))
+      // Adding a second library while one was active: clear the previous library's browse so
+      // the new active one loads fresh (a no-op on a first pair).
+      setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery('')
+      setAddingLibrary(false)
       haptic('success')
       loadAlbums(0)
     } catch (e) {
@@ -890,6 +921,62 @@ export default function App () {
       // path has already swapped in the library, so this just tidies the flag.
       setPairing(false)
     }
+  }
+
+  // --- multi-host: switch / add / remove a library (Settings) -----------------
+
+  // Open the pairing flow to ADD another library, prefilling the name fields from what this
+  // device already goes by so you never re-type your name to add a server.
+  function openAddLibrary () {
+    setPairNames({
+      deviceName: state.settings?.deviceName || '',
+      userName: state.settings?.userName || ''
+    })
+    setError(null); setScanning(false); setAddingLibrary(true)
+  }
+
+  async function switchLibrary (hostKey) {
+    if (!hostKey || hostKey === state.host?.hostKey) return
+    haptic('light')
+    // Update the UI optimistically from the tap, so the switcher and the Library header
+    // reflect the new library at once and never wait on (or drift with) a host event. The
+    // worklet's connect then drives the browse reload via host:connected.
+    setState(s => {
+      const target = (s.hosts || []).find(h => h.hostKey === hostKey)
+      return {
+        ...s,
+        host: target
+          ? { ...s.host, hostKey, libraryId: target.libraryId, libraryName: target.libraryName }
+          : s.host,
+        hosts: (s.hosts || []).map(h => ({ ...h, active: h.hostKey === hostKey })),
+        connected: false
+      }
+    })
+    setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery('')
+    try {
+      await call('switchHost', { hostKey })
+    } catch (e) { setError(e.message) }
+  }
+
+  function removeLibrary (host) {
+    setConfirming({
+      title: `Remove ${host.libraryName || 'this library'}?`,
+      body: "This device stops following that library and its downloads are cleared. Your other libraries and this device's identity are untouched - re-pair anytime to get it back.",
+      yes: 'Remove',
+      danger: true,
+      onYes: async () => {
+        try {
+          const r = await call('removeHost', { hostKey: host.hostKey })
+          setState(s => ({ ...s, hosts: r.hosts }))
+          // Removing the LAST/active-with-none-left library drops us back to unpaired; the
+          // worklet already emitted host:disconnected, so just clear the browse and views.
+          if (!(r.hosts || []).some(h => h.active)) {
+            setState(s => ({ ...s, host: null, connected: false }))
+            setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setTab('library'); setResults(null); setQuery('')
+          }
+        } catch (e) { setError(e.message) }
+      }
+    })
   }
 
   const toQueue = (list) => list.map(x => ({
@@ -1103,6 +1190,30 @@ export default function App () {
 
   if (state.loading) return <div className='center'><p className='muted'>Starting…</p></div>
 
+  // Adding ANOTHER library over the running app (Settings > Libraries > Add). Same flow as
+  // the pairing wall, but cancellable back into the app rather than a dead end.
+  if (addingLibrary) {
+    if (pairing) return <Pairing />
+    return scanning
+      ? (
+        <Scanner
+          onScan={(link) => onPaired(link, pairNames)}
+          onCancel={() => { setError(null); setScanning(false) }}
+          error={error}
+        />
+        )
+      : (
+        <Welcome
+          names={pairNames}
+          setNames={setPairNames}
+          onScan={() => { setError(null); setScanning(true) }}
+          onPaste={(link) => onPaired(link, pairNames)}
+          onCancel={() => { setError(null); setScanning(false); setAddingLibrary(false) }}
+          error={error}
+        />
+        )
+  }
+
   // Pairing is a wall: with no library there is nothing to navigate, so there is
   // no navbar until there is.
   if (!state.host) {
@@ -1230,6 +1341,7 @@ export default function App () {
         state={state} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
         ident={ident} onSaveIdentity={saveIdentity} onQuality={changeQuality}
         skin={skin} onSkin={setSkinValue}
+        onSwitchHost={switchLibrary} onRemoveHost={removeLibrary} onAddLibrary={openAddLibrary}
       />
     )
   } else if (tab === 'about') {
@@ -2491,6 +2603,19 @@ function DownloadButton ({ pinned, pinning, onPin, onUnpin }) {
 function sourceText (state) {
   if (state.sourceName) return state.sourceName
   return sourceLabel(state.source)
+}
+
+// The paired libraries for the Settings switcher (multi-host, 2026-07-19). init/listHosts/
+// removeHost supply state.hosts; fall back to the single active host so the section still
+// renders on any pre-hosts state shape. ACTIVE is derived from state.host.hostKey - the one
+// source of truth the switch always updates - rather than a stored flag, so the indicator can
+// never drift from the library actually connected.
+function libsOf (state) {
+  const list = Array.isArray(state.hosts) && state.hosts.length
+    ? state.hosts
+    : (state.host ? [state.host] : [])
+  const activeKey = state.host?.hostKey
+  return list.map(h => ({ ...h, active: h.hostKey === activeKey }))
 }
 
 function sourceLabel (kind) {
@@ -3863,7 +3988,7 @@ function compressToAvatarB64 (dataUrl, size = 256) {
   })
 }
 
-function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality, skin, onSkin }) {
+function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [copied, setCopied] = useState(false)
   const [dev, setDev] = useState(null)
@@ -4039,22 +4164,38 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
           </div>
         </Section>
 
-        <Section id='library' title='Library' Icon={MusicNotesSimple} open={open === 'library'} onToggle={toggle}>
-          <div className='row'>
-            <div>
-              <div className='label'>{state.host?.libraryName || 'Library'}</div>
-              <div className='desc'>{state.connected ? 'Connected' : 'Not connected'}</div>
+        <Section id='library' title={libsOf(state).length > 1 ? 'Libraries' : 'Library'} Icon={MusicNotesSimple} open={open === 'library'} onToggle={toggle}>
+          {libsOf(state).map(h => (
+            <div
+              className='row'
+              key={h.hostKey}
+              onClick={() => { if (!h.active) onSwitchHost(h.hostKey) }}
+              style={{ cursor: h.active ? 'default' : 'pointer' }}
+            >
+              <div>
+                <div className='label'>
+                  {h.libraryName || 'Library'}
+                  {h.active && (
+                    <span className='val' style={{ color: state.connected ? 'var(--color-primary)' : undefined, marginLeft: 8 }}>
+                      {state.connected ? '●' : '○'}
+                    </span>
+                  )}
+                </div>
+                <div className='desc'>
+                  {h.active
+                    ? (state.connected ? 'Active — connected' : 'Active — connecting…')
+                    : 'Tap to switch to this library'}
+                </div>
+              </div>
+              <button className='danger' onClick={(e) => { e.stopPropagation(); onRemoveHost(h) }}>Remove</button>
             </div>
-            <span className='val' style={{ color: state.connected ? 'var(--color-primary)' : undefined }}>
-              {state.connected ? '●' : '○'}
-            </span>
-          </div>
+          ))}
           {sourceText(state) && (
             <div className='row'>
               <div>
                 <div className='label'>Source</div>
                 <div className='desc'>
-                  Where this library comes from. Your server's operator chooses it; you
+                  Where the active library comes from. Your server's operator chooses it; you
                   see whatever they point it at.
                 </div>
               </div>
@@ -4063,12 +4204,22 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
           )}
           <div className='row'>
             <div>
-              <div className='label'>Unpair</div>
+              <div className='label'>Add a library</div>
               <div className='desc'>
-                Forget this library. You will need a new pairing code to reconnect.
+                Pair this phone to another server. Switch between them here; your downloads and
+                favorites are kept per library.
               </div>
             </div>
-            <button className='danger' onClick={onUnpair}>Unpair</button>
+            <button className='primary' onClick={onAddLibrary}>Add</button>
+          </div>
+          <div className='row'>
+            <div>
+              <div className='label'>Unpair everything</div>
+              <div className='desc'>
+                Forget every library and clear all downloads. This device keeps its identity.
+              </div>
+            </div>
+            <button className='danger' onClick={onUnpair}>Unpair all</button>
           </div>
         </Section>
 
@@ -4251,7 +4402,7 @@ function DonationSheet ({ onClose }) {
 // alternative is what we shipped until now: every device on the operator's
 // dashboard called "Android phone", telling them nothing about which phone to
 // revoke.
-function Welcome ({ names, setNames, onScan, onPaste, error }) {
+function Welcome ({ names, setNames, onScan, onPaste, onCancel, error }) {
   const [link, setLink] = useState('')
 
   // Your name is REQUIRED: on the host it is the human a device is confirmed as
@@ -4295,6 +4446,7 @@ function Welcome ({ names, setNames, onScan, onPaste, error }) {
         <input value={link} onChange={e => setLink(e.target.value)} placeholder='pear://peartune/pair?…' />
         <button onClick={() => onPaste(link.trim())} disabled={!named || !link.trim()}>Pair</button>
       </details>
+      {onCancel && <button onClick={onCancel}>Cancel</button>}
     </div>
   )
 }

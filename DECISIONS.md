@@ -2,6 +2,41 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-19 - Multi-host: the library switcher (step 1 of 2)
+Tier: T2 (client-side storage + UX; no wire/grant/revoke/host change). Branch proposal/multi-host-switcher.
+Proposal proposals/2026-07-19-multi-host-switcher.md. One phone can now pair to MORE THAN ONE host (an
+Umbrel AND a Start9) and switch between them from Settings. Chosen with Tim: switcher-first (the merged
+"gateway to multi-source" is step 2), Settings-only management, and a switch swaps the queue but lets the
+buffered track play out (graceful-reconnect stance).
+WHY IT'S SMALL: the hard layers were already multi-host-safe - device identity is host-independent (one
+keypair, each host gates it), and ids never collide (libraryId = hash(hostKey)). Single-host code was
+confined to bare.js + App.jsx. NO host-side or wire change.
+WHAT SHIPPED: worklet/hosts.js (pure host-list ops incl. v1 single-object -> v2 list migration; 13 tests);
+bare.js hosts.json is a list; per-host STATE (queue/favorites/playlists/outbox/lease/pins) moved under
+lib/<libraryId>/ with a one-time flat-file migration; RPCs listHosts/switchHost/removeHost; pair() additive,
+forget() the full account reset. Settings "Library" section became a multi-library list (switch/add/remove +
+"Unpair all"). 334 tests (+13), verify green.
+REFINEMENT (during build): audio/art BLOB caches stay SHARED at the root, NOT namespaced. Their ids are
+already libraryId-scoped so nothing collides and bytes de-dupe; crucially, re-pointing the audio cache on
+switch would stall an in-flight track and break the very "keep the buffered track" behavior we chose.
+removeHost still reclaims a host's downloads (deletes its pinned audio by id, which is host-unique).
+ON-DEVICE VALIDATION + FIXES (TCL + Umbrel + Mac-mini folder host, 2026-07-19): pair a 2nd host, per-host
+browse, and round-trip switching all work. Two bugs fixed on hardware (commit e045941): (a) stale active
+indicator - derive "active" from state.host.hostKey + optimistic UI on tap, don't depend on the host:switched
+event; (b) a switch aborting on a transient connect failure - switchHost swallows a failed first dial and
+emits host:switched anyway (on-demand reconnect recovers).
+SHARED DHT NODE (commit de3ddcf): the transient "host refused" on switch was NOT a host duplicate-refusal
+(the host admits duplicates); it was each reconnect building a fresh HyperDHT node and dialing off a COLD,
+un-bootstrapped node (first dial races its own bootstrap, fails fast; retry off the warm node succeeds). Fix:
+ONE shared HyperDHT node for the worklet, passed to every PearTuneClient (close() leaves it alone; destroyed
+only on forget). Eliminates the transient and speeds up EVERY reconnect. Exposed + fixed a latent connectTo
+race (switchHost's direct connect vs ensureConnected's parallel single-flight both racing the `client` global)
+by pinning the dialed client to a local ref and bailing if superseded. Verified: 4 rapid switches, zero
+refuse / zero race errors.
+OPEN (on-device, TCL): the "buffered track drains then auto-advances into the new library's queue while a
+player is LIVE" continuity - a new ExoPlayer queue-swap flow to validate on hardware. Today a playing track
+is left untouched (never stops) and the new queue loads when nothing is playing. Everything else is done.
+
 ## 2026-07-19 - Host image 0.2.6 (six features since 0.2.5; retires all previews)
 Tier: T2 (packaging/deploy). Branch release/host-image-0.2.6. Cut from master with EVERYTHING accumulated
 since 0.2.5 baked in: genre browse (#72), per-device now-playing (#74), recently-added shelf (#75),
