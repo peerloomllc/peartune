@@ -431,3 +431,31 @@ test('genres advertise a name sort, reversible', async () => {
   const { sorts } = await a.stats()
   assert.deepEqual(sorts.genres, { keys: ['name'], reversible: true })
 })
+
+// --- recently added (date-added sort) ---------------------------------------
+
+test('albums advertise an "added" sort, and it floats the newest file to the top', async () => {
+  // Give every fixture file an old date-added, then bump ONE so its album is newest.
+  const files = fs.readdirSync(MUSIC, { recursive: true })
+    .filter(f => /\.(flac|mp3|m4a|ogg|opus|wav)$/i.test(f))
+    .map(f => path.join(MUSIC, f))
+  const old = new Date('2020-01-01T00:00:00Z')
+  for (const f of files) fs.utimesSync(f, old, old)
+  const bumped = files[0]
+  const recent = new Date('2024-06-01T00:00:00Z')
+  fs.utimesSync(bumped, recent, recent)
+
+  const a = await scanned()
+  const { sorts } = await a.stats()
+  assert.ok(sorts.albums.keys.includes('added'), 'the added album sort is advertised')
+
+  const rel = path.relative(MUSIC, bumped)
+  const track = (await a.list({ type: 'tracks' })).items.find(t => t.path === rel)
+  assert.ok(track, 'the bumped file is in the library')
+
+  const desc = (await a.list({ type: 'albums', sort: 'added', order: 'desc' })).items
+  assert.equal(desc[0].id, track.albumId, 'the album with the newest file sorts first')
+  // Same albums, no drops or dupes, whatever the order.
+  const all = (await a.list({ type: 'albums' })).items
+  assert.equal(desc.length, all.length)
+})

@@ -71,6 +71,7 @@ export default function App () {
   const [browse, setBrowse] = useState('albums')
   const [albums, setAlbums] = useState([])
   const [cursor, setCursor] = useState(0)
+  const [recent, setRecent] = useState(null) // the Recently Added shelf (newest albums)
   const [artists, setArtists] = useState(null)
   const [genres, setGenres] = useState(null)
   const [songs, setSongs] = useState(null)
@@ -143,7 +144,7 @@ export default function App () {
         // emits play:started, which lights up the mini-player). Fire-and-forget: a
         // cached queue restores offline; an uncached one waits for the connection.
         call('restore').then(r => { if (r?.restored) setCont(null) }).catch(() => {})
-        if (s.connected) { loadAlbums(0, sortParamsFor(savedSort, 'albums')); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists() }
+        if (s.connected) { loadAlbums(0, sortParamsFor(savedSort, 'albums')); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
@@ -206,6 +207,7 @@ export default function App () {
         // init connects in the BACKGROUND now, so this event - not init - is what kicks
         // off the first library load, and refreshes it on every reconnect.
         loadAlbums(0)
+        loadRecent()
         loadIdentity()
         loadSource()
         loadFavs()
@@ -496,6 +498,17 @@ export default function App () {
     setBrowse('artists')
     if (artists && !force) return
     await loadArtists()
+  }
+
+  // The Recently Added shelf: the newest albums, by the source's "date added" (folder
+  // mtime, Subsonic newest, Jellyfin DateCreated). Only meaningful when the host
+  // advertises the 'added' album sort (older hosts would return alphabetical), so the
+  // shelf is gated on that capability at render; a failure just leaves it hidden.
+  async function loadRecent () {
+    try {
+      const page = await call('albums', { sort: 'added', order: 'desc', limit: 12 })
+      setRecent(page.items || [])
+    } catch { setRecent([]) }
   }
 
   // Genres load once, like artists - the host returns the whole set in one call.
@@ -1224,7 +1237,7 @@ export default function App () {
   } else {
     screen = (
       <Library
-        state={state} albums={albums} artists={artists} genres={genres} songs={songs}
+        state={state} albums={albums} artists={artists} genres={genres} songs={songs} recent={recent}
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
@@ -1710,7 +1723,7 @@ function NamePrompt ({ title, placeholder, submitLabel = 'Save', onSubmit, onClo
 // Human labels for the canonical sort keys the host advertises. 'title'/'name' are
 // the same idea for a track vs an album; 'duration' reads as "Length" to a listener.
 const SORT_LABEL = {
-  title: 'Title', name: 'Name', artist: 'Artist', album: 'Album', year: 'Year', duration: 'Length'
+  title: 'Title', name: 'Name', artist: 'Artist', album: 'Album', year: 'Year', duration: 'Length', added: 'Recently added'
 }
 
 // The Display sheet: layout (grid density) and sort, in one bottom sheet opened by the
@@ -1770,7 +1783,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 }
 
 function Library ({
-  state, albums, artists, genres, songs, cursor, songCursor, density,
+  state, albums, artists, genres, songs, recent, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
@@ -1792,6 +1805,9 @@ function Library ({
   // source can do). Disable its button when the active view has neither.
   const sortCap = state.sorts?.[browse === 'songs' ? 'tracks' : browse]
   const displayHasOptions = browse !== 'songs' || (sortCap?.keys?.length > 0)
+  // The Recently Added shelf only makes sense when the source can order by date added
+  // (older hosts would hand back alphabetical albums under a "recently added" title).
+  const recentSupported = !!state.sorts?.albums?.keys?.includes('added')
   // The worklet hands us the base URL rather than finished art URLs, because only
   // the UI knows the density, and therefore the size to ask for.
   const artBase = state.artBase || state.host?.artBase || null
@@ -2019,6 +2035,8 @@ function Library ({
                 : albums.length
                   ? (
                     <>
+                      {recentSupported && recent && recent.length > 0 &&
+                        <RecentShelf albums={recent} onOpen={onOpenAlbum} artBase={artBase} />}
                       <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} favs={favs} onFav={onFav} />
                       {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
                     </>
@@ -2614,6 +2632,27 @@ function SearchResults ({ results, now, d, artBase, favs, onFav, onOpenAlbum, on
         )
       })}
     </>
+  )
+}
+
+// The Recently Added shelf: a horizontal strip of the newest albums above the grid.
+// Fixed-size tiles that scroll sideways, visually distinct from the full grid so it
+// reads as a shelf rather than the top of the list. Tapping opens the album.
+function RecentShelf ({ albums, onOpen, artBase }) {
+  if (!albums.length) return null
+  return (
+    <div className='shelf'>
+      <div className='shelf-head'>Recently added</div>
+      <div className='shelf-row'>
+        {albums.map(a => (
+          <button className='shelf-item' key={a.id} onClick={() => onOpen(a.id)}>
+            <Cover src={artFor(a, DENSITY[2], artBase)} />
+            <div className='shelf-t'>{a.name}</div>
+            {a.artist && <div className='shelf-a muted'>{a.artist}</div>}
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 

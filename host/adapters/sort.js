@@ -31,7 +31,10 @@ const TRACK_CMP = {
 const ALBUM_CMP = {
   name: (a, b) => collator(a.name, b.name),
   artist: (a, b) => collator(a.artist, b.artist) || collator(a.name, b.name),
-  year: (a, b) => num(a.year, b.year) || collator(a.name, b.name)
+  year: (a, b) => num(a.year, b.year) || collator(a.name, b.name),
+  // Newest first is the useful direction, so ascending 'added' means most-recent; the
+  // client asks for it as {sort:'added', order:'desc'} to get newest-on-top explicitly.
+  added: (a, b) => num(a.addedAt, b.addedAt) || collator(a.name, b.name)
 }
 const ARTIST_CMP = {
   name: (a, b) => collator(a.name, b.name)
@@ -44,7 +47,7 @@ const GENRE_CMP = {
 // every canonical key, reversible in both directions. Folder and Jellyfin use this.
 const FULL_SORTS = {
   tracks: { keys: ['title', 'artist', 'album', 'year', 'duration'], reversible: true },
-  albums: { keys: ['name', 'artist', 'year'], reversible: true },
+  albums: { keys: ['name', 'artist', 'year', 'added'], reversible: true },
   artists: { keys: ['name'], reversible: true },
   genres: { keys: ['name'], reversible: true }
 }

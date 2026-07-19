@@ -69,7 +69,7 @@ test('album comparator orders by name then year; artist comparator by name', () 
 
 test('FULL_SORTS advertises every canonical key, reversible, per view', () => {
   assert.deepEqual(FULL_SORTS.tracks.keys, ['title', 'artist', 'album', 'year', 'duration'])
-  assert.deepEqual(FULL_SORTS.albums.keys, ['name', 'artist', 'year'])
+  assert.deepEqual(FULL_SORTS.albums.keys, ['name', 'artist', 'year', 'added'])
   assert.deepEqual(FULL_SORTS.artists.keys, ['name'])
   for (const v of ['tracks', 'albums', 'artists']) assert.equal(FULL_SORTS[v].reversible, true)
   // Every advertised key must have a real comparator behind it, or the control lies.

@@ -38,7 +38,7 @@ const { trackId } = require('../../protocol/ids')
 // advertise none. Folder (the primary source) has the full set; this degrades honestly.
 const SUBSONIC_SORTS = {
   tracks: { keys: [], reversible: false },
-  albums: { keys: ['name', 'artist', 'year'], reversible: false },
+  albums: { keys: ['name', 'artist', 'year', 'added'], reversible: false },
   artists: { keys: [], reversible: false },
   // getGenres is alphabetical only (the default), like getArtists - offer none.
   genres: { keys: [], reversible: false }
@@ -46,7 +46,8 @@ const SUBSONIC_SORTS = {
 const ALBUM_LIST_TYPE = {
   name: 'alphabeticalByName',
   artist: 'alphabeticalByArtist',
-  year: 'byYear'
+  year: 'byYear',
+  added: 'newest' // getAlbumList2 type=newest = recently added, what the shelf wants
 }
 
 const API_VERSION = '1.16.1'

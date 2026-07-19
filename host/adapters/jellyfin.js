@@ -53,7 +53,8 @@ const TRACK_SORT_BY = {
 const ALBUM_SORT_BY = {
   name: 'SortName',
   artist: 'AlbumArtist,SortName',
-  year: 'ProductionYear,PremiereDate,SortName'
+  year: 'ProductionYear,PremiereDate,SortName',
+  added: 'DateCreated,SortName' // when the album was added to the Jellyfin library
 }
 const sortOrder = (order) => (order === 'desc' ? 'Descending' : 'Ascending')
 
