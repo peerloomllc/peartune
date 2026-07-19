@@ -2,6 +2,17 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-19 - Host image 0.2.6 (six features since 0.2.5; retires all previews)
+Tier: T2 (packaging/deploy). Branch release/host-image-0.2.6. Cut from master with EVERYTHING accumulated
+since 0.2.5 baked in: genre browse (#72), per-device now-playing (#74), recently-added shelf (#75),
+scheduled auto-rescan (#76), and BOTH device-avatar halves (#78 host/wire/dashboard + #79 phone). Retires
+the large Umbrel cp preview these rode on (adapters + server.js + media.js + avatars.js + dashboard).
+Digest sha256:04c38ef5022dbad0c4e2179ae4b084bf2559714872004566643c31bc0f305ccc (OCI image index,
+amd64+arm64, verified via the GHCR registry API). podman + qemu, pushed to GHCR. Re-pinned all consumers
+and rebuilt the s9pk (0.2.6, start-sdk verify passed).
+DEPLOY (open, needs Tim): redeploy the Umbrel off 0.2.6 (sudo docker) to replace the preview container;
+re-sideload the 0.2.6 s9pk to the Start9 (GUI).
+
 ## 2026-07-19 - Host image 0.2.5 (tabbed dashboard + genre browse baked in)
 Tier: T2 (packaging/deploy). Branch release/host-image-0.2.5. Cut a fresh multi-arch image from master -
 the first with the tabbed operator dashboard (PR #70) AND genre-browse host support (PR #72), retiring

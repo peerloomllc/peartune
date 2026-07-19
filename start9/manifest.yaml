@@ -11,7 +11,7 @@
 id: peartune
 title: "PearTune"
 # emver: kept in lockstep with the host image tag it wraps.
-version: 0.2.5
+version: 0.2.6
 release-notes: |
   First StartOS release of the PearTune host. Runs the always-on daemon that
   serves your self-hosted music library over HyperDHT, with a dashboard for
