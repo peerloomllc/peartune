@@ -20,21 +20,57 @@
 // Bare-side behavior is validated by scripts/spike-shim.js before any UI is built
 // on top of it.
 
-const http = require('bare-http1')
+// Required lazily inside createAudioShim (below), NOT at module load: bare-http1 pulls a native
+// addon that only exists on the phone, so a top-level require would make this whole module
+// unloadable in a Node unit test - and the pure URL router (parseUrl) is exactly what we want to
+// test there. createAudioShim only runs on-device, where the addon is present.
+let http = null
 
 const RANGE = /^bytes=(\d*)-(\d*)$/
-const TRACK_PATH = /^\/t\/([a-z0-9]+)/i
+// URL forms, single-host and merged (multi-host step 2, proposal 2026-07-19 §5):
+//   /t/<trackId>            /t/<libraryId>/<trackId>
+//   /art/<coverId>          /art/<libraryId>/<coverId>
+// libraryId + trackId are z32 (lowercase alnum); a coverId can be a server's own id, so it's the
+// permissive tail. The MERGED (2-segment) form carries the OWNING host in the URL itself, so the
+// player's held URLs keep routing to the right host even if the merged index is later rebuilt
+// mid-session (a host dropping out of the blend can't misroute a URL the player already holds).
 // Artwork rides the same loopback server, so the WebView can just use a plain
 // <img src="http://127.0.0.1:PORT/art/...">. The bytes still travel over P2P; the
 // browser never knows. The alternative (pipe every cover through IPC as base64)
 // would be slower, fatter, and would make a grid of 50 covers miserable.
-const ART_PATH = /^\/art\/([^/?#]+)/
+const TRACK_PATH2 = /^\/t\/([a-z0-9]+)\/([a-z0-9]+)/i
+const TRACK_PATH1 = /^\/t\/([a-z0-9]+)/i
+const ART_PATH2 = /^\/art\/([a-z0-9]+)\/([^/?#]+)/i
+const ART_PATH1 = /^\/art\/([^/?#]+)/
 // ?s=<px>. A grid of 50 covers wants small ones; the full-screen viewer wants a
 // big one. Same cover id, two very different requests, so the size is part of the
 // URL - and therefore part of the cache key.
 const ART_SIZE = /[?&]s=(\d+)/
 const DEFAULT_ART_SIZE = 300
 const MAX_ART_SIZE = 1200
+
+function artSize (url) {
+  const s = ART_SIZE.exec(String(url))
+  return Math.min(MAX_ART_SIZE, Number(s && s[1]) || DEFAULT_ART_SIZE)
+}
+
+// Pure URL router (exported for tests). Returns { kind:'track'|'art', libraryId, id, size? } or
+// null. The merged 2-segment form is matched first; libraryId is null for the single-host form -
+// which is exactly what routes the request to the single active client, unchanged. A track path
+// can't be mistaken for art and vice-versa; a 1-segment cover (no interior '/') can't match the
+// 2-segment form (coverIds are always encodeURIComponent'd, so any '/' is a real separator).
+function parseUrl (url = '') {
+  const u = String(url)
+  let m = ART_PATH2.exec(u)
+  if (m) return { kind: 'art', libraryId: m[1], id: decodeURIComponent(m[2]), size: artSize(u) }
+  m = ART_PATH1.exec(u)
+  if (m) return { kind: 'art', libraryId: null, id: decodeURIComponent(m[1]), size: artSize(u) }
+  m = TRACK_PATH2.exec(u)
+  if (m) return { kind: 'track', libraryId: m[1], id: m[2] }
+  m = TRACK_PATH1.exec(u)
+  if (m) return { kind: 'track', libraryId: null, id: m[1] }
+  return null
+}
 
 // ExoPlayer sniffs the container anyway, but a correct type saves it a probe and
 // avoids it refusing an unknown stream outright.
@@ -71,7 +107,8 @@ function parseRange (header, size) {
 // to transcode. The worklet owns the policy (a Settings choice, and later the network
 // type); the shim just asks it at the moment a track is requested, so a change takes
 // effect on the next track without rebuilding anything.
-function createAudioShim ({ client, log = () => {}, ensure = async () => {}, quality = () => null, cache = null, artStore = null, leaseOk = () => true }) {
+function createAudioShim ({ client, log = () => {}, ensure = async () => {}, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostClient = null, libForTrack = null, libForCover = null }) {
+  if (!http) http = require('bare-http1') // on-device only; see the note at the top of this file
   const meta = new Map() // trackId -> { size, mime }
 
   // The client is REPLACEABLE, and the indirection is the point. On a reconnect
@@ -81,9 +118,22 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
   // client and a paused queue silently plays into a dead socket on resume.
   let current = client
 
-  async function metaFor (trackId) {
+  // Which client serves THIS request (multi-host step 2, proposal 2026-07-19 §5). A merged URL
+  // names its owning host (libraryId, from the URL); a single-host URL names none, and a resolver
+  // (libForTrack/libForCover) is the fallback that maps a bare id to its host in merged mode. When
+  // a host is named we route to its pool client (hostClient, which revives it); otherwise the
+  // single active client - reviving it via ensure() - exactly as before, so single-host is
+  // unchanged. A cache HIT never gets here: it's served by id alone, host-agnostic.
+  async function connFor (libraryId, id, resolver) {
+    const lib = libraryId || (resolver ? resolver(id) : null)
+    if (lib && hostClient) return await hostClient(lib)
+    await ensure()
+    return current
+  }
+
+  async function metaFor (trackId, conn) {
     if (meta.has(trackId)) return meta.get(trackId)
-    const t = await current.get({ id: trackId })
+    const t = await (conn || current).get({ id: trackId })
     if (!t) return null
     const m = { size: t.size, mime: mimeFor(t.path || t.title) }
     meta.set(trackId, m)
@@ -91,20 +141,15 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
   }
 
   const server = http.createServer(async (req, res) => {
-    const art = ART_PATH.exec(req.url || '')
-    if (art) {
-      const s = ART_SIZE.exec(req.url || '')
-      const size = Math.min(MAX_ART_SIZE, Number(s?.[1]) || DEFAULT_ART_SIZE)
-      return serveArt(decodeURIComponent(art[1]), size, req, res)
-    }
-
-    const match = TRACK_PATH.exec(req.url || '')
-    if (!match) {
+    const parsed = parseUrl(req.url || '')
+    if (!parsed) {
       res.writeHead(404)
       return res.end()
     }
+    if (parsed.kind === 'art') return serveArt(parsed.id, parsed.size, parsed.libraryId, req, res)
 
-    const trackId = match[1]
+    const trackId = parsed.id
+    const trackLib = parsed.libraryId
 
     try {
       // CACHE FIRST. A complete local copy is served straight from disk - no connection
@@ -118,10 +163,12 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
 
       // The link may have died while the app sat in the background. This request
       // is often the FIRST thing that knows the user is back (they pressed play on
-      // the lock screen), so it revives the connection rather than failing.
-      await ensure()
+      // the lock screen), so it revives the connection rather than failing. In merged
+      // mode connFor picks (and revives) the track's OWNING host; single-host mode
+      // revives the one active client, unchanged.
+      const conn = await connFor(trackLib, trackId, libForTrack)
 
-      const m = await metaFor(trackId)
+      const m = await metaFor(trackId, conn)
       if (!m) {
         res.writeHead(404)
         return res.end()
@@ -139,7 +186,7 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
           'content-type': MIME[tc.format] || 'audio/mpeg',
           'accept-ranges': 'none'
         })
-        await current.streamTo(
+        await conn.streamTo(
           { trackId, format: tc.format, bitrate: tc.bitrate },
           (chunk) => res.write(chunk)
         )
@@ -178,7 +225,7 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
       // streamTo, NOT stream: accumulate nothing. The player asked for a window
       // of audio, not the whole album in RAM.
       try {
-        await current.streamTo({ trackId, offset: start, length }, (chunk) => {
+        await conn.streamTo({ trackId, offset: start, length }, (chunk) => {
           res.write(chunk)
           if (sink) sink.write(chunk)
         })
@@ -210,7 +257,7 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
   const artCache = new Map()
   const ART_CACHE_MAX = 120
 
-  async function serveArt (coverId, size, req, res) {
+  async function serveArt (coverId, size, libraryId, req, res) {
     // Keyed by size as well as id, or the first request for a cover would decide
     // the resolution of every later one - a thumbnail blown up across a phone
     // screen, or a 1200px image behind every tile in the grid.
@@ -239,8 +286,10 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
       let buf = artCache.get(key)
 
       if (!buf) {
-        await ensure()
-        buf = await current.art({ coverId, size })
+        // Route the live cover fetch to its owning host (the URL's libraryId, or the resolver in
+        // merged mode); single-host mode names none and revives the one active client, unchanged.
+        const conn = await connFor(libraryId, coverId, libForCover)
+        buf = await conn.art({ coverId, size })
         if (!buf || !buf.length) {
           res.writeHead(404)
           return res.end()
@@ -341,10 +390,17 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
       return `http://127.0.0.1:${port}/t/${trackId}`
     },
 
+    // The merged form: the owning host is baked into the URL so the player's held URL routes to the
+    // right host for the life of the queue, even across an index rebuild (proposal §5).
+    urlForLib (libraryId, trackId) {
+      const { port } = server.address()
+      return `http://127.0.0.1:${port}/t/${libraryId}/${trackId}`
+    },
+
     close () {
       return new Promise(resolve => server.close(resolve))
     }
   }
 }
 
-module.exports = { createAudioShim, mimeFor, DEFAULT_ART_SIZE }
+module.exports = { createAudioShim, mimeFor, parseUrl, DEFAULT_ART_SIZE }

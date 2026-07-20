@@ -466,6 +466,13 @@ const pool = new Map()
 let mergedIndex = null
 let mergedConnected = new Set()
 let rebuildingIndex = null // single-flight: a burst of browse calls entering merged mode shares ONE build
+// Routing lookups derived from the index (step 2, slice 4): map a bare trackId/coverId back to its
+// owning host, so a play/art request in merged mode (whose URL may carry no libraryId, e.g. the UI's
+// own artBase covers) still reaches the right server. trackByAnyId keys EVERY copy's id to the
+// merged track, so bestCopy can fail the stream over to another host when the primary is offline.
+let coverLib = new Map() // coverId -> libraryId
+let trackLib = new Map() // any copy's trackId -> libraryId
+let trackByAnyId = new Map() // any copy's trackId -> the merged track (for best-copy failover)
 
 function poolClient (libraryId) {
   const e = pool.get(libraryId)
@@ -536,6 +543,7 @@ async function rebuildIndex () {
     const catalogs = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)
     mergedIndex = merge.buildIndex(catalogs)
     mergedConnected = new Set(catalogs.map((c) => c.libraryId))
+    buildRouteMaps()
     try {
       fs.mkdirSync(mergedDir(), { recursive: true })
       fs.writeFileSync(mergedIndexFile(), JSON.stringify({
@@ -559,8 +567,27 @@ function loadCachedIndex () {
   if (mergedIndex) return
   try {
     const o = JSON.parse(fs.readFileSync(mergedIndexFile(), 'utf8'))
-    if (o && o.index) { mergedIndex = o.index; mergedConnected = new Set(o.connected || []) }
+    if (o && o.index) { mergedIndex = o.index; mergedConnected = new Set(o.connected || []); buildRouteMaps() }
   } catch {}
+}
+
+// (Re)build the trackId/coverId -> owning-host lookups from the current index (step 2, slice 4). A
+// coverId maps to the FIRST host seen holding it; a trackId (every copy's id) maps to its own host
+// and to the merged track (for failover). Rebuilt whenever the index is.
+function buildRouteMaps () {
+  coverLib = new Map()
+  trackLib = new Map()
+  trackByAnyId = new Map()
+  if (!mergedIndex) return
+  const noteCover = (coverId, lib) => { if (coverId && !coverLib.has(coverId)) coverLib.set(coverId, lib) }
+  const noteCopies = (e) => { for (const c of (e.copies || [])) noteCover(c.coverId, c.libraryId) }
+  for (const t of mergedIndex.tracks) {
+    for (const c of (t.copies || [])) { if (c.id) { trackLib.set(c.id, c.libraryId); trackByAnyId.set(c.id, t) }; noteCover(c.coverId, c.libraryId) }
+    noteCover(t.coverId, t.libraryId)
+  }
+  for (const a of mergedIndex.albums) { noteCover(a.coverId, a.libraryId); noteCopies(a) }
+  for (const a of mergedIndex.artists) { noteCover(a.coverId, a.libraryId); noteCopies(a) }
+  for (const g of mergedIndex.genres) { noteCover(g.coverId, g.libraryId); noteCopies(g) }
 }
 
 // Ensure a usable merged index exists before serving a browse call (a browse can land before the
@@ -570,12 +597,41 @@ async function ensureIndex () {
   return mergedIndex
 }
 
-// The pool client that owns an entity, for a DETAIL read (an album's track list, an artist's albums)
-// that the browse-list index doesn't hold. ensureHost self-heals a dropped pool connection.
-async function detailClient (libraryId) {
+// The connected pool client for one host, ensured (self-heals a dropped connection). Used both by a
+// DETAIL read (an album's track list the browse index doesn't hold) and by streaming routing.
+async function ensureHostById (libraryId) {
   const host = loadHostsFile().hosts.find((h) => h.libraryId === libraryId)
   if (!host) throw new Error('Unknown library.')
   return await ensureHost(host)
+}
+
+// The libraryIds with a LIVE pool connection right now (not merely in the last index build) - the
+// connected-set bestCopy() checks so streaming routes to a copy that's actually reachable.
+function connectedLibs () {
+  const s = new Set()
+  for (const libId of pool.keys()) if (poolClient(libId)) s.add(libId)
+  return s
+}
+
+// Resolvers the shim consults for a URL that carries no libraryId (the UI's own artBase covers, or a
+// single-segment track URL) - null outside merged mode, so single-host behaviour is unchanged.
+function libForTrack (trackId) { return mergedMode() ? (trackLib.get(trackId) || null) : null }
+function libForCover (coverId) { return mergedMode() ? (coverLib.get(coverId) || null) : null }
+
+// Resolve a track to the best CONNECTED copy to stream: { libraryId, id }. Prefers copies handed in
+// by the caller (a queue item, slice 5), then the index by any copy's id (with failover to another
+// host when the primary is offline), then a bare libraryId. Null -> fall back to the single active
+// client (single-host mode, or a track not in the blend).
+function routeTrack ({ trackId, libraryId, copies }) {
+  const connected = connectedLibs()
+  if (Array.isArray(copies) && copies.length) {
+    const c = merge.bestCopy({ copies }, connected)
+    return c ? { libraryId: c.libraryId, id: c.id } : null
+  }
+  const m = trackByAnyId.get(trackId)
+  if (m) { const c = merge.bestCopy(m, connected); if (c) return { libraryId: c.libraryId, id: c.id } }
+  if (libraryId) return { libraryId, id: trackId }
+  return null
 }
 
 // Attach a track's merged COPIES (every host that has it, primary first) by dedup-key lookup in the
@@ -610,7 +666,14 @@ async function ensureShim () {
     artStore,
     // The lease gate: a cached track is only served from disk while authorization is
     // fresh. Expired (a revoked or long-offline device) falls through to the live path.
-    leaseOk: leaseValid
+    leaseOk: leaseValid,
+    // Merged-mode streaming routing (step 2, slice 4). hostClient returns the connected pool client
+    // for a URL that names its owning host; libForTrack/libForCover resolve a bare id to its host
+    // for a URL that doesn't (the UI's own artBase covers). All three are inert in single-host mode
+    // (no libraryId in the URL, resolvers return null), so that path is unchanged.
+    hostClient: ensureHostById,
+    libForTrack,
+    libForCover
   })
   shimPort = await shim.listen()
   return shimPort
@@ -838,7 +901,7 @@ const methods = {
   // track's copies so streaming can fail over. The UI passes the served album's libraryId back here.
   async album ({ id, libraryId }) {
     if (mergedMode() && libraryId) {
-      const c = await detailClient(libraryId)
+      const c = await ensureHostById(libraryId)
       const a = await c.get({ id, type: 'album' })
       if (!a) return null
       return withBigArt({ ...a, libraryId, tracks: (a.tracks || []).map((t) => enrichCopies({ ...t, libraryId })) })
@@ -867,7 +930,7 @@ const methods = {
   // another's for the same artist - is a later refinement; phase 1 shows the primary host's.)
   async artist ({ id, libraryId }) {
     if (mergedMode() && libraryId) {
-      const c = await detailClient(libraryId)
+      const c = await ensureHostById(libraryId)
       const a = await c.get({ id, type: 'artist' })
       if (!a) return null
       return {
@@ -899,7 +962,7 @@ const methods = {
     // single active client. Either way each track is tagged with its libraryId + copies so a
     // mixed-host queue (slice 4) routes every track to a host that has it.
     let c
-    if (mergedMode() && libraryId) c = await detailClient(libraryId)
+    if (mergedMode() && libraryId) c = await ensureHostById(libraryId)
     else { await ensureConnected(); c = client }
     const tag = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId }) : t)
 
@@ -941,7 +1004,7 @@ const methods = {
   // genre's owning host; its albums carry libraryId so tapping through routes correctly.
   async genre ({ id, libraryId }) {
     let c
-    if (mergedMode() && libraryId) c = await detailClient(libraryId)
+    if (mergedMode() && libraryId) c = await ensureHostById(libraryId)
     else { await ensureConnected(); c = client }
     const g = await c.get({ id, type: 'genre' })
     if (!g) return null
@@ -958,7 +1021,7 @@ const methods = {
   // artistTracks: one round trip per album, plus the loose-track fallback.
   async genreTracks ({ id, libraryId }) {
     let c
-    if (mergedMode() && libraryId) c = await detailClient(libraryId)
+    if (mergedMode() && libraryId) c = await ensureHostById(libraryId)
     else { await ensureConnected(); c = client }
     const tag = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId }) : t)
 
@@ -1487,10 +1550,22 @@ const methods = {
 
   // The URL the RN player hands to ExoPlayer. The audio never touches RN: the
   // player pulls it from the worklet's loopback server, which pulls it over P2P.
-  async urlFor ({ trackId }) {
+  async urlFor ({ trackId, libraryId, copies }) {
     await ensureShim()
-    // A cached track with a FRESH lease plays from disk with no connection; anything else
-    // (uncached, or an expired lease) needs the live stream, so revive the link - which
+    // Merged mode: route to the track's best CONNECTED copy and mint a libraryId-scoped URL, so the
+    // player's held URL routes to the owning host for the life of the queue (proposal §5). A cached
+    // track with a fresh lease plays from disk host-agnostically (ids are namespaced); otherwise
+    // revive that specific host. copies/libraryId ride from the queue item when the shell provides
+    // them (slice 5); until then the index lookup resolves it.
+    if (mergedMode()) {
+      const route = routeTrack({ trackId, libraryId, copies })
+      if (route) {
+        if (!(audioCache.has(route.id) && leaseValid())) { try { await ensureHostById(route.libraryId) } catch {} }
+        return { url: shim.urlForLib(route.libraryId, route.id), port: shimPort }
+      }
+    }
+    // Single-host: a cached track with a fresh lease plays from disk with no connection; anything
+    // else (uncached, or an expired lease) needs the live stream, so revive the link - which
     // re-authorizes and renews the lease.
     if (!(audioCache.has(trackId) && leaseValid())) await ensureConnected()
     return { url: shim.urlFor(trackId), port: shimPort }
@@ -1707,6 +1782,7 @@ const methods = {
       if (pe) { try { if (pe.client) pe.client.close() } catch {} ; pool.delete(removed.libraryId) }
       mergedIndex = null // a removed host must leave the blend; next merged browse rebuilds
       mergedConnected.delete(removed.libraryId)
+      buildRouteMaps() // clears the routing lookups until the rebuild
     }
 
     if (wasActive) {
@@ -1769,6 +1845,7 @@ const methods = {
     await closePool() // tear down every merged-mode pool connection too
     mergedIndex = null // drop the blended index and its cache-in-memory
     mergedConnected = new Set()
+    buildRouteMaps() // clears the routing lookups
     // A full reset tears the shared dht node down too (a later pair recreates it). Client
     // close() leaves it alone by design, so destroy it here or it would leak past a forget.
     if (dht) { try { await dht.destroy() } catch {} ; dht = null }
