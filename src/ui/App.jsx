@@ -4331,22 +4331,12 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onSaveI
                   </div>
                   <div className='desc'>{desc}</div>
                 </div>
-                <button className='danger' onClick={(e) => { e.stopPropagation(); onRemoveHost(h) }}>Remove</button>
+                <button className='rowremove' aria-label={'Remove ' + (h.libraryName || 'library')} onClick={(e) => { e.stopPropagation(); onRemoveHost(h) }}>
+                  <Trash size={19} weight='regular' />
+                </button>
               </div>
             )
           })}
-          {sourceText(state) && (
-            <div className='row'>
-              <div>
-                <div className='label'>Source</div>
-                <div className='desc'>
-                  Where the active library comes from. Your server's operator chooses it; you
-                  see whatever they point it at.
-                </div>
-              </div>
-              <span className='val'>{sourceText(state)}</span>
-            </div>
-          )}
           <div className='row'>
             <div>
               <div className='label'>Add a library</div>
@@ -4356,15 +4346,6 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onSaveI
               </div>
             </div>
             <button className='primary' onClick={onAddLibrary}>Add</button>
-          </div>
-          <div className='row'>
-            <div>
-              <div className='label'>Unpair everything</div>
-              <div className='desc'>
-                Forget every library and clear all downloads. This device keeps its identity.
-              </div>
-            </div>
-            <button className='danger' onClick={onUnpair}>Unpair all</button>
           </div>
         </Section>
 

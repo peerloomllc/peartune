@@ -1926,6 +1926,18 @@ button.danger {
   color: var(--color-error);
   border-color: var(--color-border);
 }
+.rowremove {
+  flex: none;
+  border: none;
+  background: none;
+  padding: .35rem;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+}
+.rowremove:active {
+  color: var(--color-error);
+}
 button.wide {
   width: 100%;
 }
