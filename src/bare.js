@@ -505,7 +505,13 @@ async function ensureHost (host) {
       await c.connect({ hostKey: host.hostKey, libraryId: host.libraryId })
       e.client = c
       stampAuthFor(libId) // a successful connect is a fresh authorization for THIS host's lease
-      c.conn.once('close', () => { if (e.client === c) e.client = null })
+      c.conn.once('close', () => {
+        if (e.client === c) e.client = null
+        // A pool connection dropping (a revoke of THIS host, or it going offline) has no other
+        // channel to the UI - host:disconnected only fires for the single active client. In merged
+        // mode, push fresh status so the chip + Settings row grey promptly, whichever host it was.
+        if (mergedMode()) emit('merged:updated', mergedStatusData())
+      })
       return c
     })().finally(() => { e.reconnecting = null })
   }
@@ -535,6 +541,12 @@ async function closePool () {
 // lib/_merged/index.json so a cold launch renders instantly then refreshes in the background.
 const mergedDir = () => path.join(LIB_ROOT, MERGED_ID)
 const mergedIndexFile = () => path.join(mergedDir(), 'index.json')
+// When the last rebuild finished. A rebuild re-fetches every host's full catalog (seconds, real
+// bandwidth), so the auto-refresh triggers (a reconnect) are rate-limited against this - otherwise a
+// permanently-unreachable host (revoked) keeps `some host disconnected` true and every single-client
+// reconnect would kick another full rebuild. An explicit pull-to-refresh passes force to bypass it.
+let lastIndexBuiltAt = 0
+const REBUILD_COOLDOWN_MS = 20000
 
 async function rebuildIndex () {
   if (rebuildingIndex) return rebuildingIndex
@@ -551,6 +563,7 @@ async function rebuildIndex () {
     const catalogs = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)
     mergedIndex = merge.buildIndex(catalogs)
     mergedConnected = new Set(catalogs.map((c) => c.libraryId))
+    lastIndexBuiltAt = Date.now()
     buildRouteMaps()
     try {
       fs.mkdirSync(mergedDir(), { recursive: true })
@@ -585,8 +598,14 @@ function listHostsData () {
 
 // The per-library status the UI renders the source-filter chips + greying from (see the mergedStatus
 // method). A module function so a background rebuildIndex can push it without the methods object.
+// `connected` is LIVE pool connectivity (connectedLibs), not the build-time mergedConnected, so a
+// revoke - which destroys the pool connection instantly - greys the host the moment the UI re-queries
+// (on host:disconnected), without waiting for a full index rebuild. `trackCount` stays index-based:
+// how many of the host's tracks are in the CURRENT blend (a host can be greyed/unreachable yet still
+// have its last-built tracks browsable).
 function mergedStatusData () {
   const hosts = loadHostsFile().hosts
+  const live = connectedLibs()
   const perLib = {}
   if (mergedIndex) {
     for (const t of mergedIndex.tracks) {
@@ -598,7 +617,7 @@ function mergedStatusData () {
     libraries: hosts.map((h) => ({
       libraryId: h.libraryId,
       libraryName: h.libraryName,
-      connected: mergedConnected.has(h.libraryId),
+      connected: live.has(h.libraryId),
       trackCount: perLib[h.libraryId] || 0
     })),
     counts: mergedIndex
@@ -1157,8 +1176,11 @@ const methods = {
   },
 
   // Rebuild the index (a host reconnected, or a pull-to-refresh). Only meaningful in merged mode.
-  async refreshMerged () {
+  // An auto-trigger (a reconnect) is rate-limited so a permanently-unreachable host can't drive a
+  // rebuild loop; an explicit pull-to-refresh passes force to rebuild now regardless.
+  async refreshMerged ({ force = false } = {}) {
     if (!mergedMode()) return { merged: false }
+    if (!force && mergedIndex && (Date.now() - lastIndexBuiltAt) < REBUILD_COOLDOWN_MS) return mergedStatusData()
     await rebuildIndex()
     return mergedStatusData()
   },
@@ -1840,6 +1862,11 @@ const methods = {
       mergedConnected.delete(removed.libraryId)
       buildRouteMaps() // clears the routing lookups until the rebuild
     }
+
+    // Merged is only a thing with 2+ libraries. Dropping to one (or none) leaves the blended view
+    // for the single-host experience - matching the host:switched the UI hears below, which flips
+    // its own merged flag off. (Removing one of THREE keeps merged, so guard on the new count.)
+    if (file.hosts.length < 2) _mergedMode = false
 
     if (wasActive) {
       if (client) { try { await client.close() } catch {} ; client = null }

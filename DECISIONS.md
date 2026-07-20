@@ -2,6 +2,36 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-20 - Merged library: Settings-row status + rebuild-loop / re-pair fixes
+Tier: T2 (client UI + worklet only; no wire/host/grant/revoke change). Branch fix/merged-settings-row-status.
+Polish + correctness surfaced while addressing the stale Settings library-row label from the step-2 revoke
+test. HARDWARE-VERIFIED on the TCL vs Umbrel + Mac.
+WHAT SHIPPED:
+- Settings > Libraries rows are MERGED-AWARE: in the blend they read "In your blended library" / "Offline
+  — unreachable" with a live connection dot, instead of the single-host "Active — connected" / "Tap to
+  switch". Rows are informational in merged mode (the home chips do the filtering); tap-to-switch stays
+  only in single-host mode. Passes `merged` into Settings.
+- mergedStatus().connected now reports LIVE pool connectivity (connectedLibs()), not build-time
+  mergedConnected - so a revoke greys the chip + row the instant the connection drops, no rebuild needed.
+  trackCount stays index-based (a greyed host's last-built tracks stay browsable).
+- Prompt greying wired two ways: the UI re-queries mergedStatus on host:disconnected (with a delayed
+  second read for the single-client/pool close race), AND the worklet's pool-close handler pushes
+  merged:updated (covers a NON-active host revoke, which fires no host:disconnected).
+- removeHost exits merged mode when the paired count drops below 2 (matches the host:switched the UI
+  already flips on).
+- REBUILD COOLDOWN (20s, force-bypass): a revoked/unreachable host kept `some host disconnected` true, so
+  every single-client reconnect re-triggered a full refreshMerged - an on-device rebuild LOOP
+  (re-fetching catalogs, host:disconnected flood). refreshMerged({force}) rate-limits auto-triggers;
+  pull-to-refresh and pair pass force. Verified: 22s window went from a flood to 1 rebuild, 0 disconnects.
+- onPaired now enters merged (pairing a 2nd host) or force-rebuilds (restoring a revoked one) so the
+  (re)paired host folds into the blend immediately instead of waiting out the cooldown.
+HARDWARE: Settings rows showed "Offline — unreachable" (revoked Umbrel) + "In your blended library" (Mac);
+revoke auto-greyed the chip with no pull-to-refresh; the rebuild loop is gone; re-pair restored the blend
+(60 albums / 2 libs) and the correct "Tim's Umbrel" name. 368 tests, verify green. onPaired's enter/force
+path is verify-green + uses the confirmed force-refresh mechanism (not separately re-revoked to avoid grant
+churn). NOTE: separate BUGS Tim hit on hotel wifi/Tailscale (remove-on-Pixel no-op, orphan host rows,
+inconsistent re-pair, onboarding-bypass half-identity) are logged in TODO.md, not addressed here.
+
 ## 2026-07-19 - Merged library, slice 5: merged-default UI + source-filter chips (STEP 2 COMPLETE)
 Tier: T3 (merged-library proposal §7). Branch feature/merged-library-ui, stacked on slices 3-4 (#85/#86).
 The last slice: makes the blended library the DEFAULT view and ships the source-filter chips. HARDWARE-
