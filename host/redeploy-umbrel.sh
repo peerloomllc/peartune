@@ -12,7 +12,10 @@
 set -euo pipefail
 
 # Pinned image (tag + digest = reproducible; the digest is what actually deploys).
-IMG='ghcr.io/peerloomllc/peartune-host:0.2.7@sha256:fd1a711f9a878addc706c18c4f89ab78595f1fee1bc5a686387007f775db52c7'
+# NB: this is the REGISTRY manifest digest (skopeo inspect docker://… .Digest, or the first
+# RepoDigest after a pull) - NOT `podman inspect --format {{.Digest}}`, which is the local digest
+# and yields "manifest unknown" on pull.
+IMG='ghcr.io/peerloomllc/peartune-host:0.2.7@sha256:85718280c902b6765c2f618a6d1f14b0e6d995f16a3ce9990469ae3076dc5f55'
 
 DATA='/home/umbrel/peartune-data'                     # identity + grants (persisted)
 MUSIC_HOST='/home/umbrel/umbrel/home/Downloads'       # mounted at /library (ro); roots = /library/music,/library/downtify
