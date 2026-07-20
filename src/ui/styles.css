@@ -892,6 +892,12 @@ button.icon.mode.on { color: var(--color-primary); }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 button.danger { color: var(--color-error); border-color: var(--color-border); }
+/* Icon-only Remove on a library row: just the trash glyph in the error colour, no button chrome. */
+.rowremove {
+  flex: none; border: none; background: none; padding: .35rem;
+  color: var(--color-text-muted); display: inline-flex; align-items: center;
+}
+.rowremove:active { color: var(--color-error); }
 button.wide { width: 100%; }
 .btnrow { display: flex; gap: .5rem; margin-top: .25rem; }
 .btnrow button { flex: 1; font-size: .875rem; }
