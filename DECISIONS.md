@@ -2,6 +2,34 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-19 - Merged library, slice 4: streaming routing (per-track host + mixed queue)
+Tier: T3 (merged-library proposal, proposals/2026-07-19-multi-host-merged-library.md §5-6). Branch
+feature/merged-library-stream, stacked on slice 3 (#85). Wires the merged index into PLAYBACK: a track (or
+cover) in merged mode streams from the host that actually holds it. NO wire/host/grant/revoke change.
+URL SCHEME (worklet/shim.js): the loopback URLs gain an optional owning-host segment -
+/t/<libraryId>/<trackId> and /art/<libraryId>/<coverId>, beside the unchanged single-host /t/<id>, /art/<id>.
+Pure parseUrl() router (exported, 9 tests) matches the merged 2-seg form first; libraryId is null for the
+single form, which routes to the single active client EXACTLY as before. Per request the shim picks the
+client via connFor(): a URL that names a host -> its pool client (hostClient, self-healing); a URL that
+doesn't -> a resolver (libForTrack/libForCover) in merged mode, else the single active client. Cache HITS
+never route - served by (namespaced) id alone, host-agnostic, so offline/downloaded playback is untouched.
+AUDIO uses the durable 2-seg URL (urlFor -> shim.urlForLib) so the player's held URL keeps routing correctly
+even across an index rebuild mid-session; ART keeps the UI's own 1-seg artBase composition and routes via
+the libForCover resolver (a mis-resolved cover only shows a placeholder - not worth a UI-wide URL change).
+bare.js: urlFor({trackId,libraryId,copies}) -> routeTrack() picks the best CONNECTED copy (merge.bestCopy
+over the live pool set, failing over when the primary host is offline) and mints the scoped URL; ensureHostById
+revives that specific host; buildRouteMaps() derives coverId/trackId -> owning-host lookups on every index
+build (cleared on removeHost/forget). The mixed-host queue lands in lib/_merged/queue.json for free (the
+'_merged' sentinel makes libDir() point there); the shell threading each item's libraryId/copies through
+saveQueueState is slice 5 - until then urlFor resolves via the index, so merged play already routes.
+lazy-require: bare-http1 moved to a lazy require inside createAudioShim so shim.js loads in a Node test
+(the native addon is on-device only) - parseUrl is now unit-testable.
+KNOWN CAVEAT (pre-existing, not new): subsonic/jellyfin coverIds are the server's RAW ids (not namespaced),
+so two SAME-KIND servers could collide a coverId in the shared art cache + the libForCover map. Tim's setup
+(Umbrel Navidrome + Mac folder) doesn't collide (different id formats); trackIds ARE namespaced so audio
+never collides. This is the same source-scoped-dedup boundary already tracked for multi-SOURCE. 368 tests
+(+9), verify green (incl. bare-pack). NOT yet hardware-tested - slice 5 (the UI) drives the acceptance run.
+
 ## 2026-07-19 - Merged library, slice 3: catalog fetch + index-served browse/search
 Tier: T3 (part of the merged-library proposal proposals/2026-07-19-multi-host-merged-library.md).
 Branch feature/merged-library-browse. Slice 3 of 5 - wires the DORMANT slice-1/2 pieces (worklet/merge.js
