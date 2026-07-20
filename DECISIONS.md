@@ -2,6 +2,36 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-19 - Merged library, slice 3: catalog fetch + index-served browse/search
+Tier: T3 (part of the merged-library proposal proposals/2026-07-19-multi-host-merged-library.md).
+Branch feature/merged-library-browse. Slice 3 of 5 - wires the DORMANT slice-1/2 pieces (worklet/merge.js
++ the src/bare.js connection pool) into a working read-only merged browse. NO wire/host/grant change; the
+single-host path is byte-for-byte unchanged (every browse method BRANCHES on merged mode, single mode
+falls through untouched).
+WHAT SHIPPED:
+- worklet/catalog.js (+ test/catalog.test.js, 13 tests): PURE fetchAllPages (loop a host's paginated
+  library.list to exhaustion - null / maxPages cap / no-advance guard), fetchCatalog (pull a host's full
+  artists/albums/tracks/genres off one client; rejects on a real drop so allSettled drops that whole host),
+  and the serve helpers paginate/serveList/searchIndex (filter+sort+page and in-memory search over the
+  built index).
+- src/bare.js: the MERGED MODE flag is the reserved sentinel activeLibraryId === '_merged' (mergedMode()).
+  rebuildIndex() = ensureAll -> fetchCatalog each connected host (allSettled) -> merge.buildIndex -> cache
+  to lib/_merged/index.json + a module var; single-flight; mergedConnected tracks who's in the blend.
+  loadCachedIndex renders a cold launch instantly. Browse LISTS (albums/artists/tracks/genres) + search
+  serve from the index (sorted/filtered/paged in memory - incl. an A-Z Songs list a single Subsonic host
+  can't do); DETAIL reads (album/artist/genre + their track lists) route to the entity's OWNING host via
+  the pool and enrichCopies() tags each track with its merged copies (dedup-key lookup) so slice 4 can fail
+  over. New RPCs: enterMerged / refreshMerged / mergedStatus (per-library connected + trackCount for the
+  slice-5 filter chips + greying).
+DELIBERATE (noted for review): browse lists come from the index, but album/artist/genre DETAIL track lists
+come from the owning host (the index holds no per-album track order) - authoritative order + fidelity over
+a second in-memory structure. A cross-host artist page (one host's albums beside another's for the same
+artist) stays primary-host-only in phase 1. Merged mode reuses the '_merged' state dir, so favorites/resume
+in merged mode are per-_merged (empty) = the proposal's phase-2 deferral, not a regression. rebuild-on-
+reconnect is the UI calling refreshMerged (wired in slice 5); dormant now since nothing enters merged mode
+yet. 359 tests (+13), verify green (incl. bare-pack). NOT yet hardware-tested - slice 5 (the UI) drives the
+TCL + Umbrel + Mac mini acceptance run.
+
 ## 2026-07-19 - Queue-on-switch continuity (multi-host step 1 polish)
 Tier: T2 (client/shell only; no wire/host/grant change). Branch feature/queue-on-switch. Closes the last
 open multi-host item: switching libraries WHILE a track plays now drains the current track then advances
