@@ -161,6 +161,22 @@ test('track and album sort map to SortBy/SortOrder; default is unchanged', async
   assert.match(params.SortBy, /^ProductionYear/)
 })
 
+test('album list requests DateCreated and maps it to addedAt (merged recently-added shelf)', async () => {
+  const a = make()
+  let fields = null
+  a._call = async (path, p) => {
+    fields = p.Fields
+    return { Items: [
+      { Id: 'al-1', Name: 'IV', DateCreated: '2026-07-01T12:00:00.000Z' },
+      { Id: 'al-2', Name: 'V' } // no DateCreated -> null
+    ] }
+  }
+  const { items } = await a.list({ type: 'albums' })
+  assert.match(fields, /DateCreated/, 'DateCreated must be in Fields or the API omits it')
+  assert.equal(items[0].addedAt, Date.parse('2026-07-01T12:00:00.000Z'))
+  assert.equal(items[1].addedAt, null)
+})
+
 // --- genres ---------------------------------------------------------------
 
 test('list({type:"genres"}) maps MusicGenres', async () => {

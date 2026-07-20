@@ -36,7 +36,7 @@ const TICKS_PER_MS = 10000
 // one: it carries the file SIZE, and the phone's loopback shim needs a content-length
 // before it will let ExoPlayer seek. Without it the player can only play forward.
 const TRACK_FIELDS = 'MediaSources,ParentId,ProductionYear,Path'
-const ALBUM_FIELDS = 'ProductionYear,ChildCount,ParentId'
+const ALBUM_FIELDS = 'ProductionYear,ChildCount,ParentId,DateCreated'
 
 // Canonical sort key -> Jellyfin SortBy. The default (no sort) track order stays what
 // it always was - by album-artist, album, then disc/track - so browsing is unchanged
@@ -214,6 +214,9 @@ class JellyfinAdapter {
       artist: item.AlbumArtist || item.AlbumArtists?.[0]?.Name || null,
       year: item.ProductionYear ?? null,
       songCount: item.ChildCount ?? null,
+      // DateCreated = when the album was added to the library (needs the field in ALBUM_FIELDS), a
+      // real timestamp the merged shelf can date-sort against other hosts.
+      addedAt: item.DateCreated ? (Date.parse(item.DateCreated) || null) : null,
       coverId: item.Id
     }
   }

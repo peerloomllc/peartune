@@ -1169,41 +1169,14 @@ const methods = {
     return { items }
   },
 
-  // The merged "Recently added" shelf: each connected host CAN order its own albums by date added,
-  // but there's no shared timestamp to sort across them (a folder host has mtimes; Subsonic only gives
-  // newest-first order, no field). So pull each host's own recent albums and ROUND-ROBIN interleave
-  // them - the shelf mixes libraries rather than showing all of one then the other. Deduped by album
-  // key so the same album on two hosts shows once. (A true global date-sort would need addedAt from
-  // every adapter - a host change; deferred.)
+  // The merged "Recently added" shelf. Every adapter now tags albums with a real `addedAt` (folder
+  // mtime, Subsonic `created`, Jellyfin DateCreated), and buildIndex keeps the NEWEST across copies -
+  // so this is a TRUE global date-sort across the blend (newest first), not a per-host interleave.
   async recentMerged ({ limit = 12 } = {}) {
     if (!mergedMode()) return { items: [] }
-    const libs = [...connectedLibs()]
-    if (!libs.length) return { items: [] }
-    const per = Math.max(3, Math.ceil(limit / libs.length) + 2)
-    const settled = await Promise.allSettled(libs.map(async (lib) => {
-      const c = poolClient(lib)
-      if (!c) return []
-      const page = await c.list({ type: 'albums', sort: 'added', order: 'desc', limit: per })
-      return (page.items || []).map((al) => ({ ...al, libraryId: lib }))
-    }))
-    const byHost = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)
-    const seen = new Set()
-    const items = []
-    for (let i = 0; items.length < limit; i++) {
-      let any = false
-      for (const list of byHost) {
-        const al = list[i]
-        if (!al) continue
-        any = true
-        const k = merge.albumKey(al)
-        if (seen.has(k)) continue
-        seen.add(k)
-        items.push(al)
-        if (items.length >= limit) break
-      }
-      if (!any) break
-    }
-    return { items: items.map(withArt) }
+    const ix = await ensureIndex()
+    const page = catalog.serveList(ix.albums, { sort: 'added', order: 'desc', cursor: 0, limit })
+    return { items: page.items.map(withArt) }
   },
 
   async search ({ q, libraryId } = {}) {

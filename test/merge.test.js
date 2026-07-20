@@ -113,6 +113,24 @@ test('buildIndex tolerates a host with missing lists and an empty catalog set', 
 
 // --- sort / filter / bestCopy ------------------------------------------------
 
+test('mergeAlbums keeps the NEWEST addedAt across copies, and sortItems orders by it', () => {
+  const a = [
+    { id: 'u', libraryId: 'libU', name: 'OK Computer', artist: 'Radiohead', year: 1997, songCount: 12, addedAt: 1000 },
+    { id: 'm', libraryId: 'libM', name: 'OK Computer', artist: 'Radiohead', year: 1997, songCount: 12, addedAt: 5000 }, // newer copy
+    { id: 'k', libraryId: 'libU', name: 'Kid A', artist: 'Radiohead', year: 2000, songCount: 10, addedAt: 9000 }
+  ]
+  const merged = M.mergeAlbums(a)
+  const ok = merged.find((x) => M.norm(x.name).startsWith('ok computer'))
+  assert.equal(ok.addedAt, 5000, 'the newer copy\'s addedAt wins')
+  // Recently-added order (desc): Kid A (9000) before OK Computer (5000)
+  assert.deepEqual(M.sortItems(merged, 'added', 'desc').map((x) => x.name), ['Kid A', 'OK Computer'])
+})
+
+test('mergeAlbums addedAt is null when no copy has one', () => {
+  const merged = M.mergeAlbums([{ id: 'x', libraryId: 'libU', name: 'Solo', artist: 'Q', year: 0, songCount: 1 }])
+  assert.equal(merged[0].addedAt, null)
+})
+
 test('sortItems sorts by any field, both directions, using normalized text', () => {
   const albums = [
     { name: 'Kid A', year: 2000 },

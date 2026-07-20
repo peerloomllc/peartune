@@ -141,6 +141,9 @@ function mergeAlbums (albums) {
       year: Number(p.year) || 0,
       coverId: p.coverId,
       songCount: Math.max(...g.copies.map((c) => Number(c.songCount) || 0)),
+      // The NEWEST "date added" across copies, so a merged album sorts by when it most recently
+      // landed on any host - the true global "recently added" ordering across the blend.
+      addedAt: Math.max(0, ...g.copies.map((c) => Number(c.addedAt) || 0)) || null,
       copies: orderedCopies(g, idCopy)
     })
   }
@@ -218,6 +221,7 @@ function sortItems (items, key, order = 'asc') {
   const val = (x) => {
     switch (key) {
       case 'year': return Number(x.year) || 0
+      case 'added': return Number(x.addedAt) || 0
       case 'duration': return Number(x.durationMs) || 0
       case 'artist': return norm(x.artist)
       case 'album': return norm(x.album)
