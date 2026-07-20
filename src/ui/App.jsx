@@ -130,6 +130,13 @@ export default function App () {
   const [pinned, setPinned] = useState(() => new Set()) // pinned (downloaded) album ids
   const [pinning, setPinning] = useState({}) // albumId -> { done, total } while downloading
   const [downloads, setDownloads] = useState(null) // the Downloads view: [{ id, name, ... }]
+  // Merged library (multi-host step 2): when 2+ hosts are paired the library home is the BLENDED,
+  // deduped view of all of them, and `merged` holds its per-source status ({ merged, libraries:
+  // [{libraryId, libraryName, connected, trackCount}], counts }) for the filter chips + greying.
+  // `filter` is the selected source chip: '_all' (the blend) or one library's id (a per-host view,
+  // which is just the merged index filtered). Null merged = single-host, the unchanged experience.
+  const [merged, setMerged] = useState(null)
+  const [filter, setFilter] = useState('_all')
 
   useEffect(() => {
     call('init')
@@ -147,6 +154,10 @@ export default function App () {
         // emits play:started, which lights up the mini-player). Fire-and-forget: a
         // cached queue restores offline; an uncached one waits for the connection.
         call('restore').then(r => { if (r?.restored) setCont(null) }).catch(() => {})
+        // Merged is the default when 2+ hosts are paired: the browse serves from the cached index
+        // INSTANTLY (no connection needed), and a background rebuild refreshes it via merged:updated.
+        setMerged(s.merged || null)
+        if (s.merged?.merged) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
         if (s.connected) { loadAlbums(0, sortParamsFor(savedSort, 'albums')); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists() }
       })
       .catch(e => setState({ loading: false, error: e.message }))
@@ -209,15 +220,26 @@ export default function App () {
         setError(null)
         // init connects in the BACKGROUND now, so this event - not init - is what kicks
         // off the first library load, and refreshes it on every reconnect.
-        loadAlbums(0)
-        loadRecent()
         loadIdentity()
         loadSource()
         loadFavs()
         loadContinue()
         loadHandoff(); setTimeout(loadHandoff, 2000) // retry: the active device may push its queue just after we connect
         loadPlaylists(true)
+        // In merged mode, if any paired host is still missing from the blend, rebuild to fold the
+        // one that just came online in (merged:updated then reloads browse + chips). If the blend is
+        // already complete, just re-render browse from the current index rather than re-fetching.
+        if (mergedRef.current?.merged) {
+          if ((mergedRef.current.libraries || []).some(l => !l.connected)) call('refreshMerged').catch(() => {})
+          else reloadBrowse()
+        } else {
+          loadAlbums(0)
+          loadRecent()
+        }
       }),
+      // A background merged rebuild landed (launch, a host (re)joining, a pull-to-refresh): update
+      // the source chips + greying and re-render the browse from the fresh blend.
+      on('merged:updated', (st) => { setMerged(st); reloadBrowse() }),
 
       // Switched to another paired library (multi-host, 2026-07-19). Swap the browse to the
       // new library and flip the active flag; the currently-playing track is left ALONE (a
@@ -230,6 +252,9 @@ export default function App () {
           host: { ...s.host, hostKey: d.hostKey, libraryId: d.libraryId, libraryName: d.libraryName },
           hosts: (s.hosts || []).map(h => ({ ...h, active: h.hostKey === d.hostKey }))
         }))
+        // A Settings switch focuses ONE library (the worklet left merged mode); drop the blended
+        // view and its chips. The '_all' chip re-enters merged.
+        setMerged(m => (m ? { ...m, merged: false } : m)); setFilter('_all')
         setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery(''); setError(null)
         if (liveRef.current?.connected) {
           loadAlbums(0); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadPlaylists(true)
@@ -255,6 +280,39 @@ export default function App () {
   // What the once-registered listeners above need to see, always current.
   const liveRef = useRef({})
   liveRef.current = { host: state.host, connected: state.connected, reconnecting }
+
+  // Merged-mode refs, for the same reason as sortRef below: the once-registered listeners (and the
+  // loaders they fire) captured the first render, so they read the CURRENT source filter, merged
+  // status, and browse view through refs. filterRef is also set synchronously by the chip tap so a
+  // reload picks up the new filter before setState commits.
+  const mergedRef = useRef(null); mergedRef.current = merged
+  const filterRef = useRef('_all'); filterRef.current = filter
+  const browseRef = useRef('albums'); browseRef.current = browse
+
+  // Reload whichever browse view is showing, from the current source filter (used after a merged
+  // rebuild, and by a chip tap). Mirrors applySort's reset-then-load per view.
+  function reloadBrowse () {
+    const v = browseRef.current
+    if (v === 'albums') { setAlbums([]); setCursor(0); setAlbumsLoaded(false); loadAlbums(0) }
+    else if (v === 'artists') { setArtists(null); loadArtists() }
+    else if (v === 'genres') { setGenres(null); loadGenres() }
+    else if (v === 'songs') { setSongs(null); setSongCursor(0); loadSongs(0) }
+  }
+
+  // Pick a source-filter chip: '_all' (the blend) or one library's id. Any chip RE-ENTERS merged
+  // mode first if a Settings switch had focused a single library. Set the ref synchronously so the
+  // reload reads the new filter immediately.
+  function pickFilter (libraryId) {
+    haptic('light')
+    filterRef.current = libraryId
+    setFilter(libraryId)
+    setStack([]); setResults(null); setQuery('')
+    if (merged && !merged.merged) {
+      call('enterMerged').then(st => { if (st?.libraries) { setMerged(st); reloadBrowse() } }).catch(() => {})
+    } else {
+      reloadBrowse()
+    }
+  }
 
   // The per-view sort, via a ref, because the loaders run from once-registered
   // listeners (host:connected fires the first library load) whose closures captured
@@ -473,7 +531,7 @@ export default function App () {
 
   async function loadAlbums (from, params) {
     try {
-      const page = await call('albums', { cursor: from, limit: 60, ...(params ?? sortParams('albums')) })
+      const page = await call('albums', { cursor: from, limit: 60, libraryId: filterRef.current, ...(params ?? sortParams('albums')) })
       setAlbums(a => (from ? [...a, ...page.items] : page.items))
       setCursor(page.nextCursor)
       setAlbumsLoaded(true)
@@ -511,7 +569,7 @@ export default function App () {
   // a single call, so unlike albums there is nothing to page.
   async function loadArtists (params) {
     try {
-      const page = await call('artists', { ...(params ?? sortParams('artists')) })
+      const page = await call('artists', { libraryId: filterRef.current, ...(params ?? sortParams('artists')) })
       setArtists(page.items)
     } catch (e) {
       setError(e.message)
@@ -529,6 +587,9 @@ export default function App () {
   // advertises the 'added' album sort (older hosts would return alphabetical), so the
   // shelf is gated on that capability at render; a failure just leaves it hidden.
   async function loadRecent () {
+    // The blended index carries no per-host "date added", so the Recently Added shelf is a
+    // single-host affordance; in merged mode it stays hidden (a cross-host recent is a refinement).
+    if (mergedRef.current?.merged) { setRecent([]); return }
     try {
       const page = await call('albums', { sort: 'added', order: 'desc', limit: 12 })
       setRecent(page.items || [])
@@ -538,7 +599,7 @@ export default function App () {
   // Genres load once, like artists - the host returns the whole set in one call.
   async function loadGenres (params) {
     try {
-      const page = await call('genres', { ...(params ?? sortParams('genres')) })
+      const page = await call('genres', { libraryId: filterRef.current, ...(params ?? sortParams('genres')) })
       setGenres(page.items)
     } catch (e) {
       setError(e.message)
@@ -557,7 +618,7 @@ export default function App () {
   // this view was dropped the first time round).
   async function loadSongs (from, params) {
     try {
-      const page = await call('tracks', { cursor: from, limit: 100, ...(params ?? sortParams('songs')) })
+      const page = await call('tracks', { cursor: from, limit: 100, libraryId: filterRef.current, ...(params ?? sortParams('songs')) })
       setSongs(s => (from ? [...(s || []), ...page.items] : page.items))
       setSongCursor(page.nextCursor)
     } catch (e) {
@@ -829,6 +890,12 @@ export default function App () {
   // already reach for.
   async function refresh () {
     setError(null)
+    // In merged mode a pull-to-refresh rebuilds the blend (re-fetches every host's catalog, folding
+    // in one that came back online); merged:updated then re-renders the browse + chips.
+    if (mergedRef.current?.merged) {
+      try { const st = await call('refreshMerged'); if (st?.libraries) setMerged(st) } catch {}
+      return
+    }
     loadSource() // the operator may have switched the source since we last looked
     if (browse === 'artists') return showArtists(true)
     if (browse === 'songs') return showSongs(true)
@@ -844,7 +911,7 @@ export default function App () {
     // side. The Library render does the actual filtering off `query`.
     if (!q.trim() || browse === 'songs') return setResults(null)
     try {
-      setResults(await call('search', { q }))
+      setResults(await call('search', { q, libraryId: filterRef.current }))
     } catch (e) {
       toast(e.message, true)
     }
@@ -1351,6 +1418,7 @@ export default function App () {
     screen = (
       <Library
         state={state} albums={albums} artists={artists} genres={genres} songs={songs} recent={recent}
+        merged={merged} filter={filter} onFilter={pickFilter}
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
@@ -1896,7 +1964,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 }
 
 function Library ({
-  state, albums, artists, genres, songs, recent, cursor, songCursor, density,
+  state, albums, artists, genres, songs, recent, merged, filter, onFilter, cursor, songCursor, density,
   browse, query, results, now, error, albumsLoaded, reconnecting,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
@@ -1924,6 +1992,13 @@ function Library ({
   // The worklet hands us the base URL rather than finished art URLs, because only
   // the UI knows the density, and therefore the size to ask for.
   const artBase = state.artBase || state.host?.artBase || null
+
+  // Merged-view header: the blended library isn't "the active host", so name it for what's showing -
+  // "All libraries" for the blend, or the one library a chip has focused. `mergedAll` = the blend.
+  const mergedAll = !!(merged?.merged && filter === '_all')
+  const libTitle = merged?.merged
+    ? (filter === '_all' ? 'All libraries' : (merged.libraries.find(l => l.libraryId === filter)?.libraryName || 'Library'))
+    : (state.host.libraryName || 'Library')
 
   // Pull to refresh, by hand: this is a WebView, so there is no RefreshControl to
   // borrow. Only arms when the document is ALREADY at the top, or the gesture would
@@ -1968,7 +2043,10 @@ function Library ({
   // is the screen you see when a reconnect has actually FAILED - which is the only
   // moment "the server may be off, or your access was revoked" is a true thing to
   // say to someone.
-  if (!state.connected) {
+  // Merged mode browses from the in-memory index (no single connection needed), so the blended view
+  // renders from the cached index even while the active client is still connecting - don't gate it on
+  // state.connected. Single-host mode still shows the not-connected wall.
+  if (!state.connected && !merged?.merged) {
     return (
       <div className='app'>
         <header><h1>{state.host.libraryName || 'Library'}</h1></header>
@@ -2026,12 +2104,16 @@ function Library ({
           the title sticky as well would cost twice the height for a word you
           already know. */}
       <header>
-        <h1>{state.host.libraryName || 'Library'}</h1>
+        <h1>{libTitle}</h1>
         <p className='muted sm'>
           {songFilter
             ? `${shownSongs.length} of ${songs ? songs.length : 0} loaded songs`
             : count(browse, { albums, artists, genres, songs })}
-          {sourceText(state) && <> · {sourceText(state)}</>}
+          {/* In the blended view the source kind belongs to the active host, not the blend, so show
+              the library COUNT instead ("2 libraries"); a single-host filter shows its source. */}
+          {mergedAll
+            ? <> · {merged.libraries.length} libraries</>
+            : (sourceText(state) && <> · {sourceText(state)}</>)}
         </p>
       </header>
 
@@ -2071,6 +2153,13 @@ function Library ({
               <Faders size={20} weight='regular' />
             </button>
           </div>
+        )}
+        {/* The source-filter chips (multi-host step 2): [All] + one per library. The blended view is
+            the default; a chip narrows to one host (which is just the merged index filtered). Shown
+            only with 2+ libraries and not while searching. An offline host is greyed but still
+            selectable (its tracks in the last blend remain browsable, just unplayable). */}
+        {!searching && merged && (merged.libraries?.length >= 2) && (
+          <SourceChips libraries={merged.libraries} filter={merged.merged ? filter : null} onPick={onFilter} />
         )}
       </div>
 
@@ -2778,6 +2867,28 @@ function RecentShelf ({ albums, onOpen, artBase }) {
           </button>
         ))}
       </div>
+    </div>
+  )
+}
+
+// The source-filter chips for the merged library (multi-host step 2). [All] is the blend; each other
+// chip narrows to one library. An offline library (not in the current blend) is greyed but still
+// tappable. `filter` is the active chip id, or null when a Settings switch has focused one host (so
+// nothing here is lit and tapping any chip returns to the blended view).
+function SourceChips ({ libraries, filter, onPick }) {
+  return (
+    <div className='chips'>
+      <button className={'chip' + (filter === '_all' ? ' on' : '')} onClick={() => onPick('_all')}>All</button>
+      {libraries.map(l => (
+        <button
+          key={l.libraryId}
+          className={'chip' + (filter === l.libraryId ? ' on' : '') + (l.connected ? '' : ' off')}
+          onClick={() => onPick(l.libraryId)}
+          title={l.connected ? undefined : 'Offline'}
+        >
+          {l.libraryName || 'Library'}
+        </button>
+      ))}
     </div>
   )
 }

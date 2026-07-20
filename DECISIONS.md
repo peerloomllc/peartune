@@ -2,6 +2,38 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-19 - Merged library, slice 5: merged-default UI + source-filter chips (STEP 2 COMPLETE)
+Tier: T3 (merged-library proposal §7). Branch feature/merged-library-ui, stacked on slices 3-4 (#85/#86).
+The last slice: makes the blended library the DEFAULT view and ships the source-filter chips. HARDWARE-
+VALIDATED on the TCL against the Umbrel (Navidrome) + Mac mini (folder). NO wire/host/grant/revoke change.
+KEY REFACTOR (correctness): merged mode is now a boolean flag `_mergedMode`, DECOUPLED from activeLibraryId
+(slices 3-4 used the activeLibraryId==='_merged' sentinel). Why: any favorites/resume call fires
+ensureConnected -> connectTo -> useLibrary(realHost), which would silently flip activeLibraryId off '_merged'
+and drop us out of merged mode mid-session. Now activeLibraryId still names the single client's host (so the
+single-client "You" features - favorites/resume/counts/session - keep working against the active host, the
+proposal's "per-filter for now"), while _mergedMode governs the blended browse/streaming. The merged queue
+uses lib/_merged/queue.json via an explicit queueFile() branch, not the sentinel.
+WORKLET (bare.js): init() enters merged mode when 2+ hosts are paired (loadCachedIndex for an instant cold
+render, background rebuildIndex, returns merged status); with 0-1 hosts the app is byte-for-byte single-host.
+rebuildIndex emits 'merged:updated' so the UI refreshes browse+chips after a background/reconnect rebuild.
+enterMerged/exitMerged/refreshMerged manage the flag; switchHost drops merged (Settings "focus one host").
+DETAIL ROUTING WITHOUT UI THREADING: a new entityLib map (album/artist/genre id -> owning host, built with
+the slice-4 route maps) lets album/artist/genre detail resolve their host FROM THE ID (libForEntity), so the
+UI keeps calling album({id}) unchanged - no libraryId threaded through the nav stack. Play routing likewise
+rides slice-4's trackByAnyId resolver, so the shell queue needs NO libraryId/copies threading (explicit
+queue-item copies for cold-launch-without-cache failover is a noted deferral).
+UI (App.jsx): `merged` (per-source status) + `filter` state; a SourceChips row ([All] + one chip per library,
+offline greyed) under the browse picker, shown with 2+ libraries; browse loaders pass libraryId=filter; the
+not-connected wall is skipped in merged mode (browse serves from the index); header reads "All libraries · N
+libraries" for the blend or the focused library's name; pull-to-refresh rebuilds the blend; Recently Added
+hidden in merged mode (no cross-host addedAt yet).
+BUGFIX found on-device: the IPC dispatch invokes methods UNBOUND, so `this` is undefined inside them - enterMerged/
+refreshMerged's `this.mergedStatus()` (and removeHost's pre-existing `this.listHosts()`) threw. Extracted
+mergedStatusData()/listHostsData() module functions. HARDWARE: merged home renders "All libraries · 60 albums
+· 2 libraries"; chips filter (My Library -> "25 albums · Folder"); album detail opens + covers route per host;
+two albums (Mac's "Courtesy Call", then "Boucle Infinie") played back-to-back in one merged session. 368 tests,
+verify green (incl. bare-pack). NOT hardware-tested: the revoke-on-one-host case (per-host guarantee unchanged).
+
 ## 2026-07-19 - Merged library, slice 4: streaming routing (per-track host + mixed queue)
 Tier: T3 (merged-library proposal, proposals/2026-07-19-multi-host-merged-library.md §5-6). Branch
 feature/merged-library-stream, stacked on slice 3 (#85). Wires the merged index into PLAYBACK: a track (or
