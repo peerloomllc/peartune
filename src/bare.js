@@ -402,6 +402,45 @@ async function flushOutbox () {
   }
 }
 
+// Per-host outboxes for MERGED mode: a state write (favorite/resume/count) to an OWNING host that's
+// offline queues to THAT host's own outbox (lib/<libraryId>/outbox.json) and flushes when that host
+// (re)connects. Distinct from the single-active `outbox` var above (single-host mode); here writes fan
+// out across hosts, so each host keeps its own queue.
+const outboxFileFor = (libraryId) => path.join(LIB_ROOT, libraryId, 'outbox.json')
+function loadOutboxFor (libraryId) {
+  try { const o = JSON.parse(fs.readFileSync(outboxFileFor(libraryId), 'utf8')); return Array.isArray(o) ? o : [] } catch { return [] }
+}
+function enqueueFor (libraryId, method, params) {
+  if (!libraryId) return
+  const next = coalesce(loadOutboxFor(libraryId), { method, params })
+  try {
+    fs.mkdirSync(path.join(LIB_ROOT, libraryId), { recursive: true })
+    fs.writeFileSync(outboxFileFor(libraryId), JSON.stringify(next))
+  } catch {}
+  log('outbox:queued', { lib: String(libraryId).slice(0, 8), method, depth: next.length })
+}
+const flushingLibs = new Set()
+async function flushOutboxFor (libraryId, c) {
+  if (!c || !libraryId || flushingLibs.has(libraryId)) return
+  let q = loadOutboxFor(libraryId)
+  if (!q.length) return // nothing queued for this host - don't churn on every connect
+  flushingLibs.add(libraryId)
+  try {
+    while (q.length) {
+      const call = clientCall(c, q[0])
+      if (!call) { q = q.slice(1) } // unknown method: drop it
+      else {
+        try { await call() } catch { break } // still can't reach the host; keep this + the rest
+        q = q.slice(1)
+      }
+      try { fs.writeFileSync(outboxFileFor(libraryId), JSON.stringify(q)) } catch {}
+    }
+    if (!q.length) log('outbox:drained', { lib: String(libraryId).slice(0, 8) })
+  } finally {
+    flushingLibs.delete(libraryId)
+  }
+}
+
 // --- the offline lease (phase 5B) -------------------------------------------
 function loadLastAuth () {
   try { return Number(JSON.parse(fs.readFileSync(leaseFile(), 'utf8')).lastAuth) || 0 } catch { return 0 }
@@ -532,6 +571,9 @@ async function ensureHost (host) {
       await c.connect({ hostKey: host.hostKey, libraryId: host.libraryId })
       e.client = c
       stampAuthFor(libId) // a successful connect is a fresh authorization for THIS host's lease
+      // Drain anything queued for this host while it was offline (merged favorite/resume/count writes).
+      // Fire-and-forget - a slow flush must not hold up the connect or the reads waiting on it.
+      flushOutboxFor(libId, c).catch(() => {})
       c.conn.once('close', () => {
         if (e.client === c) e.client = null
         // A pool connection dropping (a revoke of THIS host, or it going offline) has no other
@@ -1539,10 +1581,12 @@ const methods = {
   // host, so the caller simply starts the track from the top.
   async resumeSave ({ trackId, positionMs, durationMs }) {
     if (mergedMode()) {
-      // Route the resume to the track's OWNING host. Fire-and-forget; a resume isn't precious, so an
-      // offline owning host just drops it (per-host outbox for merged writes is a later slice).
-      const c = trackClient(trackId)
-      if (c) { try { await c.resumeSet({ trackId, positionMs, durationMs }) } catch {} }
+      // Route the resume to the track's OWNING host; queue to that host's outbox if it's unreachable,
+      // so it syncs when the host reconnects (coalesce keeps only the latest position per track).
+      const lib = favHost('track', trackId)
+      const c = lib && poolClient(lib)
+      if (c) { try { await c.resumeSet({ trackId, positionMs, durationMs }) } catch { enqueueFor(lib, 'resume.set', { trackId, positionMs, durationMs }) } }
+      else if (lib) enqueueFor(lib, 'resume.set', { trackId, positionMs, durationMs })
       return { ok: true }
     }
     // When connected, write straight through; when not, queue immediately rather than
@@ -1611,10 +1655,12 @@ const methods = {
   // for the "Most played" view.
   async countBump ({ trackId }) {
     if (mergedMode()) {
-      // Count the play on the track's OWNING host. Fire-and-forget; an offline owning host drops it
-      // (per-host outbox for merged writes is a later slice).
-      const c = trackClient(trackId)
-      if (c) { try { await c.countBump({ trackId }) } catch {} }
+      // Count the play on the track's OWNING host; queue to that host's outbox if unreachable, so the
+      // play isn't lost (each queued bump is a real play - counts accumulate).
+      const lib = favHost('track', trackId)
+      const c = lib && poolClient(lib)
+      if (c) { try { await c.countBump({ trackId }) } catch { enqueueFor(lib, 'count.bump', { trackId }) } }
+      else if (lib) enqueueFor(lib, 'count.bump', { trackId })
       return { ok: true }
     }
     if (connected && client) {
@@ -1680,9 +1726,9 @@ const methods = {
   async toggleFav ({ kind = 'track', id, on }) {
     const want = on !== false
     if (mergedMode()) {
-      // Route to the host that OWNS this item; update the blended cache optimistically so the heart
-      // flips instantly. An owning host that's offline keeps the optimistic heart (queued) - per-host
-      // outbox fan-out for favorites is a later slice.
+      // Route to the host that OWNS this item; flip the blended cache optimistically so the heart
+      // reacts instantly. If the owning host is unreachable, queue the write to its outbox so it syncs
+      // on reconnect (LWW - coalesce keeps only the latest on/off per item).
       applyMergedFav(kind, id, want)
       const lib = favHost(kind, id)
       const c = lib && poolClient(lib)
@@ -1692,9 +1738,11 @@ const methods = {
           return { kind: r.kind, id: r.id, on: r.on }
         } catch (e) {
           if (e?.code === 'ENOMETHOD') { applyMergedFav(kind, id, !want); throw e }
+          enqueueFor(lib, 'fav.set', { kind, id, on: want })
           return { kind, id, on: want, queued: true }
         }
       }
+      if (lib) enqueueFor(lib, 'fav.set', { kind, id, on: want })
       return { kind, id, on: want, queued: true }
     }
     const apply = (v) => {
