@@ -423,6 +423,17 @@ test('the "added" album sort maps to getAlbumList2 type=newest', async () => {
   assert.equal(seen.type, 'newest')
 })
 
+test('album list carries addedAt parsed from Subsonic `created` (for the merged recently-added shelf)', async () => {
+  const a = make()
+  a._call = async () => ({ albumList2: { album: [
+    { id: 'al1', name: 'A', created: '2026-07-01T12:00:00.000Z' },
+    { id: 'al2', name: 'B' } // no created -> null
+  ] } })
+  const { items } = await a.list({ type: 'albums' })
+  assert.equal(items[0].addedAt, Date.parse('2026-07-01T12:00:00.000Z'))
+  assert.equal(items[1].addedAt, null)
+})
+
 test('album sort maps to a getAlbumList2 type; year passes a full year range', async () => {
   const a = make()
   const seen = {}

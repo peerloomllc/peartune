@@ -315,6 +315,9 @@ class SubsonicAdapter {
         artist: a.artist || null,
         year: a.year ?? null,
         songCount: a.songCount ?? null,
+        // `created` (ISO 8601, OpenSubsonic/Navidrome) is when the album was added to the library -
+        // a real timestamp, so the merged shelf can date-sort it against a folder host's mtimes.
+        addedAt: a.created ? (Date.parse(a.created) || null) : null,
         coverId: a.coverArt || a.id
       }))
       return { type, items, nextCursor: list.length === limit ? offset + limit : null }
