@@ -291,6 +291,33 @@ function saveFavCache (g) {
   }))
 }
 
+// The MERGED favorites cache (phase 2): the UNION of every host's favorites, cached at lib/_merged so
+// the blended hearts render instantly + offline. Favourites are host-as-hub (each host stores THIS
+// device's favorites for its own items), so the blend is just their union - an id is favorited iff any
+// host that owns it says so.
+const mergedFavFile = () => path.join(LIB_ROOT, MERGED_ID, 'favorites.json')
+function loadMergedFavCache () {
+  try {
+    const o = JSON.parse(fs.readFileSync(mergedFavFile(), 'utf8'))
+    return { track: o.track || [], album: o.album || [], artist: o.artist || [] }
+  } catch {
+    return { track: [], album: [], artist: [] }
+  }
+}
+function saveMergedFavCache (g) {
+  try {
+    fs.mkdirSync(path.join(LIB_ROOT, MERGED_ID), { recursive: true })
+    fs.writeFileSync(mergedFavFile(), JSON.stringify({ track: g.track || [], album: g.album || [], artist: g.artist || [] }))
+  } catch {}
+}
+function applyMergedFav (kind, id, on) {
+  const cache = loadMergedFavCache()
+  const set = new Set(cache[kind] || [])
+  if (on) set.add(id); else set.delete(id)
+  cache[kind] = [...set]
+  saveMergedFavCache(cache)
+}
+
 // Same disposable-mirror deal for playlist summaries.
 function loadPlaylistCache () {
   try {
@@ -702,6 +729,34 @@ function connectedLibs () {
   const s = new Set()
   for (const libId of pool.keys()) if (poolClient(libId)) s.add(libId)
   return s
+}
+
+// Union every connected host's favorites (phase 2). Returns the merged id sets plus `src` (id -> the
+// host that has it) so favoriteItems can resolve each from the right host, and `ok` (any host answered).
+async function unionFavs () {
+  const libs = [...connectedLibs()]
+  const settled = await Promise.allSettled(libs.map((lib) => {
+    const c = poolClient(lib)
+    return c ? c.favList().then((v) => ({ lib, v })) : Promise.reject(new Error('offline'))
+  }))
+  const u = { track: new Set(), album: new Set(), artist: new Set() }
+  const src = new Map()
+  let ok = false
+  for (const r of settled) {
+    if (r.status !== 'fulfilled' || !r.value || !r.value.v) continue
+    ok = true
+    const { lib, v } = r.value
+    for (const k of ['track', 'album', 'artist']) {
+      for (const id of (v[k] || [])) { u[k].add(id); if (!src.has(id)) src.set(id, lib) }
+    }
+  }
+  return { ok, grouped: { track: [...u.track], album: [...u.album], artist: [...u.artist] }, src }
+}
+
+// The owning host of a favorite id: a track routes by its copy id; an album/artist by entityLib.
+function favHost (kind, id) {
+  if (kind === 'track') { const r = routeTrack({ trackId: id }); return r ? r.libraryId : null }
+  return entityLib.get(id) || null
 }
 
 // Resolvers the shim consults for a URL that carries no libraryId (the UI's own artBase covers, or a
@@ -1448,6 +1503,16 @@ const methods = {
   // hides the hearts); on any other failure we fall back to the cache so hearts still
   // render offline.
   async favorites () {
+    if (mergedMode()) {
+      // The blended hearts: the UNION of every connected host's favorites, cached at lib/_merged.
+      try {
+        const { ok, grouped } = await unionFavs()
+        if (ok) { saveMergedFavCache(grouped); return { ...grouped, supported: true } }
+        return { ...loadMergedFavCache(), supported: true, offline: true }
+      } catch {
+        return { ...loadMergedFavCache(), supported: true, offline: true }
+      }
+    }
     try {
       await ensureConnected()
       const g = await client.favList()
@@ -1539,6 +1604,24 @@ const methods = {
   // will never know about.
   async toggleFav ({ kind = 'track', id, on }) {
     const want = on !== false
+    if (mergedMode()) {
+      // Route to the host that OWNS this item; update the blended cache optimistically so the heart
+      // flips instantly. An owning host that's offline keeps the optimistic heart (queued) - per-host
+      // outbox fan-out for favorites is a later slice.
+      applyMergedFav(kind, id, want)
+      const lib = favHost(kind, id)
+      const c = lib && poolClient(lib)
+      if (c) {
+        try {
+          const r = await c.favSet({ kind, id, on: want })
+          return { kind: r.kind, id: r.id, on: r.on }
+        } catch (e) {
+          if (e?.code === 'ENOMETHOD') { applyMergedFav(kind, id, !want); throw e }
+          return { kind, id, on: want, queued: true }
+        }
+      }
+      return { kind, id, on: want, queued: true }
+    }
     const apply = (v) => {
       const cache = loadFavCache()
       const set = new Set(cache[kind] || [])
@@ -1570,6 +1653,28 @@ const methods = {
   // One get() per favorite - bounded by how many a person favorites. Anything that no
   // longer resolves (source changed, item gone) is skipped, not shown as a dead row.
   async favoriteItems () {
+    if (mergedMode()) {
+      // Union across hosts, then resolve each favorite from the SAME host that has it (src map), so a
+      // track favorited on the Mac resolves off the Mac. Skips anything unresolvable, like single-host.
+      const { grouped, src } = await unionFavs()
+      saveMergedFavCache(grouped)
+      const resolve = async (ids, type) => {
+        const out = []
+        for (const id of ids) {
+          const lib = src.get(id)
+          const c = lib && poolClient(lib)
+          if (!c) continue
+          const it = await c.get({ id, type }).catch(() => null)
+          if (it) out.push(withArt({ ...it, libraryId: lib }))
+        }
+        return out
+      }
+      return {
+        tracks: await resolve(grouped.track, 'track'),
+        albums: await resolve(grouped.album, 'album'),
+        artists: await resolve(grouped.artist, 'artist')
+      }
+    }
     await ensureConnected()
     const g = await client.favList()
     const grouped = { track: g.track || [], album: g.album || [], artist: g.artist || [] }
