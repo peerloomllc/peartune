@@ -214,6 +214,14 @@ export default function App () {
         // music is still going. Just note we are off the wire; play:stopped is what
         // clears the player, and only if the buffer actually starves (a revoke).
         setState(s => ({ ...s, connected: false }))
+        // In merged mode, re-read the per-library status (cheap - no rebuild): a revoke drops the
+        // host's pool connection at once, so this greys its chip + Settings row immediately, without
+        // waiting for the next index rebuild. A transient background drop greys it too and un-greys
+        // on reconnect - honest either way. Query now AND after a beat: the single-client close (this
+        // event) and the pool close race by a few ms on a revoke, so the delayed read catches the
+        // pool drop if it lagged.
+        const regrey = () => { if (mergedRef.current?.merged) call('mergedStatus').then(st => { if (st?.libraries) setMerged(st) }).catch(() => {}) }
+        regrey(); setTimeout(regrey, 1200)
       }),
       on('host:connected', (d) => {
         setState(s => ({ ...s, connected: true, host: { ...s.host, ...d } }))
@@ -891,9 +899,10 @@ export default function App () {
   async function refresh () {
     setError(null)
     // In merged mode a pull-to-refresh rebuilds the blend (re-fetches every host's catalog, folding
-    // in one that came back online); merged:updated then re-renders the browse + chips.
+    // in one that came back online); merged:updated then re-renders the browse + chips. force bypasses
+    // the rebuild cooldown - the user explicitly asked for fresh.
     if (mergedRef.current?.merged) {
-      try { const st = await call('refreshMerged'); if (st?.libraries) setMerged(st) } catch {}
+      try { const st = await call('refreshMerged', { force: true }); if (st?.libraries) setMerged(st) } catch {}
       return
     }
     loadSource() // the operator may have switched the source since we last looked
@@ -980,7 +989,19 @@ export default function App () {
       setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery('')
       setAddingLibrary(false)
       haptic('success')
-      loadAlbums(0)
+      // A pair added (or restored) a library. With 2+ libraries the app is the merged blend: enter it
+      // if we weren't already, else FORCE a rebuild to fold the new/returned host in now (an explicit
+      // pair must not wait on the rebuild cooldown). Otherwise it's single-host - load normally.
+      if ((hosts || []).length >= 2) {
+        filterRef.current = '_all'; setFilter('_all')
+        const st = mergedRef.current?.merged
+          ? await call('refreshMerged', { force: true }).catch(() => null)
+          : await call('enterMerged').catch(() => null)
+        if (st?.libraries) setMerged(st)
+        reloadBrowse()
+      } else {
+        loadAlbums(0)
+      }
     } catch (e) {
       setError(pairError(e.message))
       haptic('warn')
@@ -1406,7 +1427,7 @@ export default function App () {
   } else if (tab === 'settings') {
     screen = (
       <Settings
-        state={state} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
+        state={state} merged={merged} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
         ident={ident} onSaveIdentity={saveIdentity} onQuality={changeQuality}
         skin={skin} onSkin={setSkinValue}
         onSwitchHost={switchLibrary} onRemoveHost={removeLibrary} onAddLibrary={openAddLibrary}
@@ -4100,7 +4121,7 @@ function compressToAvatarB64 (dataUrl, size = 256) {
   })
 }
 
-function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary }) {
+function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [copied, setCopied] = useState(false)
   const [dev, setDev] = useState(null)
@@ -4277,31 +4298,43 @@ function Settings ({ state, themePref, onTheme, onUnpair, ident, onSaveIdentity,
         </Section>
 
         <Section id='library' title={libsOf(state).length > 1 ? 'Libraries' : 'Library'} Icon={MusicNotesSimple} open={open === 'library'} onToggle={toggle}>
-          {libsOf(state).map(h => (
-            <div
-              className='row'
-              key={h.hostKey}
-              onClick={() => { if (!h.active) onSwitchHost(h.hostKey) }}
-              style={{ cursor: h.active ? 'default' : 'pointer' }}
-            >
-              <div>
-                <div className='label'>
-                  {h.libraryName || 'Library'}
-                  {h.active && (
-                    <span className='val' style={{ color: state.connected ? 'var(--color-primary)' : undefined, marginLeft: 8 }}>
-                      {state.connected ? '●' : '○'}
-                    </span>
-                  )}
+          {libsOf(state).map(h => {
+            // In the MERGED view every paired library is part of the blend, so its status is whether
+            // it's currently IN the blend (from merged.libraries) - which updates on a rebuild/revoke,
+            // unlike the single active client's state.connected. Rows are informational here (the home
+            // chips do the filtering); tap-to-switch stays only in single-host mode, where "active"
+            // and state.connected are the right signals. `ml` present => merged mode.
+            const ml = merged?.merged ? (merged.libraries || []).find(l => l.libraryId === h.libraryId) : null
+            const online = ml ? ml.connected : (h.active && state.connected)
+            const showDot = ml ? true : h.active // merged: every row has a status; single: only the active one
+            const desc = ml
+              ? (ml.connected ? 'In your blended library' : 'Offline — unreachable')
+              : (h.active
+                  ? (state.connected ? 'Active — connected' : 'Active — connecting…')
+                  : 'Tap to switch to this library')
+            const tappable = !ml && !h.active // only switch libraries in single-host mode
+            return (
+              <div
+                className='row'
+                key={h.hostKey}
+                onClick={() => { if (tappable) onSwitchHost(h.hostKey) }}
+                style={{ cursor: tappable ? 'pointer' : 'default' }}
+              >
+                <div>
+                  <div className='label'>
+                    {h.libraryName || 'Library'}
+                    {showDot && (
+                      <span className='val' style={{ color: online ? 'var(--color-primary)' : undefined, marginLeft: 8 }}>
+                        {online ? '●' : '○'}
+                      </span>
+                    )}
+                  </div>
+                  <div className='desc'>{desc}</div>
                 </div>
-                <div className='desc'>
-                  {h.active
-                    ? (state.connected ? 'Active — connected' : 'Active — connecting…')
-                    : 'Tap to switch to this library'}
-                </div>
+                <button className='danger' onClick={(e) => { e.stopPropagation(); onRemoveHost(h) }}>Remove</button>
               </div>
-              <button className='danger' onClick={(e) => { e.stopPropagation(); onRemoveHost(h) }}>Remove</button>
-            </div>
-          ))}
+            )
+          })}
           {sourceText(state) && (
             <div className='row'>
               <div>
