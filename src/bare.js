@@ -759,6 +759,13 @@ function favHost (kind, id) {
   return entityLib.get(id) || null
 }
 
+// The connected pool client for the host that owns a track (merged mode), or null - so per-track
+// state writes (resume/count) and reads route to the same host that holds the track.
+function trackClient (trackId) {
+  const lib = favHost('track', trackId)
+  return lib ? poolClient(lib) : null
+}
+
 // Resolvers the shim consults for a URL that carries no libraryId (the UI's own artBase covers, or a
 // single-segment track URL) - null outside merged mode, so single-host behaviour is unchanged.
 function libForTrack (trackId) { return mergedMode() ? (trackLib.get(trackId) || null) : null }
@@ -1531,6 +1538,13 @@ const methods = {
   // is fine, the position is not precious. resumeGet answers 0 offline / on an old
   // host, so the caller simply starts the track from the top.
   async resumeSave ({ trackId, positionMs, durationMs }) {
+    if (mergedMode()) {
+      // Route the resume to the track's OWNING host. Fire-and-forget; a resume isn't precious, so an
+      // offline owning host just drops it (per-host outbox for merged writes is a later slice).
+      const c = trackClient(trackId)
+      if (c) { try { await c.resumeSet({ trackId, positionMs, durationMs }) } catch {} }
+      return { ok: true }
+    }
     // When connected, write straight through; when not, queue immediately rather than
     // block this frequent call on a doomed connect. The flush rides the next reconnect.
     if (connected && client) {
@@ -1542,6 +1556,11 @@ const methods = {
   },
 
   async resumeGet ({ trackId }) {
+    if (mergedMode()) {
+      const c = trackClient(trackId)
+      if (c) { try { return await c.resumeGet({ trackId }) } catch {} }
+      return { positionMs: 0 }
+    }
     try {
       await ensureConnected()
       return await client.resumeGet({ trackId })
@@ -1554,6 +1573,25 @@ const methods = {
   // renderable track (title, artist, art) so the launch card can show it. Null when
   // there is nothing to continue, offline, or on an old host.
   async resumeLatest () {
+    if (mergedMode()) {
+      // The globally-most-recent resume across hosts: each host's latest, then pick the newest by
+      // updatedAt, and resolve the track from that host.
+      const libs = [...connectedLibs()]
+      const settled = await Promise.allSettled(libs.map(async (lib) => {
+        const c = poolClient(lib)
+        if (!c) return null
+        const r = await c.resumeLatest()
+        return r && r.trackId ? { ...r, lib } : null
+      }))
+      const cands = settled.filter((x) => x.status === 'fulfilled' && x.value).map((x) => x.value)
+      if (!cands.length) return null
+      cands.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+      const best = cands[0]
+      const c = poolClient(best.lib)
+      const t = c && await c.get({ id: best.trackId, type: 'track' }).catch(() => null)
+      if (!t) return null
+      return { track: withArt({ ...t, libraryId: best.lib }), positionMs: best.positionMs, durationMs: best.durationMs }
+    }
     try {
       await ensureConnected()
       const r = await client.resumeLatest()
@@ -1572,6 +1610,13 @@ const methods = {
   // to past a threshold. topPlayed resolves the most-played ids to renderable tracks
   // for the "Most played" view.
   async countBump ({ trackId }) {
+    if (mergedMode()) {
+      // Count the play on the track's OWNING host. Fire-and-forget; an offline owning host drops it
+      // (per-host outbox for merged writes is a later slice).
+      const c = trackClient(trackId)
+      if (c) { try { await c.countBump({ trackId }) } catch {} }
+      return { ok: true }
+    }
     if (connected && client) {
       try { await client.countBump({ trackId }) } catch { enqueue('count.bump', { trackId }) }
     } else {
@@ -1582,6 +1627,36 @@ const methods = {
   },
 
   async topPlayed ({ limit = 50 } = {}) {
+    if (mergedMode()) {
+      // Merge each host's most-played. The SAME track on two hosts has different ids, so group by the
+      // merged track's dedup key and SUM counts (a play on either host is a play), then resolve the
+      // top N from a host that has them.
+      const libs = [...connectedLibs()]
+      const settled = await Promise.allSettled(libs.map(async (lib) => {
+        const c = poolClient(lib)
+        if (!c) return []
+        const r = await c.countTop({ limit: limit * 2 })
+        return (r.items || []).map((it) => ({ ...it, lib }))
+      }))
+      const raw = settled.filter((x) => x.status === 'fulfilled').flatMap((x) => x.value)
+      const byKey = new Map()
+      for (const it of raw) {
+        const m = trackByAnyId.get(it.trackId)
+        const key = m ? m.key : it.trackId
+        const g = byKey.get(key)
+        if (g) g.count += (Number(it.count) || 0)
+        else byKey.set(key, { trackId: it.trackId, lib: it.lib, count: Number(it.count) || 0 })
+      }
+      const top = [...byKey.values()].sort((a, b) => b.count - a.count).slice(0, limit)
+      const out = []
+      for (const it of top) {
+        const c = poolClient(it.lib)
+        if (!c) continue
+        const t = await c.get({ id: it.trackId, type: 'track' }).catch(() => null)
+        if (t) out.push({ ...withArt({ ...t, libraryId: it.lib }), playCount: it.count })
+      }
+      return { items: out }
+    }
     try {
       await ensureConnected()
       const { items } = await client.countTop({ limit })

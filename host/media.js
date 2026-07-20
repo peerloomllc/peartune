@@ -247,7 +247,8 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       case 'resume.latest': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         const row = await state.latestResume(ownerOf(grant))
-        return send.res.send({ id, body: row ? { trackId: row.trackId, positionMs: row.positionMs, durationMs: row.durationMs } : null })
+        // updatedAt lets the merged client pick the globally-newest resume across hosts.
+        return send.res.send({ id, body: row ? { trackId: row.trackId, positionMs: row.positionMs, durationMs: row.durationMs, updatedAt: row.updatedAt || 0 } : null })
       }
 
       case 'resume.set': {
