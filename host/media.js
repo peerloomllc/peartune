@@ -28,7 +28,7 @@ function ownerOf (grant) {
   return grant.personId ? 'p:' + grant.personId : 'd:' + grant.deviceKey
 }
 
-function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state = null, presence = null, avatars = null, log = () => {} }) {
+function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Set once the channel is open (below). Called on close to drop this connection's push
@@ -109,6 +109,9 @@ function serveMedia ({ conn, libraryId, getAdapter, grant, grants = null, state 
     return {
       deviceName: row?.label || null,
       belongsTo: person ? person.name : null,
+      // The library's CURRENT name (a getter, read now), so a dashboard rename reflects on the
+      // phone on its next connect - the app updates its stored host record + UI from this.
+      libraryName: libraryName ? libraryName() : null,
       // The device's own guest expiry (null = permanent), so the phone can show a
       // "guest access expires in X" banner. Read from THIS connection's grant, never a
       // param - a device only ever learns its OWN access. Refreshed on every connect, so

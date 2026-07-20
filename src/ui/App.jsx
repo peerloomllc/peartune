@@ -248,6 +248,16 @@ export default function App () {
       // A background merged rebuild landed (launch, a host (re)joining, a pull-to-refresh): update
       // the source chips + greying and re-render the browse from the fresh blend.
       on('merged:updated', (st) => { setMerged(st); reloadBrowse() }),
+      // The operator renamed the library on the dashboard; the worklet caught it on connect and
+      // persisted it. Reflect it live in the header, the Settings switcher, and the merged chips.
+      on('host:renamed', (d) => {
+        setState(s => ({
+          ...s,
+          host: s.host?.hostKey === d.hostKey ? { ...s.host, libraryName: d.libraryName } : s.host,
+          hosts: (s.hosts || []).map(h => h.hostKey === d.hostKey ? { ...h, libraryName: d.libraryName } : h)
+        }))
+        if (mergedRef.current?.merged) call('mergedStatus').then(st => { if (st?.libraries) setMerged(st) }).catch(() => {})
+      }),
 
       // Switched to another paired library (multi-host, 2026-07-19). Swap the browse to the
       // new library and flip the active flag; the currently-playing track is left ALONE (a

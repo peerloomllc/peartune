@@ -381,6 +381,9 @@ class PearTuneHost {
         // and a phone that keeps streaming from the source you just switched away
         // from is a bug you would not find for weeks.
         getAdapter: () => this.adapter,
+        // A getter too: the operator can rename the library mid-connection, and identity.get
+        // (refreshed on every connect) hands the CURRENT name back so the phone updates live.
+        libraryName: () => this.libraryName,
         grant: lookup.grant,
         // The host-as-hub user-state store. serveMedia derives the owner from THIS
         // connection's grant, so a device can only ever read/write its own state.

@@ -112,4 +112,14 @@ function removeHost (raw, hostKey) {
   return { file: f, removed }
 }
 
-module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost }
+// Update a host's display name - the operator renamed the library server-side, and the app learns
+// the new name on connect (identity.get carries it). Idempotent: a missing host, an empty name, or
+// an unchanged name leaves the file as-is. Never touches the active pointer.
+function renameHost (raw, hostKey, libraryName) {
+  const f = normalize(raw)
+  const h = f.hosts.find((x) => x.hostKey === hostKey)
+  if (h && libraryName && h.libraryName !== libraryName) h.libraryName = libraryName
+  return f
+}
+
+module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost }
