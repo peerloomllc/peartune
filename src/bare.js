@@ -773,6 +773,37 @@ function connectedLibs () {
   return s
 }
 
+// --- cross-host session home (multi-host phase 3, proposal 2026-07-20) --------
+// The merged play session lives on ONE elected host - the smallest-hostKey host that's currently
+// connected - so every device coordinates through the same generation-CAS authority (electHome is
+// pure + tested in worklet/hosts). The single active host keeps its own per-host session.
+function sessionHomeLib () {
+  return hostList.electHome(loadHostsFile(), connectedLibs())
+}
+
+// Where a session RPC goes, and under which scope. Merged mode -> the elected home host with
+// `merged: true`; single mode -> the active client. sessionTarget() is SYNC (reads current pool
+// state, used by the ~4s heartbeat so it never dials); sessionReady() ensures the connection first
+// (used by activate/takeover/info, which the user just triggered). Either yields c: null offline.
+function sessionTarget () {
+  if (mergedMode()) { const lib = sessionHomeLib(); return { c: lib ? poolClient(lib) : null, merged: true } }
+  return { c: client, merged: false }
+}
+async function sessionReady () {
+  if (mergedMode()) { await ensureAll().catch(() => {}); return sessionTarget() }
+  await ensureConnected()
+  return { c: client, merged: false }
+}
+
+// Tag a session queue item with its owning host, so the receiver routes each track to the host
+// that holds it. The receiver's own merged index resolves it too, but a self-describing session
+// survives an index that differs slightly between devices. No-op (returns base) in single mode.
+function tagSessionItem (base, trackId, merged) {
+  if (!merged) return base
+  const m = trackByAnyId.get(trackId)
+  return m ? { ...base, libraryId: m.libraryId, copies: m.copies } : base
+}
+
 // Union every connected host's favorites (phase 2). Returns the merged id sets plus `src` (id -> the
 // host that has it) so favoriteItems can resolve each from the right host, and `ok` (any host answered).
 async function unionFavs () {
@@ -1434,15 +1465,21 @@ const methods = {
     // Dedup-by-content would silence that and let two devices play at once. (Large-queue write
     // cost is the proposal's deferred open question #2.)
     let lostSession = false
-    if (sessionActive && sessionSupported && connected && client && snapshot) {
+    // The session target is the elected home host in merged mode (carrying the mixed-host queue),
+    // else the single active client. SYNC lookup - a heartbeat never dials; if the home is offline
+    // we keep the token and retry on the next snapshot, exactly as single mode does when offline.
+    const tgt = sessionActive && sessionSupported ? sessionTarget() : null
+    if (tgt && tgt.c && snapshot) {
       const items = Array.isArray(snapshot.items) ? snapshot.items : []
       try {
-        const queue = items.map(t => ({ trackId: t.id, title: t.title, artist: t.artist, album: t.album, art: t.art, artFull: t.artFull, durationMs: t.durationMs }))
+        const queue = items.map(t => tagSessionItem(
+          { trackId: t.id, title: t.title, artist: t.artist, album: t.album, art: t.art, artFull: t.artFull, durationMs: t.durationMs },
+          t.id, tgt.merged))
         // positionMs + playing ride this same heartbeat, so "Play here" seeks to the exact
         // spot from the claim reply (no separate resume round-trip) and another device's card
         // can say "Paused on <name>" honestly. The shell forces a snapshot on pause, so the
         // paused state + exact position land at once rather than up to a heartbeat late.
-        const r = await client.sessionSet({ queue, index: snapshot.index || 0, shuffle: !!snapshot.shuffle, repeat: Number(snapshot.repeat) || 0, positionMs: Number(snapshot.positionMs) || 0, playing: !!snapshot.playing })
+        const r = await tgt.c.sessionSet({ queue, index: snapshot.index || 0, shuffle: !!snapshot.shuffle, repeat: Number(snapshot.repeat) || 0, positionMs: Number(snapshot.positionMs) || 0, playing: !!snapshot.playing, merged: tgt.merged })
         if (r && r.ok === false) { sessionActive = false; lostSession = true } // superseded
       } catch (e) {
         if (e?.code === 'ENOMETHOD') sessionSupported = false
@@ -1473,10 +1510,11 @@ const methods = {
     if (!sessionSupported) return { active: false, supported: false }
     if (sessionActive) return { active: true }
     try {
-      await ensureConnected()
+      const { c, merged } = await sessionReady()
+      if (!c) return { active: false } // offline; the next play retries
       for (let i = 0; i < 2; i++) {
-        const cur = await client.sessionGet()
-        const r = await client.sessionClaim({ generation: cur?.generation || 0 })
+        const cur = await c.sessionGet(merged ? { merged: true } : undefined)
+        const r = await c.sessionClaim({ generation: cur?.generation || 0, merged })
         if (r?.ok) { sessionActive = true; sessionGen = r.session.generation; return { active: true } }
       }
       return { active: false }
@@ -1495,8 +1533,9 @@ const methods = {
   async sessionInfo () {
     if (!sessionSupported) return { supported: false }
     try {
-      await ensureConnected()
-      const s = await client.sessionGet()
+      const { c, merged } = await sessionReady()
+      if (!c) return { supported: true, offline: true }
+      const s = await c.sessionGet(merged ? { merged: true } : undefined)
       if (s) sessionGen = s.generation
       return {
         supported: true,
@@ -1517,20 +1556,25 @@ const methods = {
   async sessionTakeover () {
     if (!sessionSupported) return { ok: false, supported: false }
     try {
-      await ensureConnected()
+      const { c, merged } = await sessionReady()
+      if (!c) return { ok: false }
       for (let i = 0; i < 2; i++) {
-        const s = await client.sessionGet()
+        const s = await c.sessionGet(merged ? { merged: true } : undefined)
         if (!s || !Array.isArray(s.queue) || !s.queue.length) return { ok: false, empty: true }
-        const r = await client.sessionClaim({ generation: s.generation })
+        const r = await c.sessionClaim({ generation: s.generation, merged })
         if (r?.ok) {
           sessionActive = true; sessionGen = r.session.generation
           const items = r.session.queue.map(t => ({ id: t.trackId, title: t.title, artist: t.artist, album: t.album, art: t.art, artFull: t.artFull, durationMs: t.durationMs }))
           const cur = items[r.session.index || 0]
           // Seek to the position the leaving device pushed with the queue (exact when it paused
           // first, <=one heartbeat old otherwise). Fall back to the per-track resume row only if
-          // the session carries none (an old host, or a session written before this shipped).
+          // the session carries none (an old host, or a session written before this shipped). In
+          // merged mode the fallback resume lives on the track's OWNING host, not the home host.
           let positionMs = Number(r.session.positionMs) || 0
-          if (!positionMs && cur) { try { const rp = await client.resumeGet({ trackId: cur.id }); positionMs = rp?.positionMs || 0 } catch {} }
+          if (!positionMs && cur) {
+            const rc = merged ? (poolClient(trackLib.get(cur.id)) || c) : c
+            try { const rp = await rc.resumeGet({ trackId: cur.id }); positionMs = rp?.positionMs || 0 } catch {}
+          }
           return { ok: true, items, index: r.session.index || 0, shuffle: !!r.session.shuffle, repeat: r.session.repeat || 0, positionMs }
         }
       }

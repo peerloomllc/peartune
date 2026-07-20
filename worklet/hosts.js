@@ -122,4 +122,19 @@ function renameHost (raw, hostKey, libraryName) {
   return f
 }
 
-module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost }
+// The elected "session home" for the merged play session (multi-host phase 3, proposal
+// 2026-07-20): the CONNECTED host with the lexicographically-smallest hostKey. Pure so every
+// device - and this test - computes the SAME home from the same host list, which is what gives
+// the cross-host session ONE generation-CAS authority (no cross-device race). `live` is the set
+// (or array) of currently-connected libraryIds; a host absent from it can't be home. Returns the
+// home's libraryId, or null when nothing paired is reachable.
+function electHome (raw, live) {
+  const f = normalize(raw)
+  const set = live instanceof Set ? live : new Set(live || [])
+  const cand = f.hosts.filter((h) => h && h.hostKey && set.has(h.libraryId))
+  if (!cand.length) return null
+  cand.sort((a, b) => (a.hostKey < b.hostKey ? -1 : a.hostKey > b.hostKey ? 1 : 0))
+  return cand[0].libraryId
+}
+
+module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost, electHome }

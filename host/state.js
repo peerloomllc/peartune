@@ -275,12 +275,16 @@ class UserState {
   // #3, chosen over the proposal's losing-device flush - which a backgrounded loser cannot
   // do). `playing` says whether the active device is playing or paused, so another device's
   // card can read "Paused on X" honestly instead of "Playing on X" (follow-up #2).
-  _sessionKey (ownerId) {
-    return `session:${ownerId}`
+  // `merged` selects the CROSS-HOST session (multi-host phase 3, proposal 2026-07-20): a distinct
+  // row so a host can be BOTH someone's single-library session home and the elected merged home
+  // without collision. The queue then carries foreign trackIds from other hosts, which we store
+  // opaquely - they are metadata to us, we never dereference them.
+  _sessionKey (ownerId, merged) {
+    return merged ? `session:merged:${ownerId}` : `session:${ownerId}`
   }
 
-  async getSession (ownerId) {
-    const node = await this.bee.get(this._sessionKey(ownerId), { valueEncoding: 'json' })
+  async getSession (ownerId, merged = false) {
+    const node = await this.bee.get(this._sessionKey(ownerId, merged), { valueEncoding: 'json' })
     return node ? node.value : null
   }
 
@@ -289,8 +293,8 @@ class UserState {
   // and return the new row. A stale generation returns null - the caller lost the race and must
   // re-read. A missing row is generation 0, so the first claimer creates it. A claim ADOPTS the
   // existing queue (it does not wipe it) - "Play here" continues the session, it does not clear it.
-  async claimSession (ownerId, deviceKey, generation = 0) {
-    const row = await this.getSession(ownerId)
+  async claimSession (ownerId, deviceKey, generation = 0, merged = false) {
+    const row = await this.getSession(ownerId, merged)
     const cur = row?.generation || 0
     if ((Number(generation) || 0) !== cur) return null // someone else holds/changed it
     const next = {
@@ -306,7 +310,7 @@ class UserState {
       generation: cur + 1,
       updatedAt: Date.now()
     }
-    await this.bee.put(this._sessionKey(ownerId), next, { valueEncoding: 'json' })
+    await this.bee.put(this._sessionKey(ownerId, merged), next, { valueEncoding: 'json' })
     return next
   }
 
@@ -314,8 +318,8 @@ class UserState {
   // non-holder (a device superseded by a claim it has not noticed yet) is rejected with null,
   // which is exactly how it learns it is no longer active (lazy presence). The token
   // (activeDeviceKey + generation) is left untouched.
-  async setSession (ownerId, deviceKey, { queue, index, shuffle, repeat, positionMs, playing } = {}) {
-    const row = await this.getSession(ownerId)
+  async setSession (ownerId, deviceKey, { queue, index, shuffle, repeat, positionMs, playing } = {}, merged = false) {
+    const row = await this.getSession(ownerId, merged)
     if (!row || row.activeDeviceKey !== deviceKey) return null
     row.queue = sanitizeQueue(queue)
     row.index = Number.isInteger(index) && index >= 0 ? index : 0
@@ -326,7 +330,7 @@ class UserState {
     row.positionMs = Number.isFinite(positionMs) && positionMs > 0 ? Math.round(positionMs) : 0
     row.playing = !!playing
     row.updatedAt = Date.now()
-    await this.bee.put(this._sessionKey(ownerId), row, { valueEncoding: 'json' })
+    await this.bee.put(this._sessionKey(ownerId, merged), row, { valueEncoding: 'json' })
     return row
   }
 }

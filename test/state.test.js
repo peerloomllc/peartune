@@ -404,3 +404,44 @@ test('a claim ADOPTS positionMs + playing so "Play here" can seek from the claim
   assert.equal(adopted.positionMs, 90000) // the receiver seeks here with no extra round-trip
   assert.equal(adopted.playing, true)
 })
+
+// --- cross-host (merged) session (multi-host phase 3, proposal 2026-07-20) ----
+
+test('the merged session is a SEPARATE row from the single-library one for the same owner', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  // Same owner, two scopes: a single-library session on this host AND the elected merged home.
+  await s.claimSession('p:TIM', 'PHONE', 0, false)
+  await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'local' }], index: 0 }, false)
+  await s.claimSession('p:TIM', 'PHONE', 0, true)
+  await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'blend', libraryId: 'L2' }], index: 0 }, true)
+  // Neither clobbers the other; each scope keeps its own queue.
+  assert.deepEqual((await s.getSession('p:TIM', false)).queue.map(x => x.trackId), ['local'])
+  assert.deepEqual((await s.getSession('p:TIM', true)).queue.map(x => x.trackId), ['blend'])
+})
+
+test('the merged CAS is independent: a claim in one scope does not bump the other generation', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0, false) // single gen -> 1
+  await s.claimSession('p:TIM', 'PHONE', 0, true)  // merged gen -> 1 (its own row, still 0->1)
+  assert.equal((await s.getSession('p:TIM', false)).generation, 1)
+  assert.equal((await s.getSession('p:TIM', true)).generation, 1)
+  // A TABLET takeover of the MERGED session leaves the single-library holder untouched.
+  const t2 = await s.claimSession('p:TIM', 'TABLET', 1, true)
+  assert.equal(t2.activeDeviceKey, 'TABLET')
+  assert.equal((await s.getSession('p:TIM', false)).activeDeviceKey, 'PHONE')
+})
+
+test('the merged session stores foreign trackIds + their routing tags opaquely', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0, true)
+  await s.setSession('p:TIM', 'PHONE', {
+    queue: [{ trackId: 'x', libraryId: 'L2', copies: [{ libraryId: 'L2', id: 'x' }] }],
+    index: 0
+  }, true)
+  const row = await s.getSession('p:TIM', true)
+  assert.equal(row.queue[0].libraryId, 'L2')            // the owning host survives the round-trip
+  assert.deepEqual(row.queue[0].copies, [{ libraryId: 'L2', id: 'x' }])
+})
