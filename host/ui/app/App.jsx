@@ -822,11 +822,13 @@ function PairModal ({ onClose, toast }) {
             </div>
             <div className='keyrow'>
               <div className='key addr'>{qr.link}</div>
-              <button className='iconbtn copybtn' onClick={copyLink} aria-label='Copy pairing code'>
-                {copied ? <CheckCircle size={16} weight='fill' color='var(--good)' /> : <Copy size={15} />}
+            </div>
+            <div className='pairacts'>
+              <button className='ghost' onClick={stop}>Cancel</button>
+              <button onClick={copyLink}>
+                {copied ? <><CheckCircle size={15} weight='fill' color='var(--good)' /> Copied</> : <><Copy size={15} /> Copy</>}
               </button>
             </div>
-            <button className='ghost' onClick={stop}>Cancel</button>
           </div>}
     </Modal>
   )
