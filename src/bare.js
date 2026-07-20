@@ -565,6 +565,9 @@ async function rebuildIndex () {
     mergedConnected = new Set(catalogs.map((c) => c.libraryId))
     lastIndexBuiltAt = Date.now()
     buildRouteMaps()
+    // Pick up library RENAMES for EVERY connected host, not just the active one (identity() covers
+    // the active host on its own). Done here so the chips + switcher relabel on the same rebuild.
+    await syncHostNames(hosts.filter((h) => mergedConnected.has(h.libraryId)))
     try {
       fs.mkdirSync(mergedDir(), { recursive: true })
       fs.writeFileSync(mergedIndexFile(), JSON.stringify({
@@ -583,6 +586,23 @@ async function rebuildIndex () {
     return mergedIndex
   })().finally(() => { rebuildingIndex = null })
   return rebuildingIndex
+}
+
+// Pick up library RENAMES for the given connected pool hosts (extends the active-host live-rename to
+// every host in the blend). Each host's identity.get carries its current name; if it differs from our
+// stored record, persist it and tell the UI (chips + switcher relabel). Best-effort per host.
+async function syncHostNames (hosts) {
+  await Promise.allSettled((hosts || []).map(async (h) => {
+    const c = poolClient(h.libraryId)
+    if (!c) return
+    const remote = await c.getIdentity().catch(() => null)
+    const name = remote && remote.libraryName
+    const rec = loadHostsFile().hosts.find((x) => x.libraryId === h.libraryId)
+    if (name && rec && rec.libraryName !== name) {
+      saveHostsFile(hostList.renameHost(loadHostsFile(), rec.hostKey, name))
+      emit('host:renamed', { hostKey: rec.hostKey, libraryName: name })
+    }
+  }))
 }
 
 // The paired libraries with the active one flagged (Settings' switcher). A module function so
@@ -1019,13 +1039,30 @@ const methods = {
   async artist ({ id, libraryId }) {
     const lib = libForEntity(id, libraryId)
     if (mergedMode() && lib) {
-      const c = await ensureHostById(lib)
-      const a = await c.get({ id, type: 'artist' })
-      if (!a) return null
+      // BLEND across hosts: the same artist can live on more than one host, so fetch each copy's
+      // artist page and merge their albums (deduped by album key, like the browse index). One host's
+      // "OK Computer" beside another's shows once; a rip only one host has still appears.
+      const m = mergedIndex && mergedIndex.artists.find((x) => x.id === id || (x.copies || []).some((cp) => cp.id === id))
+      const copies = (m && Array.isArray(m.copies) && m.copies.length) ? m.copies : [{ libraryId: lib, id }]
+      const settled = await Promise.allSettled(copies.map(async (cp) => {
+        const c = await ensureHostById(cp.libraryId)
+        const a = await c.get({ id: cp.id, type: 'artist' })
+        return a ? { a, libraryId: cp.libraryId } : null
+      }))
+      const parts = settled.filter((r) => r.status === 'fulfilled' && r.value).map((r) => r.value)
+      if (!parts.length) return null
+      const primary = parts.find((p) => p.libraryId === lib) || parts[0]
+      // Tag each host's albums with its libraryId, then dedupe across hosts (mergeAlbums keeps copies
+      // + picks the most-complete as primary), so tapping through routes correctly.
+      const allAlbums = parts.flatMap((p) => (p.a.albums || []).map((al) => ({ ...al, libraryId: p.libraryId })))
+      const albums = merge.mergeAlbums(allAlbums)
+      // Album-less (composite-tag) artists carry loose tracks instead; blend + dedupe those too.
+      const allTracks = parts.flatMap((p) => (p.a.tracks || []).map((t) => ({ ...t, libraryId: p.libraryId })))
+      const tracks = albums.length ? [] : merge.mergeTracks(allTracks)
       return {
-        ...withBigArt({ ...a, libraryId: lib }),
-        albums: (a.albums || []).map((al) => withArt({ ...al, libraryId: lib })),
-        tracks: (a.tracks || []).map((t) => withArt(enrichCopies({ ...t, libraryId: lib })))
+        ...withBigArt({ ...primary.a, libraryId: lib }),
+        albums: albums.map(withArt),
+        tracks: tracks.map(withArt)
       }
     }
     await ensureConnected()
@@ -1130,6 +1167,43 @@ const methods = {
       for (const t of full.tracks || []) items.push({ ...tag(t), art, artFull })
     }
     return { items }
+  },
+
+  // The merged "Recently added" shelf: each connected host CAN order its own albums by date added,
+  // but there's no shared timestamp to sort across them (a folder host has mtimes; Subsonic only gives
+  // newest-first order, no field). So pull each host's own recent albums and ROUND-ROBIN interleave
+  // them - the shelf mixes libraries rather than showing all of one then the other. Deduped by album
+  // key so the same album on two hosts shows once. (A true global date-sort would need addedAt from
+  // every adapter - a host change; deferred.)
+  async recentMerged ({ limit = 12 } = {}) {
+    if (!mergedMode()) return { items: [] }
+    const libs = [...connectedLibs()]
+    if (!libs.length) return { items: [] }
+    const per = Math.max(3, Math.ceil(limit / libs.length) + 2)
+    const settled = await Promise.allSettled(libs.map(async (lib) => {
+      const c = poolClient(lib)
+      if (!c) return []
+      const page = await c.list({ type: 'albums', sort: 'added', order: 'desc', limit: per })
+      return (page.items || []).map((al) => ({ ...al, libraryId: lib }))
+    }))
+    const byHost = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)
+    const seen = new Set()
+    const items = []
+    for (let i = 0; items.length < limit; i++) {
+      let any = false
+      for (const list of byHost) {
+        const al = list[i]
+        if (!al) continue
+        any = true
+        const k = merge.albumKey(al)
+        if (seen.has(k)) continue
+        seen.add(k)
+        items.push(al)
+        if (items.length >= limit) break
+      }
+      if (!any) break
+    }
+    return { items: items.map(withArt) }
   },
 
   async search ({ q, libraryId } = {}) {

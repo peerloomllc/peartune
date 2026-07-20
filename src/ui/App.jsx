@@ -240,14 +240,15 @@ export default function App () {
         if (mergedRef.current?.merged) {
           if ((mergedRef.current.libraries || []).some(l => !l.connected)) call('refreshMerged').catch(() => {})
           else reloadBrowse()
+          loadRecent()
         } else {
           loadAlbums(0)
           loadRecent()
         }
       }),
       // A background merged rebuild landed (launch, a host (re)joining, a pull-to-refresh): update
-      // the source chips + greying and re-render the browse from the fresh blend.
-      on('merged:updated', (st) => { setMerged(st); reloadBrowse() }),
+      // the source chips + greying and re-render the browse + the recently-added shelf from the blend.
+      on('merged:updated', (st) => { setMerged(st); reloadBrowse(); loadRecent() }),
       // The operator renamed the library on the dashboard; the worklet caught it on connect and
       // persisted it. Reflect it live in the header, the Settings switcher, and the merged chips.
       on('host:renamed', (d) => {
@@ -605,11 +606,12 @@ export default function App () {
   // advertises the 'added' album sort (older hosts would return alphabetical), so the
   // shelf is gated on that capability at render; a failure just leaves it hidden.
   async function loadRecent () {
-    // The blended index carries no per-host "date added", so the Recently Added shelf is a
-    // single-host affordance; in merged mode it stays hidden (a cross-host recent is a refinement).
-    if (mergedRef.current?.merged) { setRecent([]); return }
+    // In merged mode the shelf mixes each host's own recently-added (round-robin, deduped); in
+    // single-host it's the one host's 'added' sort.
     try {
-      const page = await call('albums', { sort: 'added', order: 'desc', limit: 12 })
+      const page = mergedRef.current?.merged
+        ? await call('recentMerged', { limit: 12 })
+        : await call('albums', { sort: 'added', order: 'desc', limit: 12 })
       setRecent(page.items || [])
     } catch { setRecent([]) }
   }
@@ -2018,8 +2020,10 @@ function Library ({
   const sortCap = state.sorts?.[browse === 'songs' ? 'tracks' : browse]
   const displayHasOptions = browse !== 'songs' || (sortCap?.keys?.length > 0)
   // The Recently Added shelf only makes sense when the source can order by date added
-  // (older hosts would hand back alphabetical albums under a "recently added" title).
-  const recentSupported = !!state.sorts?.albums?.keys?.includes('added')
+  // (older hosts would hand back alphabetical albums under a "recently added" title). In merged mode
+  // the shelf comes from recentMerged (each host's own 'added' order, interleaved), so show it there
+  // whenever it returned anything.
+  const recentSupported = merged?.merged || !!state.sorts?.albums?.keys?.includes('added')
   // The worklet hands us the base URL rather than finished art URLs, because only
   // the UI knows the density, and therefore the size to ask for.
   const artBase = state.artBase || state.host?.artBase || null
