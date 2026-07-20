@@ -360,12 +360,16 @@ async function flushOutbox () {
 function loadLastAuth () {
   try { return Number(JSON.parse(fs.readFileSync(leaseFile(), 'utf8')).lastAuth) || 0 } catch { return 0 }
 }
-function stampAuth () {
+// Stamp a specific library's lease. Merged mode connects several hosts at once, each renewing
+// its OWN lease, so this takes a libraryId rather than assuming the single active one.
+function stampAuthFor (libraryId) {
   try {
-    fs.mkdirSync(libDir(), { recursive: true })
-    fs.writeFileSync(leaseFile(), JSON.stringify({ lastAuth: Date.now() }))
+    const dir = path.join(LIB_ROOT, libraryId)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'lease.json'), JSON.stringify({ lastAuth: Date.now() }))
   } catch {}
 }
+function stampAuth () { stampAuthFor(activeLibraryId) }
 // Cached audio plays only while the last successful authorization is inside the grace
 // window. This is what makes a revoked device eventually lose its downloads without ever
 // deleting a legitimate user's on a server hiccup.
@@ -403,17 +407,19 @@ function purgeAllLibraries (libraryIds) {
 
 // --- connection -------------------------------------------------------------
 
-async function ensureClient () {
-  if (client) return client
+// Build ONE PearTuneClient off the shared warm DHT node. Every connection - the single active
+// one and every merged-mode pool connection - is made here so they all share the DHT and the
+// session-superseded push wiring.
+function makeClient () {
   if (!dht) dht = new HyperDHT()
-  client = new PearTuneClient({ keyPair: identity, dht, log })
+  const c = new PearTuneClient({ keyPair: identity, dht, log })
 
   // Instant presence: the host pushes 'session-superseded' the moment another of this
   // person's devices claims the play token, so we stop NOW instead of waiting for our next
   // heartbeat to come back ok:false (lazy presence). Same effect as a rejected heartbeat -
   // drop the token and tell the shell to hand off - just immediate. The shell's onHandedOff
   // is idempotent, so a later lazy rejection landing too is harmless.
-  client.onPush = (m) => {
+  c.onPush = (m) => {
     if (m?.kind === 'session-superseded') {
       sessionActive = false
       if (m.data?.generation) sessionGen = m.data.generation
@@ -421,7 +427,68 @@ async function ensureClient () {
       emit('session:superseded', {})
     }
   }
+  return c
+}
+
+async function ensureClient () {
+  if (client) return client
+  client = makeClient()
   return client
+}
+
+// --- multi-host connection pool (step 2, merged mode) -----------------------
+//
+// Merged mode reads from ALL paired hosts at once - to build the merged catalog index and to
+// route streaming per track. Each pool entry is a READ connection to one host, kept SEPARATE
+// from the single active `client` (which still serves single-host/filtered mode and the shim).
+// libraryId -> { client, host, reconnecting }. Offline hosts are simply absent from the pool -
+// not an error (see ensureAll). The pool shares the one warm DHT node, so N connections are
+// cheap.
+const pool = new Map()
+
+function poolClient (libraryId) {
+  const e = pool.get(libraryId)
+  return e && e.client && e.client.conn && !e.client.conn.destroyed ? e.client : null
+}
+
+// Ensure ONE host in the pool is connected; returns its client. Single-flight per host (a burst
+// of merged reads shares one dial), and self-heals a dropped connection like ensureConnected.
+async function ensureHost (host) {
+  const libId = host.libraryId
+  const live = poolClient(libId)
+  if (live) return live
+
+  let e = pool.get(libId)
+  if (!e) { e = { client: null, host, reconnecting: null }; pool.set(libId, e) }
+  e.host = host
+
+  if (!e.reconnecting) {
+    e.reconnecting = (async () => {
+      if (e.client) { try { await e.client.close() } catch {} ; e.client = null }
+      const c = makeClient()
+      await c.connect({ hostKey: host.hostKey, libraryId: host.libraryId })
+      e.client = c
+      stampAuthFor(libId) // a successful connect is a fresh authorization for THIS host's lease
+      c.conn.once('close', () => { if (e.client === c) e.client = null })
+      return c
+    })().finally(() => { e.reconnecting = null })
+  }
+  await e.reconnecting
+  return e.client
+}
+
+// Connect EVERY paired host in parallel for a merged read. An offline host resolves to a
+// rejection (allSettled), so it's absent from the merge rather than failing the whole thing.
+// Returns the libraryIds that connected.
+async function ensureAll () {
+  const hosts = loadHostsFile().hosts
+  const settled = await Promise.allSettled(hosts.map((h) => ensureHost(h).then(() => h.libraryId)))
+  return settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)
+}
+
+async function closePool () {
+  for (const e of pool.values()) { try { if (e.client) await e.client.close() } catch {} }
+  pool.clear()
 }
 
 // The shim is created ONCE, on boot, independent of any connection - so a cached track
@@ -1417,7 +1484,11 @@ const methods = {
     const wasActive = before.activeHostKey === hostKey
     const { file, removed } = hostList.removeHost(before, hostKey)
     saveHostsFile(file)
-    if (removed) purgeLibrary(removed.libraryId)
+    if (removed) {
+      purgeLibrary(removed.libraryId)
+      const pe = pool.get(removed.libraryId) // drop any merged-mode connection to it
+      if (pe) { try { if (pe.client) pe.client.close() } catch {} ; pool.delete(removed.libraryId) }
+    }
 
     if (wasActive) {
       if (client) { try { await client.close() } catch {} ; client = null }
@@ -1476,6 +1547,7 @@ const methods = {
 
     if (client) await client.close()
     client = null
+    await closePool() // tear down every merged-mode pool connection too
     // A full reset tears the shared dht node down too (a later pair recreates it). Client
     // close() leaves it alone by design, so destroy it here or it would leak past a forget.
     if (dht) { try { await dht.destroy() } catch {} ; dht = null }
