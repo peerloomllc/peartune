@@ -1208,11 +1208,22 @@ const methods = {
       // Offline, or an old host. The local names are still the truth about what we
       // last asked for.
     }
+    // Live library-name update: the operator can rename the library on the dashboard, and identity.get
+    // carries the CURRENT name. If it changed, persist it to the host record and tell the UI, so the
+    // header + switcher + merged chips update without a re-pair.
+    if (remote?.libraryName) {
+      const active = loadActiveHost()
+      if (active && active.libraryName !== remote.libraryName) {
+        saveHostsFile(hostList.renameHost(loadHostsFile(), active.hostKey, remote.libraryName))
+        emit('host:renamed', { hostKey: active.hostKey, libraryName: remote.libraryName })
+      }
+    }
     return {
       deviceName: remote?.deviceName || local.deviceName || '',
       userName: remote?.user?.name || local.userName || '',
       confirmed: !!remote?.user?.confirmed,
       belongsTo: remote?.belongsTo || null,
+      libraryName: remote?.libraryName || null,
       // A guest pass's expiry (null = permanent / offline / old host), so the UI can show
       // a countdown banner. Only meaningful when we actually reached the host this call.
       expiresAt: remote?.expiresAt ?? null,

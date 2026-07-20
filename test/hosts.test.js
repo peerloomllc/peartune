@@ -105,3 +105,17 @@ test('removeHost() of an unknown host is a no-op returning removed:null', () => 
   assert.equal(removed, null)
   assert.deepEqual(file.hosts.map((h) => h.hostKey), ['aaa'])
 })
+
+test('renameHost() updates a host name (operator renamed the library), active pointer untouched', () => {
+  let f = H.addHost(H.addHost(H.empty(), A, 1), B, 2) // active = bbb
+  f = H.renameHost(f, 'aaa', 'Tim’s Umbrel (attic)')
+  assert.equal(f.hosts.find((h) => h.hostKey === 'aaa').libraryName, 'Tim’s Umbrel (attic)')
+  assert.equal(f.activeHostKey, 'bbb') // unchanged
+})
+
+test('renameHost() is a no-op for a missing host, empty name, or unchanged name', () => {
+  const f = H.addHost(H.empty(), A, 1)
+  assert.equal(H.renameHost(f, 'zzz', 'X').hosts[0].libraryName, "Tim's Umbrel") // missing host
+  assert.equal(H.renameHost(f, 'aaa', '').hosts[0].libraryName, "Tim's Umbrel") // empty name
+  assert.equal(H.renameHost(f, 'aaa', "Tim's Umbrel").hosts[0].libraryName, "Tim's Umbrel") // unchanged
+})
