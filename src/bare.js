@@ -51,19 +51,26 @@ function libDir () {
   return path.join(LIB_ROOT, activeLibraryId)
 }
 
-// The MERGED view (multi-host step 2, proposal 2026-07-19) is a first-class "library" whose id is a
-// reserved sentinel: when it is the active library we serve browse/search from the in-memory merged
-// INDEX (every connected host's catalog, deduped) instead of a single host's client. Its own state
-// dir - lib/_merged/ - holds the cached index (and, from slice 4, the mixed-host queue), separate
-// from every real host's lib/<libraryId>/. mergedMode() is the one switch the browse methods read.
+// The MERGED view (multi-host step 2, proposal 2026-07-19): when on, browse/search/streaming serve
+// from the in-memory merged INDEX (every connected host's catalog, deduped) instead of a single
+// host's client. It is a MODE FLAG, deliberately DECOUPLED from activeLibraryId: activeLibraryId
+// still names the single client's host (so the single-client-dependent "You" features - favorites,
+// resume, counts, session - keep working against the active host in merged mode, the proposal's
+// "per-filter for now"), while mergedMode governs the blended browse. Tying merged mode to
+// activeLibraryId would break the moment any ensureConnected() -> connectTo() -> useLibrary(realHost)
+// fired (a favorites/resume call), silently dropping us out of merged mode mid-session. The reserved
+// '_merged' dir still holds merged-only state: the cached index and the mixed-host queue.
 const MERGED_ID = '_merged'
-function mergedMode () { return activeLibraryId === MERGED_ID }
+let _mergedMode = false
+function mergedMode () { return _mergedMode }
 
 // The persisted PLAY QUEUE, so a force-stop or a relaunch does not lose it. Holds
 // track IDs + render metadata (the shell's toQueue shape) + index + position +
 // shuffle/repeat - NEVER the loopback URLs, which carry the shim's port and change
 // every launch. On boot the shell rebuilds the paused queue and re-resolves URLs.
-const queueFile = () => path.join(libDir(), 'queue.json')
+// In merged mode the queue is MIXED-host and lives in lib/_merged/ (proposal §6), separate from
+// every single host's queue, so switching between merged and a single library never crosses them.
+const queueFile = () => path.join(mergedMode() ? path.join(LIB_ROOT, MERGED_ID) : libDir(), 'queue.json')
 // A read-through cache of THIS device's favorite trackIds. The host is the source of
 // truth (host-as-hub); this only lets the hearts render instantly and offline. Writes
 // still go to the host (favorites need a connection in Phase 1).
@@ -473,6 +480,7 @@ let rebuildingIndex = null // single-flight: a burst of browse calls entering me
 let coverLib = new Map() // coverId -> libraryId
 let trackLib = new Map() // any copy's trackId -> libraryId
 let trackByAnyId = new Map() // any copy's trackId -> the merged track (for best-copy failover)
+let entityLib = new Map() // any album/artist/genre id (primary or a copy) -> its owning libraryId
 
 function poolClient (libraryId) {
   const e = pool.get(libraryId)
@@ -556,9 +564,47 @@ async function rebuildIndex () {
       albums: mergedIndex.albums.length,
       tracks: mergedIndex.tracks.length
     })
+    // Tell the UI the blend changed (a background rebuild on launch/reconnect), so it refreshes the
+    // browse + the source-filter chips (greying a host that just dropped, un-greying one that joined).
+    if (mergedMode()) emit('merged:updated', mergedStatusData())
     return mergedIndex
   })().finally(() => { rebuildingIndex = null })
   return rebuildingIndex
+}
+
+// The paired libraries with the active one flagged (Settings' switcher). A module function so
+// methods can call it without `this` - the IPC dispatch invokes methods unbound, so `this` is
+// undefined inside them.
+function listHostsData () {
+  const f = loadHostsFile()
+  return {
+    hosts: f.hosts.map((h) => ({ ...h, active: h.hostKey === f.activeHostKey })),
+    activeHostKey: f.activeHostKey
+  }
+}
+
+// The per-library status the UI renders the source-filter chips + greying from (see the mergedStatus
+// method). A module function so a background rebuildIndex can push it without the methods object.
+function mergedStatusData () {
+  const hosts = loadHostsFile().hosts
+  const perLib = {}
+  if (mergedIndex) {
+    for (const t of mergedIndex.tracks) {
+      for (const c of (t.copies || [])) perLib[c.libraryId] = (perLib[c.libraryId] || 0) + 1
+    }
+  }
+  return {
+    merged: mergedMode(),
+    libraries: hosts.map((h) => ({
+      libraryId: h.libraryId,
+      libraryName: h.libraryName,
+      connected: mergedConnected.has(h.libraryId),
+      trackCount: perLib[h.libraryId] || 0
+    })),
+    counts: mergedIndex
+      ? { artists: mergedIndex.artists.length, albums: mergedIndex.albums.length, tracks: mergedIndex.tracks.length, genres: mergedIndex.genres.length }
+      : null
+  }
 }
 
 // Load the previous run's cached index so merged mode renders instantly on a cold launch, BEFORE
@@ -578,16 +624,22 @@ function buildRouteMaps () {
   coverLib = new Map()
   trackLib = new Map()
   trackByAnyId = new Map()
+  entityLib = new Map()
   if (!mergedIndex) return
   const noteCover = (coverId, lib) => { if (coverId && !coverLib.has(coverId)) coverLib.set(coverId, lib) }
-  const noteCopies = (e) => { for (const c of (e.copies || [])) noteCover(c.coverId, c.libraryId) }
+  // An entity's own id AND every copy's id map to the owning host, so a detail read (album/artist/
+  // genre) routes by id alone - the UI needn't thread libraryId through the nav stack.
+  const noteEntity = (e) => {
+    if (e.id && !entityLib.has(e.id)) entityLib.set(e.id, e.libraryId)
+    for (const c of (e.copies || [])) { noteCover(c.coverId, c.libraryId); if (c.id && !entityLib.has(c.id)) entityLib.set(c.id, c.libraryId) }
+  }
   for (const t of mergedIndex.tracks) {
     for (const c of (t.copies || [])) { if (c.id) { trackLib.set(c.id, c.libraryId); trackByAnyId.set(c.id, t) }; noteCover(c.coverId, c.libraryId) }
     noteCover(t.coverId, t.libraryId)
   }
-  for (const a of mergedIndex.albums) { noteCover(a.coverId, a.libraryId); noteCopies(a) }
-  for (const a of mergedIndex.artists) { noteCover(a.coverId, a.libraryId); noteCopies(a) }
-  for (const g of mergedIndex.genres) { noteCover(g.coverId, g.libraryId); noteCopies(g) }
+  for (const a of mergedIndex.albums) { noteCover(a.coverId, a.libraryId); noteEntity(a) }
+  for (const a of mergedIndex.artists) { noteCover(a.coverId, a.libraryId); noteEntity(a) }
+  for (const g of mergedIndex.genres) { noteCover(g.coverId, g.libraryId); noteEntity(g) }
 }
 
 // Ensure a usable merged index exists before serving a browse call (a browse can land before the
@@ -617,6 +669,9 @@ function connectedLibs () {
 // single-segment track URL) - null outside merged mode, so single-host behaviour is unchanged.
 function libForTrack (trackId) { return mergedMode() ? (trackLib.get(trackId) || null) : null }
 function libForCover (coverId) { return mergedMode() ? (coverLib.get(coverId) || null) : null }
+// The owning host of a DETAIL entity (album/artist/genre) by its id, so a detail read routes even
+// when the UI didn't thread a libraryId (it just calls album({id})). An explicit libraryId wins.
+function libForEntity (id, libraryId) { return libraryId || (mergedMode() ? (entityLib.get(id) || null) : null) }
 
 // Resolve a track to the best CONNECTED copy to stream: { libraryId, id }. Prefers copies handed in
 // by the caller (a queue item, slice 5), then the index by any copy's id (with failover to another
@@ -822,6 +877,19 @@ const methods = {
         log('init:connect-failed', { err: e.message })
         emit('host:disconnected', { hostKey: host.hostKey })
       })
+
+      // MERGED IS THE DEFAULT when 2+ libraries are paired (proposal 2026-07-19): flip merged mode
+      // on, render the previous run's cached index INSTANTLY (loadCachedIndex is a sync disk read),
+      // and rebuild from every host in the background (emits merged:updated when it lands). With 0-1
+      // hosts there's nothing to blend, so the app stays single-host - byte-for-byte unchanged. The
+      // single client above still connects (it backs the per-host "You" features + a streaming
+      // fallback); merged mode only governs browse/streaming routing.
+      if (f.hosts.length >= 2) {
+        _mergedMode = true
+        loadCachedIndex()
+        state.merged = mergedStatusData()
+        rebuildIndex().catch((e) => log('init:merged-rebuild-failed', { err: e.message }))
+      }
     }
     return state
   },
@@ -900,11 +968,12 @@ const methods = {
   // album's owning host (authoritative order) via the pool, then tags the album + enriches each
   // track's copies so streaming can fail over. The UI passes the served album's libraryId back here.
   async album ({ id, libraryId }) {
-    if (mergedMode() && libraryId) {
-      const c = await ensureHostById(libraryId)
+    const lib = libForEntity(id, libraryId)
+    if (mergedMode() && lib) {
+      const c = await ensureHostById(lib)
       const a = await c.get({ id, type: 'album' })
       if (!a) return null
-      return withBigArt({ ...a, libraryId, tracks: (a.tracks || []).map((t) => enrichCopies({ ...t, libraryId })) })
+      return withBigArt({ ...a, libraryId: lib, tracks: (a.tracks || []).map((t) => enrichCopies({ ...t, libraryId: lib })) })
     }
     await ensureConnected()
     const a = await client.get({ id, type: 'album' })
@@ -929,14 +998,15 @@ const methods = {
   // tapping through routes correctly. (A blended cross-host artist page - one host's albums beside
   // another's for the same artist - is a later refinement; phase 1 shows the primary host's.)
   async artist ({ id, libraryId }) {
-    if (mergedMode() && libraryId) {
-      const c = await ensureHostById(libraryId)
+    const lib = libForEntity(id, libraryId)
+    if (mergedMode() && lib) {
+      const c = await ensureHostById(lib)
       const a = await c.get({ id, type: 'artist' })
       if (!a) return null
       return {
-        ...withBigArt({ ...a, libraryId }),
-        albums: (a.albums || []).map((al) => withArt({ ...al, libraryId })),
-        tracks: (a.tracks || []).map((t) => withArt(enrichCopies({ ...t, libraryId })))
+        ...withBigArt({ ...a, libraryId: lib }),
+        albums: (a.albums || []).map((al) => withArt({ ...al, libraryId: lib })),
+        tracks: (a.tracks || []).map((t) => withArt(enrichCopies({ ...t, libraryId: lib })))
       }
     }
     await ensureConnected()
@@ -961,10 +1031,11 @@ const methods = {
     // In merged mode read from the artist's owning host (its albums live there); otherwise the
     // single active client. Either way each track is tagged with its libraryId + copies so a
     // mixed-host queue (slice 4) routes every track to a host that has it.
+    const lib = libForEntity(id, libraryId)
     let c
-    if (mergedMode() && libraryId) c = await ensureHostById(libraryId)
+    if (mergedMode() && lib) c = await ensureHostById(lib)
     else { await ensureConnected(); c = client }
-    const tag = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId }) : t)
+    const tag = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId: lib }) : t)
 
     const a = await c.get({ id, type: 'artist' })
     if (!a) return { items: [] }
@@ -1003,15 +1074,16 @@ const methods = {
   // no album of its own - the same fallback artists use). In merged mode the detail routes to the
   // genre's owning host; its albums carry libraryId so tapping through routes correctly.
   async genre ({ id, libraryId }) {
+    const lib = libForEntity(id, libraryId)
     let c
-    if (mergedMode() && libraryId) c = await ensureHostById(libraryId)
+    if (mergedMode() && lib) c = await ensureHostById(lib)
     else { await ensureConnected(); c = client }
     const g = await c.get({ id, type: 'genre' })
     if (!g) return null
-    const tagAlbum = (al) => (mergedMode() ? { ...al, libraryId } : al)
-    const tagTrack = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId }) : t)
+    const tagAlbum = (al) => (mergedMode() ? { ...al, libraryId: lib } : al)
+    const tagTrack = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId: lib }) : t)
     return {
-      ...withBigArt(mergedMode() ? { ...g, libraryId } : g),
+      ...withBigArt(mergedMode() ? { ...g, libraryId: lib } : g),
       albums: (g.albums || []).map((al) => withArt(tagAlbum(al))),
       tracks: (g.tracks || []).map((t) => withArt(tagTrack(t)))
     }
@@ -1020,10 +1092,11 @@ const methods = {
   // Every track in a genre, in album order - what "Play" on a genre means. Mirrors
   // artistTracks: one round trip per album, plus the loose-track fallback.
   async genreTracks ({ id, libraryId }) {
+    const lib = libForEntity(id, libraryId)
     let c
-    if (mergedMode() && libraryId) c = await ensureHostById(libraryId)
+    if (mergedMode() && lib) c = await ensureHostById(lib)
     else { await ensureConnected(); c = client }
-    const tag = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId }) : t)
+    const tag = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId: lib }) : t)
 
     const g = await c.get({ id, type: 'genre' })
     if (!g) return { items: [] }
@@ -1064,48 +1137,36 @@ const methods = {
 
   // --- merged library (step 2, proposal 2026-07-19) ---------------------------
   //
-  // Enter the blended view: adopt the _merged state context (so browse serves from the index), show
+  // Enter the blended view: flip merged mode on (browse/streaming now serve from the index), show
   // the last run's cached index instantly, then rebuild from every connected host. Idempotent - a
-  // repeat call just refreshes. This is what the merged-default UI (slice 5) calls on launch.
+  // repeat call just refreshes. The merged-default UI (slice 5) calls this on launch when 2+ hosts
+  // are paired; the '_all' filter chip also calls it to return from a single-host focus.
   async enterMerged () {
+    _mergedMode = true
     loadCachedIndex() // render instantly from the previous run while the live rebuild runs
-    useLibrary(MERGED_ID) // activeLibraryId = '_merged' -> mergedMode() true
     await ensureShim() // browse maps art through the shim; it's up already on a normal launch
     await rebuildIndex()
-    return this.mergedStatus()
+    return mergedStatusData()
+  },
+
+  // Leave the blended view for a single library (the Settings switcher's "focus one host"). The
+  // merged index stays cached; re-entering is instant. switchHost does this too.
+  exitMerged () {
+    _mergedMode = false
+    return { merged: false }
   },
 
   // Rebuild the index (a host reconnected, or a pull-to-refresh). Only meaningful in merged mode.
   async refreshMerged () {
     if (!mergedMode()) return { merged: false }
     await rebuildIndex()
-    return this.mergedStatus()
+    return mergedStatusData()
   },
 
   // Per-library status for the source-filter chips + greying: every paired library, whether it's in
   // the current index (connected at build time), and how many of its tracks are in the blend. The
   // '_all' chip (the whole blend) is implicit and the default.
-  mergedStatus () {
-    const hosts = loadHostsFile().hosts
-    const perLib = {}
-    if (mergedIndex) {
-      for (const t of mergedIndex.tracks) {
-        for (const c of (t.copies || [])) perLib[c.libraryId] = (perLib[c.libraryId] || 0) + 1
-      }
-    }
-    return {
-      merged: mergedMode(),
-      libraries: hosts.map((h) => ({
-        libraryId: h.libraryId,
-        libraryName: h.libraryName,
-        connected: mergedConnected.has(h.libraryId),
-        trackCount: perLib[h.libraryId] || 0
-      })),
-      counts: mergedIndex
-        ? { artists: mergedIndex.artists.length, albums: mergedIndex.albums.length, tracks: mergedIndex.tracks.length, genres: mergedIndex.genres.length }
-        : null
-    }
-  },
+  mergedStatus () { return mergedStatusData() },
 
   async settings () {
     return loadSettings()
@@ -1731,13 +1792,7 @@ const methods = {
   },
 
   // The paired libraries, the active one flagged - Settings renders the switcher from this.
-  listHosts () {
-    const f = loadHostsFile()
-    return {
-      hosts: f.hosts.map((h) => ({ ...h, active: h.hostKey === f.activeHostKey })),
-      activeHostKey: f.activeHostKey
-    }
-  },
+  listHosts () { return listHostsData() },
 
   // Switch the active library. Tear down the current connection and dial the new host; the
   // shim (and its stable loopback port) SURVIVES, and a track already streaming keeps playing
@@ -1748,6 +1803,7 @@ const methods = {
     const f = hostList.setActive(loadHostsFile(), hostKey) // throws if not paired with it
     saveHostsFile(f)
     const host = hostList.activeHost(f)
+    _mergedMode = false // focusing one library leaves the blended view (the '_all' chip re-enters it)
     if (client) { try { await client.close() } catch {} ; client = null }
     connected = false
     useLibrary(host.libraryId)
@@ -1806,7 +1862,7 @@ const methods = {
       }
     }
 
-    return this.listHosts()
+    return listHostsData()
   },
 
   // Unpair EVERYTHING (full account reset). Forgets every paired library and drops the
