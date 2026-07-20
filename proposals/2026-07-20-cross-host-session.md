@@ -133,15 +133,24 @@ the merged "Play here" card, and PearTune is today's blended-queue-per-device ap
 `session:merged:*` rows removes cross-host handoff with zero effect on grants, identity, pairing, the
 media path, the single-library session, or the local queue.
 
-## Open questions
-1. **Election stability vs. availability.** Smallest-`hostKey` is deterministic but pins the session to
-   one host's uptime. Is that acceptable for v1 (degrade when it's down), or is a lightweight mirror to a
-   second host worth the extra write + a reconciliation rule (LWW by `updatedAt` across two rows)?
-2. **Prefer the *active* host as home?** Electing the host the device is most likely reaching (the
-   filter/active host) could improve availability, but it's not device-agnostic (different devices have
-   different active hosts) — which breaks the "every device computes the same home" invariant. Smallest-
-   `hostKey` is chosen for that invariant; flagged in case availability wins over determinism.
-3. **Owner drift across hosts.** If the person is confirmed on the home host (ownerId = personId) but not
-   on others, the session key is the home host's personId — consistent as long as the home doesn't change.
-   Re-election to a host where they're unconfirmed shifts ownerId to deviceKey (a session reset). Accepted
-   for v1; revisit if confirmation state varies a lot across a person's hosts.
+## Resolved (Tim, 2026-07-20)
+1. **Home offline → DEGRADE, no mirror.** If the elected home host is unreachable, the merged "Play here"
+   card hides and the local blended queue keeps playing from `queue.json`; handoff resumes when the home
+   returns. One write path, one CAS authority — a mirror to a backup host (and its two-row reconciliation)
+   is a deferred v2 nicety, not v1.
+2. **Election = smallest `hostKey`, DETERMINISTIC.** Every device computes the same home from the same
+   `hosts.json`, which is what lets a single CAS authority work. Preferring the device's *active* host was
+   rejected: different devices have different active hosts, so they'd disagree on the home and race two CAS
+   authorities — the exact tug-of-war the design exists to prevent. Determinism wins over availability here.
+3. **Owner = `personId ?? deviceKey` on the home host** (the single-library rule). Handoff is between a
+   *person's* devices, so the session must be keyed by the thing that groups them (`personId`) — keying by
+   the per-device `deviceKey` would give each device its own row and no handoff at all. Because the session
+   lives on exactly **one** elected home host, only that host's derivation matters, so there is no cross-host
+   drift for a stable home; both of a person's devices reaching that home resolve to the same `personId`.
+   The one edge case — **re-election** to a different home (the old home was removed/unpaired) — resets the
+   session (v1 accepts it, matching favorites' "start fresh once confirmed"); a carry-across is deferred.
+
+## Still open (for v2, not blocking)
+- The exact card copy + behavior when the home is offline mid-session ("session unavailable" vs. silent
+  local fallback), and whether a re-election reset warrants any user notice.
+- A backup-host mirror (resolved-1's deferral) if home-host uptime proves too fragile in practice.
