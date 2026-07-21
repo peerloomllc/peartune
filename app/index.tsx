@@ -141,30 +141,6 @@ export default function App () {
 
   const SEEK_STEP = 15 // seconds, matching the lock-screen rewind/FF buttons
 
-  // iOS FALLBACK. The gapless queue methods (setQueueSources / skip* / *QueueItem / setShuffle /
-  // setRepeatMode) come from patches/expo-audio+1.1.1.patch, which patches the ANDROID module only.
-  // On iOS none of them exist, so we drive the queue in JS instead: play one track and replace()
-  // into the next when it ends. Not gapless (a short seam between songs) and no shuffle/repeat, but
-  // playback - and the session handoff that rides on it - work. (A real iOS AVQueuePlayer port is a
-  // follow-up.)
-  const IOS = Platform.OS === 'ios'
-  // iOS: load a single queue index onto the one player via replace(), then announce + persist.
-  async function iosLoad (i: number, autoplay: boolean) {
-    const t = queueRef.current[i]
-    if (!t) return
-    try {
-      const { url }: any = await call('urlFor', { trackId: t.id })
-      const p: any = player.current
-      if (!p) return
-      manualNav.current = false
-      p.replace({ uri: url })
-      indexRef.current = i
-      if (autoplay) p.play()
-      announce(i)
-      persistQueue(true)
-    } catch (e: any) { toWeb('play:error', { error: e?.message ?? String(e) }) }
-  }
-
   // GAPLESS. The queue lives inside ExoPlayer, not here.
   //
   // The obvious design - keep the queue in JS and swap the source on
@@ -192,7 +168,6 @@ export default function App () {
     })
 
     let p: any = player.current
-    const fresh = !p
     if (!p) {
       p = createAudioPlayer({ uri: urls[startIndex] })
       player.current = p
@@ -259,17 +234,6 @@ export default function App () {
         // The playlist ran out. Normally that is a stop() - but if we're DRAINING the last
         // track of the old library after a switch, this "end" is the cue to bring up the new
         // library's queue instead (unless a sleep-end-of-track is armed, which wins - stop).
-        // iOS single-track player: didJustFinish fires at the END OF EACH track (no native queue),
-        // so drive the advance here - into a switch-drain's new library, the next queued track, or a
-        // clean stop at the end. (Android's native queue advances itself; its didJustFinish only
-        // matters at the very end, handled just below.)
-        if (IOS && s.didJustFinish) {
-          if (sleepEndOfTrack.current) { sleepEndOfTrack.current = false; stop(); pushSleep(true); return }
-          if (switchDrain.current) { finishDrain(); return }
-          if (indexRef.current < queueRef.current.length - 1) { iosLoad(indexRef.current + 1, true); return }
-          stop(); return
-        }
-
         if (s.didJustFinish && indexRef.current >= queueRef.current.length - 1) {
           if (switchDrain.current && !sleepEndOfTrack.current) { finishDrain() } else { stop() }
         }
@@ -294,15 +258,8 @@ export default function App () {
       })
     }
 
-    if (IOS) {
-      // No native queue: a fresh player already holds urls[startIndex]; a reused one is still on
-      // the previous track, so swap it in. Advancing across the queue is driven by iosLoad on the
-      // didJustFinish tick below.
-      if (!fresh) { p.replace({ uri: urls[startIndex] }); p.seekTo(0) }
-    } else {
-      p.setQueueSources(urls.map((uri: string) => ({ uri })))
-      p.seekToQueueIndex(startIndex)
-    }
+    p.setQueueSources(urls.map((uri: string) => ({ uri })))
+    p.seekToQueueIndex(startIndex)
     return p
   }
 
@@ -426,7 +383,7 @@ export default function App () {
         urls.push(url)
       }
       queueRef.current = [...queueRef.current, ...q]
-      if (!IOS) px()?.addQueueSources(urls.map((uri) => ({ uri }))) // iOS: JS queue only; iosLoad plays appended tracks when reached
+      px()?.addQueueSources(urls.map((uri) => ({ uri })))
       persistQueue(true)
       toWeb('play:queued', { count: q.length, queueLength: queueRef.current.length })
     } catch (e: any) {
@@ -446,7 +403,7 @@ export default function App () {
         f < 0 || t < 0 || f >= q.length || t >= q.length || f === t) {
       return { items: q, index: indexRef.current }
     }
-    if (!IOS) px()?.moveQueueItem(f, t) // iOS: reorder the JS queue only; the current track keeps playing
+    px()?.moveQueueItem(f, t)
     const [moved] = q.splice(f, 1)
     q.splice(t, 0, moved)
     indexRef.current = reindexAfterMove(indexRef.current, f, t)
@@ -466,7 +423,7 @@ export default function App () {
     }
     if (q.length === 1) { stop(); return { items: [], index: 0 } }
     const wasCurrent = i === indexRef.current
-    if (!IOS) px()?.removeQueueItem(i)
+    px()?.removeQueueItem(i)
     const len = q.length
     q.splice(i, 1)
     indexRef.current = reindexAfterRemove(indexRef.current, i, len)
@@ -474,9 +431,7 @@ export default function App () {
     // index is UNCHANGED and the status listener's index-change check never fires -
     // update the now-playing (mini-player + lock screen) to the new track explicitly.
     // (No seek here, so this is the safe kind of announce - unlike playIndex's.)
-    // iOS has no native queue, so removing the CURRENT track must swap the player to the new
-    // current itself (Android's ExoPlayer slides the next item in on its own).
-    if (wasCurrent) { if (IOS) iosLoad(indexRef.current, !!player.current?.playing); else announce(indexRef.current) }
+    if (wasCurrent) announce(indexRef.current)
     persistQueue(true)
     return { items: queueRef.current, index: indexRef.current }
   }
@@ -492,10 +447,8 @@ export default function App () {
     if (q.length <= 1) return { items: queueRef.current, index: indexRef.current }
     const keep = q[cur]
     if (!keep) { stop(); return { items: [], index: 0 } }
-    if (!IOS) { // iOS: the single-source player is already just playing `keep`; collapse the JS queue only
-      for (let i = q.length - 1; i > cur; i--) px()?.removeQueueItem(i)
-      for (let i = cur - 1; i >= 0; i--) px()?.removeQueueItem(i)
-    }
+    for (let i = q.length - 1; i > cur; i--) px()?.removeQueueItem(i)
+    for (let i = cur - 1; i >= 0; i--) px()?.removeQueueItem(i)
     queueRef.current = [keep]
     indexRef.current = 0
     persistQueue(true)
@@ -592,7 +545,6 @@ export default function App () {
   // down exactly the same path.
   function next () {
     manualNav.current = true
-    if (IOS) { if (indexRef.current < queueRef.current.length - 1) iosLoad(indexRef.current + 1, true); return }
     px()?.skipToNext()
   }
 
@@ -601,12 +553,6 @@ export default function App () {
   // step back one.
   function prev () {
     manualNav.current = true
-    if (IOS) {
-      // Convention: restart the current track unless we're near its start, then step back one.
-      if (posRef.current > 3000 || indexRef.current === 0) iosLoad(indexRef.current, true)
-      else iosLoad(indexRef.current - 1, true)
-      return
-    }
     px()?.skipToPrevious()
   }
 
@@ -614,7 +560,7 @@ export default function App () {
   // both respect it. Shuffling our own array instead would mean re-handing the
   // playlist to the player, which restarts buffering and breaks gapless.
   function setShuffle (on: boolean) {
-    if (!IOS) px()?.setShuffle(on) // iOS fallback has no native shuffle; the ref still tracks intent
+    px()?.setShuffle(on)
     shuffleRef.current = on
     persistQueue(true)
     toWeb('play:mode', { shuffle: on })
@@ -622,7 +568,7 @@ export default function App () {
 
   // 0 = off, 1 = repeat one, 2 = repeat all.
   function setRepeat (mode: number) {
-    if (!IOS) px()?.setRepeatMode(mode) // iOS fallback has no native repeat; the ref still tracks intent
+    px()?.setRepeatMode(mode)
     repeatRef.current = mode
     persistQueue(true)
     toWeb('play:mode', { repeat: mode })
@@ -744,7 +690,8 @@ export default function App () {
       repeatRef.current = Number(saved.repeat) || 0
 
       const p = await ensurePlayer(urls, index)
-      if (!IOS) { px()?.setShuffle(shuffleRef.current); px()?.setRepeatMode(repeatRef.current) }
+      px()?.setShuffle(shuffleRef.current)
+      px()?.setRepeatMode(repeatRef.current)
       announce(index) // shows the now-playing (paused) + the lock-screen session
       if (saved.positionMs) p.seekTo(Math.max(0, saved.positionMs / 1000))
       toWeb('play:mode', { shuffle: shuffleRef.current, repeat: repeatRef.current })
@@ -780,7 +727,8 @@ export default function App () {
       shuffleRef.current = !!saved.shuffle
       repeatRef.current = Number(saved.repeat) || 0
       const p = await ensurePlayer(urls, index)
-      if (!IOS) { px()?.setShuffle(shuffleRef.current); px()?.setRepeatMode(repeatRef.current) }
+      px()?.setShuffle(shuffleRef.current)
+      px()?.setRepeatMode(repeatRef.current)
       announce(index)
       if (saved.positionMs) p.seekTo(Math.max(0, saved.positionMs / 1000))
       toWeb('play:mode', { shuffle: shuffleRef.current, repeat: repeatRef.current })
@@ -849,7 +797,8 @@ export default function App () {
       shuffleRef.current = !!snap.shuffle
       repeatRef.current = Number(snap.repeat) || 0
       const p = await ensurePlayer(urls, index)
-      if (!IOS) { px()?.setShuffle(shuffleRef.current); px()?.setRepeatMode(repeatRef.current) }
+      px()?.setShuffle(shuffleRef.current)
+      px()?.setRepeatMode(repeatRef.current)
       announce(index)
       if (snap.positionMs) p.seekTo(Math.max(0, snap.positionMs / 1000))
       p.play()
@@ -1095,7 +1044,6 @@ export default function App () {
         const p = px()
         if (!p) return
         manualNav.current = true
-        if (IOS) { iosLoad(i, true); return } // iOS: swap the source to that track (no native queue)
         p.seekToQueueIndex(i)
         p.play()
       },
