@@ -1030,6 +1030,7 @@ async function connectTo (host) {
   if (client !== c) { try { await c.close() } catch {} ; return }
   currentHost = host
   connected = true
+  cancelReconnect() // back on: drop any pending retry and reset the backoff
   // A successful connect IS a fresh authorization - renew the offline lease.
   stampAuth()
 
@@ -1051,6 +1052,14 @@ async function connectTo (host) {
     connected = false
     log('host:disconnected')
     emit('host:disconnected', { hostKey: host.hostKey })
+    // ...and then TRY TO GET IT BACK. Reconnection used to be purely on demand
+    // (ensureConnected, when an RPC needs the host) plus the shell's app:active hook. That
+    // leaves one hole, and it is the one people actually hit: a link that dies while the app
+    // is in the FOREGROUND is never retried, because nothing asks. The idle heartbeat is sync
+    // by design and never dials. So the library sits "Offline - unreachable" while the host is
+    // up and reachable, until you background the app or restart it - measured at 11 hours on
+    // one device, and seen on both platforms (2026-07-21).
+    scheduleReconnect()
   })
 
   emit('host:connected', {
@@ -1081,6 +1090,36 @@ async function connectTo (host) {
 // back. The single-flight promise matters more than it looks - a screen coming
 // back to life fires `albums`, `artists` and a fistful of `art` requests in the
 // same tick, and without it each one would dial the host separately.
+// --- automatic reconnect ----------------------------------------------------
+//
+// Backoff, capped: a host that is simply OFF (or that revoked us) must not turn into a dial
+// every few seconds for the rest of the day, and a phone in a tunnel should not burn battery
+// retrying. Doubling from 5s to a 60s ceiling gets a brief network blip back almost at once
+// while costing one dial a minute in the pathological case.
+const RECONNECT_MIN_MS = 5000
+const RECONNECT_MAX_MS = 60000
+let retryTimer = null
+let retryDelay = 0
+
+function cancelReconnect () {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
+  retryDelay = 0
+}
+
+function scheduleReconnect () {
+  if (retryTimer || (connected && client)) return
+  if (!loadActiveHost()) return // unpaired: nothing to dial
+  retryDelay = retryDelay ? Math.min(retryDelay * 2, RECONNECT_MAX_MS) : RECONNECT_MIN_MS
+  retryTimer = setTimeout(() => {
+    retryTimer = null
+    if (!loadActiveHost()) return cancelReconnect()
+    if (connected && client) return cancelReconnect()
+    ensureConnected().then(cancelReconnect, () => scheduleReconnect())
+  }, retryDelay)
+  // Never let a retry hold the worklet awake on its own account.
+  if (retryTimer.unref) retryTimer.unref()
+}
+
 async function ensureConnected () {
   if (connected && client) return
 
@@ -1164,6 +1203,7 @@ const methods = {
       connectTo(host).catch((e) => {
         log('init:connect-failed', { err: e.message })
         emit('host:disconnected', { hostKey: host.hostKey })
+        scheduleReconnect() // the host may just be booting, or the wifi not up yet
       })
 
       // MERGED IS THE DEFAULT when 2+ libraries are paired (proposal 2026-07-19): flip merged mode
@@ -2308,6 +2348,7 @@ const methods = {
       await connectTo(host)
     } catch (e) {
       log('switch:connect-deferred', { err: e.message })
+      scheduleReconnect()
     }
     emit('host:switched', { hostKey: host.hostKey, libraryId: host.libraryId, libraryName: host.libraryName, shimPort })
     return { ...host, shimPort }
@@ -2377,12 +2418,14 @@ const methods = {
         connectTo(next).catch((e) => {
           log('remove:reconnect-failed', { err: e.message })
           emit('host:disconnected', { hostKey: next.hostKey })
+          scheduleReconnect()
         })
         emit('host:switched', { hostKey: next.hostKey, libraryId: next.libraryId, libraryName: next.libraryName, shimPort })
       } else {
         // No libraries left: back to un-paired. The shim keeps listening (its port is stable
         // and harmless); the shell shows the pairing wall.
         activeLibraryId = null
+        cancelReconnect() // no libraries left: stop dialling
         emit('host:disconnected', { hostKey })
       }
     }
@@ -2416,6 +2459,7 @@ const methods = {
     // the lease) across all libraries. The reliable purge point a reconnect failure never is.
     purgeAllLibraries(all.map((h) => h.libraryId))
     activeLibraryId = null
+    cancelReconnect()
 
     // Close the shim's HTTP server, not just the reference. Dropping the
     // reference alone would leave the loopback port bound for the life of the
