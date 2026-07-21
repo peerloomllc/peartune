@@ -271,7 +271,18 @@ class Grants {
       const clean = cleanName(userName)
       row.claimedUser = clean || null
       row.claimedAt = clean ? Date.now() : null
-      // NOT row.personId. See above.
+      // A device may CREATE a NEW person for itself, but may never assign itself to an EXISTING
+      // one (proposal 2026-07-21, refining 2026-07-14). If this device is still UNASSIGNED and
+      // claims a name no person yet holds, mint that person and assign it here - it inherits
+      // nothing (empty, single-device) and was already admitted by the pairing window, so no
+      // operator click adds anything. Claiming a name that ALREADY exists leaves personId null: a
+      // pending claim the operator confirms to JOIN, exactly as before (the checkpoint that matters,
+      // since a join inherits another identity's grant + shared state). Never auto-REASSIGN an
+      // already-assigned device: a rename by an assigned device stays a pending re-claim.
+      if (clean && !row.personId && !(await this.personByName(clean))) {
+        const person = await this.addPerson(clean)
+        row.personId = person.id
+      }
     }
 
     await this.bee.put('grant:' + key, row, { valueEncoding: 'json' })

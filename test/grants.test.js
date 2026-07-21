@@ -256,3 +256,55 @@ test('setExpiry() refreshes a guest pass without touching the claim, and no-ops 
   await g.revoke(key)
   assert.equal(await g.setExpiry(key, later + 1), null, 'a revoked grant is not re-extended')
 })
+
+// --- auto-person on a NEW claim (proposal 2026-07-21) -------------------------
+
+test('setIdentity auto-creates + assigns a person for a NEW claim on an unassigned device', async (t) => {
+  const g = await store(t)
+  const dev = await g.grant({ deviceKey: key(), label: 'phone' })
+  assert.equal(dev.personId, null)
+
+  const row = await g.setIdentity(dev.deviceKey, { deviceName: 'Pixel', userName: 'Tim' })
+  assert.equal(row.label, 'Pixel')
+  assert.equal(row.claimedUser, 'Tim')
+  assert.ok(row.personId, 'a new person was minted and assigned')
+  const person = await g.getPerson(row.personId)
+  assert.equal(person.name, 'Tim')
+})
+
+test('setIdentity leaves a claim PENDING when a person of that name already exists (join needs confirm)', async (t) => {
+  const g = await store(t)
+  const tim = await g.addPerson('Tim') // person already exists
+  const dev = await g.grant({ deviceKey: key(), label: 'tablet' })
+
+  const row = await g.setIdentity(dev.deviceKey, { userName: 'Tim' })
+  assert.equal(row.claimedUser, 'Tim')
+  assert.equal(row.personId, null, 'joining an EXISTING person stays pending until the operator confirms')
+
+  // confirmClaim then joins the SAME person, not a second one.
+  const confirmed = await g.confirmClaim(dev.deviceKey)
+  assert.equal(confirmed.personId, tim.id)
+  assert.equal((await g.listPersons()).filter((p) => p.name === 'Tim').length, 1, 'still one Tim')
+})
+
+test('setIdentity never auto-REASSIGNS an already-assigned device on a claim change', async (t) => {
+  const g = await store(t)
+  const ada = await g.addPerson('Ada')
+  const dev = await g.grant({ deviceKey: key(), label: 'phone' })
+  await g.assign(dev.deviceKey, ada.id)
+
+  // A new, non-existent name from an ALREADY-assigned device: the claim updates, but the
+  // assignment does NOT move on its own (a rename is a pending re-claim for the operator).
+  const row = await g.setIdentity(dev.deviceKey, { userName: 'Grace' })
+  assert.equal(row.claimedUser, 'Grace')
+  assert.equal(row.personId, ada.id, 'still assigned to Ada; not silently reassigned')
+  assert.equal(await g.personByName('Grace'), null, 'no stray Grace person minted')
+})
+
+test('setIdentity with a blank claim assigns nobody', async (t) => {
+  const g = await store(t)
+  const dev = await g.grant({ deviceKey: key(), label: 'phone' })
+  const row = await g.setIdentity(dev.deviceKey, { userName: '   ' })
+  assert.equal(row.claimedUser, null)
+  assert.equal(row.personId, null)
+})
