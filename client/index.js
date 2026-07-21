@@ -19,6 +19,20 @@ const { ERR } = require('../protocol/constants')
 // the host at all" case so a doomed reconnect does not hang forever.
 const CONNECT_TIMEOUT = 20000
 
+// How long we will wait for the DHT node to finish bootstrapping before dialing anyway.
+// Best-effort: a slow or failing bootstrap must never be the thing that stops a pair.
+const READY_TIMEOUT = 5000
+
+// Pairing dial attempts, and the elapsed budget after which we stop retrying. A dial that
+// dies BEFORE the connection opens is ambiguous by construction (see _pairOnce), so a
+// retry is the only thing that separates a real refusal from a blip. Measured against a
+// hyperdht testnet: a firewall deny surfaces as PEER_CONNECTION_FAILED after ~4s and a
+// host with no DHT record as PEER_NOT_FOUND in ~1ms, so the budget - not the count - is
+// what bounds how long a genuinely closed window takes to report.
+const PAIR_ATTEMPTS = 3
+const PAIR_RETRY_BUDGET_MS = 8000
+const PAIR_RETRY_GAP_MS = 500
+
 class PearTuneClient {
   constructor ({ keyPair, dht = null, bootstrap = null, log = () => {} }) {
     this.keyPair = keyPair
@@ -52,52 +66,157 @@ class PearTuneClient {
   // We still have to prove OURSELVES, which is what `rv` is for. The host's
   // public key is an address, not a secret, so dialing it proves nothing. The
   // token from the QR does.
-  async pair (link, { label = 'phone', platform = 'android', timeout = 60000 } = {}) {
-    const { rv, hostKey, name } = parseLink(link)
+  async pair (link, { label = 'phone', platform = 'android', timeout = 60000, attempts = PAIR_ATTEMPTS } = {}) {
+    const parsed = parseLink(link)
 
+    // Dial off a WARM node. A cold HyperDHT has an empty routing table, so the very first
+    // connect races its own bootstrap and can fail as "could not connect" with the host
+    // sitting right there on the LAN - then the immediate retry, off the now-warm node,
+    // succeeds. That is the intermittent pairing failure people hit on a first pair, and
+    // it is the same transient src/bare.js keeps ONE dht node alive to avoid.
+    await this._ready()
+
+    const started = Date.now()
+    let last = null
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const left = timeout - (Date.now() - started)
+      if (left <= 0) break
+
+      try {
+        return await this._pairOnce(parsed, { label, platform, timeout: left })
+      } catch (e) {
+        last = e
+
+        // A host that ADMITTED us and then hung up has made a decision - wrong token,
+        // window shut, key mismatch. Dialing again only asks the same question.
+        if (e.code !== 'EUNREACHABLE') throw e
+
+        this.log('pair:dial-failed', { attempt, code: e.dhtCode || null })
+        if (attempt === attempts) break
+        if (Date.now() - started >= PAIR_RETRY_BUDGET_MS) break
+        await new Promise((resolve) => {
+          const t = setTimeout(resolve, PAIR_RETRY_GAP_MS)
+          if (t.unref) t.unref()
+        })
+      }
+    }
+
+    throw last || new Error('pairing failed')
+  }
+
+  // One dial. Rejects with a `code` the caller can act on:
+  //
+  //   EREFUSED     - the connection OPENED (Noise completed, so the host's firewall
+  //                  admitted us) and the host then hung up. That is a decision.
+  //   EUNREACHABLE - it never opened. hyperdht cannot tell us WHY: a firewall deny and a
+  //                  network that dropped the holepunch are both PEER_CONNECTION_FAILED.
+  //                  So this must never be reported as "your code expired" - we do not
+  //                  know that, and asserting it sent a past debugging session the wrong
+  //                  way down the pipe.
+  //   ETIMEDOUT    - nothing happened at all inside the budget.
+  _pairOnce ({ rv, hostKey, name }, { label, platform, timeout }) {
     // The library id is not yet known (it is one of the things pairing tells us),
     // but the pair channel is keyed on it. Derive it: it is a pure function of
     // the host key, which the QR gave us.
     const libId = deriveLibraryId(hostKey)
 
     const conn = this.dht.connect(hostKey, { keyPair: this.keyPair })
-    conn.on('error', () => {})
 
-    try {
-      return await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('pairing timed out')), timeout)
-        if (timer.unref) timer.unref()
+    // Kept, not swallowed: the hyperdht code (PEER_NOT_FOUND, PEER_CONNECTION_FAILED,
+    // CANNOT_HOLEPUNCH) is the only forensic detail a field report ever has.
+    let dialError = null
+    conn.on('error', (e) => { dialError = e })
 
-        // If the host has no pairing window open, its firewall denies us and the
-        // connection dies here rather than hanging until the timeout.
-        conn.once('close', () => {
-          clearTimeout(timer)
-          reject(new Error('host refused the connection (is a pairing window open?)'))
-        })
+    let opened = false
 
-        conn.opened.then(() => {
-          const mux = Protomux.from(conn)
+    const unreachable = () => {
+      const e = new Error('no answer from the host (unreachable, or not accepting pair requests)')
+      e.code = 'EUNREACHABLE'
+      e.dhtCode = dialError?.code || null
+      return e
+    }
 
-          const built = pairChannel(mux, {
-            id: b4a.from(libId),
-            onpaired: (m) => {
-              clearTimeout(timer)
-              this.log('pair:done', { libraryId: m?.libraryId })
-              resolve({
-                hostKey,
-                libraryId: m?.libraryId ?? libId,
-                libraryName: m?.libraryName ?? name
-              })
+    return (async () => {
+      try {
+        return await new Promise((resolve, reject) => {
+          let settled = false
+          const done = (fn, arg) => { if (!settled) { settled = true; fn(arg) } }
+
+          const timer = setTimeout(() => {
+            const e = new Error('pairing timed out')
+            e.code = 'ETIMEDOUT'
+            done(reject, e)
+          }, timeout)
+          if (timer.unref) timer.unref()
+
+          conn.once('close', () => {
+            clearTimeout(timer)
+            if (opened) {
+              const e = new Error('host refused the pairing code')
+              e.code = 'EREFUSED'
+              done(reject, e)
+              return
             }
+            done(reject, unreachable())
           })
-          if (!built) return reject(new Error('could not open pair channel'))
 
-          built.channel.open()
-          built.messages.hello.send({ rv, deviceKey: this.keyPair.publicKey, label, platform })
-        }).catch(reject)
-      })
+          conn.opened.then(() => {
+            opened = true
+            const mux = Protomux.from(conn)
+
+            const built = pairChannel(mux, {
+              id: b4a.from(libId),
+              onpaired: (m) => {
+                clearTimeout(timer)
+                this.log('pair:done', { libraryId: m?.libraryId })
+                done(resolve, {
+                  hostKey,
+                  libraryId: m?.libraryId ?? libId,
+                  libraryName: m?.libraryName ?? name
+                })
+              }
+            })
+            if (!built) {
+              clearTimeout(timer)
+              return done(reject, new Error('could not open pair channel'))
+            }
+
+            built.channel.open()
+            built.messages.hello.send({ rv, deviceKey: this.keyPair.publicKey, label, platform })
+          }).catch(() => {
+            clearTimeout(timer)
+            done(reject, unreachable())
+          })
+        })
+      } finally {
+        conn.destroy()
+      }
+    })()
+  }
+
+  // Wait for the dht node to finish bootstrapping, but never for long. Best-effort on
+  // purpose: if the bootstrap is slow or failing, the dial itself will say so far more
+  // usefully than a hang here would.
+  async _ready (timeout = READY_TIMEOUT) {
+    const boot = typeof this.dht.fullyBootstrapped === 'function'
+      ? this.dht.fullyBootstrapped()
+      : (typeof this.dht.ready === 'function' ? this.dht.ready() : null)
+    if (!boot) return
+
+    let timer = null
+    try {
+      await Promise.race([
+        boot,
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, timeout)
+          if (timer.unref) timer.unref()
+        })
+      ])
+    } catch {
+      // a bootstrap that rejected is not a pairing failure
     } finally {
-      conn.destroy()
+      if (timer) clearTimeout(timer)
     }
   }
 
@@ -106,6 +225,10 @@ class PearTuneClient {
   async connect ({ hostKey, libraryId }) {
     this.hostKey = typeof hostKey === 'string' ? z32.decode(hostKey) : hostKey
     this.libraryId = libraryId
+
+    // Same reason as in pair(): the FIRST connect off a cold node races its own bootstrap.
+    // A no-op once the node is warm, which it is for every connect after the first.
+    await this._ready()
 
     const conn = this.dht.connect(this.hostKey, { keyPair: this.keyPair })
     conn.on('error', () => {})

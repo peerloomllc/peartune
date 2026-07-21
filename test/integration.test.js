@@ -20,7 +20,7 @@ const z32 = require('z32')
 
 const { PearTuneHost } = require('../host/server')
 const { PearTuneClient } = require('../client')
-const { parseLink } = require('../protocol/link')
+const { parseLink, encodeLink } = require('../protocol/link')
 const { libraryId } = require('../protocol/ids')
 const { PAIR_PROTOCOL } = require('../protocol/constants')
 const framing = require('../protocol/framing')
@@ -498,9 +498,89 @@ test('a pairing window that is CLOSED admits nobody', async (t) => {
   host.stopPairing() // operator closed the dashboard
 
   await assert.rejects(
-    withTimeout(client.pair(link, { timeout: 3000 }), 6000),
+    withTimeout(client.pair(link, { timeout: 20000 }), 25000),
+    (e) => {
+      // A firewall deny never opens the connection, and hyperdht reports it exactly as
+      // it reports a network that ate the holepunch. So the client must classify it as
+      // UNREACHABLE and let the copy say "we don't know which" - claiming the code
+      // expired here is a guess, and it was the wrong guess often enough to cost a
+      // debugging session.
+      assert.equal(e.code, 'EUNREACHABLE')
+      return true
+    },
     'no device may pair once the window is closed'
   )
+
+  const devices = await host.listDevices()
+  assert.equal(devices.length, 0)
+})
+
+// --- the intermittent-pair fix (2026-07-21) ---------------------------------
+
+// A dht node whose first `failFirst` dials go NOWHERE - dialed at a key nobody serves, so
+// they die before the connection opens. That is the shape of both failures the client has
+// to ride out: a cold routing table, and a holepunch the network dropped. `dials` lets a
+// test assert that a retry happened - or that one deliberately did not.
+function flakyDht (testnet, { failFirst = 0 } = {}) {
+  const dht = new HyperDHT({ bootstrap: testnet.bootstrap })
+  const nowhere = hcrypto.keyPair().publicKey
+
+  return {
+    dials: 0,
+    connect (key, opts) {
+      this.dials++
+      return dht.connect(this.dials <= failFirst ? nowhere : key, opts)
+    },
+    fullyBootstrapped: () => dht.fullyBootstrapped(),
+    destroy: () => dht.destroy()
+  }
+}
+
+test('a dial that dies before it opens is RETRIED, so a blip does not fail the pair', async (t) => {
+  const { testnet, host } = await scaffold(t)
+
+  const dht = flakyDht(testnet, { failFirst: 1 })
+  const client = new PearTuneClient({ keyPair: hcrypto.keyPair(), dht, log: QUIET })
+  t.after(async () => { await client.close(); await dht.destroy() })
+
+  const link = host.startPairing()
+  const paired = await withTimeout(
+    client.pair(link, { label: 'flaky-phone', platform: 'android', timeout: 20000 }),
+    25000
+  )
+
+  assert.equal(paired.libraryId, host.libraryId)
+  assert.equal(dht.dials, 2, 'the first dial failed and the second one paired')
+
+  const devices = await host.listDevices()
+  assert.equal(devices.length, 1, 'the retry pairs exactly one device, not two')
+})
+
+test('a code the host TURNS DOWN is a refusal, and is never retried', async (t) => {
+  const { testnet, host } = await scaffold(t)
+
+  const dht = flakyDht(testnet)
+  const client = new PearTuneClient({ keyPair: hcrypto.keyPair(), dht, log: QUIET })
+  t.after(async () => { await client.close(); await dht.destroy() })
+
+  const link = host.startPairing()
+  const wrongToken = encodeLink({
+    rv: hcrypto.randomBytes(32),
+    hostKey: parseLink(link).hostKey,
+    name: 'Test Library'
+  })
+
+  await assert.rejects(
+    withTimeout(client.pair(wrongToken, { timeout: 20000 }), 25000),
+    (e) => {
+      // The connection OPENED, so the host read the hello and said no. That is a
+      // decision about the code, and the only failure allowed to be reported as one.
+      assert.equal(e.code, 'EREFUSED')
+      return true
+    }
+  )
+
+  assert.equal(dht.dials, 1, 'a decision is not retried - dialing again asks the same question')
 
   const devices = await host.listDevices()
   assert.equal(devices.length, 0)
