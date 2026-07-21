@@ -364,6 +364,9 @@ summary { cursor: pointer; padding: .5rem; }
 button.back { padding: .4rem .7rem; margin-bottom: .6rem; display: inline-flex;
               align-items: center; gap: .3rem; }
 button.more { width: 100%; margin: 1.2rem 0 0; }
+/* The scan button pairs a QR glyph with its label, so it needs the same centring the back
+   button uses - a bare inline SVG otherwise sits on the text baseline and rides high. */
+button.scanbtn { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; }
 
 /* The search box and the picker STICK; the library title above them scrolls away.
    Those two are what you reach for from halfway down a grid of 60 albums, and

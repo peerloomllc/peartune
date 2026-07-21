@@ -19,7 +19,7 @@ import {
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
-  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera
+  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
@@ -4631,18 +4631,21 @@ function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost =
 
       {!addHost && (
         <div className='namebox'>
-          <label className='muted sm'>This device</label>
-          <input
-            value={names.deviceName}
-            onChange={e => setNames({ ...names, deviceName: e.target.value })}
-            placeholder='This phone'
-            maxLength={64}
-          />
+          {/* YOUR NAME first, then the device - the same order Settings uses. The two screens
+              disagreeing made the pair-then-check-Settings flow read as if the fields had swapped
+              places under you. */}
           <label className='muted sm'>Your name</label>
           <input
             value={names.userName}
             onChange={e => setNames({ ...names, userName: e.target.value })}
             placeholder='Your name'
+            maxLength={64}
+          />
+          <label className='muted sm'>This device</label>
+          <input
+            value={names.deviceName}
+            onChange={e => setNames({ ...names, deviceName: e.target.value })}
+            placeholder='This phone'
             maxLength={64}
           />
           <p className='muted sm hint'>
@@ -4652,7 +4655,9 @@ function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost =
         </div>
       )}
 
-      <button className='primary' onClick={onScan} disabled={!ready}>Scan pairing code</button>
+      <button className='primary scanbtn' onClick={onScan} disabled={!ready}>
+        <QrCode size={20} weight='bold' /> Scan QR
+      </button>
       <details>
         <summary className='muted sm'>Paste a link instead</summary>
         <input value={link} onChange={e => setLink(e.target.value)} placeholder='pear://peartune/pair?…' />
