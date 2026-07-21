@@ -18,5 +18,12 @@ echo "== syncing host/ + protocol/ -> $MAC:$DEST =="
 rsync -az --delete host/ "$MAC:$DEST/host/"
 rsync -az --delete protocol/ "$MAC:$DEST/protocol/"
 
+# machost.sh only stops the TRAY app, not an already-running node host - so if the current
+# :8741 listener is a previous node host/index.js, kill it first or the restart collides on the
+# port. Scope the match to the peartune data dir so the co-located PearCircle SEEDER (also a
+# host/index.js, but --data /Users/tim/.pearcal-seed on :8731) is never touched.
+echo "== stopping the existing PearTune node host (if any) =="
+ssh "$MAC" "pkill -f 'peartune-desktop/data' || true; sleep 2"
+
 echo "== restarting the Mac node host (machost.sh) =="
 ssh "$MAC" 'bash ~/machost.sh'
