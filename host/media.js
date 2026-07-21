@@ -28,7 +28,7 @@ function ownerOf (grant) {
   return grant.personId ? 'p:' + grant.personId : 'd:' + grant.deviceKey
 }
 
-function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, log = () => {} }) {
+function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, onLeave = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Set once the channel is open (below). Called on close to drop this connection's push
@@ -192,6 +192,19 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         }
         log('identity:avatar', { bytes: (params?.avatar || '').length })
         return send.res.send({ id, body: { ok: true } })
+      }
+
+      // The phone removed this library / unpaired: drop ITS OWN access here (proposal
+      // 2026-07-20). Like identity.set, the subject is THIS connection's grant (grant.deviceKey,
+      // Noise-authenticated) - there is no deviceKey param to forge, so a device can only ever
+      // leave on its own behalf. Allowed for ANY scope (relinquishing your own access is the
+      // least-privileged action), so it is deliberately NOT in the MUTATING scope gate. Reply
+      // BEFORE onLeave, which revokes the grant and destroys THIS connection.
+      case 'device.leave': {
+        if (!grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        send.res.send({ id, body: { ok: true } })
+        if (onLeave) { try { await onLeave(grant.deviceKey) } catch (e) { log('device:leave-failed', { err: e?.message }) } }
+        return
       }
 
       // --- user state: favorites (host-as-hub, milestone 3) ------------------

@@ -624,6 +624,19 @@ async function closePool () {
   pool.clear()
 }
 
+// Best-effort self-leave (proposal 2026-07-20): tell a host we're removing that this device is
+// leaving, so it drops our OWN grant and cuts us - "remove library" then actually ends access
+// there instead of leaving a live grant + stale dashboard row. Only when currently connected;
+// swallow ENOMETHOD (an old host), offline, or the connection closing as the host cuts us. Time-
+// boxed so a half-dead connection can never block the local removal, which must always proceed.
+async function leaveHostBestEffort (libraryId) {
+  const c = poolClient(libraryId) || (currentHost?.libraryId === libraryId ? client : null)
+  if (!c || !c.conn || c.conn.destroyed) return
+  try {
+    await Promise.race([c.deviceLeave(), new Promise((resolve) => setTimeout(resolve, 2000))])
+  } catch {}
+}
+
 // --- the merged index (step 2, proposal 2026-07-19 §2) ----------------------
 //
 // Rebuilt on entering merged mode and on a host reconnect/rescan: connect every paired host
@@ -2221,6 +2234,10 @@ const methods = {
   // when it was the last one). Full "forget everything" stays a separate reset (forget()).
   async removeHost ({ hostKey }) {
     const before = loadHostsFile()
+    // Tell the host we're leaving (best-effort, while the connection is still up) so it drops our
+    // own grant, before we tear the connection down below (proposal 2026-07-20).
+    const leaving = before.hosts.find((h) => h.hostKey === hostKey)
+    if (leaving) await leaveHostBestEffort(leaving.libraryId)
     const wasActive = before.activeHostKey === hostKey
     const { file, removed } = hostList.removeHost(before, hostKey)
     saveHostsFile(file)
@@ -2265,14 +2282,17 @@ const methods = {
   // Unpair EVERYTHING (full account reset). Forgets every paired library and drops the
   // connection.
   //
-  // Note what this does NOT do: it does not touch the device identity. The
-  // keypair stays, so re-pairing to a host reuses the same grant row
-  // rather than littering the operator's dashboard with a new device every time
-  // someone unpairs and pairs again. The host still holds the old grant; it can
-  // revoke it if it wants the row gone. (To drop a SINGLE library, use removeHost.)
+  // Note what this does NOT do: it does not touch the device identity. The keypair stays, so
+  // re-pairing reuses the same device identity. We DO tell each currently-connected host we're
+  // leaving (best-effort self-leave, proposal 2026-07-20) so it drops our grant - a re-pair then
+  // reuses the same row, but as a fresh (re-confirmable) grant rather than silently live. Offline
+  // hosts get nothing (they can't be reached); the operator can still delete those rows. (To drop
+  // a SINGLE library, use removeHost.)
   async forget () {
     // Grab the list BEFORE we drop it, so every per-host dir gets purged too.
     const all = loadHostsFile().hosts
+    // Best-effort self-leave to every connected host, while the connections are still up.
+    await Promise.all(all.map((h) => leaveHostBestEffort(h.libraryId)))
     try {
       fs.unlinkSync(HOSTS_FILE)
     } catch {}
