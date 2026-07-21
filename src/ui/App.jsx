@@ -388,9 +388,19 @@ export default function App () {
 
   // Who this device says it is. The HOST is the authority on what its dashboard
   // shows, so this is read back from it rather than trusted from local settings.
+  // Identity reads must land in the order they were ISSUED, not the order they happen to come
+  // back. Pairing fires two of them: `host:connected` kicks one off from inside pair() (before the
+  // claim has been sent), then onPaired fires another (after). They race over the same connection,
+  // and when the older one won it overwrote the fresh answer - Settings sat on "Waiting for your
+  // server to confirm you are X" while the host had already auto-created and assigned the person,
+  // and only a relaunch cleared it. Stamp each read and drop any reply that a newer read has
+  // already superseded.
+  const identSeq = useRef(0)
   async function loadIdentity () {
+    const seq = ++identSeq.current
     try {
-      setIdent(await call('identity'))
+      const r = await call('identity')
+      if (seq === identSeq.current) setIdent(r)
     } catch {
       // Offline, or an old host with no identity API. Settings shows what we know.
     }
@@ -416,6 +426,10 @@ export default function App () {
 
   async function saveIdentity ({ deviceName, userName }) {
     const r = await call('setIdentity', { deviceName, userName })
+    // A SAVE is newer than any read issued before it, so retire those too: the host's reply here
+    // is authoritative, and an identity read still in flight would otherwise land afterwards and
+    // put the pre-save name back on screen.
+    identSeq.current++
     setIdent(i => ({ ...i, ...r, supported: true }))
     // Keep the settings MIRROR in step. It is what openAddLibrary prefills from, so leaving it
     // stale meant adding a library carried the OLD name back to the worklet and overwrote the
