@@ -2,6 +2,29 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-20 - Handoff support is per-host, not a single app-wide flag
+Tier: T1 (client worklet only; no wire/host/grant/revoke/protocol change). Branch fix/per-host-session-support.
+BUG: the cross-device "Play here" session handoff tracked host capability in ONE global boolean
+`sessionSupported`. The first time any host answered `ENOMETHOD` to a session RPC it flipped false and
+NEVER came back, so a single stale host - one old host in a blended (merged) library, or a host you'd since
+switched away from in single mode - silently disabled the handoff for EVERY host until an app restart. This
+is the "one old host in a blend shouldn't disable the handoff globally" iOS follow-up (applies to both
+clients; the fix is in shared src/bare.js).
+FIX: replaced the flag with `sessionUnsupported`, a Set of libraryIds whose host answered ENOMETHOD, plus
+`sessionSupportedFor(lib)` / `markSessionUnsupported(lib)`. sessionTarget()/sessionReady() now also return
+`lib` (the target host's libraryId - the elected home in merged mode, the active host in single mode), and
+every session op (heartbeat push in saveQueueState, sessionActivate, sessionInfo, sessionTakeover) gates on
+and marks support by that lib. Unknown/offline (no target lib) = optimistically supported (no card flicker);
+markSessionUnsupported(null) is a no-op. So an old home host degrades ONLY itself, and once it disconnects
+and a session-capable host is elected home (or you switch active host), the handoff works again.
+DELIBERATELY NOT DONE: biasing electHome to prefer session-capable hosts. electHome must stay a PURE,
+deterministic function of the host list so every device independently elects the SAME merged-session home
+(one generation-CAS authority). Filtering by locally-learned, per-device capability would let two devices
+pick different homes and split-brain the session. So when the elected home genuinely IS old, the merged
+handoff is unavailable for everyone consistently (all devices agree) - correct, if not ideal.
+Verify green (379 tests + builds). ON-DEVICE smoke still owed: needs an actual old (pre-session) host in a
+blend, which isn't available right now (Umbrel + Mac hosts are both session-capable 0.2.9 / node source).
+
 ## 2026-07-20 - Merged library: Settings-row status + rebuild-loop / re-pair fixes
 Tier: T2 (client UI + worklet only; no wire/host/grant/revoke change). Branch fix/merged-settings-row-status.
 Polish + correctness surfaced while addressing the stale Settings library-row label from the step-2 revoke
