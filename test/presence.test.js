@@ -60,6 +60,36 @@ test('a throwing sender does not stop the others (and does not throw out)', (t) 
   assert.equal(n, 1) // only the surviving sender counts
 })
 
+test('notifyAll reaches every connection of every device and reports the total', (t) => {
+  const p = new Presence()
+  const got = []
+  p.register('PHONE', (e) => got.push(['phone-a', e]))
+  p.register('PHONE', (e) => got.push(['phone-b', e])) // one device, two live channels
+  p.register('TABLET', (e) => got.push(['tablet', e]))
+  const n = p.notifyAll('library-renamed', { libraryId: 'lib1', libraryName: 'Tim’s Umbrel' })
+  assert.equal(n, 3) // both phone channels + the tablet
+  assert.deepEqual(got.map((g) => g[0]).sort(), ['phone-a', 'phone-b', 'tablet'])
+  for (const [, e] of got) {
+    assert.equal(e.kind, 'library-renamed')
+    assert.deepEqual(e.data, { libraryId: 'lib1', libraryName: 'Tim’s Umbrel' })
+  }
+})
+
+test('notifyAll with nobody connected is a no-op, not a throw', (t) => {
+  const p = new Presence()
+  assert.equal(p.notifyAll('library-renamed', { libraryId: 'lib1' }), 0)
+})
+
+test('notifyAll swallows a throwing sender and still reaches the rest', (t) => {
+  const p = new Presence()
+  let good = 0
+  p.register('PHONE', () => { throw new Error('channel closed a tick ago') })
+  p.register('TABLET', () => { good++ })
+  const n = p.notifyAll('library-renamed', { libraryId: 'lib1' })
+  assert.equal(good, 1)
+  assert.equal(n, 1) // only the surviving sender counts
+})
+
 test('a buffer deviceKey and its z32 string address the same device', (t) => {
   const p = new Presence()
   const raw = Buffer.alloc(32, 7)

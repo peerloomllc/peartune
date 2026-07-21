@@ -518,6 +518,20 @@ function makeClient () {
       if (m.data?.generation) sessionGen = m.data.generation
       log('session:superseded', { generation: m.data?.generation ?? null })
       emit('session:superseded', {})
+    } else if (m?.kind === 'library-renamed') {
+      // The operator renamed the library on this host's dashboard; the host pushed it to every live
+      // connection (host/presence.js notifyAll). Self-describing via libraryId, so this updates the
+      // RIGHT stored host record - active OR a non-active pool host - the instant it happens, not on
+      // the next reconnect/rebuild. Same effect as syncHostNames, just push-driven. The UI relabels
+      // the header/switcher/merged chips off host:renamed for any hostKey.
+      const lib = m.data?.libraryId
+      const name = m.data?.libraryName
+      const rec = lib && loadHostsFile().hosts.find((x) => x.libraryId === lib)
+      if (rec && name && rec.libraryName !== name) {
+        saveHostsFile(hostList.renameHost(loadHostsFile(), rec.hostKey, name))
+        log('host:renamed-push', { hostKey: rec.hostKey })
+        emit('host:renamed', { hostKey: rec.hostKey, libraryName: name })
+      }
     }
   }
   return c

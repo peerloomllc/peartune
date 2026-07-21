@@ -188,8 +188,15 @@ class PearTuneHost {
   setLibraryName (name) {
     const clean = String(name == null ? '' : name).replace(/[\u0000-\u001f]/g, '').trim().slice(0, 64)
     if (!clean) throw new Error('library name required')
+    const changed = clean !== this.libraryName
     this._writeSettings({ name: clean })
     this.libraryName = clean
+    // Tell every connected device NOW, so its header / switcher / merged chip relabels instantly
+    // instead of only on its next reconnect or identity poll. Rides the existing media push channel
+    // (host/presence.js); self-describing (carries libraryId) so a device updates the RIGHT host
+    // record - it works for a non-active pool host exactly as for the active one. identity.get still
+    // carries the current name, so a device offline during the rename catches up on its next connect.
+    if (changed) this.presence.notifyAll('library-renamed', { libraryId: this.libraryId, libraryName: clean })
     return clean
   }
 
