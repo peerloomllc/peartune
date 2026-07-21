@@ -791,7 +791,11 @@ function PairModal ({ onClose, toast }) {
     setBusy(true)
     // A guest window carries the operator's chosen duration; a full window sends nothing.
     const r = await api('/api/pair/start', guest ? { expiresMs: durMs } : {})
-    const dataUrl = await QRCode.toDataURL(r.link, { width: 240, margin: 1, errorCorrectionLevel: 'M' }).catch(() => null)
+    // margin 4 = the spec's full quiet zone (was 1). A too-thin quiet zone hurts scanning, and it
+    // bites hardest in DARK mode: the white QR card is a bright island in a dark page, so the phone
+    // camera meters the dark surroundings and blows out the card, washing out the modules. A proper
+    // quiet zone + a bigger .qr card (below) keep contrast even, so it scans in either theme.
+    const dataUrl = await QRCode.toDataURL(r.link, { width: 256, margin: 4, errorCorrectionLevel: 'M' }).catch(() => null)
     setQr({ link: r.link, dataUrl, guest: r.guest, expiresMs: r.expiresMs })
     setBusy(false)
   }
@@ -941,7 +945,7 @@ function SupportModal ({ onClose }) {
   useEffect(() => {
     let cancelled = false
     setQr(null); setCopied(false)
-    QRCode.toDataURL(rail.value, { width: 220, margin: 1, errorCorrectionLevel: 'M' })
+    QRCode.toDataURL(rail.value, { width: 220, margin: 4, errorCorrectionLevel: 'M' })
       .then(u => { if (!cancelled) setQr(u) }).catch(() => {})
     return () => { cancelled = true }
   }, [rail.value])
