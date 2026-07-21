@@ -29,6 +29,7 @@ const hostList = require('../worklet/hosts')
 const merge = require('../worklet/merge')
 const catalog = require('../worklet/catalog')
 const { coalesce, clientCall } = require('../worklet/outbox')
+const leaves = require('../worklet/leaves')
 const { AudioCache } = require('../worklet/cache')
 const { ArtStore } = require('../worklet/art-cache')
 
@@ -36,6 +37,10 @@ const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
 const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
 const HOSTS_FILE = path.join(DATA_DIR, 'hosts.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
+// Undelivered "I am leaving" messages (worklet/leaves.js). At the ROOT, not under the
+// library: removing a library deletes that directory, which is precisely when this is
+// written.
+const LEAVES_FILE = path.join(DATA_DIR, 'pending-leaves.json')
 
 // PER-HOST state lives under DATA_DIR/lib/<libraryId>/ (multi-host, proposal 2026-07-19),
 // so switching libraries shows the right favorites, queue, playlists, pins, lease and
@@ -629,12 +634,65 @@ async function closePool () {
 // there instead of leaving a live grant + stale dashboard row. Only when currently connected;
 // swallow ENOMETHOD (an old host), offline, or the connection closing as the host cuts us. Time-
 // boxed so a half-dead connection can never block the local removal, which must always proceed.
+// Returns TRUE only if the host actually got the message. The caller needs to know: an
+// undelivered leave is queued and retried later (worklet/leaves.js) instead of being lost,
+// which is what stops an offline removal leaving a live grant on someone's dashboard.
 async function leaveHostBestEffort (libraryId) {
   const c = poolClient(libraryId) || (currentHost?.libraryId === libraryId ? client : null)
-  if (!c || !c.conn || c.conn.destroyed) return
+  if (!c || !c.conn || c.conn.destroyed) return false
   try {
-    await Promise.race([c.deviceLeave(), new Promise((resolve) => setTimeout(resolve, 2000))])
+    // The timeout branch resolves `false`: a half-dead connection must never block the
+    // local removal, but nor may it be mistaken for a delivered leave.
+    return await Promise.race([
+      c.deviceLeave().then(() => true, () => false),
+      new Promise((resolve) => setTimeout(() => resolve(false), 2000))
+    ])
+  } catch {
+    return false
+  }
+}
+
+function loadLeaves () {
+  try {
+    return leaves.normalize(JSON.parse(fs.readFileSync(LEAVES_FILE, 'utf8')))
+  } catch {
+    return []
+  }
+}
+
+function saveLeaves (list) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true })
+    fs.writeFileSync(LEAVES_FILE, JSON.stringify(list))
   } catch {}
+}
+
+// Retry the leaves we could not deliver at removal time. Fire-and-forget from init: each
+// one dials its host on a THROWAWAY client (that library is gone from hosts.json, so it
+// must not touch the active connection or the merged pool), says device.leave, and drops
+// out of the queue. A host that is still unreachable just stays queued until it answers or
+// the entry ages out.
+async function flushPendingLeaves () {
+  let list = leaves.expire(loadLeaves())
+  saveLeaves(list)
+  if (!list.length) return
+  log('leaves:flushing', { pending: list.length })
+
+  for (const entry of list) {
+    let c = null
+    try {
+      c = makeClient()
+      await c.connect({ hostKey: entry.hostKey, libraryId: entry.libraryId })
+      await c.deviceLeave()
+      list = leaves.dropLeave(list, entry.hostKey)
+      log('leaves:delivered', { host: entry.hostKey.slice(0, 8) })
+    } catch (e) {
+      list = leaves.bumpAttempt(list, entry.hostKey)
+      log('leaves:deferred', { host: entry.hostKey.slice(0, 8), err: e?.message })
+    }
+    try { if (c) await c.close() } catch {}
+    saveLeaves(leaves.expire(list))
+  }
 }
 
 // --- the merged index (step 2, proposal 2026-07-19 §2) ----------------------
@@ -645,6 +703,19 @@ async function leaveHostBestEffort (libraryId) {
 // lib/_merged/index.json so a cold launch renders instantly then refreshes in the background.
 const mergedDir = () => path.join(LIB_ROOT, MERGED_ID)
 const mergedIndexFile = () => path.join(mergedDir(), 'index.json')
+
+// Drop the blend's own state. Every file here is DERIVED from the paired hosts (the cached
+// index, and the merged favorites/queue that ride it), so once there is no blend left it is
+// describing libraries this device may not even follow any more. purgeLibrary is no use for
+// this: it does not know about index.json, so it would leave the biggest file behind and
+// then fail to remove the directory.
+function purgeMerged () {
+  const dir = mergedDir()
+  for (const n of ['index.json', 'queue.json', 'favorites.json', 'playlists.json', 'outbox.json', 'lease.json', 'pins.json']) {
+    try { fs.unlinkSync(path.join(dir, n)) } catch {}
+  }
+  try { fs.rmdirSync(dir) } catch {}
+}
 // When the last rebuild finished. A rebuild re-fetches every host's full catalog (seconds, real
 // bandwidth), so the auto-refresh triggers (a reconnect) are rate-limited against this - otherwise a
 // permanently-unreachable host (revoked) keeps `some host disconnected` true and every single-client
@@ -1069,6 +1140,12 @@ const methods = {
       settings: loadSettings(),
       connected: false
     }
+
+    // Deliver any leave that could not be sent when its library was removed (the host was
+    // off at the time). Fire-and-forget: it dials hosts we no longer follow, so it must
+    // never delay a cold launch or fail one.
+    flushPendingLeaves().catch((e) => log('leaves:flush-failed', { err: e?.message }))
+
     if (host) {
       // Adopt the active library synchronously (paths + outbox) BEFORE the shim comes up or
       // any per-host state is read; the background connect below also calls this, idempotently.
@@ -1131,6 +1208,15 @@ const methods = {
     // Additive, not overwriting: a second pairing ADDS a library and makes it active (a
     // re-pair of a known host just refreshes + re-activates it, never duplicates the row).
     saveHostsFile(hostList.addHost(loadHostsFile(), host, Date.now()))
+
+    // We are pairing this host, so CANCEL any leave still queued for it. Without this, a
+    // removal that never reached an offline host would be retried after the user re-paired
+    // and would revoke the grant they just created.
+    const pending = loadLeaves()
+    if (pending.some((e) => e.hostKey === host.hostKey)) {
+      saveLeaves(leaves.dropLeave(pending, host.hostKey))
+      log('leaves:cancelled-by-pair', { host: String(host.hostKey).slice(0, 8) })
+    }
 
     await connectTo(host)
     return { ...host, shimPort }
@@ -2237,7 +2323,13 @@ const methods = {
     // Tell the host we're leaving (best-effort, while the connection is still up) so it drops our
     // own grant, before we tear the connection down below (proposal 2026-07-20).
     const leaving = before.hosts.find((h) => h.hostKey === hostKey)
-    if (leaving) await leaveHostBestEffort(leaving.libraryId)
+    // If the host was unreachable it never heard this, so REMEMBER it and retry on a later
+    // launch. Otherwise the phone forgets the library while the host keeps a live grant -
+    // the same action leaving two different host states (found 2026-07-21).
+    if (leaving && !(await leaveHostBestEffort(leaving.libraryId))) {
+      saveLeaves(leaves.queueLeave(loadLeaves(), leaving))
+      log('leaves:queued', { host: hostKey.slice(0, 8) })
+    }
     const wasActive = before.activeHostKey === hostKey
     const { file, removed } = hostList.removeHost(before, hostKey)
     saveHostsFile(file)
@@ -2253,7 +2345,26 @@ const methods = {
     // Merged is only a thing with 2+ libraries. Dropping to one (or none) leaves the blended view
     // for the single-host experience - matching the host:switched the UI hears below, which flips
     // its own merged flag off. (Removing one of THREE keeps merged, so guard on the new count.)
-    if (file.hosts.length < 2) _mergedMode = false
+    if (file.hosts.length < 2) {
+      _mergedMode = false
+      // The blend is over, so its cached state describes libraries this device may no longer
+      // follow. It is all derived (the next rebuild refetches it), so drop it rather than leave
+      // a stale favorites/queue/index for a removed library sitting on disk.
+      purgeMerged()
+    }
+
+    // THE LAST LIBRARY IS GONE, so nothing on this device has anything left to play. Clear the
+    // shared blob caches, which removeHost otherwise never touches: purgeLibrary only drops the
+    // audio of that library's PINNED downloads, so the streamed LRU cache used to survive
+    // removing every library (97 MB of it, measured 2026-07-21) with no way left to reclaim it
+    // now that "Unpair all" is gone from the UI. Ids are hashed per library and cannot be
+    // attributed back to one, so a precise per-library purge needs the cache index to record
+    // the library - logged as a follow-up; this closes the case that actually strands bytes.
+    if (!file.hosts.length) {
+      try { audioCache.clear() } catch {}
+      try { artStore.clear() } catch {}
+      log('local:blobs-purged')
+    }
 
     if (wasActive) {
       if (client) { try { await client.close() } catch {} ; client = null }
@@ -2292,7 +2403,11 @@ const methods = {
     // Grab the list BEFORE we drop it, so every per-host dir gets purged too.
     const all = loadHostsFile().hosts
     // Best-effort self-leave to every connected host, while the connections are still up.
-    await Promise.all(all.map((h) => leaveHostBestEffort(h.libraryId)))
+    // Whatever could not be delivered is queued and retried later, same as removeHost.
+    const delivered = await Promise.all(all.map((h) => leaveHostBestEffort(h.libraryId)))
+    let queued = loadLeaves()
+    all.forEach((h, i) => { if (!delivered[i]) queued = leaves.queueLeave(queued, h) })
+    saveLeaves(queued)
     try {
       fs.unlinkSync(HOSTS_FILE)
     } catch {}
