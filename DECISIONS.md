@@ -29,7 +29,13 @@ TESTS: +5 (3 presence notifyAll units: broadcast-reaches-all, no-connections no-
 still carries it, and a same-name save pushes nobody). 384 tests, verify green.
 DEPLOY: this is a HOST change - it does nothing until the host runs the new code. The client half ships in
 the APK. Needs the host image rebuilt/redeployed (Umbrel, Tim-gated) or the Mac node-source host restarted to
-take effect; until then hosts fall back to the on-connect sync. ON-DEVICE smoke owed post-deploy.
+take effect; until then hosts fall back to the on-connect sync.
+HARDWARE-VERIFIED (Mac side, 2026-07-20): Mac host redeployed to the new code (host/redeploy-mac.sh); a fresh
+debug APK built from this branch + installed to the TCL (packaged bundle confirmed to carry the library-
+renamed onPush handler). Renamed the Mac library "My Library"->"Mac Music" via its loopback dashboard - the
+TCL's merged source-filter chip relabeled INSTANTLY (no pull-to-refresh, no reconnect), and reverted live on
+rename-back. Deploy tooling committed: host/build-image.sh (multi-arch GHCR build + auto-pin) and
+host/redeploy-mac.sh. UMBREL side still owed: needs the 0.2.10 image built/pushed + the sudo redeploy (Tim).
 
 ## 2026-07-20 - Non-active host's library rename now refreshes on the same trigger as the active host
 Tier: T1 (client worklet only; no wire/host/grant/protocol change). Branch fix/non-active-host-live-rename.
