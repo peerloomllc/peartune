@@ -682,3 +682,44 @@ test('a device sets and clears its own avatar over the wire, stored per deviceKe
   await client.setAvatar({ avatar: '' })
   assert.equal(host.avatars.has(deviceKey), false)
 })
+
+// The stale-snapshot bug, found on-device 2026-07-21: identity.get used to answer from the
+// CONNECTION's grant (captured when the firewall admitted it), so it reported the state as of
+// connect time forever. A device that had just claimed a name got told it had none, and the app
+// sat on "Waiting for your server to confirm you are X" until it reconnected.
+test('IDENTITY: a claim is visible to identity.get on the SAME connection (no stale snapshot)', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  const before = await client.getIdentity()
+  assert.equal(before.user, null, 'no claim yet')
+
+  await client.setIdentity({ deviceName: 'Phone', userName: 'Robin' })
+
+  // The SAME connection must now see it. This is the whole point: no reconnect, no relaunch.
+  const after = await client.getIdentity()
+  assert.equal(after.user?.name, 'Robin', 'the claim this device just made is visible')
+  assert.equal(after.deviceName, 'Phone', 'and so is the device name')
+  // A name nobody else holds auto-creates its person (proposal 2026-07-21), so this device is
+  // confirmed straight away - which is exactly what the app renders as "your server has confirmed".
+  assert.equal(after.user?.confirmed, true, 'auto-created person means confirmed immediately')
+  assert.equal(after.belongsTo, 'Robin')
+})
+
+// The operator side of the same staleness: a change made on the DASHBOARD must reach a device
+// that is already connected, next time it asks - without it having to reconnect first.
+test('IDENTITY: an operator assignment reaches an ALREADY-connected device on its next read', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+  const deviceKey = z32.encode(client.keyPair.publicKey)
+
+  await client.setIdentity({ deviceName: 'Phone', userName: 'Robin' })
+  // The operator renames that person on the dashboard while the device stays connected.
+  const person = await host.grants.personByName('Robin')
+  await host.grants.renamePerson(person.id, 'Robin Hood')
+
+  const after = await client.getIdentity()
+  assert.equal(after.belongsTo, 'Robin Hood', 'the device sees the rename without reconnecting')
+})

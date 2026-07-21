@@ -156,7 +156,18 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // only ever read and write ITS OWN identity - there is no deviceKey parameter
       // to forge, and adding one would be the whole vulnerability.
       case 'identity.get': {
-        return send.res.send({ id, body: await identityOf(grant) })
+        // RE-READ the row. `grant` is this CONNECTION's grant, captured once when the firewall
+        // admitted it, so answering from it made identity.get report the state as of connect
+        // time for the whole life of the connection - it could never see a claim the device had
+        // just made, nor an operator confirming/renaming/assigning on the dashboard.
+        //
+        // That is what made a fresh pair sit on "Waiting for your server to confirm you are X"
+        // while the host had already auto-created and assigned the person: identity.set wrote the
+        // row and replied with fresh data, but the identity.get 13ms later still answered from the
+        // stale snapshot (measured on-device 2026-07-21). Only a reconnect cleared it, which is
+        // exactly why relaunching the app "fixed" it.
+        const row = (grants && grant) ? await grants.get(grant.deviceKey) : null
+        return send.res.send({ id, body: await identityOf(row || grant) })
       }
 
       case 'identity.set': {
