@@ -314,7 +314,9 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .modal-head .iconbtn { position: absolute; right: 0; top: 50%; transform: translateY(-50%); margin: 0; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .stack.center { align-items: center; text-align: center; }
-.qr { width: 216px; height: 216px; background: #fff; border-radius: 12px; padding: 10px; }
+/* A bigger, well-padded WHITE card: a larger high-contrast target fills more of the camera frame,
+   so its auto-exposure meters the QR itself instead of a dark page around it (dark-mode scan fix). */
+.qr { width: 240px; height: 240px; background: #fff; border-radius: 12px; padding: 14px; }
 .tabs { display: flex; gap: 8px; margin-bottom: 14px; width: 100%; }
 .tabs button { flex: 1 1 0; min-width: 0; padding: 9px 4px; font-size: 12.5px; gap: 5px; white-space: nowrap; }
 /* Reserved caption height so the sheet stays the same size across Lightning /
