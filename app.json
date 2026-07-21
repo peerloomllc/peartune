@@ -39,6 +39,23 @@
         "backgroundColor": "#17140f"
       }
     },
+    "ios": {
+      "bundleIdentifier": "com.peartune",
+      "supportsTablet": false,
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio"
+        ],
+        "NSCameraUsageDescription": "PearTune scans a pairing QR code to connect to your library host.",
+        "NSAppTransportSecurity": {
+          "NSExceptionDomains": {
+            "127.0.0.1": {
+              "NSExceptionAllowsInsecureHTTPLoads": true
+            }
+          }
+        }
+      }
+    },
     "plugins": [
       [
         "expo-router"
