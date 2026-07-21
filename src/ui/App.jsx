@@ -1305,6 +1305,7 @@ export default function App () {
         )
       : (
         <Welcome
+          addHost
           names={pairNames}
           setNames={setPairNames}
           onScan={() => { setError(null); setScanning(true) }}
@@ -4542,49 +4543,56 @@ function DonationSheet ({ onClose }) {
 // alternative is what we shipped until now: every device on the operator's
 // dashboard called "Android phone", telling them nothing about which phone to
 // revoke.
-function Welcome ({ names, setNames, onScan, onPaste, onCancel, error }) {
+function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost = false }) {
   const [link, setLink] = useState('')
 
-  // Your name is REQUIRED: on the host it is the human a device is confirmed as
-  // (per-person revoke needs a person), so an unnamed device is a worse dashboard
-  // for the operator. The device name stays optional - it has a sensible fallback.
+  // Your name is REQUIRED at ONBOARDING: on the host it is the human a device is confirmed as
+  // (per-person revoke needs a person), so an unnamed device is a worse dashboard for the operator.
+  // The device name stays optional - it has a sensible fallback. But when ADDING a second library
+  // (addHost), the identity is already established (this device is already named + claims a user),
+  // so we hide the name fields and pair straight through with the stored identity - re-asking would
+  // be a redundant onboarding wall on the way to just scanning another server's code.
   const named = names.userName.trim().length > 0
+  const ready = addHost || named
 
   return (
     <div className='center'>
       <h1>Pear<span className='tune'>Tune</span></h1>
       <p className='muted'>
-        Your self-hosted music, anywhere. Open the PearTune dashboard on your
-        server and show the pairing code.
+        {addHost
+          ? 'Open the PearTune dashboard on the server you want to add and show its pairing code.'
+          : 'Your self-hosted music, anywhere. Open the PearTune dashboard on your server and show the pairing code.'}
       </p>
       {error && <div className='error'>{error}</div>}
 
-      <div className='namebox'>
-        <label className='muted sm'>This device</label>
-        <input
-          value={names.deviceName}
-          onChange={e => setNames({ ...names, deviceName: e.target.value })}
-          placeholder='This phone'
-          maxLength={64}
-        />
-        <label className='muted sm'>Your name</label>
-        <input
-          value={names.userName}
-          onChange={e => setNames({ ...names, userName: e.target.value })}
-          placeholder='Your name'
-          maxLength={64}
-        />
-        <p className='muted sm hint'>
-          The person running the server sees these, so they know whose device this
-          is. They confirm your name before it means anything.
-        </p>
-      </div>
+      {!addHost && (
+        <div className='namebox'>
+          <label className='muted sm'>This device</label>
+          <input
+            value={names.deviceName}
+            onChange={e => setNames({ ...names, deviceName: e.target.value })}
+            placeholder='This phone'
+            maxLength={64}
+          />
+          <label className='muted sm'>Your name</label>
+          <input
+            value={names.userName}
+            onChange={e => setNames({ ...names, userName: e.target.value })}
+            placeholder='Your name'
+            maxLength={64}
+          />
+          <p className='muted sm hint'>
+            The person running the server sees these, so they know whose device this
+            is. They confirm your name before it means anything.
+          </p>
+        </div>
+      )}
 
-      <button className='primary' onClick={onScan} disabled={!named}>Scan pairing code</button>
+      <button className='primary' onClick={onScan} disabled={!ready}>Scan pairing code</button>
       <details>
         <summary className='muted sm'>Paste a link instead</summary>
         <input value={link} onChange={e => setLink(e.target.value)} placeholder='pear://peartune/pair?…' />
-        <button onClick={() => onPaste(link.trim())} disabled={!named || !link.trim()}>Pair</button>
+        <button onClick={() => onPaste(link.trim())} disabled={!ready || !link.trim()}>Pair</button>
       </details>
       {onCancel && <button onClick={onCancel}>Cancel</button>}
     </div>
