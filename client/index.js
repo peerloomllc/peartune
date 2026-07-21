@@ -257,7 +257,7 @@ class PearTuneClient {
 
   // Play session (cross-device handoff, proposal 2026-07-17). The host takes the owner +
   // acting device from the connection; claim/set are gated by the generation CAS host-side.
-  sessionGet () { return this._request('session.get') }
+  sessionGet (params) { return this._request('session.get', params) }
   sessionClaim (params) { return this._request('session.claim', params) }
   sessionSet (params) { return this._request('session.set', params) }
 

@@ -119,3 +119,21 @@ test('renameHost() is a no-op for a missing host, empty name, or unchanged name'
   assert.equal(H.renameHost(f, 'aaa', '').hosts[0].libraryName, "Tim's Umbrel") // empty name
   assert.equal(H.renameHost(f, 'aaa', "Tim's Umbrel").hosts[0].libraryName, "Tim's Umbrel") // unchanged
 })
+
+// --- electHome: the merged session's deterministic authority (phase 3) --------
+
+test('electHome() picks the smallest-hostKey host among the CONNECTED ones', () => {
+  const f = H.addHost(H.addHost(H.empty(), A, 1), B, 2) // aaa < bbb
+  assert.equal(H.electHome(f, ['libA', 'libB']), 'libA')   // both live -> aaa wins
+  assert.equal(H.electHome(f, new Set(['libB'])), 'libB')  // only bbb live -> it's home
+  assert.equal(H.electHome(f, []), null)                   // nothing reachable -> no home
+})
+
+test('electHome() is device-agnostic: every device computes the same home from the same list', () => {
+  // Order of the host list must not change the answer (two devices may have added in either order).
+  const f1 = H.addHost(H.addHost(H.empty(), B, 1), A, 2)
+  const f2 = H.addHost(H.addHost(H.empty(), A, 1), B, 2)
+  const live = ['libA', 'libB']
+  assert.equal(H.electHome(f1, live), H.electHome(f2, live))
+  assert.equal(H.electHome(f1, live), 'libA')
+})
