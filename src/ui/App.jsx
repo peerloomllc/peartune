@@ -417,6 +417,10 @@ export default function App () {
   async function saveIdentity ({ deviceName, userName }) {
     const r = await call('setIdentity', { deviceName, userName })
     setIdent(i => ({ ...i, ...r, supported: true }))
+    // Keep the settings MIRROR in step. It is what openAddLibrary prefills from, so leaving it
+    // stale meant adding a library carried the OLD name back to the worklet and overwrote the
+    // one you had just saved.
+    setState(s => ({ ...s, settings: { ...(s.settings || {}), deviceName, userName } }))
     haptic('success')
     toast('Sent to your server')
     return r
@@ -1000,6 +1004,11 @@ export default function App () {
       // the new active one loads fresh (a no-op on a first pair).
       setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery('')
       setAddingLibrary(false)
+      // pair() now sends the claim, so the host may ALREADY have confirmed us (a brand-new name
+      // auto-creates its person). Re-read the identity or Settings would sit on "Waiting for your
+      // server to confirm you are X" until the next reconnect, which is exactly the stale banner
+      // this pass set out to kill.
+      loadIdentity()
       haptic('success')
       // A pair added (or restored) a library. With 2+ libraries the app is the merged blend: enter it
       // if we weren't already, else FORCE a rebuild to fold the new/returned host in now (an explicit
@@ -1029,9 +1038,12 @@ export default function App () {
   // Open the pairing flow to ADD another library, prefilling the name fields from what this
   // device already goes by so you never re-type your name to add a server.
   function openAddLibrary () {
+    // `ident` is the live identity (what Settings shows and what the last Save wrote); the
+    // settings mirror is the fallback for the offline case where ident never loaded. Reading
+    // the mirror FIRST is what let a stale copy ride through a pair and clobber the real name.
     setPairNames({
-      deviceName: state.settings?.deviceName || '',
-      userName: state.settings?.userName || ''
+      deviceName: ident?.deviceName || state.settings?.deviceName || '',
+      userName: ident?.userName || state.settings?.userName || ''
     })
     setError(null); setScanning(false); setAddingLibrary(true)
   }

@@ -1119,7 +1119,12 @@ const methods = {
       platform: 'android'
     })
 
-    saveSettings({ deviceName: name, userName: (userName || '').trim() })
+    // A BLANK name must never wipe the one this device already goes by. The add-a-library
+    // flow prefills these fields, and a stale or empty prefill used to overwrite the real
+    // name on disk - the phone would silently revert to an older identity just because you
+    // added a second server.
+    const claim = (userName || '').trim()
+    saveSettings({ deviceName: name, ...(claim ? { userName: claim } : {}) })
 
     const host = {
       hostKey: paired.hostKey && paired.hostKey.length === 32
@@ -1133,6 +1138,23 @@ const methods = {
     saveHostsFile(hostList.addHost(loadHostsFile(), host, Date.now()))
 
     await connectTo(host)
+
+    // TELL THE HOST WHO WE SAY WE ARE. The pair handshake carries the device LABEL (hello.label)
+    // but nothing about the person, so without this the name the user just typed under "Your name"
+    // never leaves the phone: the operator sees an unclaimed row, the host cannot auto-create or
+    // match a person, and the app sits on "Waiting for your server to confirm you are X" forever -
+    // with no way out, because Settings only offers Save once the field is DIRTY. Best-effort by
+    // design: a claim grants nothing (it is cosmetic until the operator confirms), so a host too
+    // old to know identity.set, or a connection that drops here, must not fail a pair that has
+    // already succeeded.
+    if (claim) {
+      try {
+        await client.setIdentity({ deviceName: name, userName: claim })
+      } catch (e) {
+        log('pair:claim-failed', { err: e?.message })
+      }
+    }
+
     return { ...host, shimPort }
   },
 
