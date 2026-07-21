@@ -402,6 +402,9 @@ class PearTuneHost {
         // So a session.claim here can push "you were superseded" to the device that
         // held the token (cross-device handoff, instant presence).
         presence: this.presence,
+        // device.leave: the phone removed this library, so drop ITS OWN grant + cut the
+        // connection (proposal 2026-07-20). Bound here so serveMedia never holds the host.
+        onLeave: (deviceKey) => this.leaveDevice(deviceKey),
         // A device sets its own avatar (identity.avatar), keyed by this connection's
         // Noise-authenticated deviceKey - it can only ever write its own.
         avatars: this.avatars,
@@ -447,6 +450,23 @@ class PearTuneHost {
     const row = await this.grants.revoke(deviceKey)
     const killed = this.connections.kill(deviceKey)
     this.log('host:revoked', {
+      device: Grants.keyOf(deviceKey).slice(0, 8),
+      killedConnections: killed
+    })
+    return { grant: row, killed }
+  }
+
+  // A device dropping its OWN access - the phone removed this library / unpaired (device.leave,
+  // proposal 2026-07-20). Same teeth as an operator revoke (tombstone + cut every live connection
+  // it holds) so "remove" on the phone actually ends access here instead of leaving a live grant,
+  // but logged as a self-initiated leave. The deviceKey is the leaving connection's own Noise-
+  // authenticated key (media.js passes grant.deviceKey), so a device can only ever leave on its
+  // own behalf. The revoked row is hidden by the dashboard's "show revoked" toggle, so the device
+  // drops out of the default Devices list.
+  async leaveDevice (deviceKey) {
+    const row = await this.grants.revoke(deviceKey)
+    const killed = this.connections.kill(deviceKey)
+    this.log('host:device-left', {
       device: Grants.keyOf(deviceKey).slice(0, 8),
       killedConnections: killed
     })

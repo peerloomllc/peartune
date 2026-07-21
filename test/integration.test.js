@@ -219,6 +219,17 @@ async function twoDevicesOnePerson (testnet, host, name = 'Tim') {
   return { a: { client: aClient }, b: { client: bClient } }
 }
 
+// Poll until `fn()` is truthy or the deadline passes. device.leave replies BEFORE the host
+// finishes revoking + cutting the connection, so tests wait for the durable effect to land.
+async function until (fn, ms = 3000) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    if (await fn()) return true
+    await new Promise((r) => setTimeout(r, 25))
+  }
+  return false
+}
+
 // Resolve when `client` receives a push of `kind`, preserving any handler already set.
 function oncePush (client, kind, ms = 4000) {
   return new Promise((resolve, reject) => {
@@ -547,6 +558,50 @@ test('RENAME: setting the SAME name pushes nobody (no spurious relabel)', async 
   host.setLibraryName('Test Library') // scaffold's existing name - unchanged
   await new Promise((r) => { const tm = setTimeout(r, 200); if (tm.unref) tm.unref() })
   assert.equal(pushes, 0)
+})
+
+// --- client self-leave (proposal 2026-07-20) ---------------------------------
+
+test('LEAVE: device.leave revokes the caller\'s OWN grant and cuts its connection', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+  const deviceKey = z32.encode(client.keyPair.publicKey)
+
+  await client.ping() // ensure the media channel is open + registered host-side
+  assert.equal(host.connections.count(deviceKey), 1)
+
+  const r = await client.deviceLeave()
+  assert.equal(r.ok, true)
+
+  // Same teeth as an operator revoke: the grant is tombstoned (NOT deleted) and the live
+  // connection is cut - so "remove library" on the phone actually ends access here.
+  assert.ok(await until(async () => host.connections.count(deviceKey) === 0),
+    'the connection must be cut')
+  const row = (await host.listDevices()).find((d) => d.deviceKey === deviceKey)
+  assert.ok(row, 'the row survives as a tombstone (hidden by the dashboard\'s show-revoked toggle)')
+  assert.ok(row.revokedAt, 'the grant is revoked, not deleted')
+})
+
+test('LEAVE: leaving affects ONLY the caller, not another device under the same person', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+  const aKey = z32.encode(a.client.keyPair.publicKey)
+  const bKey = z32.encode(b.client.keyPair.publicKey)
+  await a.client.ping()
+  await b.client.ping()
+
+  await a.client.deviceLeave()
+  assert.ok(await until(async () =>
+    (await host.listDevices()).find((d) => d.deviceKey === aKey)?.revokedAt),
+  'the leaving device gets revoked')
+
+  const devices = await host.listDevices()
+  const bRow = devices.find((d) => d.deviceKey === bKey)
+  assert.equal(bRow.revokedAt, null, 'the OTHER device under the same person is untouched')
+  assert.equal(host.connections.count(bKey), 1, 'and its connection stays live')
 })
 
 // --- dashboard now-playing (per-device, off the play session) ----------------

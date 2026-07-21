@@ -230,6 +230,12 @@ class PearTuneClient {
   // Set (or clear) this device's own avatar - a small JPEG, base64 in params.avatar.
   setAvatar (params) { return this._request('identity.avatar', params) }
 
+  // Leave: this device removed this library / unpaired, so drop its OWN grant on the host
+  // (proposal 2026-07-20). The host revokes this connection's grant and cuts it, so removing a
+  // library on the phone ends access here instead of leaving a live grant + stale dashboard row.
+  // Best-effort: the caller swallows ENOMETHOD (an old host) or a close/offline rejection.
+  deviceLeave () { return this._request('device.leave') }
+
   // Favorites (host-as-hub, milestone 3). No owner param: the host takes it from the
   // Noise-authenticated connection, exactly like identity above.
   favList () { return this._request('fav.list') }
