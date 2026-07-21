@@ -300,7 +300,12 @@ select { cursor: pointer; }
 input:focus, select:focus { outline: none; border-color: var(--primary); }
 
 /* ---- modal ---------------------------------------------------------------- */
-.overlay { position: fixed; inset: 0; z-index: 50; background: #0009; backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; padding: 20px; animation: fade .15s ease; }
+/* NB: no backdrop-filter here. A full-screen blur must recompute every frame anything BEHIND it
+   changes - and behind an open modal the .live dots pulse forever (animation: beat) and the 3s
+   /api/state poll repaints the whole dashboard - so the 2px blur made every modal fade, keystroke
+   (library rename) and tab switch stutter, worst on a phone/remote-rendered browser. The #0009
+   scrim alone gives the same separation for free. */
+.overlay { position: fixed; inset: 0; z-index: 50; background: #0009; display: flex; align-items: center; justify-content: center; padding: 20px; animation: fade .15s ease; }
 @keyframes fade { from { opacity: 0; } }
 .modal { width: 100%; max-width: 420px; max-height: 88dvh; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); padding: 20px; }
 /* Title centered; close button pinned to the top-right corner. */
