@@ -55,6 +55,20 @@ class Presence {
     return n
   }
 
+  // Broadcast a typed event to EVERY live connection of EVERY device. Returns how many received
+  // it. For host-wide changes that aren't aimed at one device - a library rename, so every paired
+  // phone relabels at once. Same swallow-a-bad-sender contract as notify(): one dead channel must
+  // not stop the rest, and its close handler unregisters it imminently.
+  notifyAll (kind, data = null) {
+    let n = 0
+    for (const set of this._byDevice.values()) {
+      for (const pushFn of set) {
+        try { pushFn({ kind, data }); n++ } catch {}
+      }
+    }
+    return n
+  }
+
   // Live connection count for a device (test/introspection).
   count (deviceKey) {
     return this._byDevice.get(keyOf(deviceKey))?.size || 0

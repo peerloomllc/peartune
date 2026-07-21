@@ -508,6 +508,47 @@ function withTimeout (promise, ms) {
   ])
 }
 
+// --- library rename push (instant relabel, follow-up to the on-connect sync) ----
+
+test('RENAME: setLibraryName pushes "library-renamed" to a connected device', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client, paired } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  // A round-trip first, so the host has finished opening the media channel and REGISTERED this
+  // connection in the presence registry (connect() resolves client-side before that host-side work).
+  await client.ping()
+
+  // Arm the listener BEFORE renaming so we cannot miss the push.
+  const pushed = oncePush(client, 'library-renamed')
+  const clean = host.setLibraryName('Tim’s Umbrel')
+  assert.equal(clean, 'Tim’s Umbrel')
+
+  const evt = await pushed
+  assert.equal(evt.data.libraryName, 'Tim’s Umbrel')
+  // Self-describing: the push carries the libraryId so a device updates the RIGHT host record -
+  // it works for a non-active pool host exactly as for the active one.
+  assert.equal(evt.data.libraryId, host.libraryId)
+  assert.equal(evt.data.libraryId, paired.libraryId)
+
+  // The push is the FAST path, not the only one: identity.get still hands back the current name,
+  // so a device offline during the rename catches up on its next connect.
+  const id = await client.getIdentity()
+  assert.equal(id.libraryName, 'Tim’s Umbrel')
+})
+
+test('RENAME: setting the SAME name pushes nobody (no spurious relabel)', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  let pushes = 0
+  client.onPush = (m) => { if (m?.kind === 'library-renamed') pushes++ }
+  host.setLibraryName('Test Library') // scaffold's existing name - unchanged
+  await new Promise((r) => { const tm = setTimeout(r, 200); if (tm.unref) tm.unref() })
+  assert.equal(pushes, 0)
+})
+
 // --- dashboard now-playing (per-device, off the play session) ----------------
 
 test('listDevices surfaces now-playing on the active device only, with a coverId', async (t) => {

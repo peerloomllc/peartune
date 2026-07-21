@@ -2,6 +2,35 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-20 - Instant library rename via a host PUSH (over the existing presence registry)
+Tier: T2 (additive, backward-compatible wire extension; no new message type, no new access surface, no
+grant/revoke change). Branch feature/library-rename-push. The truly-instant follow-up to the on-connect
+sync (fix/non-active-host-live-rename, same day): that made a rename refresh on reconnect; this makes it
+refresh the MILLISECOND the operator hits rename, for the active host AND every non-active pool host at once.
+WHAT: the host broadcasts a `library-renamed` push to every connected device the moment setLibraryName()
+changes the name, carrying `{ libraryId, libraryName }`. Self-describing (libraryId) so the client updates
+the RIGHT stored host record - a non-active pool host relabels exactly like the active one.
+- host/presence.js: new `notifyAll(kind, data)` - broadcast to every live connection of every device (same
+  swallow-a-bad-sender contract as notify()).
+- host/server.js setLibraryName(): `if (changed) this.presence.notifyAll('library-renamed', {libraryId,
+  libraryName})`. Only on an actual change (same-name save pushes nobody).
+- src/bare.js makeClient() onPush: a new `library-renamed` branch mirrors syncHostNames' logic (find the
+  host record by libraryId, renameHost + emit host:renamed) - just push-driven. The UI already relabels the
+  header/switcher/merged chips off host:renamed for any hostKey, so NO UI change was needed.
+WIRE: NO new message type - it's a new `kind` STRING within the existing media push (framing.js type 5,
+which already carries session-superseded). Fully backward-compatible: an old client ignores an unknown kind;
+an old host never sends it (and the client's identity()/on-connect sync still covers those hosts). Doc
+comment in framing.js updated to list both kinds.
+SECURITY: no new surface (see host/presence.js's own argument): the push only rides a channel the firewall
+already admitted and register() runs AFTER the grant check; a revoked device's connection is destroyed, which
+unregisters it, so it can never receive one. The payload is a libraryId + name the device already knows.
+TESTS: +5 (3 presence notifyAll units: broadcast-reaches-all, no-connections no-op, throwing-sender swallow;
+2 integration over real DHT: rename pushes to a connected device with the right libraryId + identity.get
+still carries it, and a same-name save pushes nobody). 384 tests, verify green.
+DEPLOY: this is a HOST change - it does nothing until the host runs the new code. The client half ships in
+the APK. Needs the host image rebuilt/redeployed (Umbrel, Tim-gated) or the Mac node-source host restarted to
+take effect; until then hosts fall back to the on-connect sync. ON-DEVICE smoke owed post-deploy.
+
 ## 2026-07-20 - Non-active host's library rename now refreshes on the same trigger as the active host
 Tier: T1 (client worklet only; no wire/host/grant/protocol change). Branch fix/non-active-host-live-rename.
 GAP: PR #92 made the ACTIVE host's dashboard rename refresh live (identity() polls getIdentity() on every

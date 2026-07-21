@@ -131,8 +131,9 @@ const err = {
 
 // Host -> client. An UNSOLICITED, typed event - the one server->client push path.
 // Carries no request id (it answers no request); `kind` names the event and `data` is
-// its JSON payload. Today the only kind is 'session-superseded' (another of your devices
-// claimed the play-session token, so stop). It rides the same Noise-authenticated,
+// its JSON payload. Kinds: 'session-superseded' (another of your devices claimed the play-
+// session token, so stop) and 'library-renamed' (the operator renamed this library; data
+// carries { libraryId, libraryName } so a device relabels the right host at once). It rides the same Noise-authenticated,
 // firewall-gated media channel as everything else and dies with the connection, so a
 // revoked device - whose connection the host destroys - can never receive one. Appended
 // LAST (type 5) so every existing type id is preserved: an old client that never
