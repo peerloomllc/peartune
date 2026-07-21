@@ -331,7 +331,10 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // param - a device can only ever touch its own owner's session and claim as itself.
       case 'session.get': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        const row = await state.getSession(ownerOf(grant))
+        // merged = the cross-host session (phase 3): a distinct row keyed the same owner,
+        // holding a queue that spans hosts. Same auth, same shape.
+        const merged = !!params?.merged
+        const row = await state.getSession(ownerOf(grant), merged)
         if (!row) return send.res.send({ id, body: null })
         // Enrich so the app can render "Playing on <name>" / "Play here" with no extra lookup:
         // is THIS device the active one, and if not, what is the active device called.
@@ -346,20 +349,21 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
 
       case 'session.claim': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        const merged = !!params?.merged
         const owner = ownerOf(grant)
         // Who held the token BEFORE this claim - so we can tell them, instantly, that they lost
         // it (instead of them finding out lazily on their next heartbeat, deferred follow-up #1).
-        const prev = (await state.getSession(owner))?.activeDeviceKey || null
+        const prev = (await state.getSession(owner, merged))?.activeDeviceKey || null
         // Compare-and-set on the generation the client last saw. null = it lost the race.
-        const row = await state.claimSession(owner, grant.deviceKey, Number(params?.generation) || 0)
+        const row = await state.claimSession(owner, grant.deviceKey, Number(params?.generation) || 0, merged)
         // Push only on a SUCCESSFUL takeover from a DIFFERENT device (an idempotent re-claim by
         // the current holder, or a lost CAS race, must not tell anyone to stop). presence is
         // null in the unit tests; the push is best-effort and never gates the reply.
         let pushed = 0
         if (row && prev && prev !== grant.deviceKey && presence) {
-          pushed = presence.notify(prev, 'session-superseded', { generation: row.generation })
+          pushed = presence.notify(prev, 'session-superseded', { generation: row.generation, merged })
         }
-        log('session:claim', { ok: !!row, generation: row?.generation ?? null, superseded: pushed })
+        log('session:claim', { merged, ok: !!row, generation: row?.generation ?? null, superseded: pushed })
         return send.res.send({ id, body: { ok: !!row, session: row } })
       }
 
@@ -367,7 +371,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         // Only the active device may write. null (ok:false) = superseded - the client learns
         // here that it lost the token (lazy presence) and pauses.
-        const row = await state.setSession(ownerOf(grant), grant.deviceKey, params || {})
+        const row = await state.setSession(ownerOf(grant), grant.deviceKey, params || {}, !!params?.merged)
         return send.res.send({ id, body: { ok: !!row, session: row } })
       }
 
