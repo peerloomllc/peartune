@@ -767,6 +767,12 @@ button.more {
   width: 100%;
   margin: 1.2rem 0 0;
 }
+button.scanbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+}
 .sticky {
   position: sticky;
   top: 0;
