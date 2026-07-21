@@ -2,6 +2,26 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-20 - Non-active host's library rename now refreshes on the same trigger as the active host
+Tier: T1 (client worklet only; no wire/host/grant/protocol change). Branch fix/non-active-host-live-rename.
+GAP: PR #92 made the ACTIVE host's dashboard rename refresh live (identity() polls getIdentity() on every
+host:connected). The merged-library work added syncHostNames() so a rebuildIndex() also relabels EVERY
+connected pool host - BUT a complete-blend host:connected (the common case: the active client reconnected
+while the pool hosts stayed up) reloads browse WITHOUT a rebuild (App.jsx only calls refreshMerged when some
+host is still disconnected). So on that path loadIdentity() refreshed the active host's name but nothing
+resynced the pool hosts - a non-active host renamed on its dashboard stayed stale in the source-filter chip
+until a pull-to-refresh or a full reconnect-driven rebuild.
+FIX: identity() (which rides loadIdentity(), fired on every host:connected) now, in merged mode, also
+fire-and-forget syncHostNames() for the connected NON-active pool hosts. So a pool host picks up its rename
+on the exact same trigger the active host does - parity, no extra machinery. syncHostNames already emits
+host:renamed per change and the UI already relabels the header/switcher/chips for any hostKey.
+NOTE - still not instant on a STABLE connection: like the active host, this refreshes on reconnect / pull-to-
+refresh, not the millisecond the operator hits rename while everything stays connected. Truly-instant for ALL
+hosts would be a HOST PUSH on rename over the existing presence registry (the session-superseded pattern) -
+a separate host change that needs a redeploy to verify; logged as a follow-up, not done here.
+Verify green (379 tests + builds). ON-DEVICE smoke owed: rename a non-active pool host's library on its
+dashboard, trigger a reconnect (background/foreground or network flip), confirm the merged chip relabels.
+
 ## 2026-07-20 - Handoff support is per-host, not a single app-wide flag
 Tier: T1 (client worklet only; no wire/host/grant/revoke/protocol change). Branch fix/per-host-session-support.
 BUG: the cross-device "Play here" session handoff tracked host capability in ONE global boolean

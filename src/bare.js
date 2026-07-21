@@ -1410,6 +1410,16 @@ const methods = {
         emit('host:renamed', { hostKey: active.hostKey, libraryName: remote.libraryName })
       }
     }
+    // Extend that live rename to the OTHER hosts in a blend. This method rides loadIdentity(), which
+    // fires on EVERY host:connected - but a complete-blend reconnect reloads browse WITHOUT a rebuild,
+    // so syncHostNames (which only rides rebuildIndex) never runs and a non-active host's rename stays
+    // stale in the chip. Sync the connected pool hosts here too, on the same trigger the active host
+    // uses. Fire-and-forget so identity() stays fast; syncHostNames emits host:renamed per change.
+    if (mergedMode()) {
+      const activeKey = loadActiveHost()?.hostKey
+      const others = loadHostsFile().hosts.filter((h) => h.hostKey !== activeKey && poolClient(h.libraryId))
+      if (others.length) syncHostNames(others).catch(() => {})
+    }
     return {
       deviceName: remote?.deviceName || local.deviceName || '',
       userName: remote?.user?.name || local.userName || '',
