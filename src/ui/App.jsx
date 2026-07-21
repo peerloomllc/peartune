@@ -2028,6 +2028,16 @@ function Library ({
         `${t.title || ''} ${t.artist || ''} ${t.album || ''}`.toLowerCase().includes(songFilter))
     : songs
   const D = densityOf(density)
+  // Can we actually REACH what we are looking at? In the blend a source filter names one
+  // library, so ask that one; on '_all' any live host counts. Single-host falls back to the
+  // connection flag. Drives the empty state, which must not claim a library is empty when we
+  // simply could not read it.
+  const viewedLib = merged?.merged && filter && filter !== '_all'
+    ? (merged.libraries || []).find(l => l.libraryId === filter)
+    : null
+  const reachable = viewedLib
+    ? !!viewedLib.connected
+    : (merged?.merged ? (merged.libraries || []).some(l => l.connected) : !!state.connected)
   // The Display sheet offers layout (grid views only) and/or sort (whatever the
   // source can do). Disable its button when the active view has neither.
   const sortCap = state.sorts?.[browse === 'songs' ? 'tracks' : browse]
@@ -2270,7 +2280,7 @@ function Library ({
                         )}
                       </div>
                       )
-                    : <Empty />)
+                    : <Empty reachable={reachable} onRetry={onReconnect} />)
               : <SkeletonRows />)
           : browse === 'genres'
             ? (genres
@@ -2291,12 +2301,30 @@ function Library ({
                       {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
                     </>
                     )
-                  : <Empty />}
+                  : <Empty reachable={reachable} onRetry={onReconnect} />}
     </div>
   )
 }
 
-function Empty () {
+// An empty grid means one of two VERY different things, and saying the wrong one sends
+// people off to fix a problem they do not have. A library we cannot reach (offline, or
+// access ended from the dashboard) served us nothing; that is not the same as a library
+// with no music in it, and "add music on the server and let it rescan" is actively
+// misleading advice to someone who was just revoked.
+function Empty ({ reachable = true, onRetry }) {
+  if (!reachable) {
+    return (
+      <div className='blank'>
+        <MusicNotesSimple size={40} weight='thin' />
+        <h2>Can’t reach this library</h2>
+        <p className='muted sm'>
+          This device is offline, or the server ended its access. If it was removed there, pair
+          again from the server’s dashboard.
+        </p>
+        {onRetry && <button className='more' onClick={onRetry}>Try again</button>}
+      </div>
+    )
+  }
   return (
     <div className='blank'>
       <MusicNotesSimple size={40} weight='thin' />
@@ -2768,15 +2796,25 @@ function sourceLabel (kind) {
 // Turn a raw pairing failure into something a person can act on. The wire errors
 // are written for a developer ("host refused the connection (is a pairing window
 // open?)"); the person holding the phone needs to know what to DO.
+// "The server said no" and "the server never answered" are different failures with different
+// fixes, and they used to share one message. That cost real debugging time: an expired pairing
+// window and a phone that cannot reach the host at all both read as "Couldn't reach your
+// library", so the message could not tell you which one you were looking at.
 function pairError (msg = '') {
   const m = String(msg)
+  // The host ANSWERED and its firewall turned us away: no window open any more, or this
+  // device is revoked. Reaching it was never the problem.
   if (/pairing window|host refused|firewall|denied/i.test(m)) {
-    return "Couldn't reach your library. Make sure the pairing code is still showing on your server's dashboard, then try again."
+    return 'Your server turned that pairing code down. It has most likely expired, so show a fresh one on the dashboard and try again.'
   }
   if (/not a peartune|not a valid|invalid|malformed/i.test(m)) {
     return "That doesn't look like a PearTune pairing code. Copy it again from your server's dashboard."
   }
-  if (/timed out|timeout|expired/i.test(m)) {
+  // Nothing came back at all: a transport problem, not a stale code.
+  if (/timed out|timeout/i.test(m)) {
+    return "Couldn't reach your library. Your server never answered, so check it is running and that both devices are on a network that can reach it."
+  }
+  if (/expired/i.test(m)) {
     return 'That pairing code has expired. Show a fresh one on your server and try again.'
   }
   return 'Pairing failed. Show a fresh code on your server and try again.'
