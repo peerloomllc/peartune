@@ -135,7 +135,15 @@ let reconnecting = null // the in-flight reconnect, so N callers share ONE attem
 // here"; a rejected push (ok:false) means we were superseded and must pause (lazy presence).
 let sessionActive = false // do we currently hold the token?
 let sessionGen = 0 // the generation we last saw (for the claim CAS)
-let sessionSupported = true // false once a host answers ENOMETHOD - degrade silently
+// Handoff support is tracked PER HOST, not app-wide. A host that answers ENOMETHOD to a session
+// RPC is remembered as unsupported by its libraryId, so ONE stale host in a blended library (or a
+// host we've since switched away from in single mode) can no longer disable the handoff for every
+// other host - the bug of a single global flag that went false on the first old host and never
+// came back. Unknown or offline (no target lib) = assume supported, so the "Playing on <name>"
+// card doesn't flicker off before we've actually heard an ENOMETHOD from that host.
+const sessionUnsupported = new Set() // libraryIds whose host answered ENOMETHOD to a session RPC
+function sessionSupportedFor (lib) { return !lib || !sessionUnsupported.has(lib) }
+function markSessionUnsupported (lib) { if (lib) sessionUnsupported.add(lib) }
 
 // --- IPC --------------------------------------------------------------------
 
@@ -785,14 +793,16 @@ function sessionHomeLib () {
 // `merged: true`; single mode -> the active client. sessionTarget() is SYNC (reads current pool
 // state, used by the ~4s heartbeat so it never dials); sessionReady() ensures the connection first
 // (used by activate/takeover/info, which the user just triggered). Either yields c: null offline.
+// `lib` is the target host's libraryId - the key handoff support is scoped to (the elected home in
+// merged mode, the active host in single mode). Callers gate on sessionSupportedFor(lib).
 function sessionTarget () {
-  if (mergedMode()) { const lib = sessionHomeLib(); return { c: lib ? poolClient(lib) : null, merged: true } }
-  return { c: client, merged: false }
+  if (mergedMode()) { const lib = sessionHomeLib(); return { c: lib ? poolClient(lib) : null, merged: true, lib } }
+  return { c: client, merged: false, lib: currentHost?.libraryId || null }
 }
 async function sessionReady () {
   if (mergedMode()) { await ensureAll().catch(() => {}); return sessionTarget() }
   await ensureConnected()
-  return { c: client, merged: false }
+  return { c: client, merged: false, lib: currentHost?.libraryId || null }
 }
 
 // Tag a session queue item with its owning host, so the receiver routes each track to the host
@@ -1468,8 +1478,8 @@ const methods = {
     // The session target is the elected home host in merged mode (carrying the mixed-host queue),
     // else the single active client. SYNC lookup - a heartbeat never dials; if the home is offline
     // we keep the token and retry on the next snapshot, exactly as single mode does when offline.
-    const tgt = sessionActive && sessionSupported ? sessionTarget() : null
-    if (tgt && tgt.c && snapshot) {
+    const tgt = sessionActive ? sessionTarget() : null
+    if (tgt && tgt.c && sessionSupportedFor(tgt.lib) && snapshot) {
       const items = Array.isArray(snapshot.items) ? snapshot.items : []
       try {
         const queue = items.map(t => tagSessionItem(
@@ -1482,7 +1492,7 @@ const methods = {
         const r = await tgt.c.sessionSet({ queue, index: snapshot.index || 0, shuffle: !!snapshot.shuffle, repeat: Number(snapshot.repeat) || 0, positionMs: Number(snapshot.positionMs) || 0, playing: !!snapshot.playing, merged: tgt.merged })
         if (r && r.ok === false) { sessionActive = false; lostSession = true } // superseded
       } catch (e) {
-        if (e?.code === 'ENOMETHOD') sessionSupported = false
+        if (e?.code === 'ENOMETHOD') markSessionUnsupported(tgt.lib)
         // offline / transient: keep the token, retry on the next snapshot
       }
     }
@@ -1507,11 +1517,13 @@ const methods = {
   // retry if another device claimed in the same instant). Claiming ADOPTS the existing queue on
   // the host; the shell's next saveQueueState overwrites it with ours.
   async sessionActivate () {
-    if (!sessionSupported) return { active: false, supported: false }
     if (sessionActive) return { active: true }
+    let lib = null
     try {
-      const { c, merged } = await sessionReady()
+      const { c, merged, lib: l } = await sessionReady()
+      lib = l
       if (!c) return { active: false } // offline; the next play retries
+      if (!sessionSupportedFor(lib)) return { active: false, supported: false } // this host is old
       for (let i = 0; i < 2; i++) {
         const cur = await c.sessionGet(merged ? { merged: true } : undefined)
         const r = await c.sessionClaim({ generation: cur?.generation || 0, merged })
@@ -1519,7 +1531,7 @@ const methods = {
       }
       return { active: false }
     } catch (e) {
-      if (e?.code === 'ENOMETHOD') { sessionSupported = false; return { active: false, supported: false } }
+      if (e?.code === 'ENOMETHOD') { markSessionUnsupported(lib); return { active: false, supported: false } }
       return { active: false } // offline; the next play retries
     }
   },
@@ -1531,10 +1543,12 @@ const methods = {
   // What the UI needs for the "Playing on <name>" card: is another of my devices actively
   // holding a non-empty session. Tracks the generation for a later claim.
   async sessionInfo () {
-    if (!sessionSupported) return { supported: false }
+    let lib = null
     try {
-      const { c, merged } = await sessionReady()
+      const { c, merged, lib: l } = await sessionReady()
+      lib = l
       if (!c) return { supported: true, offline: true }
+      if (!sessionSupportedFor(lib)) return { supported: false } // this host is old
       const s = await c.sessionGet(merged ? { merged: true } : undefined)
       if (s) sessionGen = s.generation
       return {
@@ -1546,7 +1560,7 @@ const methods = {
         count: s?.queue?.length || 0
       }
     } catch (e) {
-      if (e?.code === 'ENOMETHOD') { sessionSupported = false; return { supported: false } }
+      if (e?.code === 'ENOMETHOD') { markSessionUnsupported(lib); return { supported: false } }
       return { supported: true, offline: true }
     }
   },
@@ -1554,10 +1568,12 @@ const methods = {
   // "Play here": claim the token and hand the session queue back to the shell (mapped to its
   // shape) plus the current track's resume position, so the shell rebuilds + seeks + plays.
   async sessionTakeover () {
-    if (!sessionSupported) return { ok: false, supported: false }
+    let lib = null
     try {
-      const { c, merged } = await sessionReady()
+      const { c, merged, lib: l } = await sessionReady()
+      lib = l
       if (!c) return { ok: false }
+      if (!sessionSupportedFor(lib)) return { ok: false, supported: false } // this host is old
       for (let i = 0; i < 2; i++) {
         const s = await c.sessionGet(merged ? { merged: true } : undefined)
         if (!s || !Array.isArray(s.queue) || !s.queue.length) return { ok: false, empty: true }
@@ -1580,7 +1596,7 @@ const methods = {
       }
       return { ok: false }
     } catch (e) {
-      if (e?.code === 'ENOMETHOD') { sessionSupported = false; return { ok: false, supported: false } }
+      if (e?.code === 'ENOMETHOD') { markSessionUnsupported(lib); return { ok: false, supported: false } }
       return { ok: false }
     }
   },
