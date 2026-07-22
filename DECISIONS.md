@@ -2,6 +2,51 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-22 - Off-LAN: why a VPN does not rescue the app, and diagnostics before a transport change
+Tier: T1 (the diagnostics screen itself: read-only, no wire change). The TRANSPORT decision it exists to
+inform is T3 and still unmade - deliberately.
+
+THE FINDING, from hyperdht 6.33's source, not from guessing. Tim, off-LAN on cellular: with Tailscale ON he
+can open the Umbrel DASHBOARD in his browser, but the app still cannot connect. Both facts are explained by
+one line in `node_modules/hyperdht/lib/connect.js`:
+
+    if (c.lan && relayed && clientAddress.host === serverAddress.host) { ... try the peer's local addresses }
+
+hyperdht only attempts a peer's LAN/tailnet addresses when BOTH ENDS APPEAR TO COME FROM THE SAME PUBLIC IP.
+Off-LAN the phone's public address is the carrier's and the host's is Tim's home connection, so the host's
+tailnet address (100.100.71.117) is carried in the handshake payload and NEVER TRIED. The browser reaches the
+dashboard because that is a plain TCP connection to a routable tailnet address; the app is key-addressed and
+goes through the DHT, which will not use that path. NB the tailnet address is not filtered as "reserved"
+(bogon's isReserved says false for 100.64/10) - it survives into the payload and is still never dialled.
+
+CONSEQUENCE: "turn on a VPN" is NOT a workaround for this app today, and must not be documented as one. That
+correction matters because the earlier write-up (TODO, 2026-07-20) reached for exactly that advice.
+
+ALSO CORRECTED: the old note claimed HyperDHT has NO relay fallback. FALSE for 6.33 - `relayThrough` exists
+on BOTH `dht.connect(key, {relayThrough})` and `dht.createServer({relayThrough})`, and the DHT tracks
+`stats.relaying {attempts, successes, aborts}`. We pass no relayThrough today, so nothing is ever relayed;
+using it needs a node with a public address that both ends can reach, i.e. infrastructure PeerLoom would run.
+
+DECIDED, with Tim, 2026-07-22: DIAGNOSTICS FIRST, transport change second. The off-LAN failure can only be
+reproduced on his Pixel (the TCL has no SIM), so every previous attempt was blind, and "Couldn't reach your
+library" is the same sentence whether the DHT never bootstrapped, the host was never found, or a carrier NAT
+refused the punch - which want completely different fixes. Settings -> Connection now runs the transport for
+real (a raw hyperdht dial per paired host, using the device's own keypair, no client retries or error
+mapping in the way) and reports where it stopped, with a Copy report button.
+
+WHAT THE REPORT DISTINGUISHES, which the app's normal error cannot: PEER_NOT_FOUND (the server is not
+announcing - a SERVER problem) vs PEER_CONNECTION_FAILED / CANNOT_HOLEPUNCH (found it, the network would not
+let us through). It also carries whether this phone is firewalled, whether the DHT knows its public address,
+and the punch/relay counter DELTA for the run. It deliberately does NOT claim which of "the network refused"
+or "the server declined this device" happened, because from the client they are indistinguishable - the same
+honesty #125 established for the pairing copy.
+
+NOT DECIDED YET, and both stay open until a real off-LAN report lands: (a) a PeerLoom-run relay via
+relayThrough - restores "works anywhere, no VPN" but is infrastructure the pitch says you do not need, and
+the relay sees metadata and carries bandwidth; (b) an address hint so the app can use a tailnet path - bigger
+than it sounds, because hyperdht is key-addressed, so it means a second transport (our protocol over a plain
+socket plus a Noise handshake), and it only helps people who already run a VPN.
+
 ## 2026-07-20 - Instant library rename via a host PUSH (over the existing presence registry)
 Tier: T2 (additive, backward-compatible wire extension; no new message type, no new access surface, no
 grant/revoke change). Branch feature/library-rename-push. The truly-instant follow-up to the on-connect

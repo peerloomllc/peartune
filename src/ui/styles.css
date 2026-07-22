@@ -1147,3 +1147,18 @@ button.shead .caret.open { transform: rotate(90deg); }
 }
 .namebox .hint { margin: .4rem 0 0; }
 label.flabel { display: block; margin-top: .6rem; }
+
+/* Connection diagnostics: a plain fact table, deliberately not styled like a dashboard.
+   It is read once, in a bad moment, and usually copied straight into a bug report. */
+.diag { margin-top: .75rem; border-top: 1px solid var(--color-divider); }
+.diag-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+  padding: .5rem .1rem; border-bottom: 1px solid var(--color-divider); font-size: .88rem;
+}
+.diag-row span { color: var(--color-text-secondary); min-width: 0; }
+.diag-row b { font-weight: 500; text-align: right; }
+.diag-row b.ok { color: var(--color-success); }
+.diag-row b.bad { color: var(--color-error); }
+.diag-note { margin-top: .6rem; }
+.spin { animation: peartune-spin 1s linear infinite; }
+@keyframes peartune-spin { to { transform: rotate(360deg); } }

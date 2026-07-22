@@ -2931,6 +2931,41 @@ function Problem ({ error, onDismiss }) {
   )
 }
 
+// A hyperdht failure code, in words a person can act on. The distinction that matters is
+// FOUND-BUT-UNREACHABLE vs NEVER-FOUND: the first is the network between you and the server
+// (a carrier NAT refusing the hole-punch), the second is the server not being announced at
+// all. They look identical in the app's normal error message, which is exactly why chasing
+// the off-LAN bug has been so slow.
+function diagReason (code) {
+  switch (code) {
+    case 'PEER_NOT_FOUND': return 'server not found on the network'
+    case 'PEER_CONNECTION_FAILED': return 'found it, could not connect'
+    case 'CANNOT_HOLEPUNCH': return 'network refused the connection'
+    case 'ETIMEDOUT': return 'no answer in 15s'
+    case 'ECLOSED': return 'it hung up'
+    default: return code || 'failed'
+  }
+}
+
+// One honest sentence about what the run means. It must NOT over-claim: a server that admits
+// nobody and a network that drops the punch both arrive as "found it, could not connect", and
+// asserting either one has sent past debugging the wrong way.
+function diagSummary (d) {
+  if (d.error) return 'The check itself failed: ' + d.error
+  const hosts = d.hosts || []
+  if (!hosts.length) return 'Nothing to check until a library is paired.'
+  const bad = hosts.filter(h => !h.ok)
+  if (!bad.length) return 'Everything is reachable from this network.'
+  const punched = (d.during?.punches && Object.keys(d.during.punches).length) ? 'yes' : 'no'
+  const notFound = bad.some(h => h.code === 'PEER_NOT_FOUND')
+  if (notFound) {
+    return 'A library was not found on the network at all - that points at the SERVER (off, or not announcing), not at this phone.'
+  }
+  return 'The libraries were found but would not connect. Hole-punch attempted during this check: ' +
+    punched + '. That is either this network refusing the connection, or the server declining this device - ' +
+    'from here the two look identical, which is why the copied report matters.'
+}
+
 function pairError (msg = '') {
   const m = String(msg)
   // The host let the connection OPEN and then hung up: it read the code and said no. This
@@ -4400,6 +4435,20 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
   // The avatar shown in the profile header: the last-picked one (optimistic) else what
   // the worklet persisted. `avatar` is base64 JPEG (no data: prefix).
   const [avatarLocal, setAvatarLocal] = useState(null)
+  const [diag, setDiag] = useState(null)
+  const [diagBusy, setDiagBusy] = useState(false)
+  const [diagCopied, setDiagCopied] = useState(false)
+  const runDiagnostics = async () => {
+    setDiagBusy(true); setDiag(null); setDiagCopied(false)
+    haptic('light')
+    try { setDiag(await call('diagnose')) } catch (e) { setDiag({ error: e.message, node: {}, hosts: [] }) }
+    setDiagBusy(false)
+  }
+  const copyDiag = () => {
+    copyText(JSON.stringify(diag, null, 2))
+    setDiagCopied(true); haptic('light')
+    setTimeout(() => setDiagCopied(false), 1800)
+  }
   const avatar = avatarLocal ?? state.settings?.avatar ?? ''
   const initial = (userName || deviceName || '?').trim().charAt(0).toUpperCase() || '?'
   const fileRef = useRef(null)
@@ -4581,6 +4630,53 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
             </div>
             <button className='primary' onClick={onAddLibrary}>Add</button>
           </div>
+        </Section>
+
+        {/* Why this is in the shipping app and not a debug build: the off-LAN failure can
+            only be reproduced on a phone that is off-LAN, and "Couldn't reach your library"
+            is the same sentence whether the DHT never started, the server was never found,
+            or a carrier NAT refused the hole-punch. Those need different fixes. This runs
+            the transport for real and reports where it stopped, in a form you can copy into
+            a bug report. */}
+        <Section id='conn' title='Connection' Icon={PlugsConnected} open={open === 'conn'} onToggle={toggle}>
+          <div className='desc'>
+            Checks whether this phone can actually reach your libraries right now, and says
+            where it stops if it cannot. Useful when you are away from home and PearTune
+            says it cannot reach a library.
+          </div>
+          <div className='btnrow'>
+            <button onClick={runDiagnostics} disabled={diagBusy}>
+              {diagBusy ? <><CircleNotch size={15} className='spin' /> Checking…</> : <>Run check</>}
+            </button>
+            {diag && <button onClick={copyDiag}>
+              <Copy size={15} /> {diagCopied ? 'Copied' : 'Copy report'}
+            </button>}
+          </div>
+
+          {diag && (
+            <div className='diag'>
+              <div className='diag-row'>
+                <span>This phone</span>
+                <b>{diag.node.bootstrapped ? 'on the network' : 'NOT on the network'}</b>
+              </div>
+              <div className='diag-row'>
+                <span>Others can reach it directly</span>
+                <b>{diag.node.firewalled ? 'no (behind a firewall/NAT)' : 'yes'}</b>
+              </div>
+              <div className='diag-row'>
+                <span>Its address out there</span>
+                <b>{diag.node.publicAddress || 'not known yet'}</b>
+              </div>
+              {diag.hosts.map((h, i) => (
+                <div className='diag-row' key={i}>
+                  <span>{h.library}</span>
+                  <b className={h.ok ? 'ok' : 'bad'}>{h.ok ? `reached in ${h.ms} ms` : `${diagReason(h.code)} (${h.ms} ms)`}</b>
+                </div>
+              ))}
+              {!diag.hosts.length && <div className='diag-row'><span>No libraries paired yet.</span></div>}
+              <div className='desc diag-note'>{diagSummary(diag)}</div>
+            </div>
+          )}
         </Section>
 
         <Section id='device' title='Device key' Icon={Key} open={open === 'device'} onToggle={toggle}>
