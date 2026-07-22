@@ -344,6 +344,16 @@ export default function App () {
   // loaders they fire) captured the first render, so they read the CURRENT source filter, merged
   // status, and browse view through refs. filterRef is also set synchronously by the chip tap so a
   // reload picks up the new filter before setState commits.
+  // Returning to Library while disconnected re-tries. The case that made this obvious: the
+  // Connection check reached both libraries in under half a second, the user went back to
+  // Library, and it was still showing the failure from a minute earlier because nothing ever
+  // asked again. Guarded on `reconnecting` so tab-flipping cannot stack dials.
+  useEffect(() => {
+    if (tab !== 'library') return
+    const s = liveRef.current
+    if (s.host && !s.connected && !s.reconnecting) reconnect()
+  }, [tab])
+
   const mergedRef = useRef(null); mergedRef.current = merged
   const filterRef = useRef('_all'); filterRef.current = filter
   const browseRef = useRef('albums'); browseRef.current = browse
@@ -2111,6 +2121,13 @@ function Library ({
   const reachable = viewedLib
     ? !!viewedLib.connected
     : (merged?.merged ? (merged.libraries || []).some(l => l.connected) : !!state.connected)
+  // "All" (the blended view) vs one picked library - the copy below differs, and saying
+  // "this library" while showing every one of them was simply wrong.
+  const allScope = !viewedLib && !!merged?.merged
+  // A connect is in flight and nothing has answered yet. The single-host wall above has had
+  // a Reconnecting screen for a while; merged mode never got one, so it showed the failure
+  // instantly on open - which is what Tim saw off-LAN.
+  const connecting = !!reconnecting && !reachable
   // The Display sheet offers layout (grid views only) and/or sort (whatever the
   // source can do). Disable its button when the active view has neither.
   const sortCap = state.sorts?.[browse === 'songs' ? 'tracks' : browse]
@@ -2354,7 +2371,7 @@ function Library ({
                         )}
                       </div>
                       )
-                    : <Empty reachable={reachable} onRetry={onReconnect} />)
+                    : <Empty reachable={reachable} onRetry={onReconnect} all={allScope} connecting={connecting} />)
               : <SkeletonRows />)
           : browse === 'genres'
             ? (genres
@@ -2375,7 +2392,7 @@ function Library ({
                       {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
                     </>
                     )
-                  : <Empty reachable={reachable} onRetry={onReconnect} />}
+                  : <Empty reachable={reachable} onRetry={onReconnect} all={allScope} connecting={connecting} />}
     </div>
   )
 }
@@ -2385,15 +2402,31 @@ function Library ({
 // access ended from the dashboard) served us nothing; that is not the same as a library
 // with no music in it, and "add music on the server and let it rescan" is actively
 // misleading advice to someone who was just revoked.
-function Empty ({ reachable = true, onRetry }) {
+function Empty ({ reachable = true, onRetry, all = false, connecting = false }) {
+  // Trying is not the same as failed, and the app used to show the failure the instant it
+  // opened - before it had tried at all. On a phone off-LAN the first connect can legitimately
+  // take tens of seconds (a hole-punch that aborts takes ~11s to abort), so silence there reads
+  // as "broken" when it is "working on it".
+  if (connecting) {
+    return (
+      <div className='blank'>
+        <ArrowsClockwise size={40} weight='thin' className='spin' />
+        <h2>{all ? 'Connecting to your libraries…' : 'Connecting…'}</h2>
+        <p className='muted sm'>Away from home this can take a moment.</p>
+      </div>
+    )
+  }
   if (!reachable) {
     return (
       <div className='blank'>
         <MusicNotesSimple size={40} weight='thin' />
-        <h2>Can’t reach this library</h2>
+        {/* Plural when the view is ALL libraries - saying "this library" while showing every
+            one of them made the message read as being about a library the user had not picked. */}
+        <h2>{all ? 'Can’t reach your libraries' : 'Can’t reach this library'}</h2>
         <p className='muted sm'>
-          This device is offline, or the server ended its access. If it was removed there, pair
-          again from the server’s dashboard.
+          {all
+            ? 'This device is offline, or the servers are unreachable right now. If one was removed there, pair again from its dashboard.'
+            : 'This device is offline, or the server ended its access. If it was removed there, pair again from the server’s dashboard.'}
         </p>
         {onRetry && <button className='more' onClick={onRetry}>Try again</button>}
       </div>

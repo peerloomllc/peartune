@@ -1085,3 +1085,19 @@ test('a connect that never opens reports UNREACHABLE, not "the host refused"', a
     }
   )
 })
+
+
+// #149 refactored connect() and silently dropped `this.conn = conn`. Nothing FUNCTIONAL broke
+// in a single-host test - the media channel still worked off the local `conn` variable - but
+// poolClient() in src/bare.js gates the merged view on `client.conn && !client.conn.destroyed`,
+// so every pool host read as disconnected and the blended library showed "can't reach your
+// libraries" while a raw dial reached the same host in the same instant. The connection object
+// must be reachable from the client after connect.
+test('connect() leaves the live connection on client.conn (poolClient depends on it)', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  assert.ok(client.conn, 'client.conn is set after connect')
+  assert.equal(client.conn.destroyed, false, 'and it is the LIVE connection, which poolClient checks')
+})

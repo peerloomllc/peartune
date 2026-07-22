@@ -1413,6 +1413,16 @@ const methods = {
   },
 
   async reconnect () {
+    // Merged mode reads from the POOL and the in-memory index, NOT the single active client -
+    // so reconnecting only `client` (ensureConnected) left the blended view exactly as empty as
+    // it found it. That is the "ran the Connection check, it reached both, went back to Library
+    // and nothing loaded" case: the check dials the pool, reconnect() dialled the wrong socket.
+    // Force a rebuild, which reconnects every host and refreshes the blend (and emits
+    // merged:updated for the chips). Fall back to the single client for single-host mode.
+    if (mergedMode()) {
+      await rebuildIndex()
+      return { ok: true, connected: mergedConnected.size > 0, merged: true, shimPort }
+    }
     await ensureConnected()
     return { ok: true, connected, shimPort }
   },
@@ -1775,7 +1785,10 @@ const methods = {
     // THREE dials per host, not one. Tim's two off-LAN runs eight minutes apart - same phone,
     // same DHT node - went abort-abort then reach-reach, so a single dial measures the moment
     // rather than the network. What we need to know is the HIT RATE.
-    const ATTEMPTS = 3
+    // FOUR, to match the app's own connect policy (client/index.js CONNECT_ATTEMPTS). A report
+    // that tries fewer times than the app understates what the app can do - and one that tried
+    // MORE is how the diagnostics came to disagree with the library screen in the first place.
+    const ATTEMPTS = 4
     for (const h of hosts) {
       const tries = []
       for (let i = 0; i < ATTEMPTS; i++) {

@@ -109,3 +109,14 @@ test('the same report is available as an email, because GitHub demands a login f
   assert.ok(decoded.includes('App 0.1.0'))
   assert.ok(!decoded.includes(key))
 })
+
+test('a failed dial reads as a network problem, not as an app bug', async () => {
+  const { friendlyError } = await load()
+  // The exact string client/index.js produces for a dial that never opened. It reached the
+  // user verbatim once - "could not reach the host" - which is developer wording for the one
+  // thing this classifier exists to translate.
+  const r = friendlyError('could not reach the host')
+  assert.equal(r.kind, 'known', 'not a bug report - the network is the story')
+  assert.match(r.title, /Can't reach your library/)
+  assert.ok(r.hint.includes('network'), 'and it says what to check')
+})

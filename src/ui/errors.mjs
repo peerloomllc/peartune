@@ -55,7 +55,9 @@ export function friendlyError (raw) {
       technical: m
     }
   }
-  if (/unreachable|timed out|timeout|offline|disconnect|connection|network|refused|ENOTFOUND|ECONN/i.test(m)) {
+  // "could not reach the host" is what the client now says for a dial that never opened, and it
+  // reached the user verbatim - developer wording for exactly the thing this branch translates.
+  if (/could not reach|couldn't reach|cannot reach|unreachable|timed out|timeout|offline|disconnect|connection|network|refused|ENOTFOUND|ECONN/i.test(m)) {
     return {
       kind: 'known',
       title: "Can't reach your library right now.",
