@@ -1467,7 +1467,7 @@ export default function App () {
     screen = (
       <Settings
         state={state} merged={merged} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
-        ident={ident} onSaveIdentity={saveIdentity} onQuality={changeQuality}
+        ident={ident} onRefreshIdentity={loadIdentity} onSaveIdentity={saveIdentity} onQuality={changeQuality}
         skin={skin} onSkin={setSkinValue}
         onSwitchHost={switchLibrary} onRemoveHost={removeLibrary} onAddLibrary={openAddLibrary}
       />
@@ -4203,7 +4203,13 @@ function compressToAvatarB64 (dataUrl, size = 256) {
   })
 }
 
-function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onSaveIdentity, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary }) {
+// How often Settings re-asks the host who this device belongs to WHILE the answer is still
+// "waiting to be confirmed". Slower than the worklet's own 4s session heartbeat, so this
+// adds less traffic than what an open connection already carries.
+const IDENT_POLL_MS = 5000
+const IDENT_POLL_MAX = 36 // 3 minutes of asking, then wait for the next time Settings opens
+
+function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [copied, setCopied] = useState(false)
   const [dev, setDev] = useState(null)
@@ -4212,6 +4218,29 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onSaveI
   const [cache, setCache] = useState(null) // { bytes, count, cap }
 
   useEffect(() => { call('cacheStats').then(setCache).catch(() => {}) }, [])
+
+  // WHO this device belongs to is the host's answer, and the operator changes it on their
+  // dashboard - out of band, while the app just sits here. #122 made the host answer
+  // truthfully, but nothing was ASKING again: the read only happened on connect and on
+  // pair, so a confirm or a rename did not show until the next reconnect. So: re-read
+  // whenever Settings opens, and keep asking while the note still says "waiting" - that is
+  // precisely when somebody is watching this screen for it to change. It stops the moment
+  // the host confirms, so a settled Settings tab is not a poll loop.
+  const identPending = !!ident && !ident.confirmed && ident.supported !== false
+  useEffect(() => {
+    if (!state.connected) return
+    onRefreshIdentity()
+    if (!identPending) return
+    // Bounded, because "waiting" can last as long as the operator takes and a Settings tab
+    // left open in a pocket must not poll for an hour. Three minutes covers somebody
+    // actually watching for the banner to flip; after that, reopening Settings re-arms it.
+    let left = IDENT_POLL_MAX
+    const t = setInterval(() => {
+      if (--left <= 0) return clearInterval(t)
+      onRefreshIdentity()
+    }, IDENT_POLL_MS)
+    return () => clearInterval(t)
+  }, [identPending, state.connected])
   const cap = cache?.cap ?? (state.settings?.cacheCap ?? 0)
   const setCap = async (bytes) => { haptic('light'); try { setCache(await call('setCacheCap', { bytes })) } catch {} }
   const clearCache = async () => { haptic('warn'); try { setCache(await call('clearCache')) } catch {} }
