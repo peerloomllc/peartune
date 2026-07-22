@@ -445,3 +445,63 @@ test('the merged session stores foreign trackIds + their routing tags opaquely',
   assert.equal(row.queue[0].libraryId, 'L2')            // the owning host survives the round-trip
   assert.deepEqual(row.queue[0].copies, [{ libraryId: 'L2', id: 'x' }])
 })
+
+// --- deleteOwner: "delete Ben" has to actually delete Ben's history ------------
+
+test('deleteOwner removes every row of one owner: favs, resume, counts, playlists, both sessions', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  await s.setFav('p:TIM', 'track', 'T1', true)
+  await s.setFav('p:TIM', 'album', 'A1', true)
+  await s.setFav('p:TIM', 'artist', 'AR1', false) // an explicit "off" row still has to go
+  await s.setResume('p:TIM', 'T1', 42_000, 200_000)
+  await s.bumpCount('p:TIM', 'T1')
+  const pl = await s.createPlaylist('p:TIM', 'Roadtrip')
+  await s.claimSession('p:TIM', 'PHONE', 0, false)
+  await s.claimSession('p:TIM', 'PHONE', 0, true)
+
+  const removed = await s.deleteOwner('p:TIM')
+  assert.equal(removed, 8) // 3 favs + resume + count + playlist + 2 sessions
+
+  assert.deepEqual(await s.listFavs('p:TIM'), { track: [], album: [], artist: [] })
+  assert.equal(await s.getResume('p:TIM', 'T1'), null)
+  assert.equal(await s.getCount('p:TIM', 'T1'), 0)
+  assert.deepEqual(await s.topCounts('p:TIM'), [])
+  assert.equal(await s.latestResume('p:TIM'), null)
+  assert.deepEqual(await s.listPlaylists('p:TIM'), [])
+  assert.equal(await s.getPlaylist('p:TIM', pl.id), null)
+  assert.equal(await s.getSession('p:TIM', false), null)
+  assert.equal(await s.getSession('p:TIM', true), null)
+})
+
+test('deleteOwner touches ONLY that owner, including an owner whose id is a prefix of another', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  // 'p:AB' is a strict prefix of 'p:ABC' - the `:` .. `;` bound is what keeps them apart.
+  for (const o of ['p:AB', 'p:ABC', 'd:AB']) {
+    await s.setFav(o, 'track', 'T1', true)
+    await s.setResume(o, 'T1', 1000, 2000)
+    await s.bumpCount(o, 'T1')
+    await s.createPlaylist(o, 'Mix')
+    await s.claimSession(o, 'PHONE', 0, false)
+  }
+
+  assert.equal(await s.deleteOwner('p:AB'), 5)
+
+  assert.deepEqual((await s.listFavs('p:AB')).track, [])
+  for (const other of ['p:ABC', 'd:AB']) {
+    assert.deepEqual((await s.listFavs(other)).track, ['T1'], other + ' keeps its favorites')
+    assert.equal((await s.getResume(other, 'T1')).positionMs, 1000)
+    assert.equal(await s.getCount(other, 'T1'), 1)
+    assert.equal((await s.listPlaylists(other)).length, 1)
+    assert.notEqual(await s.getSession(other, false), null)
+  }
+})
+
+test('deleteOwner on an owner with nothing stored is a no-op, not an error', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  assert.equal(await s.deleteOwner('p:NOBODY'), 0)
+})

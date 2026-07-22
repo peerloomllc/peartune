@@ -163,6 +163,22 @@ a { color: var(--primary-strong); }
 .sub { color: var(--muted); font-size: 12.5px; margin-top: 1px; display: flex; align-items: center; gap: 7px; min-width: 0; }
 .sub > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub.rev { color: var(--warn); }
+/* An emptied person (nobody's phone left) is kept, not auto-deleted - a phone that
+   left by itself carries back into this same person. So the row just READS as stale:
+   dimmed, with a "No devices" chip and when it emptied. It sorts below the people who
+   still hold a phone, and its Delete is the tidy-up. */
+.person.gone .name, .person.gone .avatar { opacity: .55; }
+.chip-gone {
+  flex: 0 0 auto; font-size: 11px; font-weight: 600; letter-spacing: .02em;
+  color: var(--subtle); background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 1px 7px;
+}
+.sweep {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 10px; padding: 9px 4px 2px; border-top: 1px dashed var(--border);
+  color: var(--muted); font-size: 12.5px;
+}
+.sweep > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* Needs-confirmation: a pending claim gets its own roomy card at the top of the
    list, so device rows stay uniform and the claim has space to be read + acted on. */
 .pend-hdr { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--warn); font-weight: 700; margin: 2px 2px 8px; }
@@ -465,5 +481,11 @@ button.destructive { background: var(--bad); color: #fff; }
   .modal { max-width: none; border-radius: 18px 18px 0 0; max-height: 92dvh; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
   .tabs button { font-size: 12px; padding: 9px 3px; }
 
+  /* The person row wraps here - but .who (name + sub) had no floor, so instead of
+     forcing that wrap it shrank to a sliver and its text ran under the buttons.
+     Give it a floor and the two actions drop to their own line, which is what the
+     wrap was for; they then share the width instead of sitting at 88px each. */
   .prow { flex-wrap: wrap; }
+  .who { min-width: 165px; }
+  .prow > button { flex: 1 1 auto; }
 }

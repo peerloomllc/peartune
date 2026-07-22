@@ -346,13 +346,14 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
 
       // Delete an EMPTY person (one holding no un-revoked device) from the store, so
       // the People list does not fill with dead rows. Refused for a person who still
-      // holds a live device - revoke them first.
+      // holds a live device - revoke them first. `purged` is how many user-state rows
+      // (favorites, resume, counts, playlists, sessions) went with them.
       if (req.method === 'POST' && url.pathname === '/api/person/delete') {
         const { personId } = await readBody(req)
         if (!personId) return json(res, 400, { error: 'personId required' })
-        const { deleted } = await host.deletePerson(personId)
+        const { deleted, purged } = await host.deletePerson(personId)
         if (!deleted) return json(res, 400, { error: 'can only delete a person with no active devices' })
-        return json(res, 200, { ok: true })
+        return json(res, 200, { ok: true, deleted: true, purged })
       }
 
       // Rename a person directly (the dashboard used to only reach a rename by

@@ -511,11 +511,18 @@ class PearTuneHost {
   // Remove an empty person (grants.deletePerson refuses one that still holds a live
   // device). Nothing to kill: their live devices, if any, are what would have blocked
   // the delete.
+  //
+  // Deleting the person ALSO purges their user state, because the personId is minted
+  // fresh and never reused - so those favorites, resume points, counts and playlists
+  // become unreachable the moment the row goes. Leaving them was a slow leak and a
+  // privacy wart ("delete Ben" that did not delete Ben's history). Order matters: the
+  // person row goes FIRST, since that is the guarded step that can refuse.
   async deletePerson (personId) {
     const person = await this.grants.deletePerson(personId)
     if (!person) return { deleted: null }
-    this.log('host:person-deleted', { personId })
-    return { deleted: person }
+    const purged = await this.userState.deleteOwner('p:' + personId)
+    this.log('host:person-deleted', { personId, purged })
+    return { deleted: person, purged }
   }
 
   async listDevices () {

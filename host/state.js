@@ -333,6 +333,31 @@ class UserState {
     await this.bee.put(this._sessionKey(ownerId, merged), row, { valueEncoding: 'json' })
     return row
   }
+
+  // --- purge one owner ------------------------------------------------------
+  //
+  // Remove EVERY row this owner holds: favorites, resume points, play counts,
+  // playlists and both session rows. The operator deleting a person is the only
+  // caller (host/server.js). Without it "Delete Ben" left Ben's listening history
+  // in the store forever, unreachable but present - a slow leak AND a privacy wart,
+  // since the button plainly says delete.
+  //
+  // Scoped by the same `:` .. `;` bound trick listFavs uses, so owner `p:abc` never
+  // reaches `p:abcd` ('d' sorts above ';'). Keys are collected before deleting rather
+  // than deleted mid-stream. Returns how many rows went.
+  async deleteOwner (ownerId) {
+    const keys = []
+    for (const prefix of ['fav', 'resume', 'count', 'playlist']) {
+      const lo = `${prefix}:${ownerId}:`
+      const hi = `${prefix}:${ownerId};`
+      for await (const node of this.bee.createReadStream({ gte: lo, lt: hi })) keys.push(node.key)
+    }
+    for (const key of [this._sessionKey(ownerId, false), this._sessionKey(ownerId, true)]) {
+      if (await this.bee.get(key)) keys.push(key)
+    }
+    for (const key of keys) await this.bee.del(key)
+    return keys.length
+  }
 }
 
 module.exports = { UserState, FAV_KINDS }
