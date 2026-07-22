@@ -138,6 +138,19 @@ export default function App () {
   const [merged, setMerged] = useState(null)
   const [filter, setFilter] = useState('_all')
 
+  // Seed the pairing form from the identity this device already carries. Removing a library
+  // (or unpairing entirely) deliberately KEEPS deviceName/userName in settings.json - you are
+  // still you - but the form used to open blank, so the obvious thing to do was retype your
+  // name. Retype it differently and the host mints a SECOND person, which is where a good
+  // share of the orphan people came from. Seeds a field only while it is still empty, so it
+  // can never overwrite what someone is typing, and openAddLibrary's explicit prefill wins.
+  useEffect(() => {
+    const d = state.settings?.deviceName || ''
+    const u = state.settings?.userName || ''
+    if (!d && !u) return
+    setPairNames(p => ({ deviceName: p.deviceName || d, userName: p.userName || u }))
+  }, [state.settings?.deviceName, state.settings?.userName])
+
   useEffect(() => {
     call('init')
       .then((s) => {
