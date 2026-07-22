@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   MusicNotes, UsersThree, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
   CaretRight, Plus, X, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
-  Lightning, CheckCircle, Folder, CaretLeft, Wrench
+  Lightning, CheckCircle, Folder, CaretLeft, Wrench, Clock
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
 import { api, copyText, ago, until, fmtDur, platformLabel, DONATE } from './api'
@@ -786,9 +786,45 @@ function PairModal ({ onClose, toast }) {
   const [guest, setGuest] = useState(false)
   const [durMs, setDurMs] = useState(DAY_MS)
   const [copied, setCopied] = useState(false)
+  const [outcome, setOutcome] = useState(null) // { ok: true, label } | { ok: false } once the window ends
+  const seenKeys = useRef(new Set())
   const copyLink = async () => { if (await copyText(qr.link)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }
+
+  // Watch the open window and SAY what happened, instead of leaving the operator holding a QR with
+  // no idea whether it worked. The host's pair window is one-shot - pair.js close('paired') - so
+  // `pairing` flips true->false either way; a NEW device row is what separates "paired" from
+  // "expired". Polls faster than the dashboard's 3s so the confirmation feels immediate, and only
+  // while a code is actually on screen.
+  useEffect(() => {
+    if (!qr || outcome) return
+    let done = false
+    const t = setInterval(async () => {
+      if (done) return
+      const st = await api('/api/state').catch(() => null)
+      if (!st || done) return
+      const fresh = (st.devices || []).find(d => !d.revokedAt && !seenKeys.current.has(d.deviceKey))
+      if (fresh) {
+        done = true
+        setOutcome({ ok: true, label: fresh.label || 'a device' })
+        // The window is already closed host-side, so there is nothing to stop - close straight
+        // through the parent, not the modal's own handler (which would POST /api/pair/stop).
+        setTimeout(() => onClose(), 2200)
+      } else if (st.pairing === false) {
+        // The window ended with nobody through it. Do NOT auto-close: the operator is standing
+        // there and needs a fresh code, not a modal that vanishes.
+        done = true
+        setOutcome({ ok: false })
+      }
+    }, 1000)
+    return () => { done = true; clearInterval(t) }
+  }, [qr, outcome])
   const start = async () => {
     setBusy(true)
+    // Remember who was here BEFORE the window opened. A device key that was not in this set is the
+    // one that just paired through it - which is what lets us say WHICH device, and lets us tell a
+    // successful pair from a window that simply timed out.
+    const before = await api('/api/state').catch(() => null)
+    seenKeys.current = new Set((before?.devices || []).map(d => d.deviceKey))
     // A guest window carries the operator's chosen duration; a full window sends nothing.
     const r = await api('/api/pair/start', guest ? { expiresMs: durMs } : {})
     // margin 4 = the spec's full quiet zone (was 1). A too-thin quiet zone hurts scanning, and it
@@ -817,12 +853,32 @@ function PairModal ({ onClose, toast }) {
               : <p className='hint center'>Permanent access. Scan the code in PearTune on your phone.</p>}
             <button onClick={start} disabled={busy}>{busy ? 'Starting…' : 'Show pairing code'}</button>
           </div>
-        : <div className='stack center'>
-            {qr.dataUrl && <img className='qr' src={qr.dataUrl} alt='Pairing QR code' />}
-            <div className='hint center'>
-              {qr.guest
-                ? `Guest pass — access expires ${fmtDur(qr.expiresMs)} after this device pairs.`
-                : 'Valid for 5 minutes. Closes as soon as one device pairs.'}
+        : outcome
+          ? <div className='stack center'>
+              {outcome.ok
+                ? <>
+                    <CheckCircle size={44} weight='fill' color='var(--good)' />
+                    <h3 className='pairdone'>Paired with {outcome.label}</h3>
+                    <p className='hint center'>It can reach your library now. Closing…</p>
+                  </>
+                : <>
+                    <Clock size={40} weight='regular' color='var(--muted)' />
+                    <h3 className='pairdone'>That code expired</h3>
+                    <p className='hint center'>Nobody paired through it. Show a fresh one when the phone is ready.</p>
+                    <div className='pairacts'>
+                      <button className='ghost' onClick={onClose}>Close</button>
+                      <button onClick={() => { setOutcome(null); setQr(null) }}>New code</button>
+                    </div>
+                  </>}
+            </div>
+          : <div className='stack center'>
+            <div className='qrpanel'>
+              {qr.dataUrl && <img className='qr' src={qr.dataUrl} alt='Pairing QR code' />}
+              <div className='qrcap'>
+                {qr.guest
+                  ? `Guest pass — access expires ${fmtDur(qr.expiresMs)} after this device pairs.`
+                  : 'Valid for 5 minutes. Closes as soon as one device pairs.'}
+              </div>
             </div>
             <div className='keyrow'>
               <div className='key addr'>{qr.link}</div>

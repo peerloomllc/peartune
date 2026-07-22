@@ -317,6 +317,15 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 /* A bigger, well-padded WHITE card: a larger high-contrast target fills more of the camera frame,
    so its auto-exposure meters the QR itself instead of a dark page around it (dark-mode scan fix). */
 .qr { width: 240px; height: 240px; background: #fff; border-radius: 12px; padding: 14px; }
+/* ...and a LIGHT PANEL around it, in BOTH themes. The remaining dark-mode scanning problem is the
+   phone camera's auto-exposure: a white card floating in a dark modal is a small bright island, so
+   the camera meters the dark surroundings and blows out the card, washing the modules into grey.
+   Widening the light region means the camera meters something close to what it is trying to read.
+   Deliberately theme-independent - in light mode it costs nothing, and "the QR looks the same
+   wherever you are" is easier to support than a QR that only scans in one theme. */
+.qrpanel { background: #fff; border-radius: 18px; padding: 22px 26px; display: inline-flex; flex-direction: column; align-items: center; gap: 10px; }
+/* The caption rides INSIDE the panel, so it is legible against white in dark mode too. */
+.qrpanel .qrcap { color: #3a3a3a; font-size: 12.5px; line-height: 1.45; max-width: 260px; }
 .tabs { display: flex; gap: 8px; margin-bottom: 14px; width: 100%; }
 .tabs button { flex: 1 1 0; min-width: 0; padding: 9px 4px; font-size: 12.5px; gap: 5px; white-space: nowrap; }
 /* Reserved caption height so the sheet stays the same size across Lightning /
@@ -336,6 +345,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .keyrow .key { flex: 1 1 auto; min-width: 0; }
 .copybtn { flex: none; width: 30px; height: 30px; }
 /* The pairing modal's footer actions: Cancel + Copy side by side. */
+.pairdone { margin: 0; font-size: 15.5px; }
 .pairacts { display: flex; gap: 8px; justify-content: center; }
 .pairacts button { display: inline-flex; align-items: center; gap: 6px; }
 .btnrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
