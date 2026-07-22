@@ -213,7 +213,14 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
       // stored as complete. Transcodes (above) are never cached: they have no stable
       // bytes to seek back into.
       const full = start === 0 && end === m.size - 1
-      const sink = (cache && full && !cache.has(trackId)) ? cache.createSink(trackId, { mime: m.mime, size: m.size }) : null
+      // Tag the bytes with the library they came from (conn.libraryId - set by connect(), so
+      // it is right in merged mode AND single-host, where the URL carries no library). It is
+      // the only chance to record it: a trackId is a hash of the libraryId, so nothing can
+      // work it out afterwards - which is why removing a library used to strand its streamed
+      // audio until the LRU cap ate it.
+      const sink = (cache && full && !cache.has(trackId))
+        ? cache.createSink(trackId, { mime: m.mime, size: m.size, library: trackLib || conn.libraryId || null })
+        : null
 
       res.writeHead(partial ? 206 : 200, {
         'content-type': m.mime,

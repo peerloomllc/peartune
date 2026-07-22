@@ -142,6 +142,92 @@ test('clear() empties the index and deletes every file (the purge primitive)', a
   assert.equal(fs.existsSync(path.join(d, 'b')), false)
 })
 
+// --- per-library purge (removing ONE library while others stay) --------------
+
+// Same as put(), but tagged with the library the bytes came from.
+async function putFrom (cache, id, library, bytes = Buffer.alloc(100)) {
+  const sink = cache.createSink(id, { mime: 'audio/flac', size: bytes.length, library })
+  sink.write(bytes)
+  return sink.commit()
+}
+
+test('removeLibrary drops ONLY that library\'s audio, and the files are really gone', async (t) => {
+  const d = await dir(t)
+  const cache = new AudioCache({ dir: d })
+  await putFrom(cache, 'a1', 'libA', Buffer.alloc(300))
+  await putFrom(cache, 'a2', 'libA', Buffer.alloc(200))
+  await putFrom(cache, 'b1', 'libB', Buffer.alloc(100))
+
+  const r = cache.removeLibrary('libA')
+  assert.deepEqual({ removed: r.removed, bytes: r.bytes, untagged: r.untagged }, { removed: 2, bytes: 500, untagged: 0 })
+  assert.equal(cache.has('a1'), false)
+  assert.equal(cache.has('a2'), false)
+  assert.equal(cache.has('b1'), true, 'the OTHER library is untouched')
+  assert.equal(fs.existsSync(path.join(d, 'a1')), false)
+  assert.equal(fs.existsSync(path.join(d, 'b1')), true)
+})
+
+test('removeLibrary takes PINNED downloads too - a removed library keeps nothing', async (t) => {
+  const d = await dir(t)
+  const cache = new AudioCache({ dir: d })
+  await putFrom(cache, 'dl', 'libA')
+  cache.setPinned('dl', true)
+
+  assert.equal(cache.removeLibrary('libA').removed, 1)
+  assert.equal(cache.has('dl'), false, 'pinned is protection from EVICTION, not from removing the library')
+})
+
+test('entries written before the library tag existed are left alone, and counted', async (t) => {
+  const d = await dir(t)
+  const cache = new AudioCache({ dir: d })
+  await put(cache, 'legacy', Buffer.alloc(100)) // no library recorded
+  await putFrom(cache, 'tagged', 'libA')
+
+  const r = cache.removeLibrary('libA')
+  assert.equal(r.removed, 1)
+  assert.equal(r.untagged, 1, 'reported, so the log can be honest about what was left')
+  assert.equal(cache.has('legacy'), true, 'unattributable: claiming it could delete another library\'s audio')
+})
+
+test('a removeLibrary survives a reopen (the index was persisted)', async (t) => {
+  const d = await dir(t)
+  const c1 = new AudioCache({ dir: d })
+  await putFrom(c1, 'a1', 'libA')
+  await putFrom(c1, 'b1', 'libB')
+  c1.removeLibrary('libA')
+
+  const c2 = new AudioCache({ dir: d })
+  assert.equal(c2.has('a1'), false, 'a dropped row must not come back pointing at a deleted file')
+  assert.equal(c2.has('b1'), true)
+})
+
+test('removeLibrary with no library id is a no-op, not a wipe', async (t) => {
+  const d = await dir(t)
+  const cache = new AudioCache({ dir: d })
+  await putFrom(cache, 'a1', 'libA')
+  await put(cache, 'legacy', Buffer.alloc(50))
+
+  assert.deepEqual(cache.removeLibrary(null), { removed: 0, bytes: 0, untagged: 0 })
+  assert.deepEqual(cache.removeLibrary(''), { removed: 0, bytes: 0, untagged: 0 })
+  assert.equal(cache.count(), 2)
+})
+
+test('save() persists removals made by hand (remove() alone does not)', async (t) => {
+  const d = await dir(t)
+  const c1 = new AudioCache({ dir: d })
+  await put(c1, 'gone', Buffer.alloc(100))
+  await put(c1, 'stays', Buffer.alloc(100))
+  c1.remove('gone')
+
+  // Without the save, the row returns on the next launch and has() lies about a file
+  // that is no longer on disk.
+  assert.equal(new AudioCache({ dir: d }).has('gone'), true, 'remove() alone is in-memory')
+  c1.save()
+  const c2 = new AudioCache({ dir: d })
+  assert.equal(c2.has('gone'), false)
+  assert.equal(c2.has('stays'), true)
+})
+
 function streamToBuffer (rs) {
   return new Promise((resolve, reject) => {
     const chunks = []

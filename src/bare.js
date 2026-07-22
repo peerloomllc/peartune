@@ -103,8 +103,9 @@ const DEFAULT_CACHE_CAP = 1024 * 1024 * 1024 // 1 GB
 const leaseFile = () => path.join(libDir(), 'lease.json')
 const LEASE_GRACE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 // The PINNED-ALBUM registry (milestone 3, phase 5C): what the user explicitly downloaded,
-// separate from the auto-LRU cache. Maps albumId -> { id, name, artist, coverId, trackIds,
-// addedAt, complete }. The bytes live in the audio cache (marked pinned); this is the
+// separate from the auto-LRU cache. Maps albumId -> { id, name, artist, coverId, tracks,
+// addedAt, complete } - `tracks` being the track METADATA, so a download still renders with
+// no host. The bytes live in the audio cache (marked pinned); this is the
 // human-facing list the Downloads view shows and unpins.
 const pinsFile = () => path.join(libDir(), 'pins.json')
 
@@ -254,8 +255,24 @@ function purgeLibrary (libraryId) {
   try {
     const pins = JSON.parse(fs.readFileSync(path.join(dir, 'pins.json'), 'utf8'))
     for (const alb of Object.values(pins || {})) {
-      for (const tid of (alb.trackIds || [])) { try { audioCache.remove(tid) } catch {} }
+      // `tracks` is what pinAlbum writes: the track METADATA, so a download renders with no
+      // host. This used to read `alb.trackIds`, which pins.json has never contained (only the
+      // comment on pinsFile said so), so the loop silently dropped nothing and removing a
+      // library left its DOWNLOADED audio on disk with no way left to reach it.
+      const ids = (alb.tracks || []).map(t => t && t.id).filter(Boolean)
+      for (const tid of (ids.length ? ids : (alb.trackIds || []))) { try { audioCache.remove(tid) } catch {} }
     }
+    // remove() does not persist (see cache.js), so without this the rows come back on the
+    // next launch pointing at files that are gone.
+    try { audioCache.save() } catch {}
+  } catch {}
+
+  // The STREAMED audio, which the pins list above cannot see. Entries written before the
+  // library tag existed have none and are deliberately left alone - claiming them would risk
+  // deleting another library's cache - so they keep ageing out under the LRU cap as before.
+  try {
+    const { removed, bytes, untagged } = audioCache.removeLibrary(libraryId)
+    if (removed || untagged) log('local:audio-purged', { library: libraryId.slice(0, 8), removed, bytes, untagged })
   } catch {}
   for (const n of ['queue.json', 'favorites.json', 'playlists.json', 'outbox.json', 'lease.json', 'pins.json']) {
     try { fs.unlinkSync(path.join(dir, n)) } catch {}
@@ -2243,7 +2260,9 @@ const methods = {
       try {
         if (!audioCache.has(t.id)) {
           const mime = mimeFor(t.suffix ? 'a.' + t.suffix : (t.path || t.title || ''))
-          const sink = audioCache.createSink(t.id, { mime, size: t.size })
+          // Tagged with the library, same as the shim's write-through: it is what lets
+          // removing ONE library reclaim its bytes while the others stay downloaded.
+          const sink = audioCache.createSink(t.id, { mime, size: t.size, library: client.libraryId || currentHost?.libraryId || null })
           await client.streamTo({ trackId: t.id }, (chunk) => sink.write(chunk))
           if (!await sink.commit()) throw new Error('incomplete download')
         }
