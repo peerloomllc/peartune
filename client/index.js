@@ -39,9 +39,26 @@ const PAIR_RETRY_GAP_MS = 500
 // The punch is INTERMITTENT on a carrier NAT, so a single dial reports a hard failure for
 // something a retry a moment later just... does. Pairing has retried since #125; connect
 // never did, which is why "I can't connect when I'm out" and "it works now" were both true.
-const CONNECT_ATTEMPTS = 3
-const CONNECT_RETRY_BUDGET_MS = 14000
+// The budget has to cover the WORST CASE of an attempt, not the average, because an aborted
+// hole-punch is slow to fail. Measured on Tim's Pixel, off-LAN on 5G, both hosts, both with
+// and without Tailscale: a failing attempt costs 4-12s (hyperdht gives up around 11.5s) and
+// the one that WORKS lands in 0.5-1.7s. Typical: fail 11.6s, fail 11.7s, succeed 1.7s.
+//
+// The first cut of this retry used a 14s budget copied from pair(), which stopped exactly ONE
+// attempt before the one that would have connected - so the diagnostics screen (no budget,
+// three dials) reached both libraries while the app itself reported them unreachable, on the
+// same phone, seconds apart. That is the bug this constant exists to not have.
+//
+// 45s is deliberately generous: it only ever elapses when the host was FOUND and the punch is
+// failing, which is precisely when persisting pays. A host that is off answers PEER_NOT_FOUND
+// in milliseconds, so all attempts finish in ~2s and nobody waits.
+const CONNECT_ATTEMPTS = 4
+const CONNECT_RETRY_BUDGET_MS = 45000
 const CONNECT_RETRY_GAP_MS = 600
+
+// What one failing attempt costs in the field, from the reports above. The budget must leave
+// room to START another attempt after two of them - see test/connect-policy.test.js.
+const OBSERVED_WORST_ATTEMPT_MS = 12000
 
 class PearTuneClient {
   constructor ({ keyPair, dht = null, bootstrap = null, log = () => {} }) {
@@ -458,4 +475,13 @@ class PearTuneClient {
   }
 }
 
-module.exports = { PearTuneClient, ERR }
+module.exports = {
+  PearTuneClient,
+  ERR,
+  // Exported for test/connect-policy.test.js, which pins them against measured field timings.
+  CONNECT_ATTEMPTS,
+  CONNECT_RETRY_BUDGET_MS,
+  CONNECT_RETRY_GAP_MS,
+  CONNECT_TIMEOUT,
+  OBSERVED_WORST_ATTEMPT_MS
+}
