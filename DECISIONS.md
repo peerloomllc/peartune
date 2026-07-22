@@ -2,6 +2,52 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-22 (night) - Hyperswarm transport phase 1: host ANNOUNCES the topic, it does not run Hyperswarm
+Tier: T3 (proposal 2026-07-22-hyperswarm-transport, PR #153 = approved). Branch
+feat/hyperswarm-transport-phase1-host. Phase 1 of 4. Host-side only; no wire, grant, revoke or media change.
+
+WHAT SHIPPED: the host announces a discovery topic derived from its key (`hostTopic(hostKey)` =
+blake2b(NS || hostKey), protocol/ids.js) so a phone can find it by DHT LOOKUP and keep retrying until a
+hole-punch lands - the off-LAN fix. `host/server.js` ready() now, after `server.listen(keyPair)`, does
+`dht.announce(topic, keyPair)` and re-announces every 10 min (unref'd; the DHT record TTL is ~20 min);
+close() unannounces. `_onconnection` and `_firewall` are BYTE-FOR-BYTE unchanged.
+
+THE DIVERGENCE FROM THE PROPOSAL, and why. The proposal said "replace createServer+listen with
+Hyperswarm+topic join" on the host. I did NOT run Hyperswarm on the host; I kept createServer and added a
+raw announce. Two reasons, the second one measured, not guessed:
+  1. Two dht servers on one keypair deadlock. A Hyperswarm with server:true runs its OWN dht.createServer
+     on the host keypair. Standing one up beside the host's existing server is exactly the deadlock
+     host/server.js already documents. (Deleting the old server and relying only on Hyperswarm's would
+     have been the alternative - which runs into #2.)
+  2. Hyperswarm's firewall wrapper cannot carry our ASYNC grant lookup. host/gate `_firewall` awaits a
+     Hyperbee lookup. Hyperswarm's `_handleFirewall` (node_modules/hyperswarm/index.js:315) is synchronous:
+     it treats the firewall's return as a boolean, and an async firewall returns a Promise, which is always
+     truthy, so it BANS the peer (peers.get(...).banned = true) on the very first connection. The DHT still
+     admits that first connect (it awaits the real Promise), but the ban makes line 313 deny the peer's
+     every RECONNECT synchronously. MEASURED on a hyperdht testnet 2026-07-22: allowed key connects once,
+     then reconnect #2 and #3 are refused. Fatal for a music app whose phone reconnects constantly. Two
+     scratch scripts proved both halves (first-connect works; reconnect banned).
+So the host stays on createServer (async firewall intact, admission unchanged, no ban bug), and ONLY the
+PHONE gets Hyperswarm's ConnectionManager in phase 2 - which is where the retry-forever + keepalive that
+actually fixes off-LAN lives. The host is a server; it never needed Hyperswarm's client-side retry anyway.
+`dht.announce` is precisely the piece of Hyperswarm the host DOES need (topic discoverability), minus the
+firewall wrapper that breaks us.
+
+BACKWARD COMPAT (the migration invariant): raw `dht.connect(hostKey)` still reaches the host because
+`server.listen(keyPair)` is unchanged - an un-upgraded phone keeps working against an upgraded host. A NEW
+phone (phase 2 topic-client) needs a host that announces the topic, i.e. this release. So: ship the host,
+confirm old phones still connect, then ship the app. Reversible in either order.
+
+SECURITY: hostTopic = hash(hostKey) exposes nothing new. Anyone who knows the host key could already
+dht.connect it; a topic only lets the same peer find it by lookup. The firewall remains the SOLE admission
+control - a topic-stranger is refused exactly as a key-dialer is. Pinned by test/transport.test.js: a
+granted device finds the host over the topic; a stranger on the topic gets no connection; raw dht.connect
+still works. +4 tests (3 transport, 1 hostTopic determinism), verify green at 459.
+
+DEPLOY: host change - does nothing until the host runs it. Needs the Mac host redeployed from source
+(host/redeploy-mac.sh) and/or the Umbrel image rebuilt + redeployed (Tim-gated). Until then hosts simply
+do not announce the topic and everything runs as today.
+
 ## 2026-07-22 (evening) - Off-LAN measured: the hole-punch is ~12% on Google Fi, so retries cannot save it
 Tier: T1 note backing a still-open T3 (the relay). Data gathered by driving Tim's Pixel over USB with wifi
 disabled (= Google Fi cellular = off-LAN; USB keeps adb alive), running the diagnostics 6 times via CDP - no

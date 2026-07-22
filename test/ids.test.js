@@ -10,7 +10,7 @@ const assert = require('node:assert/strict')
 const hcrypto = require('hypercore-crypto')
 const b4a = require('b4a')
 
-const { libraryId, trackId, ledgerTopic, randomRv } = require('../protocol/ids')
+const { libraryId, trackId, ledgerTopic, hostTopic, randomRv } = require('../protocol/ids')
 
 const hostKey = hcrypto.keyPair().publicKey
 const lib = libraryId(hostKey)
@@ -57,6 +57,18 @@ test('ledgerTopic is deterministic per library and namespaced', () => {
   assert.ok(b4a.equals(ledgerTopic(lib), lt))
   // A different library is a different topic.
   assert.ok(!b4a.equals(ledgerTopic(libraryId(hcrypto.keyPair().publicKey)), lt))
+})
+
+test('hostTopic is a deterministic 32-byte topic from the host key, both ends agree', () => {
+  const topic = hostTopic(hostKey)
+  assert.equal(topic.byteLength, 32)
+  // Host and phone derive it from the SAME host key -> the same topic.
+  assert.ok(b4a.equals(hostTopic(hostKey), topic))
+  // A different host is a different topic.
+  assert.ok(!b4a.equals(hostTopic(hcrypto.keyPair().publicKey), topic))
+  // Namespaced away from the other key-derived ids, so it can never collide with
+  // the library id or the ledger topic derived from the same material.
+  assert.ok(!b4a.equals(hostTopic(hostKey), ledgerTopic(lib)))
 })
 
 test('randomRv yields 32 unguessable bytes', () => {

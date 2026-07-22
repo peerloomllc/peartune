@@ -15,6 +15,7 @@ const NS_LIBRARY = hcrypto.hash(b4a.from('peartune/library/1'))
 const NS_TRACK = hcrypto.hash(b4a.from('peartune/track/1'))
 const NS_GROUP = hcrypto.hash(b4a.from('peartune/group/1'))
 const NS_LEDGER_TOPIC = hcrypto.hash(b4a.from('peartune/ledger-topic/1'))
+const NS_HOST_TOPIC = hcrypto.hash(b4a.from('peartune/host-topic/1'))
 
 function toBuf (x) {
   if (b4a.isBuffer(x)) return x
@@ -83,10 +84,27 @@ function ledgerTopic (libId) {
   return hcrypto.hash(b4a.concat([NS_LEDGER_TOPIC, z32.decode(libId)]))
 }
 
+// The Hyperswarm discovery topic for a HOST, derived from its 32-byte public key
+// (the raw key buffer, exactly as libraryId takes it - NOT a z32 string). Both
+// ends derive it: the host from its own key, the phone from the hostKey it already
+// holds from pairing. Used from the persistent-Hyperswarm transport (proposal
+// 2026-07-22): the host announces it, the phone joins it and retries until a
+// hole-punch lands.
+//
+// This exposes NOTHING new. Anyone who knows the host key could already
+// dht.connect(hostKey) today; hashing it into a topic only lets the same peer
+// find the host by lookup instead of by key. Admission is unchanged: the host's
+// firewall still refuses any device without a grant, so finding the host on this
+// topic gets a stranger exactly as far as dialing it by key does - nowhere. A
+// 32-byte Buffer (a Hyperswarm topic), not a z32 string.
+function hostTopic (hostKey) {
+  return hcrypto.hash(b4a.concat([NS_HOST_TOPIC, toBuf(hostKey)]))
+}
+
 // One-time pairing token, presented by the phone to prove it saw the QR. Not a
 // topic: pairing dials the host by key. See host/pair.js.
 function randomRv () {
   return hcrypto.randomBytes(32)
 }
 
-module.exports = { libraryId, trackId, groupId, ledgerTopic, randomRv }
+module.exports = { libraryId, trackId, groupId, ledgerTopic, hostTopic, randomRv }
