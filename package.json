@@ -20,6 +20,15 @@
     "ios": "expo run:ios",
     "postinstall": "patch-package"
   },
+  "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": [
+          "expo-audio"
+        ]
+      }
+    }
+  },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
     "b4a": "^1.6.7",
