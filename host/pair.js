@@ -30,6 +30,7 @@ const sodium = require('sodium-universal')
 const Protomux = require('protomux')
 
 const { pairChannel } = require('../protocol/channels')
+const { carryOverPerson } = require('./gate')
 const { PAIR_TTL_MS } = require('../protocol/constants')
 const { randomRv } = require('../protocol/ids')
 const { encodeLink } = require('../protocol/link')
@@ -142,18 +143,40 @@ class PairSession {
           guest: !!this.expiresMs
         })
       } else {
+        // A device that LEFT BY ITSELF and is pairing back comes home to its person
+        // (proposal 2026-07-21). Everything else - an operator revoke, a revoked person, a
+        // person deleted meanwhile, a tombstone from before `revokedBy` existed - mints an
+        // unassigned grant, exactly as before, and the claim/confirm flow applies. The rule
+        // itself is in gate.carryOverPerson; this only feeds it the two rows it judges.
+        const priorPerson = existing?.personId ? await this.grants.getPerson(existing.personId) : null
+        const restored = carryOverPerson(existing, priorPerson)
+
         await this.grants.grant({
           deviceKey: remoteKey,
+          personId: restored,
           label: hello.label || 'device',
           platform: hello.platform || '',
           grantedBy: this.expiresMs ? 'qr-guest' : 'qr-pair',
-          expiresAt: this.expiresMs ? Date.now() + this.expiresMs : null
+          expiresAt: this.expiresMs ? Date.now() + this.expiresMs : null,
+          // Carried with the person, so the dashboard does not show it assigned yet
+          // claiming nobody (claimMismatch reads these two together).
+          claimedUser: restored ? (existing.claimedUser ?? null) : null,
+          claimedAt: restored ? (existing.claimedAt ?? null) : null
         })
         this.log('pair:granted', {
           device: z32.encode(remoteKey).slice(0, 8),
           label: hello.label,
           guest: !!this.expiresMs
         })
+        // Its own line, because a re-pair that hands an identity back must be visible in
+        // the log rather than inferred from a diff of the grant store.
+        if (restored) {
+          this.log('pair:person-restored', {
+            device: z32.encode(remoteKey).slice(0, 8),
+            person: restored,
+            name: priorPerson.name
+          })
+        }
       }
 
       // Only now, over an authenticated connection, does the phone learn how to

@@ -447,7 +447,7 @@ class PearTuneHost {
   // what makes revoke mean "the music stops now" instead of "the music stops
   // whenever they happen to reconnect".
   async revokeDevice (deviceKey) {
-    const row = await this.grants.revoke(deviceKey)
+    const row = await this.grants.revoke(deviceKey, { by: 'operator' })
     const killed = this.connections.kill(deviceKey)
     this.log('host:revoked', {
       device: Grants.keyOf(deviceKey).slice(0, 8),
@@ -464,7 +464,9 @@ class PearTuneHost {
   // own behalf. The revoked row is hidden by the dashboard's "show revoked" toggle, so the device
   // drops out of the default Devices list.
   async leaveDevice (deviceKey) {
-    const row = await this.grants.revoke(deviceKey)
+    // 'self': the DEVICE ended this, not the operator - so pairing again may bring it back
+    // to the person it held (gate.carryOverPerson). An operator revoke never does.
+    const row = await this.grants.revoke(deviceKey, { by: 'self' })
     const killed = this.connections.kill(deviceKey)
     this.log('host:device-left', {
       device: Grants.keyOf(deviceKey).slice(0, 8),

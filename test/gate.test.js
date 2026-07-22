@@ -12,7 +12,7 @@ const EventEmitter = require('events')
 const hcrypto = require('hypercore-crypto')
 const z32 = require('z32')
 
-const { decide, sweepKills, Connections } = require('../host/gate')
+const { decide, sweepKills, carryOverPerson, Connections } = require('../host/gate')
 
 const NOW = 1_000_000
 const okGrant = (over = {}) => ({
@@ -190,6 +190,53 @@ test('sweepKills: only the expired ones among many are returned', () => {
 test('sweepKills: a live device with no grant at all is cut (fail-closed)', () => {
   const lookups = new Map() // nothing known about this key
   assert.deepEqual(sweepKills(['ghost'], lookups, NOW), ['ghost'])
+})
+
+// --- carryOverPerson: may a returning device inherit its old person? ---------
+//
+// The rule is deliberately narrow, and every way of NOT qualifying is pinned here:
+// this is the one place that can hand an identity back without an operator click.
+
+const TIM = { id: 'p1', name: 'Tim', revokedAt: null }
+const left = (over = {}) => ({
+  deviceKey: 'abc', personId: 'p1', claimedUser: 'Tim',
+  revokedAt: NOW - 10, revokedBy: 'self', ...over
+})
+
+test('carryOverPerson: a device that LEFT BY ITSELF comes back to its person', () => {
+  assert.equal(carryOverPerson(left(), TIM), 'p1')
+})
+
+test('carryOverPerson: an OPERATOR revoke does not - that checkpoint is the point of revoke', () => {
+  assert.equal(carryOverPerson(left({ revokedBy: 'operator' }), TIM), null)
+})
+
+test('carryOverPerson: revoking the whole PERSON does not bring its devices back', () => {
+  assert.equal(carryOverPerson(left({ revokedBy: 'person' }), TIM), null)
+})
+
+test('carryOverPerson: a tombstone from BEFORE revokedBy existed does not carry over', () => {
+  // Every grant already on disk when this shipped looks like this. Undefined is not
+  // 'self', so nothing in the field changes behaviour.
+  const old = left()
+  delete old.revokedBy
+  assert.equal(carryOverPerson(old, TIM), null)
+})
+
+test('carryOverPerson: nothing to return to - person deleted, or revoked meanwhile', () => {
+  assert.equal(carryOverPerson(left(), null), null, 'deleted while the device was away')
+  assert.equal(carryOverPerson(left(), { ...TIM, revokedAt: NOW }), null, 'revoked while away')
+})
+
+test('carryOverPerson: an unassigned device, and a LIVE grant, carry nothing', () => {
+  assert.equal(carryOverPerson(left({ personId: null }), TIM), null, 'it belonged to nobody')
+  assert.equal(carryOverPerson(left({ revokedAt: null }), TIM), null, 'not a tombstone at all')
+  assert.equal(carryOverPerson(null, TIM), null, 'never paired here before')
+})
+
+test('carryOverPerson: the loaded person must be the one the grant points at', () => {
+  // A caller that loaded the wrong row must not silently attach the device to it.
+  assert.equal(carryOverPerson(left(), { id: 'p2', name: 'Someone else', revokedAt: null }), null)
 })
 
 test('Connections: deviceKeys lists exactly the devices holding a live connection', () => {
