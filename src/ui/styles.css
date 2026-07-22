@@ -82,12 +82,51 @@ input {
   border-radius: 10px; border: 1px solid var(--color-border);
   background: var(--color-surface-input); color: var(--color-text-primary);
 }
+/* The bare red bar. Still used inside the QR scanner overlay, where a full card
+   would cover the viewfinder; everywhere else it is now .problem below. */
 .error {
   background: color-mix(in srgb, var(--color-error) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-error) 40%, transparent);
   color: var(--color-text-primary); padding: .7rem 1rem; border-radius: 10px;
   margin: .75rem 0; font-size: .9rem; text-align: left;
 }
+
+/* A failure the user has to READ: an icon to catch the eye, a plain-language line,
+   what to do about it, and - for a real bug - the technical text one tap away with
+   a way to send it. Softer than the old red bar on purpose: this reports a problem,
+   it does not accuse the person holding the phone. */
+.problem {
+  background: color-mix(in srgb, var(--color-error) 9%, var(--color-surface-elevated));
+  border: 1px solid color-mix(in srgb, var(--color-error) 30%, transparent);
+  border-radius: 14px; padding: .8rem .9rem; margin: .75rem 0; text-align: left;
+  animation: peartune-fade .18s ease;
+}
+.problem .prow { display: flex; align-items: flex-start; gap: .65rem; }
+.problem .picon { flex: none; color: var(--color-error); margin-top: .1rem; }
+.problem .ptext { flex: 1; min-width: 0; }
+.problem .ptitle { font-size: .95rem; font-weight: 500; line-height: 1.35; }
+.problem .phint {
+  font-size: .82rem; line-height: 1.45; color: var(--color-text-secondary); margin-top: .25rem;
+}
+.problem .pclose {
+  flex: none; background: none; border: 0; padding: .15rem; margin: -.15rem -.2rem 0 0;
+  color: var(--color-text-secondary); line-height: 0;
+}
+/* Text buttons, spaced like a sentence rather than a toolbar - these are offers,
+   not the main action of the screen. */
+.problem .pacts { display: flex; flex-wrap: wrap; gap: 1rem; margin: .6rem 0 0 1.75rem; }
+.problem .plink {
+  background: none; border: 0; padding: 0; font-size: .82rem; font-weight: 500;
+  color: var(--color-primary); text-decoration: underline; text-underline-offset: 3px;
+}
+.problem .ptech {
+  margin: .55rem 0 0 1.75rem; padding: .55rem .6rem; border-radius: 8px;
+  background: var(--color-surface-input); border: 1px solid var(--color-border);
+  color: var(--color-text-secondary); font-size: .72rem; line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; word-break: break-word; max-height: 9rem; overflow: auto;
+}
+@keyframes peartune-fade { from { opacity: 0; } to { opacity: 1; } }
 
 ul.tracks { list-style: none; margin: 0; padding: 0; }
 ul.tracks li {
