@@ -83,7 +83,12 @@ class AudioCache {
   // A write-through sink for ONE full track. Bytes are written to a `.part` file while
   // they also stream to the player; commit() finalizes only if the whole track arrived
   // (a skip mid-download aborts, so a partial file is never marked complete).
-  createSink (id, { mime, size }) {
+  // `library` is the libraryId these bytes came from, recorded so removing ONE library can
+  // reclaim its streamed audio. It cannot be derived later: a trackId is a HASH of the
+  // libraryId (protocol/ids.js), so once written there is no way back to the library it
+  // belongs to. Null is allowed (and is what every entry written before this shipped has) -
+  // removeLibrary simply cannot claim those, and the LRU cap ages them out as it always did.
+  createSink (id, { mime, size, library = null }) {
     fs.mkdirSync(this.dir, { recursive: true })
     const tmp = this._file(id) + '.part'
     const ws = fs.createWriteStream(tmp)
@@ -99,7 +104,7 @@ class AudioCache {
           if (size && bytes < size) { try { fs.unlinkSync(tmp) } catch {}; return resolve(false) }
           try {
             fs.renameSync(tmp, this._file(id))
-            this.index[id] = { size: size || bytes, mime: mime || null, lastPlayed: Date.now(), pinned: false }
+            this.index[id] = { size: size || bytes, mime: mime || null, lastPlayed: Date.now(), pinned: false, library: library || null }
             this._save()
             this._evict()
             resolve(true)
@@ -121,6 +126,34 @@ class AudioCache {
   remove (id) {
     delete this.index[id]
     try { fs.unlinkSync(this._file(id)) } catch {}
+  }
+
+  // Persist the index after a batch of remove() calls. remove() deliberately does not save
+  // (the eviction loop would then write the file once per entry), so a caller that removes
+  // by hand MUST end with this - or the deleted rows come back on the next launch, pointing
+  // at files that are no longer there.
+  save () { this._save() }
+
+  // Drop every LRU/pinned entry that came from ONE library - what "remove this library"
+  // needs in order to give the bytes back while OTHER libraries stay cached.
+  //
+  // Entries written before `library` was recorded have it null and are NOT claimed by any
+  // library: guessing would delete another library's audio, so they are left to the LRU cap
+  // exactly as before. `untagged` is returned so the caller can say so honestly in the log.
+  removeLibrary (libraryId) {
+    if (!libraryId) return { removed: 0, bytes: 0, untagged: 0 }
+    let removed = 0
+    let bytes = 0
+    let untagged = 0
+    for (const [id, e] of Object.entries(this.index)) {
+      if (!e.library) { untagged++; continue }
+      if (e.library !== libraryId) continue
+      bytes += e.size || 0
+      removed++
+      this.remove(id)
+    }
+    if (removed) this._save()
+    return { removed, bytes, untagged }
   }
 
   clear () {
