@@ -239,10 +239,28 @@ function AccessPanel ({ state, refresh, toast, online }) {
   const [pname, setPname] = useState('')
   const [renaming, setRenaming] = useState(null) // { id, draft } while editing a person's name
 
-  const persons = (state.persons || []).filter(p => !p.revokedAt)
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
   const devices = state.devices || []
   const byPerson = id => devices.filter(d => d.personId === id)
+  // EMPTY = holds no device that still has access. This is the HOST's own rule
+  // (grants.deletePerson refuses while a non-revoked grant points here), so the
+  // Delete button is offered exactly when the host would accept it. Note it counts
+  // a claim-mismatched device as held, even though that device renders under Needs
+  // confirmation rather than on this row.
+  const heldBy = id => byPerson(id).filter(d => !d.revokedAt)
+  const isEmpty = p => heldBy(p.id).length === 0
+  // Emptied people sink below the people who actually hold a phone. They are kept,
+  // not auto-deleted: with person carry-over (proposal 2026-07-21) a phone that left
+  // by itself comes BACK to this same person and finds its favourites - so deleting
+  // eagerly would destroy the thing carry-over exists to preserve. We only make the
+  // staleness visible and the tidy-up one click.
+  const persons = (state.persons || []).filter(p => !p.revokedAt)
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+    .sort((a, b) => (isEmpty(a) ? 1 : 0) - (isEmpty(b) ? 1 : 0))
+  const emptyPersons = persons.filter(isEmpty)
+  // When was this person left holding nothing? Their last device's revoke is the
+  // moment; a person who never had one (added by hand) falls back to when they were
+  // added, and a pre-upgrade row with neither just reads "No devices".
+  const emptySince = p => byPerson(p.id).reduce((t, d) => Math.max(t, d.revokedAt || 0), 0) || p.createdAt || 0
   // A device is "pending" when it claims an identity that isn't (yet) its confirmed
   // person. Pending devices are surfaced in their own Needs-confirmation card and
   // pulled out of the normal lists, so every device row stays uniform.
@@ -273,8 +291,32 @@ function AccessPanel ({ state, refresh, toast, online }) {
     mutate('/api/person/revoke', { personId: p.id }, r => `Revoked ${p.name}: ${r.devices} device(s), ${r.killed} live connection(s) cut off.`)
   }
   const deletePerson = async p => {
-    if (!await askConfirm({ title: `Delete ${p.name}?`, message: 'They have no devices, so this only tidies the list. Nothing is revoked.', confirmLabel: 'Delete' })) return
+    if (!await askConfirm({ title: `Delete ${p.name}?`, message: 'They have no devices, so nothing is revoked. Their listening history goes with them: favourites, resume points and play counts. If that phone pairs again it comes back as a new person.', confirmLabel: 'Delete', danger: true })) return
     mutate('/api/person/delete', { personId: p.id }, () => `Deleted ${p.name}.`)
+  }
+  // Tidy every emptied person in one go. Only offered when there is more than one to
+  // clear - a single stale row is a one-click Delete already. Each is deleted through
+  // the SAME guarded endpoint, so a person who picked up a device between the render
+  // and the click is refused by the host rather than swept up.
+  const clearEmpty = async () => {
+    const targets = emptyPersons
+    if (!await askConfirm({
+      title: `Clear ${targets.length} empty people?`,
+      message: `${targets.map(p => p.name).join(', ')} hold no devices. Deleting them also deletes their listening history - favourites, resume points and play counts. Nothing is revoked.`,
+      confirmLabel: `Delete ${targets.length}`,
+      danger: true
+    })) return
+    let gone = 0
+    let failed = 0
+    for (const p of targets) {
+      const r = await api('/api/person/delete', { personId: p.id })
+      if (r.deleted) gone++
+      else failed++
+    }
+    refresh()
+    toast(failed
+      ? `Deleted ${gone}; ${failed} could not be deleted (a device came back).`
+      : `Deleted ${gone} empty ${gone === 1 ? 'person' : 'people'}.`, !!failed)
   }
   // Rename in place: the person's name becomes an input with save/cancel. A no-op
   // (blank or unchanged) just closes the editor; the host refuses a name that collides
@@ -341,8 +383,9 @@ function AccessPanel ({ state, refresh, toast, online }) {
                 // otherwise. Their avatar stands in for the person on this row.
                 const face = live.find(d => d.online && d.hasAvatar) ||
                   [...live].filter(d => d.hasAvatar).sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0))[0] || null
+                const gone = isEmpty(p)
                 return (
-                  <div className='person' key={p.id}>
+                  <div className={'person' + (gone ? ' gone' : '')} key={p.id}>
                     <div className={'prow' + (expandable ? '' : ' flat')} onClick={() => !editing && expandable && setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
                       <CaretRight size={14} weight='bold' className={'caret' + (isOpen ? ' open' : '') + (expandable ? '' : ' hidden')} />
                       <Avatar keyId={face?.deviceKey} hasAvatar={!!face} name={p.name} online={on > 0} />
@@ -362,13 +405,21 @@ function AccessPanel ({ state, refresh, toast, online }) {
                         : <>
                             <div className='who'>
                               <div className='name'>{p.name}</div>
-                              <div className='sub'>{live.length} device{live.length === 1 ? '' : 's'}{on ? ` · ${on} online` : ''}{p.createdAt ? ` · added ${ago(p.createdAt)}` : ''}</div>
+                              {/* One <span>, never a bare text node: `.sub > span` is what
+                                  ellipsizes, and loose text overflows the row instead
+                                  (it used to wrap under the buttons on a phone). */}
+                              <div className='sub'>
+                                {gone && <span className='chip-gone'>No devices</span>}
+                                <span>{gone
+                                  ? (emptySince(p) ? `since ${ago(emptySince(p))}` : '')
+                                  : `${live.length} device${live.length === 1 ? '' : 's'}${on ? ` · ${on} online` : ''}${p.createdAt ? ` · added ${ago(p.createdAt)}` : ''}`}</span>
+                              </div>
                               {!isOpen && playing && <NowPlaying np={playing} />}
                             </div>
                             <button className='ghost small' onClick={e => { e.stopPropagation(); startRename(p) }}>Rename</button>
-                            {live.length
-                              ? <button className='ghost small danger' onClick={e => { e.stopPropagation(); revokePerson(p) }}>Revoke all</button>
-                              : <button className='ghost small danger' onClick={e => { e.stopPropagation(); deletePerson(p) }}>Delete</button>}
+                            {gone
+                              ? <button className='ghost small danger' onClick={e => { e.stopPropagation(); deletePerson(p) }}>Delete</button>
+                              : <button className='ghost small danger' onClick={e => { e.stopPropagation(); revokePerson(p) }}>Revoke all</button>}
                           </>}
                     </div>
                     <div className={'devices-sub' + (isOpen ? ' open' : '')}>
@@ -383,6 +434,11 @@ function AccessPanel ({ state, refresh, toast, online }) {
                   </div>
                 )
               })}
+              {emptyPersons.length > 1 &&
+                <div className='sweep'>
+                  <span>{emptyPersons.length} people hold no devices.</span>
+                  <button className='ghost small danger' onClick={clearEmpty}>Clear empty people</button>
+                </div>}
               {(unassigned.length || revokedLoose.length) ?
                 <>
                   <div className='group-h'>Unassigned</div>

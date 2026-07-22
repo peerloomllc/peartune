@@ -896,3 +896,40 @@ test('IDENTITY: an operator assignment reaches an ALREADY-connected device on it
   const after = await client.getIdentity()
   assert.equal(after.belongsTo, 'Robin Hood', 'the device sees the rename without reconnecting')
 })
+
+// Deleting a person is the dashboard's tidy-up for a row that lost its last device.
+// Their personId is minted fresh and never reused, so anything still keyed to it would
+// be unreachable from that moment on - a slow leak, and a lie, since the button says
+// delete. So the delete takes the user state with it.
+test('DELETING A PERSON purges their user state; a person still holding a device is refused', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client, key, person } = await settledUnderPerson(testnet, host)
+  t.after(() => client.close())
+
+  // Reconnect so this connection's owner is the PERSON, then leave history behind.
+  await client.close()
+  const back = new PearTuneClient({ keyPair: client.keyPair, bootstrap: testnet.bootstrap, log: QUIET })
+  t.after(() => back.close())
+  await back.connect({ hostKey: host.identity.publicKey, libraryId: host.libraryId })
+  const { items } = await back.list({ type: 'tracks' })
+  await back.favSet({ id: items[0].id, on: true })
+  await back.resumeSet({ trackId: items[0].id, positionMs: 42_000 })
+
+  const owner = 'p:' + person.id
+  assert.deepEqual((await host.userState.listFavs(owner)).track, [items[0].id], 'history is there to lose')
+
+  // While the device is live, the delete is refused - and nothing is purged, because the
+  // guarded person delete runs FIRST and short-circuits.
+  assert.equal((await host.deletePerson(person.id)).deleted, null, 'refused while a device holds them')
+  assert.deepEqual((await host.userState.listFavs(owner)).track, [items[0].id], 'a refused delete purges nothing')
+
+  // Revoke the device, and the person is now the empty row the dashboard offers to clear.
+  await host.revokeDevice(key)
+  const res = await host.deletePerson(person.id)
+  assert.equal(res.deleted.id, person.id)
+  assert.ok(res.purged >= 2, 'the favorite and the resume point went with them, got ' + res.purged)
+
+  assert.equal(await host.grants.getPerson(person.id), null)
+  assert.deepEqual((await host.userState.listFavs(owner)), { track: [], album: [], artist: [] })
+  assert.equal(await host.userState.latestResume(owner), null)
+})
