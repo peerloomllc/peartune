@@ -76,7 +76,11 @@ class Grants {
     return out
   }
 
-  async grant ({ deviceKey, personId = null, label = '', platform = '', scope = SCOPE.FULL, grantedBy = 'operator', expiresAt = null }) {
+  // `claimedUser`/`claimedAt` are normally null on a fresh grant - a device declares its
+  // name afterwards, over the media channel. They are parameters only so a device returning
+  // to its own person (proposal 2026-07-21-person-carryover-on-repair) comes back with the
+  // claim it already had, rather than reading as assigned-but-unclaimed on the dashboard.
+  async grant ({ deviceKey, personId = null, label = '', platform = '', scope = SCOPE.FULL, grantedBy = 'operator', expiresAt = null, claimedUser = null, claimedAt = null }) {
     const key = Grants.keyOf(deviceKey)
     const row = {
       deviceKey: key,
@@ -88,6 +92,8 @@ class Grants {
       grantedBy,
       expiresAt, // null = never; a timestamp = a time-limited GUEST grant (gate.decide denies past it)
       paths: null, // reserved: v2 library-subset scopes
+      claimedUser,
+      claimedAt,
       revokedAt: null,
       lastSeenAt: null
     }
@@ -123,11 +129,18 @@ class Grants {
   // Tombstone rather than delete. We want the dashboard to be able to show "this
   // device WAS allowed and is not any more", and a deleted row is indistinguish-
   // able from a device that never paired.
-  async revoke (deviceKey) {
+  //
+  // `by` records WHO ended it: 'self' (the device's own device.leave), 'operator' (the
+  // dashboard) or 'person' (revoking the whole person). A later re-pair reads it to decide
+  // whether the device may come back to its person - see gate.carryOverPerson. It defaults
+  // to 'operator' deliberately: a caller that forgets to say fails to the STRICT side,
+  // where the returning device is a stranger and needs confirming.
+  async revoke (deviceKey, { by = 'operator' } = {}) {
     const key = Grants.keyOf(deviceKey)
     const row = await this.get(key)
     if (!row || row.revokedAt) return null
     row.revokedAt = Date.now()
+    row.revokedBy = by === 'self' || by === 'person' ? by : 'operator'
     await this.bee.put('grant:' + key, row, { valueEncoding: 'json' })
     return row
   }
@@ -143,7 +156,9 @@ class Grants {
     const revoked = []
     for (const g of await this.list()) {
       if (g.personId === personId && !g.revokedAt) {
-        const r = await this.revoke(g.deviceKey)
+        // 'person', not 'self': these devices did not choose to leave, so none of them
+        // may walk back into this person by pairing again.
+        const r = await this.revoke(g.deviceKey, { by: 'person' })
         if (r) revoked.push(r)
       }
     }

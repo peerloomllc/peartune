@@ -41,6 +41,26 @@ function sweepKills (liveKeys, lookups, now = Date.now()) {
   return liveKeys.filter(k => !decide(lookups.get(k) || { grant: null }, now).allow)
 }
 
+// May a device pairing again INHERIT the person it held before? Pure, so the one rule
+// that decides it is unit-testable on its own (proposal 2026-07-21-person-carryover-on-repair).
+//
+// `existing` is the tombstoned grant for this same Noise-authenticated key; `person` is the
+// row its personId points at, loaded by the caller (null if it has been deleted).
+//
+// Restores ONLY a departure the device made itself. An operator revoke - or a revoked person,
+// or a person deleted while the device was away - starts it as a stranger with a pending
+// claim, because that checkpoint is the entire point of revoke. Tombstones written before
+// `revokedBy` existed have it undefined, which is not 'self', so nothing already on disk
+// changes behaviour.
+function carryOverPerson (existing, person) {
+  if (!existing || !existing.revokedAt) return null
+  if (existing.revokedBy !== 'self') return null
+  if (!existing.personId) return null
+  if (!person || person.revokedAt) return null
+  if (person.id !== existing.personId) return null
+  return existing.personId
+}
+
 // Registry of live connections, keyed by the peer's Noise-proven public key.
 class Connections {
   constructor () {
@@ -113,4 +133,4 @@ class Connections {
   }
 }
 
-module.exports = { decide, sweepKills, Connections }
+module.exports = { decide, sweepKills, carryOverPerson, Connections }

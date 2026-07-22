@@ -684,6 +684,99 @@ test('LEAVE: leaving affects ONLY the caller, not another device under the same 
   assert.equal(host.connections.count(bKey), 1, 'and its connection stays live')
 })
 
+// --- coming back: person carry-over (proposal 2026-07-21) --------------------
+
+// Pair, put the device under a person, let it claim that name, and leave a favorite behind -
+// the state that lives on the PERSON and is what makes coming back worth anything.
+async function settledUnderPerson (testnet, host, name = 'Tim') {
+  const { client, paired } = await pairAndConnect(testnet, host)
+  const key = z32.encode(client.keyPair.publicKey)
+  const person = await host.grants.addPerson(name)
+  await host.grants.setIdentity(key, { userName: name })
+  await host.grants.assign(key, person.id)
+  return { client, paired, key, person }
+}
+
+test('COMING BACK: a device that LEFT BY ITSELF returns to its person, with its state', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client, key, person } = await settledUnderPerson(testnet, host)
+  t.after(() => client.close())
+
+  // Reconnect so the connection's owner is the PERSON (it is captured at connect), then
+  // leave something behind that only that person can see.
+  await client.close()
+  const back = new PearTuneClient({ keyPair: client.keyPair, bootstrap: testnet.bootstrap, log: QUIET })
+  t.after(() => back.close())
+  await back.connect({ hostKey: host.identity.publicKey, libraryId: host.libraryId })
+  const { items } = await back.list({ type: 'tracks' })
+  await back.favSet({ id: items[0].id, on: true })
+
+  // The phone removes the library.
+  await back.deviceLeave()
+  assert.ok(await until(async () =>
+    (await host.listDevices()).find((d) => d.deviceKey === key)?.revokedAt), 'the leave lands')
+
+  // ...and pairs again later, through a window the operator opened.
+  const again = new PearTuneClient({ keyPair: client.keyPair, bootstrap: testnet.bootstrap, log: QUIET })
+  t.after(() => again.close())
+  await again.pair(host.startPairing(), { label: 'test-phone', platform: 'android' })
+
+  const row = (await host.listDevices()).find((d) => d.deviceKey === key)
+  assert.equal(row.revokedAt, null, 'a live grant again')
+  assert.equal(row.personId, person.id, 'back under the person it left')
+  assert.equal(row.claimedUser, 'Tim', 'and still claiming that name, so it is not "pending"')
+
+  // The payoff: the favorite is reachable again, because the owner resolves to the person.
+  await again.connect({ hostKey: host.identity.publicKey, libraryId: host.libraryId })
+  assert.deepEqual((await again.favList()).track, [items[0].id], 'its history came back with it')
+})
+
+test('COMING BACK: a device the OPERATOR revoked returns as a stranger', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client, key, person } = await settledUnderPerson(testnet, host)
+  t.after(() => client.close())
+
+  // The operator threw it out. That decision must survive a re-pair - otherwise "revoke"
+  // means nothing to anyone holding the QR.
+  await host.revokeDevice(key)
+
+  const again = new PearTuneClient({ keyPair: client.keyPair, bootstrap: testnet.bootstrap, log: QUIET })
+  t.after(() => again.close())
+  await again.pair(host.startPairing(), { label: 'test-phone', platform: 'android' })
+
+  const row = (await host.listDevices()).find((d) => d.deviceKey === key)
+  assert.equal(row.revokedAt, null, 'it may pair again - the operator opened a window')
+  assert.equal(row.personId, null, 'but it comes back as NOBODY, pending a confirm')
+  assert.equal(row.claimedUser, null, 'and carries no claim from its old life')
+
+  // The person is untouched by any of this; it simply holds one fewer device.
+  assert.equal((await host.grants.getPerson(person.id)).revokedAt, null)
+})
+
+test('COMING BACK: a person REVOKED while the device was away is not walked back into', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client, key, person } = await settledUnderPerson(testnet, host)
+  t.after(() => client.close())
+
+  await client.close()
+  const back = new PearTuneClient({ keyPair: client.keyPair, bootstrap: testnet.bootstrap, log: QUIET })
+  t.after(() => back.close())
+  await back.connect({ hostKey: host.identity.publicKey, libraryId: host.libraryId })
+  await back.deviceLeave() // a genuine self-leave: the ONLY case that carries over
+  assert.ok(await until(async () =>
+    (await host.listDevices()).find((d) => d.deviceKey === key)?.revokedAt))
+
+  // Then the operator revokes the person entirely.
+  await host.revokePerson(person.id)
+
+  const again = new PearTuneClient({ keyPair: client.keyPair, bootstrap: testnet.bootstrap, log: QUIET })
+  t.after(() => again.close())
+  await again.pair(host.startPairing(), { label: 'test-phone', platform: 'android' })
+
+  const row = (await host.listDevices()).find((d) => d.deviceKey === key)
+  assert.equal(row.personId, null, 'a revoked person is not a home to come back to')
+})
+
 // --- dashboard now-playing (per-device, off the play session) ----------------
 
 test('listDevices surfaces now-playing on the active device only, with a coverId', async (t) => {
