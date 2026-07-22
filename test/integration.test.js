@@ -1032,3 +1032,56 @@ test('a device row reports WHEN its avatar was written, so the dashboard can bus
   const row = state.devices.find(d => d.deviceKey === deviceKey)
   assert.equal(row.avatarAt, two.avatarAt, '/api/state forwards avatarAt, not just hasAvatar')
 })
+
+// Off-LAN on cellular, two diagnostics runs eight minutes apart on the SAME phone and the
+// same DHT node: the first aborted the hole-punch against both hosts after ~11s, the second
+// reached both in ~1.6s. The punch is INTERMITTENT on a carrier NAT. connect() used to make
+// exactly one dial, so a blip became a hard failure the user had to work around by hand -
+// while pairing had retried since #125.
+test('CONNECT retries a dial that dies before it opens, and succeeds on a later attempt', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+  await client.close()
+
+  const back = new PearTuneClient({ keyPair: client.keyPair, bootstrap: testnet.bootstrap, log: QUIET })
+  t.after(() => back.close())
+
+  // Kill the first two dials the moment they exist - a close BEFORE open, exactly what an
+  // aborted hole-punch looks like from here.
+  await back._ready()
+  const real = back.dht.connect.bind(back.dht)
+  let dials = 0
+  back.dht.connect = (...args) => {
+    const conn = real(...args)
+    if (++dials <= 2) setImmediate(() => { try { conn.destroy() } catch {} })
+    return conn
+  }
+
+  await back.connect({ hostKey: host.identity.publicKey, libraryId: host.libraryId })
+  assert.equal(dials, 3, 'two dials died, the third connected')
+
+  // And it is a REAL connection, not just a resolved promise.
+  const { items } = await back.list({ type: 'tracks' })
+  assert.ok(items.length > 0, 'the retried connection actually serves the library')
+})
+
+test('a connect that never opens reports UNREACHABLE, not "the host refused"', async (t) => {
+  const { testnet } = await scaffold(t)
+  const nobody = new PearTuneClient({ keyPair: hcrypto.keyPair(), bootstrap: testnet.bootstrap, log: QUIET })
+  t.after(() => nobody.close())
+
+  // A key nobody serves. The old code called this EREFUSED - "host refused the connection" -
+  // which reads as a decision the host made. It cannot be: a hole-punch that never completes
+  // closes exactly like a firewall deny, and asserting either is what #125 stopped doing for
+  // pairing. The hyperdht code is kept for the bug report.
+  const key = z32.encode(hcrypto.keyPair().publicKey)
+  await assert.rejects(
+    () => nobody.connect({ hostKey: key, libraryId: 'nope' }),
+    (e) => {
+      assert.equal(e.code, 'EUNREACHABLE', 'not EREFUSED: we cannot know the host decided anything')
+      assert.ok('dhtCode' in e, 'and the hyperdht code survives for the report')
+      return true
+    }
+  )
+})

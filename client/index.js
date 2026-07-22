@@ -33,6 +33,16 @@ const PAIR_ATTEMPTS = 3
 const PAIR_RETRY_BUDGET_MS = 8000
 const PAIR_RETRY_GAP_MS = 500
 
+// CONNECT gets the same treatment, and for a measured reason. Off-LAN on cellular, two
+// diagnostics runs eight minutes apart on the SAME phone and the same DHT node: the first
+// aborted the hole-punch against both hosts after ~11s, the second reached both in ~1.6s.
+// The punch is INTERMITTENT on a carrier NAT, so a single dial reports a hard failure for
+// something a retry a moment later just... does. Pairing has retried since #125; connect
+// never did, which is why "I can't connect when I'm out" and "it works now" were both true.
+const CONNECT_ATTEMPTS = 3
+const CONNECT_RETRY_BUDGET_MS = 14000
+const CONNECT_RETRY_GAP_MS = 600
+
 class PearTuneClient {
   constructor ({ keyPair, dht = null, bootstrap = null, log = () => {} }) {
     this.keyPair = keyPair
@@ -222,6 +232,40 @@ class PearTuneClient {
 
   // --- steady state --------------------------------------------------------
 
+  // ONE dial. Rejects with EUNREACHABLE for anything that failed BEFORE the connection
+  // opened - which is every failure this can see.
+  //
+  // It used to call that EREFUSED ("host refused the connection"), which reads as a
+  // DECISION by the host. It is not one, and cannot be: a hole-punch that never completes
+  // closes exactly like a firewall deny, which is why the offline lease refuses to purge on
+  // it (see the note in src/bare.js) and why #125 stopped the pairing copy asserting a
+  // cause it could not know. A carrier NAT dropping the punch was being reported to the
+  // user as the server turning them away.
+  _connectOnce () {
+    const conn = this.dht.connect(this.hostKey, { keyPair: this.keyPair })
+    let dialError = null
+    conn.on('error', (e) => { dialError = e })
+
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const done = (fn, arg) => { if (!settled) { settled = true; fn(arg) } }
+      const fail = (msg, code) => {
+        const e = new Error(msg)
+        e.code = code
+        // The hyperdht code (HOLEPUNCH_ABORTED, PEER_NOT_FOUND, PEER_CONNECTION_FAILED) is
+        // the only forensic detail a field report ever has - keep it, do not flatten it.
+        e.dhtCode = dialError?.code || null
+        return e
+      }
+      const timer = setTimeout(() => done(reject, fail('connect timed out', 'ETIMEDOUT')), CONNECT_TIMEOUT)
+      if (timer.unref) timer.unref()
+      conn.once('close', () => { clearTimeout(timer); done(reject, fail('could not reach the host', 'EUNREACHABLE')) })
+      conn.opened
+        .then(() => { clearTimeout(timer); done(resolve, conn) })
+        .catch(() => { clearTimeout(timer); done(reject, fail('could not reach the host', 'EUNREACHABLE')) })
+    }).catch((e) => { try { conn.destroy() } catch {} ; throw e })
+  }
+
   async connect ({ hostKey, libraryId }) {
     this.hostKey = typeof hostKey === 'string' ? z32.decode(hostKey) : hostKey
     this.libraryId = libraryId
@@ -230,24 +274,26 @@ class PearTuneClient {
     // A no-op once the node is warm, which it is for every connect after the first.
     await this._ready()
 
-    const conn = this.dht.connect(this.hostKey, { keyPair: this.keyPair })
-    conn.on('error', () => {})
+    const started = Date.now()
+    let conn = null
+    let last = null
 
-    // Tell a REFUSED connection (the host is up and its firewall denied us - revoked or
-    // ungranted; the conn closes right after the DHT reaches the host, exactly as pair()
-    // detects a closed pairing window) apart from an UNREACHABLE host (a timeout). The
-    // worklet uses e.code to decide whether a revoke should purge the offline cache -
-    // and must NEVER purge on a timeout (your server being off is not a revoke).
-    await new Promise((resolve, reject) => {
-      let settled = false
-      const done = (fn, arg) => { if (!settled) { settled = true; fn(arg) } }
-      const timer = setTimeout(() => { const e = new Error('connect timed out'); e.code = 'ETIMEDOUT'; done(reject, e) }, CONNECT_TIMEOUT)
-      if (timer.unref) timer.unref()
-      conn.once('close', () => { clearTimeout(timer); const e = new Error('host refused the connection'); e.code = 'EREFUSED'; done(reject, e) })
-      conn.opened.then(() => { clearTimeout(timer); done(resolve) }).catch((e) => { clearTimeout(timer); if (!e.code) e.code = 'EREFUSED'; done(reject, e) })
-    })
-
-    this.conn = conn
+    for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt++) {
+      try {
+        conn = await this._connectOnce()
+        break
+      } catch (e) {
+        last = e
+        this.log('connect:dial-failed', { attempt, code: e.code, dhtCode: e.dhtCode || null })
+        if (attempt === CONNECT_ATTEMPTS) throw e
+        if (Date.now() - started >= CONNECT_RETRY_BUDGET_MS) throw e
+        await new Promise((resolve) => {
+          const t = setTimeout(resolve, CONNECT_RETRY_GAP_MS)
+          if (t.unref) t.unref()
+        })
+      }
+    }
+    if (!conn) throw last || new Error('connect failed')
     const mux = Protomux.from(conn)
 
     // Registration order is fixed in protocol/channels.js and MUST match the

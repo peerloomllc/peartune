@@ -1739,6 +1739,109 @@ const methods = {
     }
   },
 
+  // --- connection diagnostics --------------------------------------------------
+  //
+  // Why this exists: the off-LAN failure can only be reproduced on Tim's phone (the test
+  // phone has no SIM), so every previous attempt at it was blind. "Couldn't reach your
+  // library" is the same message whether the DHT never bootstrapped, the host was never
+  // found, or the hole-punch was refused by a carrier NAT - and those need completely
+  // different fixes. This runs the transport for real and reports WHERE it stopped, in a
+  // form that can be copied out of the app and pasted into a bug report.
+  //
+  // It deliberately dials with hyperdht directly rather than through PearTuneClient: no
+  // retries, no friendly error mapping, nothing between the report and the transport.
+  async diagnose () {
+    const started = Date.now()
+    if (!dht) dht = new HyperDHT()
+    try { await dht.ready() } catch {}
+
+    const snap = () => JSON.parse(JSON.stringify(dht.stats || {}))
+    const before = snap()
+
+    // What the DHT knows about US. `remoteAddress()` is null until the node has learned its
+    // own public address - on a carrier NAT that alone is a finding, and `firewalled` says
+    // whether other peers can reach us unsolicited.
+    const remote = (() => { try { return dht.remoteAddress() } catch { return null } })()
+    const node = {
+      bootstrapped: !!dht.bootstrapped,
+      online: !!dht.online,
+      firewalled: dht.firewalled !== false,
+      publicAddress: remote ? remote.host + ':' + remote.port : null,
+      localPort: dht.port || null
+    }
+
+    const hosts = loadHostsFile().hosts || []
+    const results = []
+    // THREE dials per host, not one. Tim's two off-LAN runs eight minutes apart - same phone,
+    // same DHT node - went abort-abort then reach-reach, so a single dial measures the moment
+    // rather than the network. What we need to know is the HIT RATE.
+    const ATTEMPTS = 3
+    for (const h of hosts) {
+      const tries = []
+      for (let i = 0; i < ATTEMPTS; i++) {
+      const t0 = Date.now()
+      let outcome = null
+      try {
+        outcome = await new Promise((resolve) => {
+          let settled = false
+          const done = (v) => { if (!settled) { settled = true; resolve(v) } }
+          let conn = null
+          try {
+            conn = dht.connect(z32.decode(h.hostKey), { keyPair: identity })
+          } catch (e) {
+            return done({ ok: false, code: 'EBADKEY', detail: e?.message || String(e) })
+          }
+          // The hyperdht code is the forensic detail: PEER_NOT_FOUND means the host is not
+          // announcing (or the lookup never got there), while PEER_CONNECTION_FAILED /
+          // CANNOT_HOLEPUNCH mean we FOUND it and the network would not let us through.
+          const timer = setTimeout(() => done({ ok: false, code: 'ETIMEDOUT', detail: 'no answer inside 15s' }), 15_000)
+          const finish = (v) => { clearTimeout(timer); done(v); try { conn.destroy() } catch {} }
+          conn.on('error', (e) => finish({ ok: false, code: e?.code || 'EUNKNOWN', detail: e?.message || null }))
+          conn.on('open', () => finish({ ok: true }))
+          // A close with no error and no open is its own signal: the far side hung up on us.
+          conn.once('close', () => finish({ ok: false, code: 'ECLOSED', detail: 'closed before it opened' }))
+        })
+      } catch (e) {
+        outcome = { ok: false, code: 'ETHREW', detail: e?.message || String(e) }
+      }
+      tries.push({ ms: Date.now() - t0, ...outcome })
+      if (outcome.ok) break // no point measuring again once it works
+      }
+      const ok = tries.some(t => t.ok)
+      results.push({
+        library: h.libraryName || h.libraryId || '(unnamed)',
+        hostKey: String(h.hostKey || '').slice(0, 8),
+        ok,
+        attempts: tries.length,
+        ms: tries.reduce((n, t) => n + t.ms, 0),
+        // Every attempt, kept: "failed twice then worked" is the whole finding, and a
+        // summary that only reported the last one would have hidden it.
+        tries
+      })
+    }
+
+    const after = snap()
+    // The DELTA is the interesting part: punches attempted during THIS run, and whether any
+    // relaying was even tried (it is not, today - we pass no relayThrough).
+    const delta = (a, b) => {
+      const out = {}
+      for (const k of Object.keys(b || {})) {
+        if (typeof b[k] === 'object') { const d = delta(a?.[k], b[k]); if (Object.keys(d).length) out[k] = d }
+        else if ((b[k] || 0) !== (a?.[k] || 0)) out[k] = (b[k] || 0) - (a?.[k] || 0)
+      }
+      return out
+    }
+
+    return {
+      at: new Date(started).toISOString(),
+      tookMs: Date.now() - started,
+      node,
+      hosts: results,
+      during: delta(before, after),
+      stats: after
+    }
+  },
+
   async setIdentity ({ deviceName, userName }) {
     await ensureConnected()
     const r = await client.setIdentity({ deviceName, userName })
