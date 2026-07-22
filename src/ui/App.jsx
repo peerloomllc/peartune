@@ -2955,7 +2955,12 @@ function diagSummary (d) {
   const hosts = d.hosts || []
   if (!hosts.length) return 'Nothing to check until a library is paired.'
   const bad = hosts.filter(h => !h.ok)
-  if (!bad.length) return 'Everything is reachable from this network.'
+  const flaky = hosts.filter(h => h.ok && h.attempts > 1)
+  if (!bad.length) {
+    return flaky.length
+      ? 'Reachable, but not on the first try - this network drops some connection attempts, which is why PearTune now retries.'
+      : 'Everything is reachable from this network.'
+  }
   const punched = (d.during?.punches && Object.keys(d.during.punches).length) ? 'yes' : 'no'
   const notFound = bad.some(h => h.code === 'PEER_NOT_FOUND')
   if (notFound) {
@@ -4670,7 +4675,9 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
               {diag.hosts.map((h, i) => (
                 <div className='diag-row' key={i}>
                   <span>{h.library}</span>
-                  <b className={h.ok ? 'ok' : 'bad'}>{h.ok ? `reached in ${h.ms} ms` : `${diagReason(h.code)} (${h.ms} ms)`}</b>
+                  <b className={h.ok ? 'ok' : 'bad'}>{h.ok
+                    ? (h.attempts > 1 ? `reached on try ${h.attempts} (${h.ms} ms)` : `reached in ${h.ms} ms`)
+                    : `${diagReason(h.tries?.[h.tries.length - 1]?.code)} after ${h.attempts} tries`}</b>
                 </div>
               ))}
               {!diag.hosts.length && <div className='diag-row'><span>No libraries paired yet.</span></div>}

@@ -1772,7 +1772,13 @@ const methods = {
 
     const hosts = loadHostsFile().hosts || []
     const results = []
+    // THREE dials per host, not one. Tim's two off-LAN runs eight minutes apart - same phone,
+    // same DHT node - went abort-abort then reach-reach, so a single dial measures the moment
+    // rather than the network. What we need to know is the HIT RATE.
+    const ATTEMPTS = 3
     for (const h of hosts) {
+      const tries = []
+      for (let i = 0; i < ATTEMPTS; i++) {
       const t0 = Date.now()
       let outcome = null
       try {
@@ -1798,11 +1804,19 @@ const methods = {
       } catch (e) {
         outcome = { ok: false, code: 'ETHREW', detail: e?.message || String(e) }
       }
+      tries.push({ ms: Date.now() - t0, ...outcome })
+      if (outcome.ok) break // no point measuring again once it works
+      }
+      const ok = tries.some(t => t.ok)
       results.push({
         library: h.libraryName || h.libraryId || '(unnamed)',
         hostKey: String(h.hostKey || '').slice(0, 8),
-        ms: Date.now() - t0,
-        ...outcome
+        ok,
+        attempts: tries.length,
+        ms: tries.reduce((n, t) => n + t.ms, 0),
+        // Every attempt, kept: "failed twice then worked" is the whole finding, and a
+        // summary that only reported the last one would have hidden it.
+        tries
       })
     }
 
