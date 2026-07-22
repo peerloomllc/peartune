@@ -19,9 +19,11 @@ import {
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
-  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode
+  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode,
+  WarningCircle
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
+import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
 
 // --- About + donation (suite config, shared across PeerLoom apps) ------------
@@ -31,7 +33,8 @@ const STRIKE_TIP_URL = 'https://strike.me/peerloomllc/'
 const BTC_ONCHAIN_ADDRESS = 'bc1q0kksenz3j4u9ppe6f4krclvzwxk7sjy00cc9cf'
 const BUYMEACOFFEE_URL = 'https://buymeacoffee.com/peerloomllc'
 const GITHUB_URL = 'https://github.com/peerloomllc/peartune'
-const CONTACT_URL = 'mailto:peerloomllc@proton.me?subject=%5BPearTune%5D%20Feedback'
+const CONTACT_EMAIL = 'peerloomllc@proton.me'
+const CONTACT_URL = `mailto:${CONTACT_EMAIL}?subject=%5BPearTune%5D%20Feedback`
 const SHARE_TEXT = 'PearTune - your self-hosted music, playable anywhere. No port forwarding, no VPN, no account.\n\nhttps://peerloomllc.com/peartune/'
 // iOS hides the donation section per App Store guideline 3.1.1 (no external
 // donation links). The shell injects the platform before the bundle runs.
@@ -1530,6 +1533,7 @@ export default function App () {
         merged={merged} filter={filter} onFilter={pickFilter}
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
+        onDismissError={() => setError(null)}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting}
         favs={favs} onFav={favSupported ? onFav : null}
         cont={now ? null : cont}
@@ -2074,7 +2078,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 
 function Library ({
   state, albums, artists, genres, songs, recent, merged, filter, onFilter, cursor, songCursor, density,
-  browse, query, results, now, error, albumsLoaded, reconnecting,
+  browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onOpenGenre, onPlay, onLong
@@ -2283,7 +2287,9 @@ function Library ({
         )}
       </div>
 
-      {error && <div className='error'>{error}</div>}
+      {/* Dismiss has to come DOWN as a prop: this is Library, and setError lives in
+          App. Calling it here compiled and rendered fine, and did nothing on tap. */}
+      <Problem error={error} onDismiss={onDismissError} />
 
       {/* Session handoff: another device is the active player. "Play here" adopts its queue.
           Shown on the home view when this device is NOT actively playing - a PAUSED local queue
@@ -2661,7 +2667,7 @@ function DownloadScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
   return (
     <div className='app'>
       <Back onClick={onBack} />
-      {err && <div className='error'>{err}</div>}
+      <Problem error={err} />
       {dl === null && !err && <p className='muted center-p'>Loading…</p>}
       {dl === false && <p className='muted center-p'>This download is gone.</p>}
       {dl && (
@@ -2862,6 +2868,63 @@ function sourceLabel (kind) {
 // fixes, and they used to share one message. That cost real debugging time: an expired pairing
 // window and a phone that cannot reach the host at all both read as "Couldn't reach your
 // library", so the message could not tell you which one you were looking at.
+// What every report carries besides the message: which build, and which platform.
+const reportMeta = (repo) => ({
+  version: APP_VERSION, platform: window.__pearPlatform || 'unknown platform', repo
+})
+
+// The card itself. Dismissible where the failure is an event (playback died);
+// permanent where it is the reason a screen is empty (a load failed), because
+// dismissing that would leave a blank page with no explanation.
+function Problem ({ error, onDismiss }) {
+  const [open, setOpen] = useState(false)
+  const info = friendlyError(error)
+  if (!info) return null
+  const { kind, title, hint, technical } = info
+
+  return (
+    <div className={'problem' + (kind === 'bug' ? ' bug' : '')} role='alert'>
+      <div className='prow'>
+        <WarningCircle size={20} weight='fill' className='picon' />
+        <div className='ptext'>
+          <div className='ptitle'>{title}</div>
+          {hint && <div className='phint'>{hint}</div>}
+        </div>
+        {onDismiss && (
+          <button className='pclose' onClick={onDismiss} aria-label='Dismiss'>
+            <X size={16} weight='bold' />
+          </button>
+        )}
+      </div>
+
+      {technical && (
+        <>
+          <div className='pacts'>
+            <button className='plink' onClick={() => setOpen(o => !o)} aria-expanded={open}>
+              {open ? 'Hide details' : 'Details'}
+            </button>
+            {/* Three ways out, because each one fails for someone: GitHub makes you
+                SIGN IN before it will show a prefilled issue, mail needs a mail app,
+                and Copy needs neither. All three carry the same redacted report. */}
+            {kind === 'bug' && (
+              <>
+                <button className='plink' onClick={() => openUrl(reportUrl(technical, reportMeta(GITHUB_URL)))}>
+                  Report on GitHub
+                </button>
+                <button className='plink' onClick={() => openUrl(reportMailto(technical, { ...reportMeta(), to: CONTACT_EMAIL }))}>
+                  Email
+                </button>
+                <button className='plink' onClick={() => copyText(redact(technical))}>Copy</button>
+              </>
+            )}
+          </div>
+          {open && <pre className='ptech'>{redact(technical)}</pre>}
+        </>
+      )}
+    </div>
+  )
+}
+
 function pairError (msg = '') {
   const m = String(msg)
   // The host let the connection OPEN and then hung up: it read the code and said no. This
@@ -3199,7 +3262,7 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
     return (
       <div className='app'>
         <Back onClick={onBack} />
-        {problem ? <div className='error'>{problem}</div> : <p className='muted center-p'>Loading…</p>}
+        {problem ? <Problem error={problem} /> : <p className='muted center-p'>Loading…</p>}
       </div>
     )
   }
@@ -3213,7 +3276,7 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
   return (
     <div className='app'>
       <Back onClick={onBack} />
-      {problem && <div className='error'>{problem}</div>}
+      <Problem error={problem} />
 
       <div className='albumhead'>
         <div className='tapart' onClick={() => onViewArt(album.artFull || album.art, album.name)}>
@@ -3315,7 +3378,7 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
         />
       )}
 
-      {err && <div className='error'>{err}</div>}
+      <Problem error={err} />
       {!artist && !err && <p className='muted center-p'>Loading…</p>}
 
       {/* An artist with no albums is not empty. Navidrome mints an artist row for
@@ -3397,7 +3460,7 @@ function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay
         />
       )}
 
-      {err && <div className='error'>{err}</div>}
+      <Problem error={err} />
       {!genre && !err && <p className='muted center-p'>Loading…</p>}
 
       {genre && (genre.albums.length
@@ -3525,7 +3588,7 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
   return (
     <div className='app'>
       <Back onClick={onBack} />
-      {err && <div className='error'>{err}</div>}
+      <Problem error={err} />
 
       <div className='plhead'>
         <div className='pltitlerow'>
@@ -4708,7 +4771,7 @@ function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost =
           ? 'Open the PearTune dashboard on the server you want to add and show its pairing code.'
           : 'Your self-hosted music, anywhere. Open the PearTune dashboard on your server and show the pairing code.'}
       </p>
-      {error && <div className='error'>{error}</div>}
+      <Problem error={error} />
 
       {!addHost && (
         <div className='namebox'>
