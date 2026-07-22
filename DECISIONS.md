@@ -2,6 +2,32 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-22 (evening) - Off-LAN measured: the hole-punch is ~12% on Google Fi, so retries cannot save it
+Tier: T1 note backing a still-open T3 (the relay). Data gathered by driving Tim's Pixel over USB with wifi
+disabled (= Google Fi cellular = off-LAN; USB keeps adb alive), running the diagnostics 6 times via CDP - no
+blind taps, the safe method Tim approved 2026-07-22.
+
+RAW NUMBERS (each attempt is ~one independent hole-punch; F = HOLEPUNCH_ABORTED at a deterministic ~10.5s):
+  Umbrel  single-attempt 2/21 = 10%   | connected within 4 tries 2/6 sessions
+  Mac     single-attempt 3/19 = 16%   | connected within 4 tries 3/6 sessions
+  COMBINED single-attempt punch 5/40 = 12%
+  BOTH libraries up in the same session: 1 of 6.
+  The phone is firewalled with NO public address every run (CGNAT). The abort TIMING is deterministic
+  (~10.4s Umbrel, ~11.6s Mac); only the OUTCOME is random - the classic marginal punch on hard NAT.
+
+THE CONCLUSION IS ARITHMETIC. At a 12% per-attempt rate, 95% reliability needs ~22 attempts (~236s). Retries
+were the right first move and they DID turn "never" into "sometimes", but no sane retry budget makes a 12%
+punch dependable. This is the evidence the relay decision was waiting for: a PeerLoom-run relay (hyperdht
+relayThrough), used only when the direct punch fails, is the fix that makes "works anywhere, no VPN" true on a
+real carrier. Google Fi is an MVNO (T-Mobile/US Cellular) with aggressive CGNAT, i.e. a normal user's network,
+not an edge case.
+
+TAILSCALE stays a red herring for the DHT path (the LAN-address gate, DECISIONS earlier today). Tim's
+observation that toggling it changed which host connected is consistent with the ~12% coin-flip: the toggle
+just spent time during which another attempt happened to land.
+
+DECIDED: gather-only for now (Tim). NEXT is the relay proposal (T3) when Tim is ready - this entry is its
+evidence base.
 ## 2026-07-22 - Off-LAN: why a VPN does not rescue the app, and diagnostics before a transport change
 Tier: T1 (the diagnostics screen itself: read-only, no wire change). The TRANSPORT decision it exists to
 inform is T3 and still unmade - deliberately.
