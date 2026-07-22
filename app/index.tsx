@@ -13,7 +13,7 @@
 // dies, the loopback stream breaks, and the music stops. That is the product.
 
 import { useEffect, useRef, useState } from 'react'
-import { View, StatusBar, BackHandler, Appearance, AppState, Platform, Share } from 'react-native'
+import { View, StatusBar, BackHandler, Appearance, AppState, NativeModules, Platform, Share } from 'react-native'
 import { WebView } from 'react-native-webview'
 import * as Linking from 'expo-linking'
 import * as Clipboard from 'expo-clipboard'
@@ -58,17 +58,26 @@ function netKind (type?: Network.NetworkStateType): 'wifi' | 'cellular' | 'none'
   return 'wifi'
 }
 
-// WebView-freeze fix (GrapheneOS / Vanadium). The freeze = the OS silently reaping the WebView's
-// render process while the app is backgrounded. On return the WebView reloads on its own (onLoad
-// fires shortly after resume), but NO onRenderProcessGone fires - so react-native-webview's built-in
-// recovery never runs - and the resume-reloaded Vanadium renderer often exhausts its tight GPU tile
-// budget and never paints. The screen is frozen even though JS/React/taps/haptic all still work.
-// Recovery: detect that reload-on-resume and remount the WebView, which spawns a FRESH render
-// process with a fresh tile budget that draws (the same effect as the user swiping away and back).
-let _resumeAt = 0            // last AppState->active time; used to detect a reload-on-resume
-let _webViewLoaded = false   // has the WebView fired onLoad at least once (a first load is not a reap)
-let _remountInFlight = false
-let _remountWebView: (() => void) | null = null
+// WebView resume-freeze recovery (GrapheneOS / Vanadium). See
+// /home/tim/peerloomllc/WEBVIEW_FREEZE_FIX_PORT.md; reference impl PearCircle #165.
+//
+// Android's cached-app freezer cgroup-freezes the WebView's out-of-process Vanadium renderer while
+// we are backgrounded. Since the 2026-07-19 Vanadium 151 update, on resume the app gets a NEW
+// window surface but the thawed renderer's compositor never re-attaches to it: zero new buffers, a
+// frozen screen - while React, JS, taps and haptics all keep working, because they live in the app
+// process, which is perfectly healthy. That combination is what makes it read as "the app hung".
+//
+// Only a FRESH render process recovers it. This REPLACES the #110 remount machinery, which could
+// not work: a view-remount rebinds the SAME pooled, stale renderer. We terminate the renderer
+// outright (native module, plugins/with-webview-recovery.js) and reload in onRenderProcessGone.
+//
+// Gated on how long we were away: terminating costs a ~1-2s reload of the UI, so it must not fire
+// when someone flicks to another app and straight back. 20s is the reference implementation's
+// number and is tunable up if it proves too eager in daily use.
+const WEBVIEW_RECOVERY_MIN_BG_MS = 20_000
+let _backgroundedAt = 0
+// Absent on iOS and on any build made before the native module existed - every call site guards.
+const { WebViewRecovery } = NativeModules
 
 export default function App () {
   const insets = useSafeAreaInsets()
@@ -121,9 +130,6 @@ export default function App () {
   const drainStall = useRef({ pos: -1, at: 0 })
   const [uiHtml, setUiHtml] = useState<string | null>(null)
   const [scheme, setScheme] = useState<'light' | 'dark'>('dark')
-  // Bumping this key remounts the WebView (fresh render process) - see the GrapheneOS freeze fix.
-  const [webViewKey, setWebViewKey] = useState(0)
-  _remountWebView = () => { _webViewLoaded = false; setWebViewKey((k) => k + 1) }
   // Whether the UI has a screen or overlay to pop. Suite convention
   // (shell:navState): when it is false we let the press fall through and Android
   // closes the app, which is what a user at the root of an app expects.
@@ -980,8 +986,23 @@ export default function App () {
     // to prevent - but the app must not still be sitting on a dead connection when
     // the user returns to it. Tell the UI, and it reconnects before they notice.
     const appState = AppState.addEventListener('change', (s) => {
+      // WebView resume-freeze recovery (Android only - iOS/WKWebView has no cached-app freezer).
+      // Terminating the renderer is what actually unfreezes the screen; the reload it triggers is
+      // why this is gated on a real absence rather than every glance at another app.
+      if (Platform.OS === 'android') {
+        if (s === 'background' || s === 'inactive') {
+          if (_backgroundedAt === 0) _backgroundedAt = Date.now()
+        } else if (s === 'active') {
+          const bgMs = _backgroundedAt ? Date.now() - _backgroundedAt : 0
+          _backgroundedAt = 0
+          if (bgMs >= WEBVIEW_RECOVERY_MIN_BG_MS && WebViewRecovery?.terminateRenderer) {
+            WebViewRecovery.terminateRenderer()
+              .then((n: number) => { if (n) console.warn('[webview] terminated ' + n + ' renderer(s) after ' + Math.round(bgMs / 1000) + 's backgrounded') })
+              .catch(() => {}) // an old build with no native module, or no WebView up yet
+          }
+        }
+      }
       if (s === 'active') {
-        _resumeAt = Date.now() // so the WebView's onLoad can spot a silent reload-on-resume (freeze fix)
         toWeb('app:active', {})
         // The network may have changed while we were suspended (walked out of wifi),
         // and the listener does not fire in the background - so re-check on resume.
@@ -1151,25 +1172,15 @@ export default function App () {
       <StatusBar barStyle={scheme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={bg} />
       {uiHtml && (
         <WebView
-          key={webViewKey}
           ref={webRef}
-          onLoad={() => {
-            const sinceResume = _resumeAt ? (Date.now() - _resumeAt) : Infinity
-            // A load we did not request, firing right after a resume, is the OS silently reloading
-            // the WebView because its render process was reaped while backgrounded (no
-            // onRenderProcessGone fires on GrapheneOS). The resume-reloaded Vanadium renderer often
-            // exhausts its GPU tile budget and never paints (frozen screen). Recovery: once the app
-            // has settled, remount to spawn a FRESH render process with a fresh tile budget. The
-            // settle delay matters - an immediate remount respawns under the same memory pressure
-            // and freezes again.
-            if (!_remountInFlight && _webViewLoaded && sinceResume < 4000) {
-              _resumeAt = 0 // don't let the remount's own onLoad re-trigger
-              _remountInFlight = true
-              setTimeout(() => { _remountWebView?.() }, 1800)
-            } else if (_remountInFlight) {
-              _remountInFlight = false
-            }
-            _webViewLoaded = true
+          // The other half of the resume-freeze recovery. Our terminate above kills the renderer,
+          // which lands here with didCrash=false; reloading binds a FRESH render process to the
+          // current window surface, which is the thing that actually repaints. This also covers a
+          // renderer the OS killed on its own - previously that left the UI dead until the app was
+          // swiped away, because nothing reloaded it.
+          onRenderProcessGone={(e: any) => {
+            console.warn('[webview] render process gone, didCrash=' + e?.nativeEvent?.didCrash + ' -> reload')
+            webRef.current?.reload()
           }}
           // THE baseUrl IS NOT DECORATION - the QR scanner does not work without
           // it. getUserMedia only exists in a SECURE CONTEXT. Loaded as a bare

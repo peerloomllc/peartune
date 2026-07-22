@@ -81,7 +81,8 @@
       "./plugins/with-android-queries",
       "./plugins/with-android-debug-app-id",
       "./plugins/with-localhost-cleartext",
-      "./plugins/with-standalone-debug"
+      "./plugins/with-standalone-debug",
+      "./plugins/with-webview-recovery"
     ],
     "assets": [
       "./assets/bare-universal.bundle"
