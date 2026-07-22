@@ -933,3 +933,65 @@ test('DELETING A PERSON purges their user state; a person still holding a device
   assert.deepEqual((await host.userState.listFavs(owner)), { track: [], album: [], artist: [] })
   assert.equal(await host.userState.latestResume(owner), null)
 })
+
+// A phone in MERGED mode writes its session to `session:merged:{owner}` on the elected home
+// host and never touches the single-library row again. The dashboard read only the single
+// row, which meant the home host showed NOTHING while every other host showed its last
+// single-library session forever. Tim saw exactly that: the Mac blank, the Umbrel proudly
+// displaying a track from days earlier.
+test('DASHBOARD now-playing: the MERGED session is shown, and beats an older single-library row', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  const deviceKey = z32.encode(client.keyPair.publicKey)
+  const ownerId = 'd:' + deviceKey
+  const { items } = await client.list({ type: 'tracks' })
+
+  // An older SINGLE-library session says one thing...
+  await host.userState.claimSession(ownerId, deviceKey, 0, false)
+  await host.userState.setSession(ownerId, deviceKey, {
+    queue: [{ trackId: items[0].id, title: 'Yesterday', artist: 'Old' }], index: 0, playing: false
+  }, false)
+
+  let me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
+  assert.equal(me.nowPlaying.title, 'Yesterday', 'with no merged session, the single one still shows')
+
+  // ...and the MERGED session, written later, says another. The dashboard must follow the
+  // fresher row, or a merged-mode phone reads as playing whatever it last played single.
+  await host.userState.claimSession(ownerId, deviceKey, 0, true)
+  await host.userState.setSession(ownerId, deviceKey, {
+    queue: [{ trackId: items[0].id, title: 'Right Now', artist: 'Live' }], index: 0, playing: true
+  }, true)
+
+  me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
+  assert.equal(me.nowPlaying.title, 'Right Now', 'the merged session wins')
+  assert.equal(me.nowPlaying.playing, true)
+})
+
+test('DASHBOARD now-playing: a STALE session is not presented as what the phone is doing now', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  const deviceKey = z32.encode(client.keyPair.publicKey)
+  const ownerId = 'd:' + deviceKey
+  const { items } = await client.list({ type: 'tracks' })
+
+  await host.userState.claimSession(ownerId, deviceKey, 0)
+  await host.userState.setSession(ownerId, deviceKey, {
+    queue: [{ trackId: items[0].id, title: 'Three Days Ago', artist: 'Ghost' }], index: 0, playing: true
+  })
+  let me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
+  assert.ok(me.nowPlaying, 'fresh: shown')
+
+  // Backdate the heartbeat. The phone is still CONNECTED - which is why "online" was never
+  // enough of a check on its own.
+  const row = await host.userState.getSession(ownerId)
+  row.updatedAt = Date.now() - 60 * 60 * 1000
+  await host.stateBee.put('session:' + ownerId, row, { valueEncoding: 'json' })
+
+  me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
+  assert.equal(me.nowPlaying, null, 'an hour-old session is a leftover, not now-playing')
+  assert.equal(me.online, true, 'and the device is still connected, so this is not the online check')
+})
