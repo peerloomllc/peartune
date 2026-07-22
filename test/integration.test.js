@@ -995,3 +995,40 @@ test('DASHBOARD now-playing: a STALE session is not presented as what the phone 
   assert.equal(me.nowPlaying, null, 'an hour-old session is a leftover, not now-playing')
   assert.equal(me.online, true, 'and the device is still connected, so this is not the online check')
 })
+
+// The dashboard renders a device photo as <img src="/api/device/avatar?id=KEY">. That src is
+// identical on every 3s poll, so the browser never re-fetches it: a NEW photo kept rendering
+// as the old one until you reloaded the page. The row now carries when the photo was written,
+// which the dashboard puts in the URL - so a changed photo changes the src.
+test('a device row reports WHEN its avatar was written, so the dashboard can bust its cache', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+  const deviceKey = z32.encode(client.keyPair.publicKey)
+
+  const before = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
+  assert.equal(before.hasAvatar, false)
+  assert.equal(before.avatarAt, 0, 'no photo, no timestamp')
+
+  await client.setAvatar({ avatar: Buffer.from('first-photo').toString('base64') })
+  const one = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
+  assert.equal(one.hasAvatar, true)
+  assert.ok(one.avatarAt > 0, 'a photo has a timestamp')
+
+  // The point: REPLACING the photo must move the timestamp, or the dashboard's <img> URL
+  // stays the same and the browser keeps showing the previous picture.
+  await new Promise(r => setTimeout(r, 1100)) // mtime granularity
+  await client.setAvatar({ avatar: Buffer.from('second-photo-different').toString('base64') })
+  const two = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
+  assert.ok(two.avatarAt > one.avatarAt, `avatarAt must advance on a new photo (${one.avatarAt} -> ${two.avatarAt})`)
+
+  // THROUGH THE HTTP LAYER, which is where the first cut of this fix fell over: /api/state
+  // whitelists the fields it forwards, so a field can exist on listDevices() and still never
+  // reach the dashboard. Testing only the method above passed while the bug was fully intact.
+  const { startDashboard } = require('../host/ui/server')
+  const dash = await startDashboard({ host, bind: '127.0.0.1', port: 8791, password: '' })
+  t.after(() => dash.close())
+  const state = await fetch('http://127.0.0.1:8791/api/state').then(r => r.json())
+  const row = state.devices.find(d => d.deviceKey === deviceKey)
+  assert.equal(row.avatarAt, two.avatarAt, '/api/state forwards avatarAt, not just hasAvatar')
+})

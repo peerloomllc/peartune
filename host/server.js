@@ -576,7 +576,7 @@ class PearTuneHost {
           }
         }
       }
-      return { ...r, online, nowPlaying, hasAvatar: this.avatars.has(r.deviceKey) }
+      return { ...r, online, nowPlaying, hasAvatar: this.avatars.has(r.deviceKey), avatarAt: this.avatars.at(r.deviceKey) }
     }))
   }
 
