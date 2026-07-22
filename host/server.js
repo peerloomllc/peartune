@@ -29,6 +29,9 @@ const { AvatarStore } = require('./avatars')
 // connect; this covers a guest that expires WHILE connected. 30s is fine for a scheduled
 // expiry - unlike revoke's instant, event-driven kill, nobody is racing a lost phone here.
 const EXPIRY_SWEEP_MS = 30_000
+
+// How long a play session stays believable on the dashboard with no heartbeat (listDevices).
+const SESSION_STALE_MS = 15 * 60 * 1000
 const { serveMedia } = require('./media')
 const { PairSession } = require('./pair')
 const { SourceStore, buildAdapter } = require('./source')
@@ -526,14 +529,35 @@ class PearTuneHost {
   }
 
   async listDevices () {
+    // A session the phone has not touched in this long is not what it is doing NOW. The
+    // heartbeat rides the play-status tick (a few seconds apart while playing) and is forced
+    // on every structural change, so a LIVE session is never this old - a row this stale is a
+    // leftover from a phone that moved its session to another host or simply stopped. The cost
+    // is that a phone left paused for a long time eventually drops off the dashboard, which is
+    // the right trade against announcing a track from three days ago as "now playing".
+    const fresh = (s) => Date.now() - (s.updatedAt || 0) < SESSION_STALE_MS
     const rows = await this.grants.list()
     // The play session is per OWNER (a person, or an unclaimed device is its own
     // owner) and names ONE activeDeviceKey - only that device is playing. Load each
     // owner's session once, then attach now-playing to the device that holds it; every
     // other device is idle. Best-effort: a session read failing just omits the track.
+    //
+    // Read BOTH session rows and take the fresher one. A phone in MERGED mode writes to
+    // `session:merged:{owner}` on the elected home host and never touches the single-library
+    // row again - so reading only the single row showed nothing at all on the home host, and
+    // showed the last single-library session FOREVER on every other host. Tim saw exactly
+    // that: the Mac (the merged home) had no now-playing on any row, while the Umbrel proudly
+    // displayed a track from days earlier.
     const sessions = new Map()
     const sessionFor = async (ownerId) => {
-      if (!sessions.has(ownerId)) sessions.set(ownerId, await this.userState.getSession(ownerId).catch(() => null))
+      if (!sessions.has(ownerId)) {
+        const [single, merged] = await Promise.all([
+          this.userState.getSession(ownerId).catch(() => null),
+          this.userState.getSession(ownerId, true).catch(() => null)
+        ])
+        const fresher = (merged?.updatedAt || 0) >= (single?.updatedAt || 0) ? merged : single
+        sessions.set(ownerId, fresher)
+      }
       return sessions.get(ownerId)
     }
     return Promise.all(rows.map(async r => {
@@ -541,7 +565,7 @@ class PearTuneHost {
       let nowPlaying = null
       if (online && !r.revokedAt) {
         const s = await sessionFor(r.personId ? 'p:' + r.personId : 'd:' + r.deviceKey)
-        if (s && s.activeDeviceKey === r.deviceKey && Array.isArray(s.queue) && s.queue.length) {
+        if (s && s.activeDeviceKey === r.deviceKey && Array.isArray(s.queue) && s.queue.length && fresh(s)) {
           const t = s.queue[s.index] || s.queue[0]
           if (t) {
             // The session carries the phone's own loopback art URL, useless here, but
