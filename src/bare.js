@@ -560,6 +560,50 @@ function makeClient () {
   return c
 }
 
+// --- identity fan-out (multi-host) -------------------------------------------
+//
+// Your name, your device's name and your photo describe THE DEVICE, not one pairing, so
+// every host you are paired to should show the same ones. They used to be pushed on the
+// single active `client` only, which meant a second library kept whatever you were called
+// when you paired it: Tim's Umbrel still read "Pixel" / "TCL" with no photo while the Mac
+// had "Pixel2" / "TCL2" with both, and nothing would ever have reconciled them.
+//
+// Two halves, because a host that is offline when you rename cannot be told then:
+//   1. setIdentity/setAvatar fan out to every host CONNECTED right now.
+//   2. ensureHost pushes to a host the first time it connects in this run, so one that was
+//      off catches up by itself.
+// `identitySynced` is what stops (2) re-pushing on every pool read; a dropped connection
+// clears its entry, so a reconnect re-syncs.
+const identitySynced = new Set()
+
+async function pushIdentityTo (c, libId) {
+  const st = loadSettings()
+  // Only send what we actually have. A blank name would otherwise ask the host to clear a
+  // name it already knows, and an empty avatar means "remove the photo" - neither is what
+  // an unrelated reconnect should do.
+  if (st.deviceName || st.userName) {
+    await c.setIdentity({ deviceName: st.deviceName || undefined, userName: st.userName || undefined })
+  }
+  if (st.avatar) await c.setAvatar({ avatar: st.avatar })
+  if (libId) identitySynced.add(libId)
+}
+
+// Best-effort, in parallel, to every host with a live connection - including the single
+// active client, which is not in the pool. Never throws: a host that refuses or drops mid
+// push just stays stale until it reconnects, and renaming must not fail because of it.
+async function fanOutIdentity () {
+  const targets = new Map()
+  if (client && client.conn && !client.conn.destroyed) targets.set(currentHost?.libraryId || '_active', client)
+  for (const libId of pool.keys()) {
+    const c = poolClient(libId)
+    if (c) targets.set(libId, c)
+  }
+  await Promise.allSettled([...targets].map(([libId, c]) =>
+    pushIdentityTo(c, libId === '_active' ? null : libId)
+      .catch((e) => log('identity:push-failed', { lib: String(libId).slice(0, 8), err: e?.message }))
+  ))
+}
+
 async function ensureClient () {
   if (client) return client
   client = makeClient()
@@ -619,8 +663,12 @@ async function ensureHost (host) {
       // Drain anything queued for this host while it was offline (merged favorite/resume/count writes).
       // Fire-and-forget - a slow flush must not hold up the connect or the reads waiting on it.
       flushOutboxFor(libId, c).catch(() => {})
+      // A host that was offline when you renamed yourself catches up here, once per
+      // connection. Fire-and-forget: it must not delay the read that opened this.
+      if (!identitySynced.has(libId)) pushIdentityTo(c, libId).catch(() => {})
       c.conn.once('close', () => {
         if (e.client === c) e.client = null
+        identitySynced.delete(libId) // so a reconnect re-syncs rather than trusting a dead run
         // A pool connection dropping (a revoke of THIS host, or it going offline) has no other
         // channel to the UI - host:disconnected only fires for the single active client. In merged
         // mode, push fresh status so the chip + Settings row grey promptly, whichever host it was.
@@ -1698,6 +1746,9 @@ const methods = {
       deviceName: r?.deviceName || deviceName || '',
       userName: r?.user?.name || userName || ''
     })
+    // Every OTHER paired host gets it too - saveSettings first, so what they receive is
+    // what we just committed locally (and what a later reconnect will re-send).
+    fanOutIdentity().catch(() => {})
     return {
       deviceName: r?.deviceName || '',
       userName: r?.user?.name || '',
@@ -1713,6 +1764,13 @@ const methods = {
     const a = avatar || ''
     saveSettings({ avatar: a })
     try { await ensureConnected(); await client.setAvatar({ avatar: a }) } catch {}
+    // The pool hosts too. Note this sends an EMPTY avatar as well, unlike the reconnect
+    // sync: clearing your photo is a deliberate act and must reach every host, whereas a
+    // reconnect has no business deleting one.
+    await Promise.allSettled([...pool.keys()].map((libId) => {
+      const c = poolClient(libId)
+      return c ? c.setAvatar({ avatar: a }) : null
+    }))
     return { ok: true, avatar: a }
   },
 
