@@ -30,6 +30,7 @@ const merge = require('../worklet/merge')
 const catalog = require('../worklet/catalog')
 const { coalesce, clientCall } = require('../worklet/outbox')
 const leaves = require('../worklet/leaves')
+const retry = require('../worklet/retry')
 const { AudioCache } = require('../worklet/cache')
 const { ArtStore } = require('../worklet/art-cache')
 
@@ -624,6 +625,8 @@ async function ensureHost (host) {
         // channel to the UI - host:disconnected only fires for the single active client. In merged
         // mode, push fresh status so the chip + Settings row grey promptly, whichever host it was.
         if (mergedMode()) emit('merged:updated', mergedStatusData())
+        // ...and then TRY TO GET IT BACK, which nothing used to do for a pool host.
+        schedulePoolReconnect(e.host)
       })
       return c
     })().finally(() => { e.reconnecting = null })
@@ -642,6 +645,9 @@ async function ensureAll () {
 }
 
 async function closePool () {
+  // Cancel FIRST: closing a client fires its close handler, which would otherwise schedule a
+  // retry for a pool we are in the middle of tearing down.
+  cancelAllPoolReconnects()
   for (const e of pool.values()) { try { if (e.client) await e.client.close() } catch {} }
   pool.clear()
 }
@@ -1109,12 +1115,8 @@ async function connectTo (host) {
 // same tick, and without it each one would dial the host separately.
 // --- automatic reconnect ----------------------------------------------------
 //
-// Backoff, capped: a host that is simply OFF (or that revoked us) must not turn into a dial
-// every few seconds for the rest of the day, and a phone in a tunnel should not burn battery
-// retrying. Doubling from 5s to a 60s ceiling gets a brief network blip back almost at once
-// while costing one dial a minute in the pathological case.
-const RECONNECT_MIN_MS = 5000
-const RECONNECT_MAX_MS = 60000
+// The backoff math is in worklet/retry.js (pure, unit-tested) because there are now TWO loops
+// using it: this one for the active client, and the per-host pool loop below.
 let retryTimer = null
 let retryDelay = 0
 
@@ -1126,7 +1128,7 @@ function cancelReconnect () {
 function scheduleReconnect () {
   if (retryTimer || (connected && client)) return
   if (!loadActiveHost()) return // unpaired: nothing to dial
-  retryDelay = retryDelay ? Math.min(retryDelay * 2, RECONNECT_MAX_MS) : RECONNECT_MIN_MS
+  retryDelay = retry.nextDelay(retryDelay)
   retryTimer = setTimeout(() => {
     retryTimer = null
     if (!loadActiveHost()) return cancelReconnect()
@@ -1135,6 +1137,67 @@ function scheduleReconnect () {
   }, retryDelay)
   // Never let a retry hold the worklet awake on its own account.
   if (retryTimer.unref) retryTimer.unref()
+}
+
+// --- automatic reconnect for POOL hosts (2026-07-21) ------------------------
+//
+// The same hole #121 closed for the active client, one level out. A pool link that dies had
+// nothing that dialled it again: the only paths back were an explicit pull-to-refresh, an
+// index rebuild, or a relaunch. So when a host in the blend restarts - which is exactly what
+// deploying to it does - its half of the library goes dark and STAYS dark while the app runs,
+// even though the host is reachable. Seen for real when the Umbrel was redeployed to 0.2.16:
+// "Offline - unreachable" for minutes, instant recovery on relaunch.
+//
+// One timer per libraryId, same 5s->60s ladder, and every retry re-reads hosts.json - so a
+// library removed while a retry is pending simply stops (the entry is gone), and a retry can
+// never resurrect a host the user just dropped.
+const poolRetry = new Map() // libraryId -> { timer, delay }
+
+function cancelPoolReconnect (libraryId) {
+  const r = poolRetry.get(libraryId)
+  if (r && r.timer) clearTimeout(r.timer)
+  poolRetry.delete(libraryId)
+}
+
+function cancelAllPoolReconnects () {
+  for (const id of [...poolRetry.keys()]) cancelPoolReconnect(id)
+}
+
+function schedulePoolReconnect (host) {
+  const libId = host && host.libraryId
+  if (!libId) return
+  // The pool exists to serve the BLEND. Outside merged mode the active-client loop above is
+  // the one that matters, and dialling pool hosts nobody is reading is pure battery.
+  if (!mergedMode()) return cancelPoolReconnect(libId)
+  if (!loadHostsFile().hosts.some((h) => h.libraryId === libId)) return cancelPoolReconnect(libId)
+  if (poolClient(libId)) return cancelPoolReconnect(libId)
+
+  const r = poolRetry.get(libId) || { timer: null, delay: 0 }
+  if (r.timer) return
+  r.delay = retry.nextDelay(r.delay)
+  r.timer = setTimeout(() => {
+    r.timer = null
+    const rec = loadHostsFile().hosts.find((h) => h.libraryId === libId)
+    if (!rec || !mergedMode()) return cancelPoolReconnect(libId)
+    if (poolClient(libId)) return cancelPoolReconnect(libId)
+    ensureHost(rec).then(
+      () => { cancelPoolReconnect(libId); onPoolHostBack(libId) },
+      () => schedulePoolReconnect(rec)
+    )
+  }, r.delay)
+  if (r.timer.unref) r.timer.unref()
+  poolRetry.set(libId, r)
+}
+
+// A pool host answered again. Two different things have to happen, and only the first is free.
+function onPoolHostBack (libraryId) {
+  log('pool:reconnected', { library: String(libraryId).slice(0, 8) })
+  // 1. The chip and the Settings row un-grey immediately - the connection is the fact they show.
+  if (mergedMode()) emit('merged:updated', mergedStatusData())
+  // 2. Its TRACKS are only back once the index is rebuilt. Rate-limiting exists to stop a host
+  //    we cannot reach driving a rebuild loop; this one we just reached, and it is genuinely
+  //    missing from the blend, so it has earned exactly one rebuild.
+  if (!mergedConnected.has(libraryId)) rebuildIndex().catch(() => {})
 }
 
 async function ensureConnected () {
@@ -1556,6 +1619,9 @@ const methods = {
   // merged index stays cached; re-entering is instant. switchHost does this too.
   exitMerged () {
     _mergedMode = false
+    // Nobody is reading the blend now, so stop dialling for it. Re-entering merged mode
+    // reconnects on demand (ensureAll), and a link that dies after that schedules afresh.
+    cancelAllPoolReconnects()
     return { merged: false }
   },
 
@@ -2376,6 +2442,7 @@ const methods = {
     saveHostsFile(f)
     const host = hostList.activeHost(f)
     _mergedMode = false // focusing one library leaves the blended view (the '_all' chip re-enters it)
+    cancelAllPoolReconnects() // same reason as exitMerged: no blend, no pool dialling
     if (client) { try { await client.close() } catch {} ; client = null }
     connected = false
     useLibrary(host.libraryId)
@@ -2417,6 +2484,10 @@ const methods = {
     saveHostsFile(file)
     if (removed) {
       purgeLibrary(removed.libraryId)
+      // Stop dialling it BEFORE closing, or the close handler schedules a retry for the very
+      // library we are removing. (The retry re-reads hosts.json and would stop on its own, but
+      // a removal should not leave a doomed timer running for up to a minute either.)
+      cancelPoolReconnect(removed.libraryId)
       const pe = pool.get(removed.libraryId) // drop any merged-mode connection to it
       if (pe) { try { if (pe.client) pe.client.close() } catch {} ; pool.delete(removed.libraryId) }
       mergedIndex = null // a removed host must leave the blend; next merged browse rebuilds
