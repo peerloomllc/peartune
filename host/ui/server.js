@@ -289,7 +289,11 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         const body = await readBody(req)
         const expiresMs = Number(body.expiresMs) > 0 ? Number(body.expiresMs) : null
         const link = host.startPairing({ expiresMs })
-        const svg = await QRCode.toString(link, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' })
+        // margin 4 = the spec's full quiet zone, matching what the dashboard renders (App.jsx also
+        // generates its own QR at margin 4). Nothing renders THIS svg today - the dashboard uses its
+        // client-side one - but an API that hands out a harder-to-scan code than the UI shows is a
+        // trap for whoever picks it up next.
+        const svg = await QRCode.toString(link, { type: 'svg', margin: 4, errorCorrectionLevel: 'M' })
         return json(res, 200, {
           link, svg, ttlMs: host.pairSession.ttl,
           guest: !!host.pairSession.expiresMs,
