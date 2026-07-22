@@ -311,6 +311,13 @@ class PearTuneClient {
       }
     }
     if (!conn) throw last || new Error('connect failed')
+
+    // #149's retry refactor dropped this line, and it is load-bearing: poolClient() in
+    // src/bare.js gates on `client.conn && !client.conn.destroyed`, so a pool client whose
+    // .conn was never set reads as PERMANENTLY DISCONNECTED. That is why the merged view
+    // showed "can't reach your libraries" while the raw diagnostics dial reached both hosts
+    // in the same instant - the pool connected fine and then declared itself offline.
+    this.conn = conn
     const mux = Protomux.from(conn)
 
     // Registration order is fixed in protocol/channels.js and MUST match the
