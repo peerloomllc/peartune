@@ -2136,9 +2136,8 @@ function Library ({
               <p className='muted sm'>
                 {/* Always the plain, honest reason - never a raw reconnect error.
                     Off and revoked are indistinguishable from here, and a leaked
-                    "host refused the connection (is a pairing window open?)" is
-                    developer-speak that belonged to a pairing attempt, not this
-                    screen. */}
+                    "host refused the connection" is developer-speak that belonged
+                    to a pairing attempt, not this screen. */}
                 PearTune can't reach this library. Your server may be off, or its
                 access for this device may have been revoked.
               </p>
@@ -2808,25 +2807,29 @@ function sourceLabel (kind) {
 }
 
 // Turn a raw pairing failure into something a person can act on. The wire errors
-// are written for a developer ("host refused the connection (is a pairing window
-// open?)"); the person holding the phone needs to know what to DO.
+// are written for a developer ("no answer from the host (unreachable, or not
+// accepting pair requests)"); the person holding the phone needs to know what to DO.
 // "The server said no" and "the server never answered" are different failures with different
 // fixes, and they used to share one message. That cost real debugging time: an expired pairing
 // window and a phone that cannot reach the host at all both read as "Couldn't reach your
 // library", so the message could not tell you which one you were looking at.
 function pairError (msg = '') {
   const m = String(msg)
-  // The host ANSWERED and its firewall turned us away: no window open any more, or this
-  // device is revoked. Reaching it was never the problem.
-  if (/pairing window|host refused|firewall|denied/i.test(m)) {
+  // The host let the connection OPEN and then hung up: it read the code and said no. This
+  // is the only case where we actually know the code was the problem, so it is the only
+  // case allowed to say so.
+  if (/host refused|denied/i.test(m)) {
     return 'Your server turned that pairing code down. It has most likely expired, so show a fresh one on the dashboard and try again.'
   }
   if (/not a peartune|not a valid|invalid|malformed/i.test(m)) {
     return "That doesn't look like a PearTune pairing code. Copy it again from your server's dashboard."
   }
-  // Nothing came back at all: a transport problem, not a stale code.
-  if (/timed out|timeout/i.test(m)) {
-    return "Couldn't reach your library. Your server never answered, so check it is running and that both devices are on a network that can reach it."
+  // The connection never opened. The transport CANNOT tell a firewall deny (no pairing
+  // window) from a dropped holepunch - both arrive as "could not connect" - so neither may
+  // be asserted here. Saying "it has expired" for a network blip is what sent an earlier
+  // investigation down the wrong path.
+  if (/no answer from the host|never answered|unreachable|timed out|timeout/i.test(m)) {
+    return "Couldn't set up with your library. Your server didn't answer - the pairing window may have closed, or this phone can't reach it right now. Show a fresh code on the dashboard, and check both are on a network that can reach each other."
   }
   if (/expired/i.test(m)) {
     return 'That pairing code has expired. Show a fresh one on your server and try again.'
