@@ -118,6 +118,11 @@ export default function App () {
   const [favs, setFavs] = useState(() => ({ track: new Set(), album: new Set(), artist: new Set() }))
   const [favSupported, setFavSupported] = useState(true) // false = host too old
   const [favItems, setFavItems] = useState(null) // the Favorites view, resolved + grouped
+  // Which libraries were in the blend last time we heard: a ref, not state, because it only ever
+  // answers "did a host just JOIN?" for the merged:updated handler and must never cause a render.
+  // Starts empty on purpose - the first event after launch then re-reads the hearts once, which is
+  // exactly what a cold start needs (the pool is warmer by then than it was on host:connected).
+  const blendLibsRef = useRef(new Set())
   const [cont, setCont] = useState(null) // "continue listening": { track, positionMs }
   const [handoff, setHandoff] = useState(null) // another device holds the play session: { activeDeviceName, count }
   const [mostPlayed, setMostPlayed] = useState(null) // the Most Played view: { items }
@@ -261,7 +266,26 @@ export default function App () {
       }),
       // A background merged rebuild landed (launch, a host (re)joining, a pull-to-refresh): update
       // the source chips + greying and re-render the browse + the recently-added shelf from the blend.
-      on('merged:updated', (st) => { setMerged(st); reloadBrowse(); loadRecent() }),
+      on('merged:updated', (st) => {
+        setMerged(st); reloadBrowse(); loadRecent()
+        // AND re-read the hearts when a library JOINS the blend. In merged mode the heart state is
+        // the UNION of every CONNECTED host's favorites (the worklet walks the pool for it), but it
+        // was only ever fetched on host:connected - which fires for the ACTIVE client, before the
+        // pool has finished coming up. So after removing and re-pairing a library the Favorites
+        // list was right while every heart rendered as an outline, and only a relaunch fixed it:
+        // the list is fetched when you open it (pool warm by then), the id-set was not fetched
+        // again at all. Same reason a cold launch could show hollow hearts for a beat.
+        //
+        // Only on a JOIN: a host DROPPING out cannot add favorites, and re-reading on every event
+        // would mean a favList round-trip per host every time a link flaps.
+        const live = new Set((st?.libraries || []).filter(l => l.connected).map(l => l.libraryId))
+        const joined = [...live].some(id => !blendLibsRef.current.has(id))
+        blendLibsRef.current = live
+        if (joined) {
+          loadFavs()
+          setFavItems(null) // the resolved list is missing that host's rows too; refetch on open
+        }
+      }),
       // The operator renamed the library on the dashboard; the worklet caught it on connect and
       // persisted it. Reflect it live in the header, the Settings switcher, and the merged chips.
       on('host:renamed', (d) => {
@@ -1050,6 +1074,13 @@ export default function App () {
       } else {
         loadAlbums(0)
       }
+      // AFTER the blend has been rebuilt (so the new host is in the pool), re-read the hearts.
+      // In merged mode they are the union of every CONNECTED host's favorites, and the pool only
+      // comes up during the rebuild above - so a pair that ADDS a host, or a RE-pair that brings
+      // one back with its favorites, would otherwise leave every heart hollow until the next
+      // relaunch. The resolved Favorites list is dropped too: it is missing that host's rows.
+      loadFavs()
+      setFavItems(null)
     } catch (e) {
       setError(pairError(e.message))
       haptic('warn')
@@ -1108,6 +1139,11 @@ export default function App () {
         try {
           const r = await call('removeHost', { hostKey: host.hostKey })
           setState(s => ({ ...s, hosts: r.hosts }))
+          // The hearts and the Favorites list still hold that library's ids. Drop them: leaving
+          // them would show favorites for a library this device no longer follows, and it also
+          // keeps the blend's view of "what is favorited" honest for the next join.
+          loadFavs()
+          setFavItems(null)
           // Removing the LAST/active-with-none-left library drops us back to unpaired; the
           // worklet already emitted host:disconnected, so just clear the browse and views.
           if (!(r.hosts || []).some(h => h.active)) {
