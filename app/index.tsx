@@ -301,6 +301,19 @@ export default function App () {
       { showSeekForward: true, showSeekBackward: true }
     )
 
+    announceToUi(i)
+  }
+
+  // The UI half of announce, on its own - for the case where the WEBVIEW lost its
+  // state but playback did not (see restoreQueue). The lock screen is untouched there
+  // on purpose: setActiveForLockScreen tears the MediaSession down and rebuilds it,
+  // and doing that mid-playback risks the audio focus with it (the same hazard the
+  // playIndex comment documents). The notification is already correct anyway - it is
+  // the phone's WebView that was killed, not the player.
+  function announceToUi (i: number) {
+    const t = queueRef.current[i]
+    if (!t) return
+
     toWeb('play:started', {
       trackId: t.id,
       title: t.title,
@@ -311,6 +324,23 @@ export default function App () {
       // deliberately keeps the small one - it is a notification, not a gallery.
       artFull: t.artFull ?? null,
       index: i,
+      queueLength: queueRef.current.length
+    })
+  }
+
+  // Push the CURRENT transport state to the UI without waiting for the next status tick.
+  // Needed because a PAUSED player emits none at all: a UI that just reloaded would show
+  // the right track with a dead progress bar and a play/pause button set to whatever it
+  // guessed. Same shape the playbackStatusUpdate listener sends.
+  function pushStatus () {
+    const p: any = player.current
+    if (!p) return
+    toWeb('play:status', {
+      playing: !!p.playing,
+      positionMs: Math.round((p.currentTime ?? 0) * 1000),
+      durationMs: p.duration ? Math.round(p.duration * 1000) : null,
+      buffering: !!p.isBuffering,
+      index: indexRef.current,
       queueLength: queueRef.current.length
     })
   }
@@ -677,8 +707,26 @@ export default function App () {
   // seek and re-applied shuffle/repeat. URLs are re-resolved from IDs because the shim
   // port changes each launch. No-op if something is already playing, or if offline and
   // a track's URL cannot be resolved.
+  // Called by the UI on every mount. Two different situations arrive here:
+  //
+  // 1. A COLD START - no player. Rebuild the last session's queue, paused.
+  // 2. A LIVE PLAYER and a fresh UI. That is a WEBVIEW RELOAD, not a cold start: the
+  //    renderer was killed and recreated (GrapheneOS/Vanadium does this on resume, and
+  //    our own recovery does it deliberately after 20s backgrounded - see #134). The
+  //    shell kept playing the whole time; only the WebView lost its state.
+  //
+  // Case 2 used to return `{ restored: false }` and stop, which was true of the QUEUE and
+  // wrong for the user: the UI, having heard no play:started, showed no player at all
+  // while the music kept playing, and offered "Continue listening" for the very track it
+  // was already playing. So re-announce to the UI instead. The lock screen and the player
+  // are deliberately not touched - nothing is wrong with them.
   async function restoreQueue () {
-    if (player.current) return { restored: false } // don't clobber active playback
+    if (player.current) {
+      announceToUi(indexRef.current)
+      toWeb('play:mode', { shuffle: shuffleRef.current, repeat: repeatRef.current })
+      pushStatus()
+      return { restored: true, live: true, index: indexRef.current, queueLength: queueRef.current.length }
+    }
     let saved: any
     try {
       saved = await call('loadQueueState')
