@@ -219,13 +219,19 @@ function Identity ({ hostKey }) {
 // A device's avatar (the photo its user set on the phone, via /api/device/avatar),
 // else a monogram on a colour derived from a name. Display-only - the DEVICE sets the
 // photo, not the operator. `keyId` is the deviceKey; `name` seeds the fallback + colour.
-function Avatar ({ keyId, hasAvatar, name, online }) {
+function Avatar ({ keyId, hasAvatar, avatarAt, name, online }) {
   const initial = (name || '?').trim().charAt(0).toUpperCase() || '?'
   const hue = [...(name || '')].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 360, 7)
   return (
     <span className={'avatar' + (online ? '' : ' idle')} style={{ '--hue': hue }}>
       {hasAvatar && keyId
-        ? <img className='avatar-img' src={'/api/device/avatar?id=' + encodeURIComponent(keyId)} alt='' />
+        ? <img
+            className='avatar-img'
+            /* `v` is the photo's mtime. Without it the src never changes, so a NEW photo
+               keeps rendering as the old one until the page is reloaded - the poll updates
+               the JSON, but nothing tells this <img> to re-fetch. */
+            src={'/api/device/avatar?id=' + encodeURIComponent(keyId) + (avatarAt ? '&v=' + avatarAt : '')}
+            alt='' />
         : <span className='avatar-mono' aria-hidden='true'>{initial}</span>}
       {online && <span className='avatar-live' aria-hidden='true' />}
     </span>
@@ -388,7 +394,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
                   <div className={'person' + (gone ? ' gone' : '')} key={p.id}>
                     <div className={'prow' + (expandable ? '' : ' flat')} onClick={() => !editing && expandable && setOpen(o => ({ ...o, [p.id]: !o[p.id] }))}>
                       <CaretRight size={14} weight='bold' className={'caret' + (isOpen ? ' open' : '') + (expandable ? '' : ' hidden')} />
-                      <Avatar keyId={face?.deviceKey} hasAvatar={!!face} name={p.name} online={on > 0} />
+                      <Avatar keyId={face?.deviceKey} hasAvatar={!!face} avatarAt={face?.avatarAt} name={p.name} online={on > 0} />
                       {editing
                         ? <>
                             <input
@@ -490,7 +496,7 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, loose 
   return (
     <div className='dev'>
       <div className='drow'>
-        <Avatar keyId={d.deviceKey} hasAvatar={d.hasAvatar && !d.revokedAt} name={d.label} online={d.online && !d.revokedAt} />
+        <Avatar keyId={d.deviceKey} hasAvatar={d.hasAvatar && !d.revokedAt} avatarAt={d.avatarAt} name={d.label} online={d.online && !d.revokedAt} />
         <div className='who'>
           <div className='name'>
             {d.label}

@@ -25,6 +25,13 @@ class AvatarStore {
     try { return fs.readFileSync(this._file(deviceKey)) } catch { return null }
   }
 
+  // When this photo was last written, in ms. The dashboard puts it in the <img> URL: the
+  // src is otherwise identical across polls, so the browser keeps showing the old photo
+  // (the element is never re-fetched) until someone reloads the page. 0 when there is none.
+  at (deviceKey) {
+    try { return Math.floor(fs.statSync(this._file(deviceKey)).mtimeMs) } catch { return 0 }
+  }
+
   set (deviceKey, buffer) {
     if (!deviceKey) throw new Error('deviceKey required')
     if (!Buffer.isBuffer(buffer) || !buffer.length) throw new Error('empty image')

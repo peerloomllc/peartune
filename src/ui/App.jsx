@@ -464,6 +464,12 @@ export default function App () {
     }
   }
 
+  // The photo, with the settings mirror kept in step - see onPickFile in Settings.
+  async function saveAvatar (base64) {
+    await call('setAvatar', { avatar: base64 })
+    setState(s => ({ ...s, settings: { ...(s.settings || {}), avatar: base64 } }))
+  }
+
   async function saveIdentity ({ deviceName, userName }) {
     const r = await call('setIdentity', { deviceName, userName })
     // A SAVE is newer than any read issued before it, so retire those too: the host's reply here
@@ -1519,7 +1525,7 @@ export default function App () {
     screen = (
       <Settings
         state={state} merged={merged} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
-        ident={ident} onRefreshIdentity={loadIdentity} onSaveIdentity={saveIdentity} onQuality={changeQuality}
+        ident={ident} onRefreshIdentity={loadIdentity} onSaveIdentity={saveIdentity} onSaveAvatar={saveAvatar} onQuality={changeQuality}
         skin={skin} onSkin={setSkinValue}
         onSwitchHost={switchLibrary} onRemoveHost={removeLibrary} onAddLibrary={openAddLibrary}
       />
@@ -4321,7 +4327,7 @@ function compressToAvatarB64 (dataUrl, size = 256) {
 const IDENT_POLL_MS = 5000
 const IDENT_POLL_MAX = 36 // 3 minutes of asking, then wait for the next time Settings opens
 
-function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary }) {
+function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [copied, setCopied] = useState(false)
   const [dev, setDev] = useState(null)
@@ -4407,7 +4413,12 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
     try {
       const base64 = await compressToAvatarB64(await readFileDataUrl(file), 256)
       setAvatarLocal(base64)
-      await call('setAvatar', { avatar: base64 }) // saves locally + pushes to the host
+      // Through the parent, NOT call() directly: `avatarLocal` only lives as long as this
+      // screen is mounted, so a save that did not also update state.settings looked fine
+      // until you left Settings and came back - and then showed the PREVIOUS photo, which
+      // is exactly what Tim hit. saveIdentity has kept the mirror in step for names since
+      // #111; the avatar never did.
+      await onSaveAvatar(base64)
     } catch { haptic('warn') }
   }
 

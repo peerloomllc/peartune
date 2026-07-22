@@ -157,7 +157,13 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
             // playing, coverId }; coverId loads via /api/art.
             nowPlaying: d.nowPlaying || null,
             // The user set a photo on this device; it loads via /api/device/avatar.
-            hasAvatar: !!d.hasAvatar
+            hasAvatar: !!d.hasAvatar,
+            // WHEN that photo was last written. The dashboard puts it in the <img> URL:
+            // without it the src is identical across polls, so the browser goes on showing
+            // the previous picture until the page is reloaded. This field is the whole fix -
+            // and it is why the check has to run through THIS whitelist, not just
+            // listDevices(), which is where the first version of the test stopped.
+            avatarAt: d.avatarAt || 0
           }))
         })
       }
