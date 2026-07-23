@@ -8,6 +8,23 @@
 // One server, one identity. An earlier cut also ran a Hyperswarm for a pairing
 // rendezvous, which quietly created a SECOND dht server on the same keypair and
 // deadlocked. See host/pair.js for why the rendezvous was unnecessary here.
+//
+// PERSISTENT-HYPERSWARM TRANSPORT (proposal 2026-07-22, phase 1). On top of the
+// server above, the host ANNOUNCES a discovery topic derived from its key so a
+// phone can find it by DHT lookup and keep retrying until a hole-punch lands
+// (the off-LAN fix). Announce is discovery ONLY: the connection still arrives at
+// this same server and is gated by the same async firewall, so admission and the
+// revoke guarantee are byte-for-byte unchanged, and a raw dht.connect(hostKey)
+// from an un-upgraded phone keeps working.
+//
+// We announce with the RAW DHT rather than standing up a Hyperswarm here, for
+// two measured reasons: (1) a Hyperswarm would run its OWN dht server on this
+// keypair - the two-servers-on-one-keypair deadlock warned about just above; and
+// (2) Hyperswarm's firewall wrapper is synchronous and cannot carry our async
+// grant lookup - it bans a peer on the first (Promise-truthy) return, so a
+// GRANTED phone's every reconnect is then refused (measured 2026-07-22). So the
+// host stays on createServer; only the PHONE gets Hyperswarm's ConnectionManager,
+// which is where the retry-forever + keepalive that actually fixes off-LAN lives.
 
 const path = require('path')
 const fs = require('fs')
@@ -36,7 +53,14 @@ const { serveMedia } = require('./media')
 const { PairSession } = require('./pair')
 const { SourceStore, buildAdapter } = require('./source')
 const { pruneRocksLogs } = require('./logprune')
+const { hostTopic } = require('../protocol/ids')
 const { PAIR_PROTOCOL, MEDIA_PROTOCOL } = require('../protocol/constants')
+
+// How often to re-announce the discovery topic (proposal 2026-07-22). A HyperDHT
+// announce record lives ~20 min on the nodes holding it (defaultMaxAge), so we
+// refresh well inside that - 10 min matches Hyperswarm's own announcer interval.
+// unref'd, so it never keeps the process alive on its own.
+const TOPIC_REANNOUNCE_MS = 10 * 60 * 1000
 
 // Keep this many of RocksDB's rotated info logs (store/db/LOG.old.*) for debugging; prune the
 // rest. RocksDB rotates them only on reopen, so pruning at startup keeps the count bounded; the
@@ -113,6 +137,12 @@ class PearTuneHost {
     this.sourceError = null
     this.server = null
     this.pairSession = null
+
+    // Discovery topic + its re-announce timer (proposal 2026-07-22 phase 1).
+    // Derived from the host key, so the phone derives the same one from the
+    // hostKey it holds. Set in ready() once the server is listening.
+    this._topic = null
+    this._reannounce = null
   }
 
   get publicKey () {
@@ -259,6 +289,16 @@ class PearTuneHost {
 
     await this.server.listen(this.identity.keyPair)
 
+    // Announce the discovery topic so a topic-joining phone finds the host by
+    // lookup (proposal 2026-07-22 phase 1). Best-effort and awaited-but-swallowed:
+    // a slow or failing announce must NOT stop the host from starting - the raw
+    // dht.connect(hostKey) path still works without it, and the re-announce below
+    // will retry. Then refresh it periodically before the ~20 min record TTL.
+    this._topic = hostTopic(this.identity.publicKey)
+    await this._announceTopic()
+    this._reannounce = setInterval(() => { this._announceTopic() }, TOPIC_REANNOUNCE_MS)
+    if (this._reannounce.unref) this._reannounce.unref()
+
     // Cut guest connections whose grant has expired since they dialed in (see
     // EXPIRY_SWEEP_MS). unref so it never keeps the process alive on its own.
     this._sweep = setInterval(() => { this._sweepExpired().catch(() => {}) }, EXPIRY_SWEEP_MS)
@@ -276,6 +316,21 @@ class PearTuneHost {
     })
 
     return this
+  }
+
+  // (Re-)announce the discovery topic on the DHT. Signed with the host keypair, so
+  // the record authentically points a topic-lookup at THIS host. Never throws: a
+  // failed announce only means new topic-clients cannot find us yet (the raw
+  // dht.connect path and already-connected phones are unaffected), and the timer
+  // retries. Proposal 2026-07-22 phase 1.
+  async _announceTopic () {
+    if (!this._topic) return
+    try {
+      await this.dht.announce(this._topic, this.identity.keyPair).finished()
+      this.log('host:announced', { topic: z32.encode(this._topic).slice(0, 8) })
+    } catch (e) {
+      this.log('host:announce-failed', { err: e.message })
+    }
   }
 
   // Delete all but the most-recent RocksDB info logs (store/db/LOG.old.*) so they do not
@@ -597,6 +652,12 @@ class PearTuneHost {
     if (this._sweep) clearInterval(this._sweep)
     if (this._logPrune) clearInterval(this._logPrune)
     if (this._rescanTimer) clearInterval(this._rescanTimer)
+    if (this._reannounce) clearInterval(this._reannounce)
+    // Withdraw the discovery record so a lookup stops handing out a dead host.
+    // Best-effort: on a crash the record just ages out at its ~20 min TTL.
+    if (this._topic) {
+      try { await this.dht.unannounce(this._topic, this.identity.keyPair) } catch {}
+    }
     if (this.server) await this.server.close()
     await this.bee.close()
     await this.stateBee.close()
