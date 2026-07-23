@@ -117,3 +117,43 @@ test('backward compat: a raw dht.connect(hostKey) still reaches the host', async
   const pong = await client.ping()
   assert.equal(pong.libraryId, host.libraryId)
 })
+
+// The phase-2 phone path: no dht.connect. Join the host topic on a persistent swarm,
+// and when the connection lands, attach the media channel to it. Everything above the
+// socket must work identically, and a revoke must still cut the live connection.
+test('phase 2: media API over a swarm-attached connection, and revoke still cuts it', async (t) => {
+  const { testnet, host } = await scaffold(t)
+
+  const keyPair = hcrypto.keyPair()
+  await grantDevice(testnet, host, keyPair)
+
+  const swarm = new Hyperswarm({ keyPair, bootstrap: testnet.bootstrap })
+  t.after(() => swarm.destroy())
+
+  const client = new PearTuneClient({ keyPair, dht: swarm.dht, log: QUIET })
+
+  // Attach the media channel the moment the persistent membership lands a connection.
+  const connected = new Promise((resolve) => {
+    swarm.on('connection', (conn) => {
+      conn.on('error', () => {})
+      client.attach(conn, { libraryId: host.libraryId })
+      resolve()
+    })
+  })
+  swarm.join(hostTopic(host.publicKey), { server: false, client: true })
+  await swarm.flush()
+  await connected
+
+  // The media API works exactly as over a dialed connection.
+  const pong = await client.ping()
+  assert.equal(pong.libraryId, host.libraryId)
+  const { items } = await client.list({ type: 'tracks' })
+  assert.equal(items.length, 1)
+
+  // Revoke's teeth are unchanged: killing the live connection fails in-flight work and
+  // the connection goes destroyed, whether the socket came from dht.connect or the swarm.
+  const deviceKey = require('z32').encode(keyPair.publicKey)
+  await host.revokeDevice(deviceKey)
+  await new Promise((r) => setTimeout(r, 300))
+  assert.ok(client.conn.destroyed, 'the swarm-attached connection is destroyed by revoke')
+})

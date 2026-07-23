@@ -318,6 +318,25 @@ class PearTuneClient {
     // showed "can't reach your libraries" while the raw diagnostics dial reached both hosts
     // in the same instant - the pool connected fine and then declared itself offline.
     this.conn = conn
+    return this._wireMedia(conn, libraryId)
+  }
+
+  // Wire the media channel onto a connection someone ELSE established, rather than
+  // dialing one here (proposal 2026-07-22 phase 2). A Hyperswarm 'connection' hands
+  // back the same UDX+remotePublicKey object dht.connect does, so everything above
+  // the socket - Protomux, the media channel, the pending map, revoke's mid-flight
+  // fail - is identical; only how the socket was obtained differs. src/bare.js's
+  // active-host path uses this against its persistent swarm membership; connect()
+  // above (still used by the merged pool + queued leaves until phase 3) simply dials
+  // first and then calls the same wiring.
+  attach (conn, { libraryId }) {
+    this.conn = conn
+    this.libraryId = libraryId
+    this.hostKey = conn.remotePublicKey || this.hostKey
+    return this._wireMedia(conn, libraryId)
+  }
+
+  _wireMedia (conn, libraryId) {
     const mux = Protomux.from(conn)
 
     // Registration order is fixed in protocol/channels.js and MUST match the
