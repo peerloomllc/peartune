@@ -1,0 +1,18 @@
+{
+  "name": "peartune-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PeerLoom blind relay - a public-IP HyperDHT node that forwards Noise-encrypted UDX streams for peers that cannot hole-punch. App-agnostic; PearTune is its first user.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "b4a": "^1.6.7",
+    "blind-relay": "^1.6.1",
+    "hypercore-crypto": "^3.6.1",
+    "hyperdht": "^6.20.3",
+    "z32": "^1.1.0"
+  }
+}

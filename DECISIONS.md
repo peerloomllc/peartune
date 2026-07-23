@@ -2,6 +2,57 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-23 - Blind relay phase 1: the relay NODE, and two load-bearing findings that shrink the rest
+Tier: T3 (proposal 2026-07-23-blind-relay, approved by Tim 2026-07-23). Branch feat/blind-relay-node.
+Phase 1 of 3. New infra only; NO app or host code change ships in this phase.
+
+WHAT SHIPPED: `relay/` - a standalone Node daemon (`relay/relay.js` `RelayNode`, `relay/index.js` entry,
+`relay/identity.js` seed-persisted keypair, Dockerfile + systemd unit + README for a public VPS). It is a
+HyperDHT node on a stable keypair that runs a `blind-relay` server: on each inbound `createServer`
+connection it `relay.accept(conn, { id: conn.remotePublicKey })`s, and blind-relay pairs two peers by a
+shared token and `.relayTo()`s raw UDX between them. It is BLIND (end-to-end Noise; it sees ciphertext +
+which-keys-talk + byte volume only) and app-agnostic (one relay key can back the whole suite). It MUST run
+on a routable public IP - a home-NAT box (Umbrel/Start9) is only as reachable as the host we are rescuing.
+
+THE LOAD-BEARING QUESTION, RESOLVED (this is why phases 2-3 are small): does hyperdht `relayThrough` compose
+with Hyperswarm's `swarm.join`, or must the phone fall back to raw `dht.connect(hostKey, {relayThrough})`?
+ANSWER: it composes NATIVELY. hyperswarm@4.17 takes `relayThrough` in its constructor (index.js:28,62), and
+`toRelayFunction` (index.js:683) makes a plain key resolve to null UNLESS forced - so direct is always tried
+first. On a connect error it sets `peerInfo.forceRelaying = true` and resets attempts when
+`shouldForceRelaying(err.code)` (index.js:225,670), which fires on exactly `HOLEPUNCH_ABORTED` (our measured
+12%/0% failure), `HOLEPUNCH_DOUBLE_RANDOMIZED_NATS`, `REMOTE_NOT_HOLEPUNCHABLE`. So Hyperswarm ALREADY
+implements direct-first + escalate-on-punch-abort per peer. Phase 2 is one option on the existing swarm at
+src/bare.js:1226 - no raw dht.connect fallback, no second media path.
+
+THE SECOND FINDING: the HOST needs NO code change. When the phone escalates it puts relayThrough in its
+handshake payload (connect.js:455); a stock `dht.createServer` host relays on `remotePayload.relayThrough`
+alone (server.js:410), dials the relay itself (server.js:664), and `_relayConnection` sets `hs.relayToken`
+BEFORE the prepunch timer arms - so the holepunch-abort teardown `if (hs.relayToken === null)
+hs.rawStream.destroy()` (server.js:428) is a no-op for a relayed stream, and the pair handler clears the
+prepunch timeout (server.js:682). A stock host SUSTAINS a relayed connection it never configured. Setting
+relayThrough ON the host would be worse: server.js:410 would then be always-true, relaying EVERY connection
+(a wasted relay dial even when the punch works). So the phone controls escalation; the host is untouched.
+This removes the host-image / Umbrel-redeploy gate the draft assumed.
+
+TWO IMPLEMENTATION GOTCHAS (measured while writing test/relay.test.js, do not re-derive):
+  1. The relay's forwarding is BIDIRECTIONAL-on-demand: a relay stream learns a peer's UDX address only from
+     a packet THAT peer sends (blind-relay's `_onfirewall` hook). So "A sends, B echoes" DEADLOCKS in a raw
+     test - B is unreachable until it sends first. A real hyperdht connection dodges this because the Noise
+     handshake is bidirectional. The test has both ends send.
+  2. Peer raw streams for the direct-drive test use `dht.createRawStream()` (NON-framed). `{ framed: true }`
+     (what hyperdht's own client uses internally) did NOT deliver data across the relay in the raw harness;
+     the relay forwards bytes regardless, and framing is a peer concern hyperdht manages itself in the real
+     path. Non-framed is correct for the harness.
+
+TEST: test/relay.test.js (+4) - (1) the relay pairs two peers by token and forwards bytes both ways,
+deterministically (direct blind-relay drive, no punch race); (2) relayThrough composes with a normal
+dht.connect without breaking it (on a testnet the punch always wins, so this proves direct-first, not
+relaying - a testnet CANNOT fail a punch, which is why the "relay carries it" proof is the phase-3 hardware
+gate); (3) identity determinism + 0600; (4) RelayNode requires a keyPair. verify green.
+
+DEPLOY: needs a public VPS (Tim chose "cheap VPS" 2026-07-23). Nothing deploys or changes behavior until
+phase 2 bakes the relay's public key into the app and the phone passes relayThrough. Phase 1 is inert infra.
+
 ## 2026-07-22 (night) - Hyperswarm transport phase 1: host ANNOUNCES the topic, it does not run Hyperswarm
 Tier: T3 (proposal 2026-07-22-hyperswarm-transport, PR #153 = approved). Branch
 feat/hyperswarm-transport-phase1-host. Phase 1 of 4. Host-side only; no wire, grant, revoke or media change.
