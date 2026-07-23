@@ -24,6 +24,7 @@ const b4a = require('b4a')
 const { PearTuneHost } = require('../host/server')
 const { PearTuneClient } = require('../client')
 const { hostTopic } = require('../protocol/ids')
+const { parseLink } = require('../protocol/link')
 
 const QUIET = () => {}
 
@@ -156,4 +157,36 @@ test('phase 2: media API over a swarm-attached connection, and revoke still cuts
   await host.revokeDevice(deviceKey)
   await new Promise((r) => setTimeout(r, 300))
   assert.ok(client.conn.destroyed, 'the swarm-attached connection is destroyed by revoke')
+})
+
+// Phase 4: pair over the swarm. Join the host topic while a pairing window is open, and run the
+// pair handshake on the connection that lands - the host admits the ungranted device via the
+// pairing exemption, and the grant is created over the swarm-borne connection.
+test('phase 4: pairing works over a swarm connection', async (t) => {
+  const { testnet, host } = await scaffold(t)
+
+  const keyPair = hcrypto.keyPair()
+  const link = host.startPairing()
+  const { rv, hostKey, name } = parseLink(link)
+
+  const swarm = new Hyperswarm({ keyPair, bootstrap: testnet.bootstrap })
+  t.after(() => swarm.destroy())
+  const client = new PearTuneClient({ keyPair, dht: swarm.dht, log: QUIET })
+
+  const paired = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('no pairing connection')), 15000)
+    swarm.on('connection', (conn) => {
+      conn.on('error', () => {})
+      client.pairOnConn(conn, { rv, hostKey, name }).then((r) => { clearTimeout(timer); resolve(r) }, reject)
+    })
+    swarm.join(hostTopic(host.publicKey), { server: false, client: true })
+    swarm.flush()
+  })
+
+  assert.equal(paired.libraryId, host.libraryId, 'pairing over the swarm returns the library id')
+  // The grant now exists, keyed to the device's real key.
+  const devices = await host.listDevices()
+  assert.equal(devices.length, 1)
+  assert.equal(devices[0].deviceKey, require('z32').encode(keyPair.publicKey))
+  assert.equal(devices[0].revokedAt, null)
 })
