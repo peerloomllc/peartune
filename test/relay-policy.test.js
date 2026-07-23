@@ -30,10 +30,11 @@ test('no key baked = inert: never relays regardless of force/NAT/toggle', () => 
   assert.equal(relayThroughFor({ force: true, randomized: true, useRelay: true, relayKey: null }), null)
 })
 
-test('ships with no relay key baked yet (phase 1 deploy is still pending)', () => {
-  // These assertions are the reminder to bake the key after the VPS is up. Once the
-  // relay is deployed and RELAY_PUBLIC_KEY_Z is set, update this test to assert the
-  // decoded key is a 32-byte buffer instead.
-  assert.equal(RELAY_PUBLIC_KEY_Z, null)
-  assert.equal(RELAY_PUBLIC_KEY, null)
+test('the PeerLoom relay key is baked and decodes to a 32-byte key', () => {
+  // Baked 2026-07-23 after the relay went live on a DigitalOcean droplet. With a key
+  // present, relayThroughFor now returns it on the fail path (see the tests above).
+  assert.equal(typeof RELAY_PUBLIC_KEY_Z, 'string')
+  assert.ok(RELAY_PUBLIC_KEY_Z.length > 0, 'a z-base32 key string is set')
+  assert.ok(b4a.isBuffer(RELAY_PUBLIC_KEY) || RELAY_PUBLIC_KEY instanceof Uint8Array)
+  assert.equal(RELAY_PUBLIC_KEY.length, 32, 'decodes to a 32-byte public key')
 })
