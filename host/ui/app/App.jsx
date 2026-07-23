@@ -849,14 +849,18 @@ function PairModal ({ onClose, toast }) {
   const [durMs, setDurMs] = useState(DAY_MS)
   const [copied, setCopied] = useState(false)
   const [outcome, setOutcome] = useState(null) // { ok: true, label } | { ok: false } once the window ends
-  const seenKeys = useRef(new Set())
+  // deviceKey -> grantedAt BEFORE the window opened. A pair is detected by a device whose grantedAt
+  // is NEW or CHANGED - not merely a new key. A device that was here with a REVOKED grant (common
+  // after any pair/revoke churn) re-pairs to a FRESH grantedAt (grant() stamps Date.now() every
+  // time), so keying on the key alone missed it and the modal wrongly said "expired" on a success.
+  const seenGrants = useRef(new Map())
   const copyLink = async () => { if (await copyText(qr.link)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }
 
   // Watch the open window and SAY what happened, instead of leaving the operator holding a QR with
   // no idea whether it worked. The host's pair window is one-shot - pair.js close('paired') - so
-  // `pairing` flips true->false either way; a NEW device row is what separates "paired" from
-  // "expired". Polls faster than the dashboard's 3s so the confirmation feels immediate, and only
-  // while a code is actually on screen.
+  // `pairing` flips true->false either way; a device that pairs THROUGH this window (a new grant, or
+  // a re-activated one with a fresh grantedAt) is what separates "paired" from "expired". Polls
+  // faster than the dashboard's 3s so the confirmation feels immediate, and only while a code is up.
   useEffect(() => {
     if (!qr || outcome) return
     let done = false
@@ -864,7 +868,7 @@ function PairModal ({ onClose, toast }) {
       if (done) return
       const st = await api('/api/state').catch(() => null)
       if (!st || done) return
-      const fresh = (st.devices || []).find(d => !d.revokedAt && !seenKeys.current.has(d.deviceKey))
+      const fresh = (st.devices || []).find(d => !d.revokedAt && seenGrants.current.get(d.deviceKey) !== d.grantedAt)
       if (fresh) {
         done = true
         setOutcome({ ok: true, label: fresh.label || 'a device' })
@@ -886,7 +890,7 @@ function PairModal ({ onClose, toast }) {
     // one that just paired through it - which is what lets us say WHICH device, and lets us tell a
     // successful pair from a window that simply timed out.
     const before = await api('/api/state').catch(() => null)
-    seenKeys.current = new Set((before?.devices || []).map(d => d.deviceKey))
+    seenGrants.current = new Map((before?.devices || []).map(d => [d.deviceKey, d.grantedAt]))
     // A guest window carries the operator's chosen duration; a full window sends nothing.
     const r = await api('/api/pair/start', guest ? { expiresMs: durMs } : {})
     // margin 4 = the spec's full quiet zone (was 1). A too-thin quiet zone hurts scanning, and it
