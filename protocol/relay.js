@@ -7,8 +7,9 @@
 
 const z32 = require('z32')
 
-// null until deployed + baked. e.g. 'yjikcym8k6eqotzu5bo5t6q6w5sexjg44cztczxkujxfsjuiroby'
-const RELAY_PUBLIC_KEY_Z = null
+// The deployed PeerLoom relay's public key (DigitalOcean droplet, 2026-07-23). Its
+// private seed lives only on the relay box (relay.seed, 0600) + Tim's password manager.
+const RELAY_PUBLIC_KEY_Z = 'qshao3eawtzecrt5p7buswr4meyyhw6q6b51qtxazd8wwfdp8uqy'
 
 const RELAY_PUBLIC_KEY = RELAY_PUBLIC_KEY_Z ? z32.decode(RELAY_PUBLIC_KEY_Z) : null
 
