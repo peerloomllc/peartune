@@ -22,6 +22,11 @@ const hcrypto = require('hypercore-crypto')
 
 const HyperDHT = require('hyperdht')
 const Hyperswarm = require('hyperswarm')
+// Internal NAT sampler, used best-effort by the diagnostics to classify THIS phone's
+// NAT (open / consistent / random). Deep-path require, so it is wrapped in try/catch at
+// the call site - if hyperdht moves it, the diagnostic just omits the classification.
+const NatSampler = require('hyperdht/lib/nat')
+const { FIREWALL: NAT_FIREWALL } = require('hyperdht/lib/constants')
 const { PearTuneClient } = require('../client')
 const { createAudioShim, mimeFor, DEFAULT_ART_SIZE } = require('../worklet/shim')
 const { streamParams } = require('../worklet/quality')
@@ -339,6 +344,39 @@ function saveSettings (patch) {
   fs.mkdirSync(DATA_DIR, { recursive: true })
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(next))
   return next
+}
+
+// Classify THIS phone's NAT the way hyperdht does before a punch: sample our own observed
+// port across several DHT nodes and see whether it stays put (CONSISTENT / OPEN, punchable)
+// or moves per-peer (RANDOM / symmetric, effectively unpunchable without a relay). This is
+// THE datum that decides whether "punch harder" (random-punch tuning) can help a given
+// network: the random-punch birthday attack only engages for a RANDOM NAT, so a CONSISTENT
+// phone that still fails is a different problem than a RANDOM one. Needs only the DHT
+// bootstrap - no host, no pairing - so it works off-LAN on cellular. Best-effort: any
+// failure (incl. hyperdht moving the internal sampler) yields null and the report omits it.
+async function classifyNat (node) {
+  const NAMES = { 0: 'unknown', 1: 'open', 2: 'consistent', 3: 'random' }
+  let session = null
+  let holder = null
+  try {
+    session = node.session()
+    holder = node._socketPool.acquire()
+    const nat = new NatSampler(node, session, holder.socket)
+    nat.autoSample()
+    await Promise.race([nat.analyzing, new Promise((r) => setTimeout(r, 8000))])
+    return {
+      firewall: nat.firewall,
+      type: NAMES[nat.firewall] || 'unknown',
+      samples: nat.sampled,
+      // A RANDOM NAT is the one the relay exists for and the one "punch harder" targets.
+      punchable: nat.firewall === NAT_FIREWALL.OPEN || nat.firewall === NAT_FIREWALL.CONSISTENT
+    }
+  } catch {
+    return null
+  } finally {
+    try { if (holder) holder.release() } catch {}
+    try { if (session) session.destroy() } catch {}
+  }
 }
 
 // The favorites cache mirrors the host's grouped shape { track, album, artist } (each
@@ -2059,7 +2097,11 @@ const methods = {
       online: !!dht.online,
       firewalled: dht.firewalled !== false,
       publicAddress: remote ? remote.host + ':' + remote.port : null,
-      localPort: dht.port || null
+      localPort: dht.port || null,
+      // The NAT classification (best-effort, may be null). `natType.type` is
+      // open/consistent/random/unknown; random = symmetric, the case a relay exists for
+      // and the only case "punch harder" (random-punch tuning) can move the needle on.
+      natType: await classifyNat(dht)
     }
 
     const hosts = loadHostsFile().hosts || []

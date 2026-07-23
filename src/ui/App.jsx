@@ -2969,6 +2969,18 @@ function Problem ({ error, onDismiss }) {
 // (a carrier NAT refusing the hole-punch), the second is the server not being announced at
 // all. They look identical in the app's normal error message, which is exactly why chasing
 // the off-LAN bug has been so slow.
+// Plain-language for the NAT classification. "random" (symmetric) is the hard case: a
+// direct punch is a lottery, so it needs the relay (or aggressive random-punching). The
+// others are punchable, so a failure there is usually the server, not the network.
+function natTypeLabel (type) {
+  switch (type) {
+    case 'open': return 'open (directly reachable)'
+    case 'consistent': return 'normal NAT (punchable)'
+    case 'random': return 'strict / symmetric NAT (hard to punch)'
+    default: return 'not determined'
+  }
+}
+
 function diagReason (code) {
   switch (code) {
     case 'PEER_NOT_FOUND': return 'server not found on the network'
@@ -4705,6 +4717,12 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
                 <span>Others can reach it directly</span>
                 <b>{diag.node.firewalled ? 'no (behind a firewall/NAT)' : 'yes'}</b>
               </div>
+              {diag.node.natType && (
+                <div className='diag-row'>
+                  <span>Your network type</span>
+                  <b className={diag.node.natType.punchable ? 'ok' : 'bad'}>{natTypeLabel(diag.node.natType.type)}</b>
+                </div>
+              )}
               <div className='diag-row'>
                 <span>Its address out there</span>
                 <b>{diag.node.publicAddress || 'not known yet'}</b>
