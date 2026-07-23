@@ -1305,6 +1305,11 @@ async function attachActive (host, conn) {
   // Drain anything queued while we were offline (favorites/resume/counts). Fire and forget.
   flushOutbox().catch(() => {})
 
+  // NOTE: the active client does NOT pushIdentityTo here (the pool does, in attachPool). pair() sends
+  // the claim explicitly, ONCE, over this now-live connection - reusing the pairing connection (see
+  // pair()) is what makes that claim land. Pushing here too raced pair()'s claim into DUPLICATE
+  // persons (both saw "nobody holds this name" and each minted one), seen on hardware 2026-07-22.
+
   resolveActiveWaiters()
 }
 
@@ -1408,10 +1413,11 @@ async function connectTo (host) {
 
 // Pair over the swarm (phase 4). Join the host's discovery topic, nudge it steadily (so an off-LAN
 // pair keeps punching instead of giving up), and run the pair handshake on the connection the swarm
-// lands - routed here via pairingTarget because the host is not in hosts.json yet. Returns the pair
-// result; the one-shot pair connection is destroyed (the media connection is made fresh by the
-// caller's connectTo, which reuses this same topic membership). The retry persistence is the win
-// over the old dht.connect pair (3 tries / 8s): pairing now enjoys the same reliability as media.
+// lands - routed here via pairingTarget because the host is not in hosts.json yet. Returns
+// { paired, conn }: the pair result AND the live connection, which the caller REUSES for the media
+// channel so an off-LAN pair does not pay for a second hole-punch (conn is null when we short-circuit
+// an already-connected host). The retry persistence + connection reuse are the win over the old
+// dht.connect pair (3 tries / 8s): pairing now has the same reliability as media, with no second punch.
 async function pairViaSwarm (link, { label = 'phone', platform = 'android', timeout = 60000 } = {}) {
   const parsed = parseLink(link) // { rv, hostKey: buffer, name }
   const hostKeyZ = z32.encode(parsed.hostKey)
@@ -1424,7 +1430,7 @@ async function pairViaSwarm (link, { label = 'phone', platform = 'android', time
   const libId = deriveLibraryId(parsed.hostKey)
   if (poolClient(libId)) {
     const rec = loadHostsFile().hosts.find((h) => h.libraryId === libId)
-    return { hostKey: parsed.hostKey, libraryId: libId, libraryName: rec ? rec.libraryName : parsed.name }
+    return { paired: { hostKey: parsed.hostKey, libraryId: libId, libraryName: rec ? rec.libraryName : parsed.name }, conn: null }
   }
 
   const c = await ensureClient()
@@ -1441,13 +1447,13 @@ async function pairViaSwarm (link, { label = 'phone', platform = 'android', time
   const cleanup = (leaveTopic) => {
     pairingTarget = null
     if (nudgeT) { clearTimeout(nudgeT); nudgeT = null }
-    // On success we KEEP the topic joined - the caller's connectTo reuses this membership for the
-    // media connection. On failure we leave it so we stop reaching for a host we never paired.
+    // On success we KEEP the topic joined - the caller REUSES this connection (and its membership)
+    // for the media channel. On failure we leave it so we stop reaching for a host we never paired.
     if (leaveTopic && swarm) { try { swarm.leave(topic) } catch {} }
   }
 
   try {
-    const paired = await new Promise((resolve, reject) => {
+    const result = await new Promise((resolve, reject) => {
       let settled = false
       const deadline = setTimeout(() => {
         if (!settled) { settled = true; reject(Object.assign(new Error('could not reach the host to pair'), { code: 'EUNREACHABLE' })) }
@@ -1460,20 +1466,24 @@ async function pairViaSwarm (link, { label = 'phone', platform = 'android', time
           if (settled) { try { conn.destroy() } catch {}; return }
           try {
             const r = await c.pairOnConn(conn, { rv: parsed.rv, hostKey: parsed.hostKey, name: parsed.name, label, platform, timeout: 15000 })
-            if (!settled) { settled = true; clearTimeout(deadline); resolve(r) }
+            // KEEP the connection: the caller wires the media channel onto this SAME conn (the host's
+            // _onconnection serves both PAIR and MEDIA on one connection), so an off-LAN pair does not
+            // pay for a SECOND hole-punch - which was timing out and showing a false error, and losing
+            // the username claim because the media connection was not up in time.
+            if (!settled) { settled = true; clearTimeout(deadline); resolve({ paired: r, conn }) }
+            else { try { conn.destroy() } catch {} } // lost the race to another connection
           } catch (e) {
+            try { conn.destroy() } catch {} // a failed handshake - drop this conn, the nudge tries again
             // EREFUSED = the host made a decision (wrong token, window shut) - stop, do not retry.
             // EUNREACHABLE/ETIMEDOUT = the punch/handshake dropped - let the nudge land another one.
             if (e.code === 'EREFUSED' && !settled) { settled = true; clearTimeout(deadline); reject(e) }
-          } finally {
-            try { conn.destroy() } catch {} // one-shot: connectTo makes the media connection
           }
         }
       }
       nudge() // force discovery now, then keep nudging until a connection lands
     })
     cleanup(false)
-    return paired
+    return result
   } catch (e) {
     cleanup(true)
     throw e
@@ -1599,7 +1609,8 @@ const methods = {
 
     // Pair OVER THE SWARM (phase 4): the host's topic membership + nudge give pairing the same
     // persistent retry as the media path, so an off-LAN pair keeps punching instead of giving up.
-    const paired = await pairViaSwarm(link, {
+    // `pairConn` is the LIVE connection the pair rode - reused for media below (no second punch).
+    const { paired, conn: pairConn } = await pairViaSwarm(link, {
       label: name,
       platform: 'android'
     })
@@ -1631,7 +1642,18 @@ const methods = {
       log('leaves:cancelled-by-pair', { host: String(host.hostKey).slice(0, 8) })
     }
 
-    await connectTo(host)
+    // REUSE the pairing connection for the media channel - no second hole-punch, which off-LAN was
+    // timing out (a false error while the pair had actually succeeded) and leaving the claim below
+    // unsent (device shown unassigned). The host serves both PAIR and MEDIA on one connection, so we
+    // just wire media onto this same conn. Fall back to a fresh connect only when there is no conn to
+    // reuse (the already-connected short-circuit) or it died in the gap.
+    if (pairConn && !pairConn.destroyed) {
+      useLibrary(host.libraryId)
+      joinActiveTopic(host)
+      await attachActive(host, pairConn)
+    } else {
+      await connectTo(host)
+    }
 
     // TELL THE HOST WHO WE SAY WE ARE. The pair handshake carries the device LABEL (hello.label)
     // but nothing about the person, so without this the name the user just typed under "Your name"

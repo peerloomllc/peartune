@@ -859,6 +859,15 @@ button.scanbtn {
   justify-content: center;
   gap: .45rem;
 }
+.onboard > button {
+  width: 100%;
+  max-width: 22rem;
+  margin-left: auto;
+  margin-right: auto;
+}
+.onboard details button {
+  width: 100%;
+}
 .sticky {
   position: sticky;
   top: 0;

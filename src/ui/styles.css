@@ -406,6 +406,10 @@ button.more { width: 100%; margin: 1.2rem 0 0; }
 /* The scan button pairs a QR glyph with its label, so it needs the same centring the back
    button uses - a bare inline SVG otherwise sits on the text baseline and rides high. */
 button.scanbtn { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; }
+/* Onboarding / pairing wall: every action button is the SAME width (capped to match the inputs +
+   the paste section), so Scan QR / Pair / Cancel line up instead of each sizing to its own text. */
+.onboard > button { width: 100%; max-width: 22rem; margin-left: auto; margin-right: auto; }
+.onboard details button { width: 100%; }
 
 /* The search box and the picker STICK; the library title above them scrolls away.
    Those two are what you reach for from halfway down a grid of 60 albums, and
