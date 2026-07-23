@@ -143,12 +143,22 @@ class PearTuneClient {
   //                  way down the pipe.
   //   ETIMEDOUT    - nothing happened at all inside the budget.
   _pairOnce ({ rv, hostKey, name }, { label, platform, timeout }) {
-    // The library id is not yet known (it is one of the things pairing tells us),
-    // but the pair channel is keyed on it. Derive it: it is a pure function of
-    // the host key, which the QR gave us.
-    const libId = deriveLibraryId(hostKey)
-
     const conn = this.dht.connect(hostKey, { keyPair: this.keyPair })
+    return this.pairOnConn(conn, { rv, hostKey, name, label, platform, timeout })
+      .finally(() => { try { conn.destroy() } catch {} })
+  }
+
+  // Run the pair handshake on an ALREADY-established connection - the socket-independent half of
+  // pairing (phase 4, proposal 2026-07-22). _pairOnce uses it after a dht.connect; src/bare.js uses
+  // it against a Hyperswarm 'connection' so pairing gets the same persistent retry as the media
+  // path. Does NOT destroy the conn (the caller owns its lifetime). Same reject codes as _pairOnce:
+  //   EREFUSED     - opened (Noise completed, host admitted us) then hung up = a decision.
+  //   EUNREACHABLE - never opened. hyperdht cannot say why (firewall deny vs dropped holepunch).
+  //   ETIMEDOUT    - nothing happened inside the budget.
+  pairOnConn (conn, { rv, hostKey, name, label = 'phone', platform = 'android', timeout = 15000 }) {
+    // The library id is not yet known (pairing tells us), but the pair channel is keyed on it -
+    // and it is a pure function of the host key the QR gave us.
+    const libId = deriveLibraryId(hostKey)
 
     // Kept, not swallowed: the hyperdht code (PEER_NOT_FOUND, PEER_CONNECTION_FAILED,
     // CANNOT_HOLEPUNCH) is the only forensic detail a field report ever has.
@@ -156,7 +166,6 @@ class PearTuneClient {
     conn.on('error', (e) => { dialError = e })
 
     let opened = false
-
     const unreachable = () => {
       const e = new Error('no answer from the host (unreachable, or not accepting pair requests)')
       e.code = 'EUNREACHABLE'
@@ -164,62 +173,58 @@ class PearTuneClient {
       return e
     }
 
-    return (async () => {
-      try {
-        return await new Promise((resolve, reject) => {
-          let settled = false
-          const done = (fn, arg) => { if (!settled) { settled = true; fn(arg) } }
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const done = (fn, arg) => { if (!settled) { settled = true; fn(arg) } }
 
-          const timer = setTimeout(() => {
-            const e = new Error('pairing timed out')
-            e.code = 'ETIMEDOUT'
-            done(reject, e)
-          }, timeout)
-          if (timer.unref) timer.unref()
+      const timer = setTimeout(() => {
+        const e = new Error('pairing timed out')
+        e.code = 'ETIMEDOUT'
+        done(reject, e)
+      }, timeout)
+      if (timer.unref) timer.unref()
 
-          conn.once('close', () => {
+      conn.once('close', () => {
+        clearTimeout(timer)
+        if (opened) {
+          const e = new Error('host refused the pairing code')
+          e.code = 'EREFUSED'
+          done(reject, e)
+          return
+        }
+        done(reject, unreachable())
+      })
+
+      // A swarm connection arrives already opened, so this resolves immediately; a dht.connect
+      // conn resolves when it opens. Either way, `opened` then gates the close-is-a-refusal logic.
+      conn.opened.then(() => {
+        opened = true
+        const mux = Protomux.from(conn)
+
+        const built = pairChannel(mux, {
+          id: b4a.from(libId),
+          onpaired: (m) => {
             clearTimeout(timer)
-            if (opened) {
-              const e = new Error('host refused the pairing code')
-              e.code = 'EREFUSED'
-              done(reject, e)
-              return
-            }
-            done(reject, unreachable())
-          })
-
-          conn.opened.then(() => {
-            opened = true
-            const mux = Protomux.from(conn)
-
-            const built = pairChannel(mux, {
-              id: b4a.from(libId),
-              onpaired: (m) => {
-                clearTimeout(timer)
-                this.log('pair:done', { libraryId: m?.libraryId })
-                done(resolve, {
-                  hostKey,
-                  libraryId: m?.libraryId ?? libId,
-                  libraryName: m?.libraryName ?? name
-                })
-              }
+            this.log('pair:done', { libraryId: m?.libraryId })
+            done(resolve, {
+              hostKey,
+              libraryId: m?.libraryId ?? libId,
+              libraryName: m?.libraryName ?? name
             })
-            if (!built) {
-              clearTimeout(timer)
-              return done(reject, new Error('could not open pair channel'))
-            }
-
-            built.channel.open()
-            built.messages.hello.send({ rv, deviceKey: this.keyPair.publicKey, label, platform })
-          }).catch(() => {
-            clearTimeout(timer)
-            done(reject, unreachable())
-          })
+          }
         })
-      } finally {
-        conn.destroy()
-      }
-    })()
+        if (!built) {
+          clearTimeout(timer)
+          return done(reject, new Error('could not open pair channel'))
+        }
+
+        built.channel.open()
+        built.messages.hello.send({ rv, deviceKey: this.keyPair.publicKey, label, platform })
+      }).catch(() => {
+        clearTimeout(timer)
+        done(reject, unreachable())
+      })
+    })
   }
 
   // Wait for the dht node to finish bootstrapping, but never for long. Best-effort on

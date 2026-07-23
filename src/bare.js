@@ -25,8 +25,8 @@ const Hyperswarm = require('hyperswarm')
 const { PearTuneClient } = require('../client')
 const { createAudioShim, mimeFor, DEFAULT_ART_SIZE } = require('../worklet/shim')
 const { streamParams } = require('../worklet/quality')
-const { isPairLink } = require('../protocol/link')
-const { hostTopic } = require('../protocol/ids')
+const { isPairLink, parseLink } = require('../protocol/link')
+const { hostTopic, libraryId: deriveLibraryId } = require('../protocol/ids')
 const hostList = require('../worklet/hosts')
 const merge = require('../worklet/merge')
 const catalog = require('../worklet/catalog')
@@ -140,6 +140,10 @@ let swarm = null
 let activeTopicKey = null // the active host's hostKey (z32) whose topic we currently join
 let activeDiscovery = null // the PeerDiscoverySession from swarm.join, so nudges can force a lookup
 let activeWaiters = [] // resolvers for callers awaiting the NEXT live active connection
+// While a swarm-pair is mid-flight: { hostKeyZ, onConn }. The host being paired is not yet in
+// hosts.json, so onSwarmConnection routes ITS connection to the pair handshake (phase 4) instead
+// of attach*. Null the rest of the time.
+let pairingTarget = null
 // How long a caller (an RPC via ensureConnected, a cold-launch connect) waits for the FIRST
 // live connection before giving up THIS wait. It bounds the wait only - the swarm membership
 // persists past it and a connection that lands later still wires up (attachActive). So this is
@@ -1232,6 +1236,12 @@ function ensureSwarm () {
 function onSwarmConnection (conn, info) {
   conn.on('error', () => {}) // a peer vanishing is normal, not an event
   const remoteHex = z32.encode(info.publicKey)
+  // A pairing connection: the host being paired is not in hosts.json yet, so route its connection
+  // to the in-flight pair handshake before the grant-based routing below (phase 4).
+  if (pairingTarget && remoteHex === pairingTarget.hostKeyZ) {
+    log('swarm:pair-connection', { host: remoteHex.slice(0, 8) })
+    return pairingTarget.onConn(conn)
+  }
   const f = loadHostsFile()
   const host = f.hosts.find((h) => h.hostKey === remoteHex)
   if (!host) {
@@ -1396,6 +1406,80 @@ async function connectTo (host) {
   return { ...host, shimPort }
 }
 
+// Pair over the swarm (phase 4). Join the host's discovery topic, nudge it steadily (so an off-LAN
+// pair keeps punching instead of giving up), and run the pair handshake on the connection the swarm
+// lands - routed here via pairingTarget because the host is not in hosts.json yet. Returns the pair
+// result; the one-shot pair connection is destroyed (the media connection is made fresh by the
+// caller's connectTo, which reuses this same topic membership). The retry persistence is the win
+// over the old dht.connect pair (3 tries / 8s): pairing now enjoys the same reliability as media.
+async function pairViaSwarm (link, { label = 'phone', platform = 'android', timeout = 60000 } = {}) {
+  const parsed = parseLink(link) // { rv, hostKey: buffer, name }
+  const hostKeyZ = z32.encode(parsed.hostKey)
+
+  // Already connected to this host? Then it is already paired + granted (the live connection proves
+  // the grant), so re-pairing is redundant - and Hyperswarm dedups one connection per peer, so we
+  // could not get a fresh pair connection to it anyway. Short-circuit instead of waiting out the
+  // whole timeout. (The common re-pair - a host you REMOVED then re-add - is disconnected, so it
+  // takes the real path below.)
+  const libId = deriveLibraryId(parsed.hostKey)
+  if (poolClient(libId)) {
+    const rec = loadHostsFile().hosts.find((h) => h.libraryId === libId)
+    return { hostKey: parsed.hostKey, libraryId: libId, libraryName: rec ? rec.libraryName : parsed.name }
+  }
+
+  const c = await ensureClient()
+  const s = ensureSwarm()
+  const topic = hostTopic(parsed.hostKey)
+  const discovery = s.join(topic, { server: false, client: true })
+
+  let nudgeT = null
+  const nudge = () => {
+    try { discovery.refresh({ client: true, server: false }).catch(() => {}) } catch {}
+    nudgeT = setTimeout(nudge, ACTIVE_NUDGE_MS)
+    if (nudgeT.unref) nudgeT.unref()
+  }
+  const cleanup = (leaveTopic) => {
+    pairingTarget = null
+    if (nudgeT) { clearTimeout(nudgeT); nudgeT = null }
+    // On success we KEEP the topic joined - the caller's connectTo reuses this membership for the
+    // media connection. On failure we leave it so we stop reaching for a host we never paired.
+    if (leaveTopic && swarm) { try { swarm.leave(topic) } catch {} }
+  }
+
+  try {
+    const paired = await new Promise((resolve, reject) => {
+      let settled = false
+      const deadline = setTimeout(() => {
+        if (!settled) { settled = true; reject(Object.assign(new Error('could not reach the host to pair'), { code: 'EUNREACHABLE' })) }
+      }, timeout)
+      if (deadline.unref) deadline.unref()
+
+      pairingTarget = {
+        hostKeyZ,
+        onConn: async (conn) => {
+          if (settled) { try { conn.destroy() } catch {}; return }
+          try {
+            const r = await c.pairOnConn(conn, { rv: parsed.rv, hostKey: parsed.hostKey, name: parsed.name, label, platform, timeout: 15000 })
+            if (!settled) { settled = true; clearTimeout(deadline); resolve(r) }
+          } catch (e) {
+            // EREFUSED = the host made a decision (wrong token, window shut) - stop, do not retry.
+            // EUNREACHABLE/ETIMEDOUT = the punch/handshake dropped - let the nudge land another one.
+            if (e.code === 'EREFUSED' && !settled) { settled = true; clearTimeout(deadline); reject(e) }
+          } finally {
+            try { conn.destroy() } catch {} // one-shot: connectTo makes the media connection
+          }
+        }
+      }
+      nudge() // force discovery now, then keep nudging until a connection lands
+    })
+    cleanup(false)
+    return paired
+  } catch (e) {
+    cleanup(true)
+    throw e
+  }
+}
+
 
 // BOTH reconnect loops are gone. The active client's (old scheduleReconnect/retryTimer) went in
 // phase 2; the pool's (old poolRetry/schedulePoolReconnect + the 5-60s ladder) went in phase 3.
@@ -1513,7 +1597,9 @@ const methods = {
     // the operator two identical rows to choose between.
     const name = (label || '').trim() || 'Android phone'
 
-    const paired = await client.pair(link, {
+    // Pair OVER THE SWARM (phase 4): the host's topic membership + nudge give pairing the same
+    // persistent retry as the media path, so an off-LAN pair keeps punching instead of giving up.
+    const paired = await pairViaSwarm(link, {
       label: name,
       platform: 'android'
     })
