@@ -2,6 +2,44 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-23 - Blind relay phase 2: the phone offers the relay (direct-first) + a privacy toggle; inert until keyed
+Tier: T3 (proposal 2026-07-23-blind-relay). Branch feat/blind-relay-phone-toggle. Phase 2 of 3. Phone-side
+only; NO host change (see phase-1 finding). Lands the app plumbing; behavior is UNCHANGED until phase-1
+deploy bakes the relay key.
+
+WHAT SHIPPED: the phone's ONE Hyperswarm (src/bare.js ensureSwarm) now passes `relayThrough` - as a
+FUNCTION, not a static key, so the toggle + the baked key are read LIVE per connect. The function is
+`relayThroughFor` in the new `protocol/relay.js`: returns the relay key only when `(force || randomized)`
+AND `useRelay` AND a key is baked, else null. `force` is what Hyperswarm sets after a HOLEPUNCH_ABORTED, so
+this is direct-FIRST: null on the normal attempt, the key only after the direct punch fails. `randomized`
+(double-randomized NAT, direct can never work) relays from the first attempt, matching Hyperswarm's own
+default gate.
+
+THE PRIVACY TOGGLE (Tim, 2026-07-23): a Settings -> Connection switch "Use the relay when direct fails",
+DEFAULT ON. Off = pure peer-to-peer, PeerLoom infrastructure never touched, accept that a 0%-punch network
+will not connect. This is the honest control for a decentralization maximalist. Terminology pinned in the
+same conversation: the DHT is the DECENTRALIZED part (no company, the app's only transport - "disable the
+DHT" is not a privacy dial, it just breaks the app); the RELAY is the one centralized piece (sees metadata:
+which keys talk + bandwidth), so the toggle governs the relay, not the DHT. `useRelay:true` in
+DEFAULT_SETTINGS; `setUseRelay({on})` IPC (persist-only - the live relayThrough fn means no reconnect to
+apply); a `toggle` switch in App.jsx's Connection section.
+
+INERT UNTIL KEYED: `protocol/relay.js` RELAY_PUBLIC_KEY_Z is null until the relay is deployed to a VPS and
+its key baked. While null, relayThroughFor always returns null - the phone passes no relayThrough and nothing
+relays, so this phase is a safe no-op on master. That is why it is mergeable + verifiable now and needs no
+hardware gate (no behavior change to verify); the hardware 0%-punch gate is phase 3, AFTER the key is baked.
+
+DIAGNOSTICS: the Settings -> Connection report already dumps `dht.stats` incl. `relaying {attempts,
+successes, aborts}` (#148); updated the stale "we pass no relayThrough" comment - the counters now climb when
+the swarm escalates to the relay, so "direct failed but relaying.successes rose" is the relay working. The
+diagnose() dial itself still uses no relayThrough (it measures the raw punch on purpose).
+
+TEST: test/relay-policy.test.js (+6) pins every branch of relayThroughFor (direct-first, escalate-on-force,
+randomized-NAT, toggle-off, no-key-inert) + that no key is baked yet (a reminder to update it after deploy).
+verify green. DEPLOY RUNBOOK: relay/DEPLOY.md + relay/deploy/bootstrap.sh (idempotent VPS provisioner);
+Hetzner CX22 recommended (bandwidth-bound; 20 TB/mo). NEXT: Tim provisions -> bootstrap prints the key ->
+bake into protocol/relay.js -> phase 3 hardware verify on a genuinely-0%-punch scenario.
+
 ## 2026-07-23 - Blind relay phase 1: the relay NODE, and two load-bearing findings that shrink the rest
 Tier: T3 (proposal 2026-07-23-blind-relay, approved by Tim 2026-07-23). Branch feat/blind-relay-node.
 Phase 1 of 3. New infra only; NO app or host code change ships in this phase.

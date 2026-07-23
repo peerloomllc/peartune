@@ -27,6 +27,7 @@ const { createAudioShim, mimeFor, DEFAULT_ART_SIZE } = require('../worklet/shim'
 const { streamParams } = require('../worklet/quality')
 const { isPairLink, parseLink } = require('../protocol/link')
 const { hostTopic, libraryId: deriveLibraryId } = require('../protocol/ids')
+const { RELAY_PUBLIC_KEY, relayThroughFor } = require('../protocol/relay')
 const hostList = require('../worklet/hosts')
 const merge = require('../worklet/merge')
 const catalog = require('../worklet/catalog')
@@ -113,7 +114,12 @@ const pinsFile = () => path.join(libDir(), 'pins.json')
 
 const DEFAULT_SETTINGS = {
   theme: 'system', deviceName: '', userName: '', avatar: '', streamQuality: 'auto',
-  cacheCap: DEFAULT_CACHE_CAP, downloadCellular: false
+  cacheCap: DEFAULT_CACHE_CAP, downloadCellular: false,
+  // The off-LAN relay backstop (proposal 2026-07-23). On by default so the app "just
+  // works" for a 0%-punch user; a privacy maximalist turns it OFF for pure peer-to-peer,
+  // accepting that a genuinely-unpunchable network will not connect. Read live per
+  // connect in ensureSwarm's relayThrough fn, so a change applies without a restart.
+  useRelay: true
 }
 
 // What the network is right now, as reported by the shell (expo-network). Default
@@ -1223,7 +1229,21 @@ async function ensureShim () {
 function ensureSwarm () {
   if (!swarm) {
     if (!dht) dht = new HyperDHT()
-    swarm = new Hyperswarm({ keyPair: identity, dht })
+    // relayThrough is a FUNCTION, not a static key, so the privacy toggle + the baked
+    // relay key are read LIVE on every connect (Hyperswarm calls it per dial). Direct-
+    // first: it returns null on the first attempt and only yields the relay key after
+    // Hyperswarm sets force=true on a HOLEPUNCH_ABORTED (proposal 2026-07-23). With no
+    // relay key baked yet, or the toggle off, it always returns null - a pure no-op.
+    swarm = new Hyperswarm({
+      keyPair: identity,
+      dht,
+      relayThrough: (force, s) => relayThroughFor({
+        force,
+        randomized: !!(s && s.dht && s.dht.randomized),
+        useRelay: loadSettings().useRelay !== false,
+        relayKey: RELAY_PUBLIC_KEY
+      })
+    })
     swarm.on('connection', onSwarmConnection)
   }
   return swarm
@@ -2097,7 +2117,11 @@ const methods = {
 
     const after = snap()
     // The DELTA is the interesting part: punches attempted during THIS run, and whether any
-    // relaying was even tried (it is not, today - we pass no relayThrough).
+    // relaying was tried. `stats.relaying { attempts, successes, aborts }` climbs only when
+    // the swarm escalated to the blind relay (proposal 2026-07-23) - so a report where direct
+    // failed but relaying.successes rose is the relay doing its job. NB this diagnostic dials
+    // raw hyperdht with no relayThrough, so its OWN dials never relay; the counters here are
+    // the cumulative node total, which the real swarm connections feed.
     const delta = (a, b) => {
       const out = {}
       for (const k of Object.keys(b || {})) {
@@ -2868,6 +2892,15 @@ const methods = {
     s.downloadCellular = !!on
     saveSettings(s)
     return { downloadCellular: s.downloadCellular }
+  },
+
+  // The off-LAN relay privacy toggle (proposal 2026-07-23). Persisted only; the swarm's
+  // relayThrough fn reads it live per connect, so no reconnect is needed for it to apply.
+  setUseRelay ({ on }) {
+    const s = loadSettings()
+    s.useRelay = !!on
+    saveSettings(s)
+    return { useRelay: s.useRelay }
   },
 
   // The paired libraries, the active one flagged - Settings renders the switcher from this.

@@ -4437,6 +4437,10 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
   const clearCache = async () => { haptic('warn'); try { setCache(await call('clearCache')) } catch {} }
   const [cellular, setCellular] = useState(state.settings?.downloadCellular ?? false)
   const toggleCellular = async () => { const on = !cellular; haptic('light'); setCellular(on); try { await call('setDownloadCellular', { on }) } catch {} }
+  // The off-LAN relay privacy toggle. Default ON (the reliability backstop); OFF is
+  // pure peer-to-peer, no PeerLoom infrastructure ever touched (proposal 2026-07-23).
+  const [useRelay, setUseRelay] = useState(state.settings?.useRelay !== false)
+  const toggleRelay = async () => { const on = !useRelay; haptic('light'); setUseRelay(on); try { await call('setUseRelay', { on }) } catch {} }
 
   // null means "not edited yet" - fall back to what the host told us. Using '' as
   // the initial value instead would silently clear a name the moment identity
@@ -4717,6 +4721,26 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
               <div className='desc diag-note'>{diagSummary(diag)}</div>
             </div>
           )}
+
+          {/* The relay backstop. On by default so a hard-NAT/cellular user can still reach
+              home; off is pure peer-to-peer with nothing of PeerLoom's in the path, at the
+              cost of "works anywhere". Even on, it is direct-first: the relay only carries a
+              connection when the direct hole-punch fails, and it never sees inside the
+              encrypted stream. */}
+          <div className='row' style={{ marginTop: '.75rem' }}>
+            <div>
+              <div className='label'>Use the relay when direct fails</div>
+              <div className='desc'>
+                On by default. If your phone and server can’t connect directly (strict
+                carrier NAT), route through PeerLoom’s relay - it only ever carries the
+                encrypted stream, never your files. Turn off for pure peer-to-peer, at the
+                cost of connecting from some networks.
+              </div>
+            </div>
+            <button className={'toggle' + (useRelay ? ' on' : '')} role='switch' aria-checked={useRelay} onClick={toggleRelay}>
+              {useRelay ? 'On' : 'Off'}
+            </button>
+          </div>
         </Section>
 
         <Section id='device' title='Device key' Icon={Key} open={open === 'device'} onToggle={toggle}>
