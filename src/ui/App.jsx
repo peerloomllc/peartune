@@ -4804,6 +4804,14 @@ function About ({ onDonate }) {
           The server keeps the list of which devices are allowed in, and can cut one
           off in the middle of a song.
         </p>
+        <p>
+          On a few networks too strict for a direct connection (some carrier NATs),
+          and only then, your phone routes through a relay run by PeerLoom. It carries
+          the still-encrypted stream in transit only - never a stored copy of your
+          music, and it cannot see the contents, just that your device is reaching
+          your server. It is optional: turn it off in Settings → Connection for pure
+          peer-to-peer, at the cost of connecting from some networks.
+        </p>
         <div className='btnrow'>
           <button onClick={() => openUrl('https://pears.com/')}>Learn about P2P ↗</button>
         </div>
