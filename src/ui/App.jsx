@@ -4911,7 +4911,7 @@ function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost =
   const ready = addHost || named
 
   return (
-    <div className='center'>
+    <div className='center onboard'>
       <h1>Pear<span className='tune'>Tune</span></h1>
       <p className='muted'>
         {addHost
