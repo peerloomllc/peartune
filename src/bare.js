@@ -346,6 +346,39 @@ function saveSettings (patch) {
   return next
 }
 
+// Classify THIS phone's NAT the way hyperdht does before a punch: sample our own observed
+// port across several DHT nodes and see whether it stays put (CONSISTENT / OPEN, punchable)
+// or moves per-peer (RANDOM / symmetric, effectively unpunchable without a relay). This is
+// THE datum that decides whether "punch harder" (random-punch tuning) can help a given
+// network: the random-punch birthday attack only engages for a RANDOM NAT, so a CONSISTENT
+// phone that still fails is a different problem than a RANDOM one. Needs only the DHT
+// bootstrap - no host, no pairing - so it works off-LAN on cellular. Best-effort: any
+// failure (incl. hyperdht moving the internal sampler) yields null and the report omits it.
+async function classifyNat (node) {
+  const NAMES = { 0: 'unknown', 1: 'open', 2: 'consistent', 3: 'random' }
+  let session = null
+  let holder = null
+  try {
+    session = node.session()
+    holder = node._socketPool.acquire()
+    const nat = new NatSampler(node, session, holder.socket)
+    nat.autoSample()
+    await Promise.race([nat.analyzing, new Promise((r) => setTimeout(r, 8000))])
+    return {
+      firewall: nat.firewall,
+      type: NAMES[nat.firewall] || 'unknown',
+      samples: nat.sampled,
+      // A RANDOM NAT is the one the relay exists for and the one "punch harder" targets.
+      punchable: nat.firewall === NAT_FIREWALL.OPEN || nat.firewall === NAT_FIREWALL.CONSISTENT
+    }
+  } catch {
+    return null
+  } finally {
+    try { if (holder) holder.release() } catch {}
+    try { if (session) session.destroy() } catch {}
+  }
+}
+
 // The favorites cache mirrors the host's grouped shape { track, album, artist } (each
 // an array of ids). It is disposable - the host owns the truth - so a missing or
 // corrupt file is simply "no favorites cached yet".
@@ -2038,38 +2071,6 @@ const methods = {
 
   // --- connection diagnostics --------------------------------------------------
   //
-  // Classify THIS phone's NAT the way hyperdht does before a punch: sample our own
-  // observed port across several DHT nodes and see whether it stays put (CONSISTENT /
-  // OPEN, punchable) or moves per-peer (RANDOM / symmetric, effectively unpunchable
-  // without a relay). This is THE datum that decides whether "punch harder" can help a
-  // given network: the random-punch birthday attack only engages for a RANDOM NAT, so a
-  // CONSISTENT phone that still fails is a different problem than a RANDOM one. Needs only
-  // the DHT bootstrap - no host, no pairing. Best-effort: any failure yields null.
-  async _classifyNat () {
-    const NAMES = { 0: 'unknown', 1: 'open', 2: 'consistent', 3: 'random' }
-    let session = null
-    let holder = null
-    try {
-      session = dht.session()
-      holder = dht._socketPool.acquire()
-      const nat = new NatSampler(dht, session, holder.socket)
-      nat.autoSample()
-      await Promise.race([nat.analyzing, new Promise((r) => setTimeout(r, 8000))])
-      return {
-        firewall: nat.firewall,
-        type: NAMES[nat.firewall] || 'unknown',
-        samples: nat.sampled,
-        // A RANDOM NAT is the one the relay exists for and the one "punch harder" targets.
-        punchable: nat.firewall === NAT_FIREWALL.OPEN || nat.firewall === NAT_FIREWALL.CONSISTENT
-      }
-    } catch {
-      return null
-    } finally {
-      try { if (holder) holder.release() } catch {}
-      try { if (session) session.destroy() } catch {}
-    }
-  },
-
   // Why this exists: the off-LAN failure can only be reproduced on Tim's phone (the test
   // phone has no SIM), so every previous attempt at it was blind. "Couldn't reach your
   // library" is the same message whether the DHT never bootstrapped, the host was never
@@ -2100,7 +2101,7 @@ const methods = {
       // The NAT classification (best-effort, may be null). `natType.type` is
       // open/consistent/random/unknown; random = symmetric, the case a relay exists for
       // and the only case "punch harder" (random-punch tuning) can move the needle on.
-      natType: await this._classifyNat()
+      natType: await classifyNat(dht)
     }
 
     const hosts = loadHostsFile().hosts || []
