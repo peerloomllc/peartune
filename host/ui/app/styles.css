@@ -363,7 +363,8 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 /* The pairing modal's footer actions: Cancel + Copy side by side. */
 .pairdone { margin: 0; font-size: 15.5px; }
 .pairacts { display: flex; gap: 8px; justify-content: center; }
-.pairacts button { display: inline-flex; align-items: center; gap: 6px; }
+/* Equal width: Close and New Code share the row evenly instead of sizing to their (unequal) text. */
+.pairacts button { flex: 1 1 0; justify-content: center; display: inline-flex; align-items: center; gap: 6px; }
 .btnrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 a.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none; background: var(--primary); color: var(--on-primary); padding: 9px 15px; border-radius: 9px; font-size: 13.5px; font-weight: 500; cursor: pointer; }
 a.btn.ghost { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
