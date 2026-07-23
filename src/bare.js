@@ -21,10 +21,12 @@ const z32 = require('z32')
 const hcrypto = require('hypercore-crypto')
 
 const HyperDHT = require('hyperdht')
+const Hyperswarm = require('hyperswarm')
 const { PearTuneClient } = require('../client')
 const { createAudioShim, mimeFor, DEFAULT_ART_SIZE } = require('../worklet/shim')
 const { streamParams } = require('../worklet/quality')
 const { isPairLink } = require('../protocol/link')
+const { hostTopic } = require('../protocol/ids')
 const hostList = require('../worklet/hosts')
 const merge = require('../worklet/merge')
 const catalog = require('../worklet/catalog')
@@ -128,6 +130,21 @@ let networkType = 'wifi'
 // transient at the source and makes every reconnect faster. Passed to PearTuneClient, so its
 // close() leaves the node alone (_ownDht=false); we only destroy it on a full account reset.
 let dht = null
+// ONE Hyperswarm for the whole worklet (proposal 2026-07-22 phase 2), riding the shared
+// warm dht node above. The active host's connection now comes from a PERSISTENT topic
+// membership - Hyperswarm's ConnectionManager retries the hole-punch forever and holds
+// the link open with keepalive, which is what makes off-LAN reliable (PearCircle's model).
+// We no longer dht.connect the active host or run our own backoff loop for it; the swarm
+// owns retry + reconnect. Pairing and the merged pool still dht.connect for now (phase 3
+// moves the pool). Created lazily in ensureSwarm().
+let swarm = null
+let activeTopicKey = null // the active host's hostKey (z32) whose topic we currently join
+let activeWaiters = [] // resolvers for callers awaiting the NEXT live active connection
+// How long a caller (an RPC via ensureConnected, a cold-launch connect) waits for the FIRST
+// live connection before giving up THIS wait. It bounds the wait only - the swarm membership
+// persists past it and a connection that lands later still wires up (attachActive). So this is
+// a UX bound, not a give-up: unlike the old per-dial budget, missing it does not stop retrying.
+const ACTIVE_CONNECT_WAIT_MS = 20000
 let client = null
 let shim = null
 let shimPort = null
@@ -1087,50 +1104,65 @@ async function ensureShim () {
   return shimPort
 }
 
-async function connectTo (host) {
-  // Adopt this library BEFORE anything reads or writes per-host state (lease, outbox, queue).
+// The ONE Hyperswarm, riding the shared warm dht node (proposal 2026-07-22 phase 2).
+// Created lazily so a cold launch with no paired host never stands it up.
+function ensureSwarm () {
+  if (!swarm) {
+    if (!dht) dht = new HyperDHT()
+    swarm = new Hyperswarm({ keyPair: identity, dht })
+    swarm.on('connection', onSwarmConnection)
+  }
+  return swarm
+}
+
+// Every connection the swarm lands arrives here. In phase 2 we only ever join the ACTIVE
+// host's topic, so a connection should be from it; map by the Noise-authenticated remote
+// key and wire the active client onto it. Anything else is unexpected (a stale topic peer)
+// and dropped. Phase 3 will route pool hosts from here too.
+function onSwarmConnection (conn, info) {
+  conn.on('error', () => {}) // a peer vanishing is normal, not an event
+  const remoteHex = z32.encode(info.publicKey)
+  const f = loadHostsFile()
+  if (remoteHex === f.activeHostKey) {
+    const host = hostList.activeHost(f)
+    if (host) return attachActive(host, conn)
+  }
+  log('swarm:unexpected-peer', { peer: remoteHex.slice(0, 8) })
+  try { conn.destroy() } catch {}
+}
+
+// Wire the active client onto a swarm-provided connection - the socket-independent half of
+// what connectTo used to do after a dht.connect. Same shim wiring, same lease stamp, same
+// host:connected. The one deliberate deletion: the close handler no longer scheduleReconnect()s,
+// because the swarm redials by itself and re-fires 'connection', which lands us right back here.
+async function attachActive (host, conn) {
   useLibrary(host.libraryId)
-  // Pin the client we're dialing to a LOCAL ref. A library switch calls connectTo directly
-  // while browse loaders can fire ensureConnected's single-flight reconnect in parallel (the
-  // window where `connected` is briefly false) - two connect paths racing on the `client`
-  // global. Whoever's dial the `client` global no longer points at has lost the race; it must
-  // drop its connection instead of publishing a stale one (that race was reading `.conn` off a
-  // client the winner had already nulled).
   const c = await ensureClient()
-  await c.connect({ hostKey: host.hostKey, libraryId: host.libraryId })
-  if (client !== c) { try { await c.close() } catch {} ; return }
+  c.attach(conn, { libraryId: host.libraryId })
+  client = c
   currentHost = host
   connected = true
-  cancelReconnect() // back on: drop any pending retry and reset the backoff
-  // A successful connect IS a fresh authorization - renew the offline lease.
+  // A live connection IS a fresh authorization - renew the offline lease.
   stampAuth()
 
-  // Point the (already-listening) shim at the fresh client. Playback still flows
-  // THROUGH the live connection for anything not cached, which is what makes a revoke
-  // stop the music.
+  // Point the (already-listening) shim at the fresh client. Playback still flows THROUGH
+  // the live connection for anything not cached, which is what makes a revoke stop the music.
   await ensureShim()
-  if (client !== c || !c.conn) { return } // swapped out (or torn down) during ensureShim
+  if (client !== c || c.conn !== conn || conn.destroyed) return // superseded/torn down during ensureShim
 
   shim.setClient(c)
 
-  // The connection is gone: revoked, or the host went away, or - by far the most
-  // common - Android suspended this app in the background and the link timed out.
-  // Those are indistinguishable from here, so do NOT guess at the reason. Say what
-  // happened and let whoever asks next reconnect. Ignore a close for a client we've
-  // already been superseded by - its disconnect is not ours to report.
-  c.conn.once('close', () => {
-    if (client !== c) return
+  // The connection is gone: revoked, the host went away, or (most often) Android suspended
+  // this app in the background and the link timed out. Indistinguishable from here, so do
+  // NOT guess - say what happened and let the swarm bring it back. Only report for the conn
+  // that is still current: a stale close (a newer attach already replaced it) is not ours.
+  conn.once('close', () => {
+    if (client !== c || c.conn !== conn) return
     connected = false
     log('host:disconnected')
     emit('host:disconnected', { hostKey: host.hostKey })
-    // ...and then TRY TO GET IT BACK. Reconnection used to be purely on demand
-    // (ensureConnected, when an RPC needs the host) plus the shell's app:active hook. That
-    // leaves one hole, and it is the one people actually hit: a link that dies while the app
-    // is in the FOREGROUND is never retried, because nothing asks. The idle heartbeat is sync
-    // by design and never dials. So the library sits "Offline - unreachable" while the host is
-    // up and reachable, until you background the app or restart it - measured at 11 hours on
-    // one device, and seen on both platforms (2026-07-21).
-    scheduleReconnect()
+    // No scheduleReconnect: Hyperswarm's ConnectionManager owns retry + reconnect now. It
+    // keeps the topic membership and redials in the background, firing 'connection' again.
   })
 
   emit('host:connected', {
@@ -1140,52 +1172,92 @@ async function connectTo (host) {
     artBase: shim.artBase()
   })
 
-  // Drain anything queued while we were offline (favorites/resume/counts). Fire and
-  // forget - a slow flush must not hold up the connection or the UI.
+  // Drain anything queued while we were offline (favorites/resume/counts). Fire and forget.
   flushOutbox().catch(() => {})
 
+  resolveActiveWaiters()
+}
+
+// Join (or switch to) the active host's discovery topic. Idempotent: re-joining the same
+// topic is a no-op; pointing at a NEW active host leaves the old topic first so we stop
+// trying to reach a host we are no longer focused on. server:false - the phone never
+// announces, it only looks the host up and dials it, so this adds no discoverability.
+function joinActiveTopic (host) {
+  const s = ensureSwarm()
+  if (activeTopicKey === host.hostKey) return
+  leaveActiveTopic()
+  activeTopicKey = host.hostKey
+  s.join(hostTopic(z32.decode(host.hostKey)), { server: false, client: true })
+}
+
+// Force the swarm's discovery lookup to run NOW rather than waiting out its refresh debounce,
+// so a reconnect (an RPC needing the host, or the shell's foreground hook calling reconnect())
+// redials promptly instead of only on Hyperswarm's own ~10-min cadence. Fire-and-forget; the
+// swarm keeps trying regardless. A no-op when there is no swarm yet.
+function nudgeSwarm () {
+  if (swarm) swarm.flush().catch(() => {})
+}
+
+function leaveActiveTopic () {
+  if (swarm && activeTopicKey) {
+    try { swarm.leave(hostTopic(z32.decode(activeTopicKey))) } catch {}
+  }
+  activeTopicKey = null
+}
+
+// Resolve everyone awaiting the next live active connection (they were parked in
+// waitForActiveConn until attachActive fired).
+function resolveActiveWaiters () {
+  const waiters = activeWaiters
+  activeWaiters = []
+  for (const w of waiters) w.resolve()
+}
+
+// Await a live active connection, with a UX timeout so a caller does not hang forever when
+// the host is unreachable. The timeout only bounds THIS wait - the swarm membership persists,
+// so a connection that lands later still wires up via attachActive. EUNREACHABLE keeps the
+// same shape callers already handle.
+function waitForActiveConn (host, timeout = ACTIVE_CONNECT_WAIT_MS) {
+  if (connected && client && client.conn && !client.conn.destroyed && currentHost && currentHost.hostKey === host.hostKey) {
+    return Promise.resolve()
+  }
+  return new Promise((resolve, reject) => {
+    const entry = {}
+    const timer = setTimeout(() => {
+      const i = activeWaiters.indexOf(entry)
+      if (i >= 0) activeWaiters.splice(i, 1)
+      const e = new Error('could not reach the host')
+      e.code = 'EUNREACHABLE'
+      reject(e)
+    }, timeout)
+    if (timer.unref) timer.unref()
+    entry.resolve = () => { clearTimeout(timer); resolve() }
+    activeWaiters.push(entry)
+  })
+}
+
+// connectTo(host): make `host` the active connection. Joins its topic (persistent membership)
+// and awaits the first live connection; attachActive does the rest when it lands.
+async function connectTo (host) {
+  useLibrary(host.libraryId)
+  joinActiveTopic(host)
+  // If we are not already connected, prompt discovery now so a reconnect/foreground redials
+  // promptly. When a live connection already exists, waitForActiveConn returns immediately and
+  // no lookup is forced.
+  if (!(connected && client && client.conn && !client.conn.destroyed && currentHost && currentHost.hostKey === host.hostKey)) {
+    nudgeSwarm()
+  }
+  await waitForActiveConn(host)
   return { ...host, shimPort }
 }
 
 
-// Reconnect ON DEMAND, and only once.
-//
-// Android suspends a backgrounded app that is not holding a foreground service, so
-// an idle PearTune loses its link within about twenty seconds - the host logs the
-// channel closing. This is normal and unavoidable, and it is NOT worth burning
-// battery on a permanent foreground service to prevent (when music is playing or
-// paused with a queue, the media session already keeps the process alive and the
-// link survives - measured).
-//
-// So: the link is allowed to die, and ANY caller that needs it silently brings it
-// back. The single-flight promise matters more than it looks - a screen coming
-// back to life fires `albums`, `artists` and a fistful of `art` requests in the
-// same tick, and without it each one would dial the host separately.
-// --- automatic reconnect ----------------------------------------------------
-//
-// The backoff math is in worklet/retry.js (pure, unit-tested) because there are now TWO loops
-// using it: this one for the active client, and the per-host pool loop below.
-let retryTimer = null
-let retryDelay = 0
-
-function cancelReconnect () {
-  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
-  retryDelay = 0
-}
-
-function scheduleReconnect () {
-  if (retryTimer || (connected && client)) return
-  if (!loadActiveHost()) return // unpaired: nothing to dial
-  retryDelay = retry.nextDelay(retryDelay)
-  retryTimer = setTimeout(() => {
-    retryTimer = null
-    if (!loadActiveHost()) return cancelReconnect()
-    if (connected && client) return cancelReconnect()
-    ensureConnected().then(cancelReconnect, () => scheduleReconnect())
-  }, retryDelay)
-  // Never let a retry hold the worklet awake on its own account.
-  if (retryTimer.unref) retryTimer.unref()
-}
+// The active client's automatic reconnect (the old scheduleReconnect/retryTimer backoff
+// loop) is GONE as of phase 2: Hyperswarm's ConnectionManager owns retry and reconnect for
+// the active host now. It keeps the topic membership, retries the hole-punch forever with
+// its own backoff, holds the link open with keepalive, and re-fires 'connection' on a drop -
+// which is exactly the "keep trying then hold on" that fixes off-LAN. The pool below still
+// runs worklet/retry.js's backoff because it is still on dht.connect until phase 3.
 
 // --- automatic reconnect for POOL hosts (2026-07-21) ------------------------
 //
@@ -1249,22 +1321,18 @@ function onPoolHostBack (libraryId) {
 }
 
 async function ensureConnected () {
-  if (connected && client) return
+  if (connected && client && client.conn && !client.conn.destroyed) return
 
   const host = loadActiveHost()
   if (!host) throw new Error('Not paired with a library.')
 
   if (!reconnecting) {
     reconnecting = (async () => {
-      // The old client is dead once its connection closed, and a half-dead client
-      // is worse than none: it fails on the first stream instead of here, where we
-      // can still do something about it. The SHIM survives (see connectTo).
-      if (client) {
-        try {
-          await client.close()
-        } catch {}
-        client = null
-      }
+      // No client teardown here anymore: the swarm keeps ONE persistent client and
+      // re-attaches it to each fresh connection (attachActive), so there is no dead
+      // client to close. Joining the topic is idempotent; the wait resolves when the
+      // membership lands a live connection (or times out, while the membership persists
+      // and a later connection still wires up).
       await connectTo(host)
     })().finally(() => { reconnecting = null })
   }
@@ -1329,9 +1397,11 @@ const methods = {
       // (Downloads, Settings) are all local. host:connected updates the UI when it lands;
       // a failure just leaves us in the normal "not connected" state.
       connectTo(host).catch((e) => {
+        // The first connection did not land inside the wait; the swarm membership persists
+        // and keeps trying in the background (the host may just be booting, or the wifi not
+        // up yet), so nothing to schedule - attachActive fires host:connected when it lands.
         log('init:connect-failed', { err: e.message })
         emit('host:disconnected', { hostKey: host.hostKey })
-        scheduleReconnect() // the host may just be booting, or the wifi not up yet
       })
 
       // MERGED IS THE DEFAULT when 2+ libraries are paired (proposal 2026-07-19): flip merged mode
@@ -2415,6 +2485,11 @@ const methods = {
     if (t !== networkType) {
       networkType = t
       log('net:changed', { type: t })
+      // A network switch (wifi<->cellular) drops the swarm's sockets; the prior DHT announce/
+      // lookup is on the old network too. Force a fresh discovery so the active host is redialed
+      // on the new network promptly, rather than waiting out Hyperswarm's own refresh cadence
+      // (PearCircle does the same flush on network:changed). No-op with no swarm / when off.
+      if (t !== 'none') nudgeSwarm()
     }
     return { networkType }
   },
@@ -2617,20 +2692,20 @@ const methods = {
     const host = hostList.activeHost(f)
     _mergedMode = false // focusing one library leaves the blended view (the '_all' chip re-enters it)
     cancelAllPoolReconnects() // same reason as exitMerged: no blend, no pool dialling
+    // Drop the old host's live connection explicitly (we are switching away from it), then
+    // repoint the swarm's active topic below. client=null so attachActive builds a fresh one.
     if (client) { try { await client.close() } catch {} ; client = null }
     connected = false
     useLibrary(host.libraryId)
-    // Dial the new host now, but do NOT let a transient failure abort the switch: tearing the
-    // old link down and immediately dialing can lose a race with the teardown (a one-off
-    // "host refused"). The active library is ALREADY switched (activeHostKey persisted), so on
-    // a failed first dial we just let the next request's ensureConnected reconnect and fire
-    // host:connected - exactly the app's normal offline-tolerant path. Either way we emit
-    // host:switched so the UI swaps and the new library's queue is offered.
+    // Join the new host's topic and wait for its first connection, but do NOT let a transient
+    // failure abort the switch: the active library is ALREADY switched (activeHostKey persisted)
+    // and the swarm membership persists, so a first connection that does not land in the wait
+    // just arrives a moment later and fires host:connected then. Either way we emit host:switched
+    // so the UI swaps and the new library's queue is offered.
     try {
       await connectTo(host)
     } catch (e) {
       log('switch:connect-deferred', { err: e.message })
-      scheduleReconnect()
     }
     emit('host:switched', { hostKey: host.hostKey, libraryId: host.libraryId, libraryName: host.libraryName, shimPort })
     return { ...host, shimPort }
@@ -2701,17 +2776,21 @@ const methods = {
         useLibrary(next.libraryId)
         // Reconnect in the background so the RPC returns promptly; the shell swaps to the new
         // library on host:switched and reloads its queue.
+        // connectTo(next) joins next's topic, which leaves the removed host's topic first
+        // (joinActiveTopic), so the swarm stops trying the host we just dropped.
         connectTo(next).catch((e) => {
+          // Membership persists; a first connection that misses the wait wires up later.
           log('remove:reconnect-failed', { err: e.message })
           emit('host:disconnected', { hostKey: next.hostKey })
-          scheduleReconnect()
         })
         emit('host:switched', { hostKey: next.hostKey, libraryId: next.libraryId, libraryName: next.libraryName, shimPort })
       } else {
-        // No libraries left: back to un-paired. The shim keeps listening (its port is stable
-        // and harmless); the shell shows the pairing wall.
+        // No libraries left: back to un-paired. Leave the removed host's topic so the swarm
+        // stops trying to reach it (the proposal's retry-storm mitigation - remove-library
+        // leaves the topic). The shim keeps listening (its port is stable and harmless); the
+        // shell shows the pairing wall.
         activeLibraryId = null
-        cancelReconnect() // no libraries left: stop dialling
+        leaveActiveTopic()
         emit('host:disconnected', { hostKey })
       }
     }
@@ -2745,7 +2824,7 @@ const methods = {
     // the lease) across all libraries. The reliable purge point a reconnect failure never is.
     purgeAllLibraries(all.map((h) => h.libraryId))
     activeLibraryId = null
-    cancelReconnect()
+    leaveActiveTopic()
 
     // Close the shim's HTTP server, not just the reference. Dropping the
     // reference alone would leave the loopback port bound for the life of the
@@ -2764,9 +2843,13 @@ const methods = {
     mergedIndex = null // drop the blended index and its cache-in-memory
     mergedConnected = new Set()
     buildRouteMaps() // clears the routing lookups
-    // A full reset tears the shared dht node down too (a later pair recreates it). Client
-    // close() leaves it alone by design, so destroy it here or it would leak past a forget.
-    if (dht) { try { await dht.destroy() } catch {} ; dht = null }
+    // A full reset tears the shared transport down too (a later pair recreates it). The swarm
+    // OWNS the shared dht node's teardown: Hyperswarm.destroy() destroys its dht even when the
+    // node was passed in, so destroy the swarm and let it take the dht with it - destroying the
+    // dht separately after would double-destroy. If there is no swarm (never connected this run),
+    // fall back to destroying the dht directly.
+    if (swarm) { try { await swarm.destroy() } catch {} ; swarm = null; dht = null; activeTopicKey = null }
+    else if (dht) { try { await dht.destroy() } catch {} ; dht = null }
     currentHost = null
 
     log('host:forgotten')
