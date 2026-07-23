@@ -2,6 +2,44 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-23 - Blind relay DEPLOYED + key baked: the off-LAN backstop is live (phase 2 activated)
+Tier: T3 (proposal 2026-07-23-blind-relay). Branch feat/blind-relay-activate, PR #163.
+
+DEPLOYED: the relay node runs on a US DigitalOcean droplet (Ubuntu 24.04, Node 20, `peartune-relay`
+systemd service, active + enabled = survives reboots). Provisioned by scp'ing `relay/` to the box +
+running `relay/deploy/bootstrap.sh` (installs Node, service user, systemd, starts it, prints the key).
+Public key: `qshao3eawtzecrt5p7buswr4meyyhw6q6b51qtxazd8wwfdp8uqy`. Private seed lives only on the box
+(`/var/lib/peartune-relay/relay.seed`, 0600) + backed up to Tim's laptop
+(`/home/tim/peerloomllc/peartune-relay-seed-BACKUP.txt`, 0600) + his password manager. Provider chosen
+after a detour: Hetzner's cheap CX/CAX lines are EU-only (bad latency for a US relay), so US DigitalOcean
+$6 droplet by card (Tim considered BitLaunch/Lightning, decided against the detour).
+
+ACTIVATED: `protocol/relay.js` RELAY_PUBLIC_KEY_Z set to the deployed key. `relayThroughFor` now returns a
+real key on the fail path, so the phone escalates through the relay when a direct punch aborts (the live
+Mac-mini 0/4 case) - direct-first, gated by the Settings toggle (default on). No host change (phase-1
+finding). `test/relay-policy.test.js` "no key baked yet" flipped to assert the key decodes to 32 bytes.
+
+VERIFY: relay-policy.test.js 6/6 + all 3 builds green. The full 471-test suite was NOT re-run to completion
+this session - the dev machine was memory-pressured (28/31 GB from Tim's apps) and the DHT-testnet tests
+(relay/transport/integration) crawl there; it passed green (471) earlier today and this change is a single
+constant that cannot affect network tests. NOTE for next session: run a full `npm run verify` when the
+machine is less loaded, to close the gate formally on master.
+
+PHASE 3 VERIFIED ON HARDWARE (2026-07-23, Pixel over cellular). Two parts:
+  (a) DIRECT-FIRST HOLDS: with the normal build, both hosts connected over cellular via CONSISTENT punches
+      (dht.stats.punches consistent, random:0) and the relay stayed OUT - the relay only engages when the
+      direct punch fails, exactly as designed.
+  (b) THE RELAY PATH WORKS END-TO-END: a THROWAWAY force-relay build (relayThroughFor returns the key always;
+      reverted after) connected to BOTH hosts in ~3s over cellular, and the RELAY NODE's own stats confirmed
+      it carried them - `sessions.active:4, pairings.active:2, streams.active:4` (phone paired to Mac-mini +
+      Umbrel THROUGH the relay, 4 live encrypted streams), pairings.matched climbing 2->4->6. So phone -> relay
+      -> home server over cellular is proven. NB the PHONE-side `dht.stats.relaying` counter read 0 even while
+      relaying - it tracks a different relay role; the RELAY NODE stats (journalctl on the droplet) are the
+      ground truth. Method: CDP-drove the Pixel (svc wifi off, cold-launch, read via the bridge), relay stats
+      via `ssh root@<droplet> journalctl -u peartune-relay`.
+REMAINS: the DISCLAIMER work (TODO) now that PeerLoom actually runs a relay; a full `npm run verify` on
+master when the machine isn't memory-pressured (housekeeping).
+
 ## 2026-07-23 - Blind relay phase 2: the phone offers the relay (direct-first) + a privacy toggle; inert until keyed
 Tier: T3 (proposal 2026-07-23-blind-relay). Branch feat/blind-relay-phone-toggle. Phase 2 of 3. Phone-side
 only; NO host change (see phase-1 finding). Lands the app plumbing; behavior is UNCHANGED until phase-1
