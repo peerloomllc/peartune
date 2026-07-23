@@ -1,0 +1,26 @@
+# systemd unit for the PeerLoom blind relay.
+# Install to /etc/systemd/system/peartune-relay.service, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now peartune-relay
+# Logs: journalctl -u peartune-relay -f   (the public key prints on first start)
+
+[Unit]
+Description=PeerLoom blind relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=peartune
+WorkingDirectory=/opt/peartune-relay
+Environment=RELAY_DATA_DIR=/var/lib/peartune-relay
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=5
+# The relay holds no library data; still, least privilege.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/peartune-relay
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
