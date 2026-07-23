@@ -2,6 +2,37 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-23 - Multi-host: adding a 2nd library stranded the 1st as "offline" (fixed)
+Tier: T1 (app logic, no wire/grant/protocol change). Branch fix/multihost-demote-orphan.
+
+SYMPTOM (Tim, fresh test): pair host A (active, connected) -> Add Library -> pair host B. B connects, but A
+now shows OFFLINE/greyed in the merged Library, even though A's HOST dashboard still shows the device
+connected, and pull-to-refresh never recovers it.
+
+ROOT CAUSE (two layers, both confirmed on hardware via the TCL + two throwaway laptop hosts):
+  1. The pair flow makes the new host ACTIVE (useLibrary(B) + attachActive(B)). attachActive did
+     `const c = await ensureClient()` - but ensureClient RETURNS THE EXISTING singleton `client`. So it
+     re-attached the SAME client object to B's connection, ORPHANING A's connection: no client wraps it,
+     nothing tracks it. connectedLibs() (active client + pool clients) therefore excludes A -> "offline".
+  2. It cannot self-heal: Hyperswarm dedups one connection per peer, so a later merged read that
+     joinPoolTopic(A)s never gets a NEW 'connection' event (A's connection already exists), so attachPool
+     never fires for A. Stuck until A's connection happens to drop + redial. Hence pull-to-refresh is inert.
+
+FIX: on a genuine host SWITCH (prev active is a different, still-paired, still-connected host), attachActive
+now uses a FRESH `makeClient()` for the incoming host instead of the reused singleton - so the OUTGOING
+client stays attached to its own live connection - and then `demoteActiveToPool(prevHost, prevClient,
+prevConn, prevLib)` adopts that live connection+client into the pool (reuses the client, no reconnect, no
+second Protomux channel), wires a pool-style close handler, and refreshes the blend. First-pair and
+same-host reconnect keep the ensureClient singleton path unchanged. Also fixed: onPaired now `setTab('library')`
+so a successful pair lands on the Library, not back on Settings (Tim's secondary note).
+
+GOTCHA that cost a build cycle: capture the outgoing host from `currentHost`, NOT activeLibraryId - the
+pair/switch flows call useLibrary(new) BEFORE attachActive, so activeLibraryId is already the incoming host.
+
+VALIDATED on hardware (TCL + two laptop hosts): pair A -> add B -> mergedStatus = both CONNECTED, and the
+`pool:adopted` log fires. Before the fix: A offline, no pool:adopted. NOT unit-tested (bare.js multi-host
+globals aren't isolable); builds green, full suite is the standing memory-pressure housekeeping item.
+
 ## 2026-07-23 - Blind relay DEPLOYED + key baked: the off-LAN backstop is live (phase 2 activated)
 Tier: T3 (proposal 2026-07-23-blind-relay). Branch feat/blind-relay-activate, PR #163.
 

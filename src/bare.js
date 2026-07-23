@@ -805,6 +805,40 @@ function attachPool (host, conn) {
   resolvePoolWaiters(libId)
 }
 
+// When a new host takes the ACTIVE slot (add-library or switch-library) while the PREVIOUS active
+// host's connection is still alive, that old connection would otherwise be ORPHANED: attachActive
+// overwrites `client`, and Hyperswarm dedups one connection per peer - so re-joining the old host's
+// topic later NEVER re-emits its existing connection, and the host is stuck showing offline in the
+// merged view even though its dashboard still shows us connected (the exact 2026-07-23 bug). So we
+// ADOPT the live connection into the pool: reuse the SAME client (no reconnect, and no second
+// Protomux channel from a re-attach) and wire pool-style close + status. Mirrors attachPool minus
+// the makeClient()+attach - we keep the working one.
+function demoteActiveToPool (host, oldClient, oldConn, libId) {
+  joinPoolTopic(host)                 // keep a topic membership so a future drop can redial
+  const e = pool.get(libId)           // joinPoolTopic ensured the entry
+  if (e.client && e.client !== oldClient) { try { e.client.close() } catch {} }
+  e.host = host
+  e.client = oldClient
+  stopPoolNudge(libId)                // it has a live client now
+  stampAuthFor(libId)                 // a live connection is a fresh authorization for this host's lease
+  identitySynced.add(libId)           // was active => identity already sent; don't race a re-push into dup persons
+  // Pool-style close. The old attachActive close handler on this conn is now inert (it early-returns
+  // because global `client` has moved on), so this is the one that greys the row + restarts nudging.
+  oldConn.once('close', () => {
+    if (e.client !== oldClient) return
+    e.client = null
+    identitySynced.delete(libId)
+    if (mergedMode()) emit('merged:updated', mergedStatusData())
+    startPoolNudge(host)
+  })
+  log('pool:adopted', { library: libId.slice(0, 8) })
+  if (mergedMode()) {
+    emit('merged:updated', mergedStatusData())
+    if (!mergedConnected.has(libId)) rebuildIndex().catch(() => {})
+  }
+  resolvePoolWaiters(libId)
+}
+
 // Per-host nudge loop (the pool twin of startActiveNudge): force a fresh discovery lookup every
 // ~10s while this host is disconnected, so the hole-punch is retried steadily instead of stalling
 // in Hyperswarm's 10-min backoff. Only runs in merged mode (outside it nobody reads the pool).
@@ -1321,8 +1355,27 @@ function onSwarmConnection (conn, info) {
 // host:connected. The one deliberate deletion: the close handler no longer scheduleReconnect()s,
 // because the swarm redials by itself and re-fires 'connection', which lands us right back here.
 async function attachActive (host, conn) {
+  // Capture the OUTGOING active host BEFORE `client`/currentHost overwrite it, so we can hand its
+  // still-live connection to the pool rather than orphaning it (see demoteActiveToPool). NB read the
+  // outgoing host from `currentHost`, NOT activeLibraryId: the pair/switch flows call useLibrary(new)
+  // BEFORE attachActive, so activeLibraryId is already the incoming host here - but currentHost is
+  // only ever updated inside attachActive, so it still points at the host we are replacing.
+  const prevHost = currentHost
+  const prevClient = client
+  const prevConn = client ? client.conn : null
+  const prevLib = prevHost ? prevHost.libraryId : null
+
+  // A genuine host SWITCH (add-library / switch-library), not the first pair or a reconnect of the
+  // SAME host: the outgoing host has a live connection we want to keep. Use a FRESH client for the
+  // incoming host so the outgoing client stays attached to its OWN connection and can be moved into
+  // the pool. Reusing the singleton `client` (ensureClient) would re-point that one client at the new
+  // conn and orphan the old one - stranding the previous host as permanently "offline" in the merge.
+  const switching = !!(prevLib && prevLib !== host.libraryId && prevClient &&
+    prevConn && !prevConn.destroyed &&
+    loadHostsFile().hosts.some((h) => h.libraryId === prevLib))
+
   useLibrary(host.libraryId)
-  const c = await ensureClient()
+  const c = switching ? makeClient() : await ensureClient()
   c.attach(conn, { libraryId: host.libraryId })
   client = c
   currentHost = host
@@ -1331,6 +1384,10 @@ async function attachActive (host, conn) {
   log('active:connected', { host: host.hostKey.slice(0, 8), library: host.libraryName })
   // A live connection IS a fresh authorization - renew the offline lease.
   stampAuth()
+
+  // Move the previous active host into the pool so it does not go dark when the new host takes the
+  // active slot. Its client is still attached to its live connection (we used a fresh client above).
+  if (switching && prevHost) demoteActiveToPool(prevHost, prevClient, prevConn, prevLib)
 
   // Point the (already-listening) shim at the fresh client. Playback still flows THROUGH
   // the live connection for anything not cached, which is what makes a revoke stop the music.

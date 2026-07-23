@@ -1074,6 +1074,9 @@ export default function App () {
       // the new active one loads fresh (a no-op on a first pair).
       setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery('')
       setAddingLibrary(false)
+      // A successful pair should always land on the Library, not drop back to Settings (where the
+      // add-a-library flow was launched from). Harmless on a first pair (already there).
+      setTab('library')
       // pair() now sends the claim, so the host may ALREADY have confirmed us (a brand-new name
       // auto-creates its person). Re-read the identity or Settings would sit on "Waiting for your
       // server to confirm you are X" until the next reconnect, which is exactly the stale banner
