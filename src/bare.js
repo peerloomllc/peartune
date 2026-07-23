@@ -139,12 +139,24 @@ let dht = null
 // moves the pool). Created lazily in ensureSwarm().
 let swarm = null
 let activeTopicKey = null // the active host's hostKey (z32) whose topic we currently join
+let activeDiscovery = null // the PeerDiscoverySession from swarm.join, so nudges can force a lookup
 let activeWaiters = [] // resolvers for callers awaiting the NEXT live active connection
 // How long a caller (an RPC via ensureConnected, a cold-launch connect) waits for the FIRST
 // live connection before giving up THIS wait. It bounds the wait only - the swarm membership
 // persists past it and a connection that lands later still wires up (attachActive). So this is
 // a UX bound, not a give-up: unlike the old per-dial budget, missing it does not stop retrying.
 const ACTIVE_CONNECT_WAIT_MS = 20000
+// How often to force a fresh swarm discovery while the active host is DISCONNECTED. Hyperswarm's
+// own reconnect backs off hard - after ~4 attempts a topic-discovered peer's retry timer returns
+// null (stops) and even an explicit peer only gets a 10-MINUTE timer (lib/retry-timer.js). At the
+// ~12% carrier hole-punch rate that is far too slow to land in the "1-2 min" the proposal wants.
+// Each nudge (swarm.flush -> discovery refresh) clears the discovered set and re-emits the host,
+// which resets its attempts and re-enqueues it (lib/peer-discovery.js clears _discovered every
+// refresh; lib/index.js _handlePeer calls peerInfo._reset()), i.e. a fresh burst of attempts. So a
+// ~10s nudge turns Hyperswarm's minutes-long lulls into a steady retry, matching the pool's own
+// aggressive backoff. The timer is unref'd and only runs while foreground (a suspended worklet
+// freezes it, which is correct - no point punching while backgrounded).
+const ACTIVE_NUDGE_MS = 10000
 let client = null
 let shim = null
 let shimPort = null
@@ -1125,7 +1137,7 @@ function onSwarmConnection (conn, info) {
   const f = loadHostsFile()
   if (remoteHex === f.activeHostKey) {
     const host = hostList.activeHost(f)
-    if (host) return attachActive(host, conn)
+    if (host) { log('swarm:connection', { host: remoteHex.slice(0, 8) }); return attachActive(host, conn) }
   }
   log('swarm:unexpected-peer', { peer: remoteHex.slice(0, 8) })
   try { conn.destroy() } catch {}
@@ -1142,6 +1154,8 @@ async function attachActive (host, conn) {
   client = c
   currentHost = host
   connected = true
+  stopActiveNudge() // landed - stop the retry nudges
+  log('active:connected', { host: host.hostKey.slice(0, 8), library: host.libraryName })
   // A live connection IS a fresh authorization - renew the offline lease.
   stampAuth()
 
@@ -1161,8 +1175,9 @@ async function attachActive (host, conn) {
     connected = false
     log('host:disconnected')
     emit('host:disconnected', { hostKey: host.hostKey })
-    // No scheduleReconnect: Hyperswarm's ConnectionManager owns retry + reconnect now. It
-    // keeps the topic membership and redials in the background, firing 'connection' again.
+    // The swarm keeps the topic membership and redials on its own, but its backoff is slow at a
+    // carrier punch rate - so drive it with our own nudge loop until it lands again.
+    startActiveNudge()
   })
 
   emit('host:connected', {
@@ -1187,15 +1202,37 @@ function joinActiveTopic (host) {
   if (activeTopicKey === host.hostKey) return
   leaveActiveTopic()
   activeTopicKey = host.hostKey
-  s.join(hostTopic(z32.decode(host.hostKey)), { server: false, client: true })
+  activeDiscovery = s.join(hostTopic(z32.decode(host.hostKey)), { server: false, client: true })
 }
 
-// Force the swarm's discovery lookup to run NOW rather than waiting out its refresh debounce,
-// so a reconnect (an RPC needing the host, or the shell's foreground hook calling reconnect())
-// redials promptly instead of only on Hyperswarm's own ~10-min cadence. Fire-and-forget; the
-// swarm keeps trying regardless. A no-op when there is no swarm yet.
+// Force a FRESH discovery lookup now. This is the load-bearing nudge: session.refresh() re-runs
+// the DHT lookup, which clears the discovered set and re-emits the host, resetting its attempts
+// and re-enqueuing it for a fresh connection burst. (swarm.flush() only WAITS for the current
+// refresh - it does not start one when discovery is idle between its 10-min cycles - so it is the
+// wrong tool here.) Fire-and-forget; a no-op with no active discovery.
 function nudgeSwarm () {
-  if (swarm) swarm.flush().catch(() => {})
+  if (activeDiscovery) { try { activeDiscovery.refresh({ client: true, server: false }).catch(() => {}) } catch {} }
+}
+
+// Keep nudging the swarm every ACTIVE_NUDGE_MS while the active host is disconnected, so the
+// hole-punch is retried steadily instead of stalling in Hyperswarm's 10-min backoff (see the
+// constant). Self-cancels the moment a connection lands or the last host is removed. Idempotent.
+let activeNudgeTimer = null
+function startActiveNudge () {
+  if (activeNudgeTimer) return
+  const tick = () => {
+    activeNudgeTimer = null
+    if (connected && client && client.conn && !client.conn.destroyed) return // landed - stop
+    if (!loadActiveHost()) return // unpaired - nothing to reach
+    nudgeSwarm()
+    activeNudgeTimer = setTimeout(tick, ACTIVE_NUDGE_MS)
+    if (activeNudgeTimer.unref) activeNudgeTimer.unref()
+  }
+  activeNudgeTimer = setTimeout(tick, ACTIVE_NUDGE_MS)
+  if (activeNudgeTimer.unref) activeNudgeTimer.unref()
+}
+function stopActiveNudge () {
+  if (activeNudgeTimer) { clearTimeout(activeNudgeTimer); activeNudgeTimer = null }
 }
 
 function leaveActiveTopic () {
@@ -1203,6 +1240,8 @@ function leaveActiveTopic () {
     try { swarm.leave(hostTopic(z32.decode(activeTopicKey))) } catch {}
   }
   activeTopicKey = null
+  activeDiscovery = null
+  stopActiveNudge() // no active topic to reach - stop punching
 }
 
 // Resolve everyone awaiting the next live active connection (they were parked in
@@ -1241,11 +1280,12 @@ function waitForActiveConn (host, timeout = ACTIVE_CONNECT_WAIT_MS) {
 async function connectTo (host) {
   useLibrary(host.libraryId)
   joinActiveTopic(host)
-  // If we are not already connected, prompt discovery now so a reconnect/foreground redials
-  // promptly. When a live connection already exists, waitForActiveConn returns immediately and
-  // no lookup is forced.
+  // If we are not already connected, prompt discovery now AND keep nudging until it lands, so a
+  // cold connect / reconnect punches steadily instead of stalling in Hyperswarm's slow backoff.
+  // When a live connection already exists, waitForActiveConn returns immediately - no nudging.
   if (!(connected && client && client.conn && !client.conn.destroyed && currentHost && currentHost.hostKey === host.hostKey)) {
     nudgeSwarm()
+    startActiveNudge()
   }
   await waitForActiveConn(host)
   return { ...host, shimPort }
