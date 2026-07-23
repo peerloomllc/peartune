@@ -35,7 +35,11 @@ Grant access per device and per person. Your phone, your tablet, your partner's 
 
 ## Status
 
-Pre-alpha. Wire protocol proposed 2026-07-13 (`proposals/2026-07-13-wire-protocol.md`), implementation not started.
+**Alpha. Working, but not yet publicly released.**
+
+The wire protocol (`proposals/2026-07-13-wire-protocol.md`) is implemented and the whole path runs: scan the QR, browse the library, play. The host is packaged as a Docker image and runs on an Umbrel, and both the Android and the iOS clients are built. Pairing, gapless playback, per-person grants, live revocation and multiple hosts in one merged library have all been exercised on real devices against real hosts, including off-LAN over cellular.
+
+What is missing is something you can install: there is no published release yet. Open work is tracked in `TODO.md` and design decisions in `DECISIONS.md`.
 
 ## License
 
