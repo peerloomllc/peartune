@@ -12,7 +12,7 @@
 // has nothing to show yet, and the source step opens the folder browser in a modal
 // of its own (a modal inside a modal is a stacking bug waiting to happen).
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { CheckCircle, MusicNotes, Broadcast, Tag, Lock, CaretLeft, Sun, Moon } from '@phosphor-icons/react'
 import { api } from './api'
 import { SourcePanel } from './SourcePanel'
@@ -20,6 +20,9 @@ import { PairFlow } from './Pair'
 import { PasswordSection } from './Maintenance'
 import { setupSteps, DEFAULT_LIBRARY_NAME } from './setup'
 import { PEAR_MARK } from './icon'
+
+// Kept in step with the .wizslide animation duration in styles.css.
+const SLIDE_MS = 300
 
 const TITLES = {
   welcome: 'Welcome',
@@ -33,11 +36,42 @@ const TITLES = {
 export default function SetupWizard ({ state, refresh, toast, isDark, onTheme, onExit }) {
   const steps = setupSteps(state)
   const [at, setAt] = useState(0)
+  // The step being animated AWAY, and which way we are going. Both cards are on the
+  // stage for the length of the slide, so a step leaves rather than blinking out.
+  const [leaving, setLeaving] = useState(null) // { from: index, dir: 1 | -1 }
   const step = steps[at] || 'welcome'
-  const next = () => setAt(i => Math.min(i + 1, steps.length - 1))
-  const back = () => setAt(i => Math.max(i - 1, 0))
+
+  const go = (to) => {
+    const i = Math.max(0, Math.min(to, steps.length - 1))
+    if (i === at || leaving) return // ignore a second tap mid-slide
+    setLeaving({ from: at, dir: i > at ? 1 : -1 })
+    setAt(i)
+  }
+  const next = () => go(at + 1)
+  const back = () => go(at - 1)
+
+  // Ends the slide on a timer rather than on animationend: with reduced motion (or
+  // any browser that skips the animation) that event never fires and the leaving
+  // card would be stranded on the stage forever.
+  useEffect(() => {
+    if (!leaving) return
+    const t = setTimeout(() => setLeaving(null), SLIDE_MS)
+    return () => clearTimeout(t)
+  }, [leaving])
+
   // The dots skip the bookends: "Welcome" and "All set" are not work to be done.
   const dots = steps.filter(s => s !== 'welcome' && s !== 'done')
+
+  const card = (s) => (
+    <div className='panel wizcard'>
+      {s === 'welcome' && <Welcome hasPassword={steps.includes('password')} />}
+      {s === 'name' && <NameStep state={state} refresh={refresh} toast={toast} onNext={next} />}
+      {s === 'source' && <SourceStep state={state} refresh={refresh} toast={toast} />}
+      {s === 'password' && <PasswordStep state={state} refresh={refresh} toast={toast} />}
+      {s === 'pair' && <PairStep onNext={next} toast={toast} />}
+      {s === 'done' && <DoneStep state={state} />}
+    </div>
+  )
 
   return (
     <div className='app'>
@@ -75,13 +109,18 @@ export default function SetupWizard ({ state, refresh, toast, isDark, onTheme, o
             })}
           </ol>}
 
-        <div className='panel wizcard'>
-          {step === 'welcome' && <Welcome hasPassword={steps.includes('password')} />}
-          {step === 'name' && <NameStep state={state} refresh={refresh} toast={toast} onNext={next} />}
-          {step === 'source' && <SourceStep state={state} refresh={refresh} toast={toast} />}
-          {step === 'password' && <PasswordStep state={state} refresh={refresh} toast={toast} />}
-          {step === 'pair' && <PairStep onNext={next} toast={toast} />}
-          {step === 'done' && <DoneStep state={state} />}
+        {/* Keyed BY STEP so React keeps each card's instance when it moves from the
+            incoming slot to the leaving one. Re-keying per slot would remount it, and
+            a pair step sliding away would flash back to its "Show pairing code"
+            state instead of sliding away with its QR on it. */}
+        <div className='wizstage'>
+          {leaving &&
+            <div key={'step-' + leaving.from} className={'wizslide leaving ' + (leaving.dir > 0 ? 'fwd' : 'back')}>
+              {card(steps[leaving.from])}
+            </div>}
+          <div key={'step-' + at} className={'wizslide' + (leaving ? (leaving.dir > 0 ? ' fwd' : ' back') : '')}>
+            {card(step)}
+          </div>
         </div>
 
         <Nav step={step} state={state} at={at} onBack={back} onNext={next} onExit={onExit} />
@@ -95,26 +134,32 @@ export default function SetupWizard ({ state, refresh, toast, isDark, onTheme, o
 // body stays a step body. `name` saves through its own handler (NameStep passes it
 // up via onNext), so it is the one step whose primary lives in the step itself.
 function Nav ({ step, state, at, onBack, onNext, onExit }) {
-  if (step === 'name') return <div className='wiznav'>{at > 0 && <button className='ghost' onClick={onBack}><CaretLeft size={15} /> Back</button>}</div>
-
-
   const sourceReady = !!(state.source && state.source.from === 'dashboard')
   const primary =
     step === 'welcome' ? { label: 'Get started', on: true, go: onNext }
       : step === 'source' ? { label: 'Continue', on: sourceReady, go: onNext }
         : step === 'password' ? { label: 'Continue', on: true, go: onNext }
           : step === 'done' ? { label: 'Open the dashboard', on: true, go: onExit }
-            : null // 'pair' drives itself
+            // 'name' saves through its own "Save and continue"; 'pair' drives itself.
+            : null
 
   // Skipping is always allowed. A setup flow you cannot get out of is worse than no
   // setup flow - and the operator may already know exactly which control they want.
   const skippable = step === 'source' || step === 'password' || step === 'pair'
 
+  // Three fixed slots - Back left, Skip centred, the primary right - so the two
+  // buttons keep their edges whether or not the middle one is there.
   return (
     <div className='wiznav'>
-      {at > 0 && step !== 'done' && <button className='ghost' onClick={onBack}><CaretLeft size={15} /> Back</button>}
-      {skippable && <button className='link' onClick={onNext}>Skip this step</button>}
-      {primary && <button onClick={primary.go} disabled={!primary.on}>{primary.label}</button>}
+      <div className='wiznav-l'>
+        {at > 0 && step !== 'done' && <button className='ghost' onClick={onBack}><CaretLeft size={15} /> Back</button>}
+      </div>
+      <div className='wiznav-c'>
+        {skippable && <button className='link' onClick={onNext}>Skip this step</button>}
+      </div>
+      <div className='wiznav-r'>
+        {primary && <button onClick={primary.go} disabled={!primary.on}>{primary.label}</button>}
+      </div>
     </div>
   )
 }

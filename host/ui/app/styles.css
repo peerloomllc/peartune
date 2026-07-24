@@ -449,7 +449,7 @@ button.destructive { background: var(--bad); color: #fff; }
 .wizcard { flex: 0 0 auto; }
 .wizbody { padding: 22px 20px; display: flex; flex-direction: column; }
 .wizbody.center { align-items: center; text-align: center; gap: 6px; }
-.wizh { font-size: 19px; font-weight: 600; margin: 0 0 10px; letter-spacing: -0.01em; }
+.wizh { font-size: 19px; font-weight: 600; margin: 0 0 10px; letter-spacing: -0.01em; text-align: center; }
 .wizbody.center .wizh { margin: 8px 0 4px; }
 .wizbody .hint + .hint { margin-top: 10px; }
 .wizbody > input { margin-top: 4px; }
@@ -468,10 +468,42 @@ button.destructive { background: var(--bad); color: #fff; }
 .wizdots li.now .wizdot { background: color-mix(in srgb, var(--primary) 22%, transparent); }
 .wizdots li.done .wizdot { border-color: var(--good); color: var(--good); }
 
-/* Centred as one group (Tim, 2026-07-24): Back / Skip / the primary all sit under
-   the middle of the card rather than pinned to its two edges. */
-.wiznav { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 0 2px 6px; }
-.wiznav button:not(.ghost):not(.link) { min-width: 150px; }
+/* Three slots (Tim, 2026-07-24): Back on the left edge, "Skip this step" centred,
+   the primary on the right edge - and the two buttons the SAME width, so the row
+   reads as a pair rather than as whatever their labels happened to measure. */
+.wiznav { flex: 0 0 auto; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; padding: 0 2px 6px; }
+.wiznav-l { justify-self: start; }
+.wiznav-c { justify-self: center; }
+.wiznav-r { justify-self: end; }
+.wiznav button:not(.link) { min-width: 158px; justify-content: center; }
+
+/* The step cards live on a stage: the outgoing one is lifted out of flow and both
+   slide, so a step LEAVES instead of blinking out. Only the X axis is clipped, so a
+   card at translateX(±100%) cannot scroll the page sideways while the card's shadow
+   still shows above and below. `clip` (not hidden/auto) is deliberate: it adds no
+   scroll container, so it cannot turn .main's overflow-y:auto into a second
+   horizontal scrollbar the way a padding/negative-margin pair did. */
+.wizstage { position: relative; overflow-x: clip; overflow-y: visible; }
+.wizslide { animation-duration: .3s; animation-timing-function: cubic-bezier(.3,.85,.35,1); animation-fill-mode: both; }
+.wizslide.leaving { position: absolute; top: 0; left: 0; right: 0; }
+/* Forward: the old card exits left, the new one arrives from the right. Back reverses. */
+.wizslide.fwd { animation-name: wiz-in-right; }
+.wizslide.leaving.fwd { animation-name: wiz-out-left; }
+.wizslide.back { animation-name: wiz-in-left; }
+.wizslide.leaving.back { animation-name: wiz-out-right; }
+@keyframes wiz-in-right { from { transform: translateX(100%); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes wiz-in-left { from { transform: translateX(-100%); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes wiz-out-left { from { transform: none; opacity: 1 } to { transform: translateX(-100%); opacity: 0 } }
+@keyframes wiz-out-right { from { transform: none; opacity: 1 } to { transform: translateX(100%); opacity: 0 } }
+/* Reduced motion: cross-fade in place, no travel. The JS ends the transition on a
+   timer, not on animationend, so this cannot strand the leaving card. */
+@media (prefers-reduced-motion: reduce) {
+  .wizslide { animation-duration: .12s; }
+  @keyframes wiz-in-right { from { opacity: 0 } }
+  @keyframes wiz-in-left { from { opacity: 0 } }
+  @keyframes wiz-out-left { to { opacity: 0 } }
+  @keyframes wiz-out-right { to { opacity: 0 } }
+}
 
 .wizlist { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
 .wizlist li { display: flex; align-items: flex-start; gap: 11px; color: var(--primary); }
@@ -542,6 +574,7 @@ button.destructive { background: var(--bad); color: #fff; }
   .wizdots li { flex: 0 0 auto; }
   .wizdots li:not(.now) .wizlbl { display: none; }
   .wizbody { padding: 18px 14px; }
-  .wiznav { flex-wrap: wrap; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
-  .wiznav button:not(.ghost):not(.link) { min-width: 120px; flex: 1 1 auto; }
+  .wiznav { gap: 6px; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
+  /* Both still equal, just narrow enough that Back + Skip + Continue fit one row. */
+  .wiznav button:not(.link) { min-width: 104px; }
 }
