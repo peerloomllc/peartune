@@ -119,6 +119,13 @@ export default function App () {
   const [skin, setSkin] = useState('modern') // player skin: modern | classic (the retro Winamp-style face)
   const [albumsLoaded, setAlbumsLoaded] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
+  // A cold launch has not FAILED - it has not tried yet. init() answers with
+  // connected:false and kicks the connect off in the background (src/bare.js), so
+  // the not-connected wall painted a failure before anything had been attempted:
+  // every launch opened on "PearTune can't reach this library" for a moment (Tim,
+  // 2026-07-24). This is the missing third state - trying - and it is not a guess:
+  // the worklet says how the attempt ended, host:connected or host:disconnected.
+  const [firstConnect, setFirstConnect] = useState(false)
   const [shuffle, setShuffle] = useState(false)
   const [repeat, setRepeat] = useState(0) // 0 off, 1 one, 2 all
   const [sleep, setSleep] = useState(null) // sleep timer: { active, endOfTrack, deadline } from the shell
@@ -192,6 +199,9 @@ export default function App () {
         setMerged(s.merged || null)
         if (s.merged?.merged) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
         if (s.connected) { loadAlbums(0, sortParamsFor(savedSort, 'albums')); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists() }
+        // Paired but not connected YET: the background connect is in flight, so show
+        // a spinner rather than a verdict until it lands or fails.
+        else if (s.host) setFirstConnect(true)
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
@@ -247,6 +257,9 @@ export default function App () {
         // music is still going. Just note we are off the wire; play:stopped is what
         // clears the player, and only if the buffer actually starves (a revoke).
         setState(s => ({ ...s, connected: false }))
+        // The cold-launch attempt has now CONCLUDED, badly. Stop the spinner and let
+        // the wall say so - this is the honest end of the "trying" state.
+        setFirstConnect(false)
         // In merged mode, re-read the per-library status (cheap - no rebuild): a revoke drops the
         // host's pool connection at once, so this greys its chip + Settings row immediately, without
         // waiting for the next index rebuild. A transient background drop greys it too and un-greys
@@ -259,6 +272,7 @@ export default function App () {
       on('host:connected', (d) => {
         setState(s => ({ ...s, connected: true, host: { ...s.host, ...d } }))
         setError(null)
+        setFirstConnect(false)
         // init connects in the BACKGROUND now, so this event - not init - is what kicks
         // off the first library load, and refreshes it on every reconnect.
         loadIdentity()
@@ -583,6 +597,17 @@ export default function App () {
     if (n.stack.length) return setStack(s => s.slice(0, -1))
     if (n.tab !== 'library') return setTab('library')
   }), [])
+
+  // BACKSTOP, not the mechanism. host:connected / host:disconnected are what
+  // normally end the first attempt; this only covers an event that never arrives.
+  // Sized well past the worklet's own 20s first-connect wait (ACTIVE_CONNECT_WAIT_MS)
+  // so a legitimately slow off-LAN connect is never called a failure early - the
+  // wall lying in the other direction is the same bug with the sign flipped.
+  useEffect(() => {
+    if (!firstConnect) return
+    const t = setTimeout(() => setFirstConnect(false), 45000)
+    return () => clearTimeout(t)
+  }, [firstConnect])
 
   const push = (screen) => { haptic('light'); setStack(s => [...s, screen]) }
   const pop = () => setStack(s => s.slice(0, -1))
@@ -1591,7 +1616,7 @@ export default function App () {
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         onDismissError={() => setError(null)}
-        albumsLoaded={albumsLoaded} reconnecting={reconnecting}
+        albumsLoaded={albumsLoaded} reconnecting={reconnecting} firstConnect={firstConnect}
         favs={favs} onFav={favSupported ? onFav : null}
         cont={now ? null : cont}
         onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
@@ -2135,7 +2160,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 
 function Library ({
   state, albums, artists, genres, songs, recent, merged, filter, onFilter, onAddLibrary, cursor, songCursor, density,
-  browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting,
+  browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting, firstConnect,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onOpenGenre, onPlay, onLong
@@ -2176,7 +2201,7 @@ function Library ({
   // A connect is in flight and nothing has answered yet. The single-host wall above has had
   // a Reconnecting screen for a while; merged mode never got one, so it showed the failure
   // instantly on open - which is what Tim saw off-LAN.
-  const connecting = !!reconnecting && !reachable
+  const connecting = (!!reconnecting || !!firstConnect) && !reachable
   // The Display sheet offers layout (grid views only) and/or sort (whatever the
   // source can do). Disable its button when the active view has neither.
   const sortCap = state.sorts?.[browse === 'songs' ? 'tracks' : browse]
@@ -2252,11 +2277,14 @@ function Library ({
     return (
       <div className='app'>
         <header><h1>{state.host.libraryName || 'Library'}</h1></header>
-        {reconnecting
+        {/* Trying, not failed. A cold launch lands here first (firstConnect), and a
+            manual retry lands here too (reconnecting) - the wall below is only for
+            an attempt that has actually concluded. */}
+        {reconnecting || firstConnect
           ? (
             <div className='blank'>
               <ArrowsClockwise size={40} weight='thin' className='spin' />
-              <h2>Reconnecting…</h2>
+              <h2>{reconnecting ? 'Reconnecting…' : 'Connecting…'}</h2>
             </div>
             )
           : (
@@ -2268,7 +2296,7 @@ function Library ({
                     Off and revoked are indistinguishable from here, and a leaked
                     "host refused the connection" is developer-speak that belonged
                     to a pairing attempt, not this screen. */}
-                PearTune can't reach this library. Your server may be off, or its
+                PearTune can't reach this library. The server may be off, or its
                 access for this device may have been revoked.
               </p>
               <button className='primary' onClick={onReconnect}>
