@@ -116,6 +116,96 @@ header {
   padding: .35rem 0 .3rem;
   text-align: center;
 }
+.libhead {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.2rem;
+}
+.libhead h1 {
+  margin: 0;
+}
+.libpick {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.libpick::before {
+  content: "";
+  width: 16px;
+  flex: none;
+}
+.libcaret {
+  color: var(--color-text-muted);
+  transition: transform .18s ease;
+  flex: none;
+}
+.libpick.open .libcaret {
+  transform: rotate(180deg);
+}
+.libmenu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.libmenu {
+  position: absolute;
+  top: calc(100% + .3rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 41;
+  min-width: 220px;
+  max-width: 92vw;
+  max-height: 60vh;
+  overflow-y: auto;
+  text-align: left;
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  padding: .35rem;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .45);
+  animation: peartune-fade .14s ease both;
+}
+.libmenu button {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  padding: .6rem .7rem;
+  border-radius: 9px;
+  font-size: 1rem;
+  line-height: 1.2;
+}
+.libmenu button:active {
+  background: var(--color-surface-input);
+}
+.libmenu button.on {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.libmenu button.off {
+  opacity: .5;
+}
+.libmenu-sep {
+  height: 1px;
+  background: var(--color-divider);
+  margin: .35rem .3rem;
+}
+.libmenu-add {
+  color: var(--color-text-secondary);
+}
 button {
   font: inherit;
   font-weight: 500;
@@ -868,6 +958,29 @@ button.scanbtn {
 .onboard details button {
   width: 100%;
 }
+.obwhy {
+  display: flex;
+  flex-direction: column;
+  gap: .85rem;
+}
+.obwhy > div {
+  display: flex;
+  gap: .6rem;
+  align-items: flex-start;
+}
+.obwhy > div > svg {
+  flex: none;
+  color: var(--color-primary);
+  margin-top: .12rem;
+}
+.obwhy span {
+  font-size: .85rem;
+  line-height: 1.45;
+}
+.onboard .namebox > p.sm {
+  margin: 0;
+  line-height: 1.5;
+}
 .sticky {
   position: sticky;
   top: 0;
@@ -1178,14 +1291,6 @@ button.more.danger {
   display: inline-flex;
   align-items: center;
   gap: .4rem;
-}
-@keyframes peartune-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-.spin {
-  animation: peartune-spin 1.1s linear infinite;
 }
 @keyframes peartune-pulse {
   0%, 100% {
@@ -2496,36 +2601,6 @@ button.shead .caret.open {
 }
 label.flabel {
   display: block;
-  margin-top: .6rem;
-}
-.diag {
-  margin-top: .75rem;
-  border-top: 1px solid var(--color-divider);
-}
-.diag-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 1rem;
-  padding: .5rem .1rem;
-  border-bottom: 1px solid var(--color-divider);
-  font-size: .88rem;
-}
-.diag-row span {
-  color: var(--color-text-secondary);
-  min-width: 0;
-}
-.diag-row b {
-  font-weight: 500;
-  text-align: right;
-}
-.diag-row b.ok {
-  color: var(--color-success);
-}
-.diag-row b.bad {
-  color: var(--color-error);
-}
-.diag-note {
   margin-top: .6rem;
 }
 .spin {

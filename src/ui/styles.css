@@ -444,6 +444,13 @@ button.scanbtn { display: inline-flex; align-items: center; justify-content: cen
    the paste section), so Scan QR / Pair / Cancel line up instead of each sizing to its own text. */
 .onboard > button { width: 100%; max-width: 22rem; margin-left: auto; margin-right: auto; }
 .onboard details button { width: 100%; }
+/* The intro card's three "what this even is" lines: icon, then a sentence. */
+.obwhy { display: flex; flex-direction: column; gap: .85rem; }
+.obwhy > div { display: flex; gap: .6rem; align-items: flex-start; }
+.obwhy > div > svg { flex: none; color: var(--color-primary); margin-top: .12rem; }
+.obwhy span { font-size: .85rem; line-height: 1.45; }
+/* A card that is one paragraph of guidance (the "whose library" answers). */
+.onboard .namebox > p.sm { margin: 0; line-height: 1.5; }
 
 /* The search box and the picker STICK; the library title above them scrolls away.
    Those two are what you reach for from halfway down a grid of 60 albums, and
