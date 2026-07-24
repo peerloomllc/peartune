@@ -364,7 +364,9 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .pairdone { margin: 0; font-size: 15.5px; }
 .pairacts { display: flex; gap: 8px; justify-content: center; }
 /* Equal width: Close and New Code share the row evenly instead of sizing to their (unequal) text. */
-.pairacts button { flex: 1 1 0; justify-content: center; display: inline-flex; align-items: center; gap: 6px; }
+/* nowrap: the row is content-width, so a flex-basis of 0 lets a two-word label
+   ("New code") break across two lines and make the pair of buttons uneven. */
+.pairacts button { flex: 1 1 0; justify-content: center; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .btnrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 a.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none; background: var(--primary); color: var(--on-primary); padding: 9px 15px; border-radius: 9px; font-size: 13.5px; font-weight: 500; cursor: pointer; }
 a.btn.ghost { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
@@ -441,6 +443,95 @@ button.destructive { background: var(--bad); color: #fff; }
 .tabpane > .panel > .list { padding-top: 14px; }
 .tabpane > .panel > .panel-body { padding-top: 14px; }
 
+/* ---- first-run setup wizard ----------------------------------------------- */
+/* A full-page view, not a modal: the dashboard behind it has nothing to show yet,
+   and the source step opens the folder browser in a modal of its own. */
+.wizcard { flex: 0 0 auto; }
+.wizbody { padding: 22px 20px; display: flex; flex-direction: column; }
+/* margin-block auto centres the last card's content in the (uniform, and so for it
+   over-tall) card. Auto margins and not a stretched flex item on purpose: the stage
+   ratchet measures this element's scrollHeight, and stretching it would peg that
+   measurement to the current floor and stop it ever growing again. */
+.wizbody.center { align-items: center; text-align: center; gap: 6px; margin-block: auto; }
+.wizh { font-size: 19px; font-weight: 600; margin: 0 0 10px; letter-spacing: -0.01em; text-align: center; }
+.wizbody.center .wizh { margin: 8px 0 4px; }
+.wizbody .hint + .hint { margin-top: 10px; }
+.wizbody > input { margin-top: 4px; }
+
+/* The step rail. The bookends (welcome, done) are not steps, so they get no dot. */
+.wizdots { display: flex; align-items: center; gap: 6px; list-style: none; margin: 2px 0 0; padding: 0; }
+.wizdots li { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--subtle); font-size: 12px; }
+.wizdots li.now { color: var(--primary); }
+.wizdots li.done { color: var(--muted); }
+.wizlbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wizdot {
+  flex: none; width: 20px; height: 20px; border-radius: 999px; display: grid; place-items: center;
+  border: 1.5px solid currentColor; background: transparent; transition: background .18s ease;
+  font-size: 11px; font-weight: 600; line-height: 1;
+}
+.wizdots li.now .wizdot { background: color-mix(in srgb, var(--primary) 22%, transparent); }
+.wizdots li.done .wizdot { border-color: var(--good); color: var(--good); }
+
+/* Three slots (Tim, 2026-07-24): Back on the left edge, "Skip this step" centred,
+   the primary on the right edge - and the two buttons the SAME width, so the row
+   reads as a pair rather than as whatever their labels happened to measure. */
+.wiznav { flex: 0 0 auto; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; padding: 0 2px 6px; }
+.wiznav-l { justify-self: start; }
+.wiznav-c { justify-self: center; }
+.wiznav-r { justify-self: end; }
+/* The two bookend cards: one button, in the middle. */
+.wiznav.solo { grid-template-columns: 1fr; }
+.wiznav.solo .wiznav-l, .wiznav.solo .wiznav-c { display: none; }
+.wiznav.solo .wiznav-r { justify-self: center; }
+.wiznav button:not(.link) { min-width: 158px; justify-content: center; }
+
+/* The step cards live on a stage: the outgoing one is lifted out of flow and both
+   slide, so a step LEAVES instead of blinking out. Only the X axis is clipped, so a
+   card at translateX(±100%) cannot scroll the page sideways while the card's shadow
+   still shows above and below. `clip` (not hidden/auto) is deliberate: it adds no
+   scroll container, so it cannot turn .main's overflow-y:auto into a second
+   horizontal scrollbar the way a padding/negative-margin pair did. */
+/* A grid of one cell: the incoming card is the cell, so it STRETCHES to the stage's
+   ratcheted min-height (set inline from JS) and every step is the same size box. */
+.wizstage { position: relative; display: grid; overflow-x: clip; overflow-y: visible; }
+.wizslide { grid-area: 1 / 1; animation-duration: .3s; animation-timing-function: cubic-bezier(.3,.85,.35,1); animation-fill-mode: both; }
+.wizslide.leaving { position: absolute; inset: 0; }
+.wizslide > .wizcard { height: 100%; }
+/* Forward: the old card exits left, the new one arrives from the right. Back reverses. */
+.wizslide.fwd { animation-name: wiz-in-right; }
+.wizslide.leaving.fwd { animation-name: wiz-out-left; }
+.wizslide.back { animation-name: wiz-in-left; }
+.wizslide.leaving.back { animation-name: wiz-out-right; }
+@keyframes wiz-in-right { from { transform: translateX(100%); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes wiz-in-left { from { transform: translateX(-100%); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes wiz-out-left { from { transform: none; opacity: 1 } to { transform: translateX(-100%); opacity: 0 } }
+@keyframes wiz-out-right { from { transform: none; opacity: 1 } to { transform: translateX(100%); opacity: 0 } }
+/* Reduced motion: cross-fade in place, no travel. The JS ends the transition on a
+   timer, not on animationend, so this cannot strand the leaving card. */
+@media (prefers-reduced-motion: reduce) {
+  .wizslide { animation-duration: .12s; }
+  @keyframes wiz-in-right { from { opacity: 0 } }
+  @keyframes wiz-in-left { from { opacity: 0 } }
+  @keyframes wiz-out-left { to { opacity: 0 } }
+  @keyframes wiz-out-right { to { opacity: 0 } }
+}
+
+.wizlist { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.wizlist li { display: flex; align-items: flex-start; gap: 11px; color: var(--primary); }
+.wizlist li > div { display: flex; flex-direction: column; gap: 1px; color: var(--text); font-size: 14px; }
+.wizlist li span { color: var(--muted); font-size: 13px; }
+
+.wizsum { list-style: none; margin: 10px 0 14px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.wizsum li { display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 14px; }
+
+/* The music-source panel, minus its own card: it is already inside the wizard's. */
+.srcembed { margin-top: 14px; }
+/* .srcfields keeps its 278px floor here too: without it, switching Folder <-> a
+   server form resizes the step from the inside, which is the same jumping the
+   stage ratchet exists to stop. */
+.srcembed .srcactions { grid-template-columns: repeat(2, 1fr); }
+.good-line { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--good); margin-top: 2px; }
+
 /* ---- mobile --------------------------------------------------------------- */
 @media (max-width: 620px) {
   .app { padding: 0 12px; }
@@ -489,4 +580,14 @@ button.destructive { background: var(--bad); color: #fff; }
   .prow { flex-wrap: wrap; }
   .who { min-width: 165px; }
   .prow > button { flex: 1 1 auto; }
+
+  /* Setup: the step rail keeps the dots and drops the words (four labels do not fit
+     a phone), and the nav buttons stop being a fixed 150px so Back + Continue share
+     the row instead of overflowing it. */
+  .wizdots li { flex: 0 0 auto; }
+  .wizdots li:not(.now) .wizlbl { display: none; }
+  .wizbody { padding: 18px 14px; }
+  .wiznav { gap: 6px; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
+  /* Both still equal, just narrow enough that Back + Skip + Continue fit one row. */
+  .wiznav button:not(.link) { min-width: 104px; }
 }
