@@ -35,7 +35,7 @@ const BUYMEACOFFEE_URL = 'https://buymeacoffee.com/peerloomllc'
 const GITHUB_URL = 'https://github.com/peerloomllc/peartune'
 const CONTACT_EMAIL = 'peerloomllc@proton.me'
 const CONTACT_URL = `mailto:${CONTACT_EMAIL}?subject=%5BPearTune%5D%20Feedback`
-const SHARE_TEXT = 'PearTune - the music on your own server, or a friend's, playable anywhere. No port forwarding, no VPN, no account.\n\nhttps://peerloomllc.com/peartune/'
+const SHARE_TEXT = 'PearTune - the music on your own server, or a friend\'s, playable anywhere. No port forwarding, no VPN, no account.\n\nhttps://peerloomllc.com/peartune/'
 // iOS hides the donation section per App Store guideline 3.1.1 (no external
 // donation links). The shell injects the platform before the bundle runs.
 const isIOS = () => typeof window !== 'undefined' && window.__pearPlatform === 'ios'
@@ -4925,8 +4925,8 @@ function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost =
       <h1>Pear<span className='tune'>Tune</span></h1>
       <p className='muted'>
         {addHost
-          ? 'Open the PearTune dashboard on the server you want to add - yours or a friend's - and show its pairing code.'
-          : 'The music on your own server, or a friend's, playable anywhere. Open the PearTune dashboard on that server and show its pairing code.'}
+          ? 'Open the PearTune dashboard on the server you want to add - yours or a friend\'s - and show its pairing code.'
+          : 'The music on your own server, or a friend\'s, playable anywhere. Open the PearTune dashboard on that server and show its pairing code.'}
       </p>
       <Problem error={error} />
 
