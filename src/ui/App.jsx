@@ -5014,6 +5014,9 @@ function Onboarding ({
                       wifi.
                     </p>}
               </div>
+              {/* The one link a new operator follows OUT of the app. It points at the product
+                  page for now; repoint it at the install/setup guide as soon as the site has one
+                  (Tim, 2026-07-24 - tracked in TODO). */}
               {owner === 'mine' &&
                 <button onClick={() => { haptic('light'); openUrl('https://peerloomllc.com/peartune/') }}>How to set up a server ↗</button>}
               <button className='primary' onClick={() => { haptic('light'); setPhase('names') }}>Continue</button>
