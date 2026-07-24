@@ -839,6 +839,63 @@ function demoteActiveToPool (host, oldClient, oldConn, libId) {
   resolvePoolWaiters(libId)
 }
 
+// The mirror of demoteActiveToPool. When the ACTIVE host is removed (remove-library) and the host
+// promoted into its place is ALREADY connected in the pool, ADOPT that live pool connection into the
+// active slot instead of redialing it. connectTo() would join the topic and wait for a fresh
+// 'connection' event - but Hyperswarm dedups one connection per peer, so an already-pool-connected
+// host NEVER re-emits, and the promotion stalls forever at "Not connected" (the 2026-07-24
+// remove-active-strands-the-survivor bug, the mirror of the 2026-07-23 add-library one). So we reuse
+// the pool's SAME client + conn (no reconnect, no second Protomux channel), take its topic membership
+// over as the active one, and rewire an active-style close handler. Returns true if it adopted a live
+// pool connection, false if the pool had none (the caller then dials cold, which is safe - no live
+// connection means no dedup).
+async function promotePoolToActive (host) {
+  const libId = host.libraryId
+  const e = pool.get(libId)
+  const poolC = e && e.client
+  const conn = poolC && poolC.conn
+  if (!poolC || !conn || conn.destroyed) return false
+
+  // Detach the entry from the pool but KEEP the connection: nulling e.client makes attachPool's close
+  // handler inert (it early-returns when e.client !== its captured client), and we drop the map entry
+  // WITHOUT swarm.leave - joinActiveTopic below re-grabs the SAME live topic membership as the active
+  // one (s.join is idempotent per topic), so the connection is never torn down.
+  e.client = null
+  stopPoolNudge(libId)
+  pool.delete(libId)
+
+  useLibrary(libId)
+  joinActiveTopic(host)   // leaves the outgoing (removed) host's topic, adopts this one's live session
+  client = poolC
+  currentHost = host
+  connected = true
+  stopActiveNudge()       // we already hold a live connection
+  stampAuth()             // a live connection is a fresh authorization for the offline lease
+  log('active:adopted', { host: host.hostKey.slice(0, 8), library: host.libraryName })
+
+  // Active-style close (mirrors attachActive): on drop, grey the header and drive the redial nudge.
+  conn.once('close', () => {
+    if (client !== poolC || poolC.conn !== conn) return
+    connected = false
+    log('host:disconnected')
+    emit('host:disconnected', { hostKey: host.hostKey })
+    startActiveNudge()
+  })
+
+  // Point the shim at the adopted client, guarding against being superseded during the await.
+  await ensureShim()
+  if (client !== poolC || poolC.conn !== conn || conn.destroyed) return true
+  shim.setClient(poolC)
+  emit('host:connected', {
+    libraryName: host.libraryName,
+    libraryId: host.libraryId,
+    shimPort,
+    artBase: shim.artBase()
+  })
+  flushOutbox().catch(() => {}) // drain anything queued while this host was a background pool member
+  return true
+}
+
 // Per-host nudge loop (the pool twin of startActiveNudge): force a fresh discovery lookup every
 // ~10s while this host is disconnected, so the hole-punch is retried steadily instead of stalling
 // in Hyperswarm's 10-min backoff. Only runs in merged mode (outside it nobody reads the pool).
@@ -3094,16 +3151,24 @@ const methods = {
       connected = false
       const next = hostList.activeHost(file)
       if (next) {
-        useLibrary(next.libraryId)
-        // Reconnect in the background so the RPC returns promptly; the shell swaps to the new
-        // library on host:switched and reloads its queue.
-        // connectTo(next) joins next's topic, which leaves the removed host's topic first
-        // (joinActiveTopic), so the swarm stops trying the host we just dropped.
-        connectTo(next).catch((e) => {
-          // Membership persists; a first connection that misses the wait wires up later.
-          log('remove:reconnect-failed', { err: e.message })
-          emit('host:disconnected', { hostKey: next.hostKey })
-        })
+        // If the promoted host is ALREADY connected in the pool (the common case when removing the
+        // active host from a live merged view), ADOPT that connection - redialing it would dedup
+        // against the existing one and stall at "Not connected" (2026-07-24). Only when the pool has
+        // no live connection do we dial cold, which is safe (no existing conn = no dedup).
+        let adopted = false
+        try { adopted = await promotePoolToActive(next) } catch (e) { log('remove:promote-failed', { err: e.message }) }
+        if (!adopted) {
+          useLibrary(next.libraryId)
+          // Reconnect in the background so the RPC returns promptly; the shell swaps to the new
+          // library on host:switched and reloads its queue.
+          // connectTo(next) joins next's topic, which leaves the removed host's topic first
+          // (joinActiveTopic), so the swarm stops trying the host we just dropped.
+          connectTo(next).catch((e) => {
+            // Membership persists; a first connection that misses the wait wires up later.
+            log('remove:reconnect-failed', { err: e.message })
+            emit('host:disconnected', { hostKey: next.hostKey })
+          })
+        }
         emit('host:switched', { hostKey: next.hostKey, libraryId: next.libraryId, libraryName: next.libraryName, shimPort })
       } else {
         // No libraries left: back to un-paired. Leave the removed host's topic so the swarm
