@@ -2271,50 +2271,49 @@ function Library ({
           the title sticky as well would cost twice the height for a word you
           already know. */}
       <header>
-        {/* The title doubles as the library switcher (2+ libraries): tap it to pick the blend ("All")
-            or one library - the same filter the old chip row drove, just folded into the header. The +
-            adds a library without a trip to Settings. A single library shows a plain title. */}
+        {/* The title IS the library menu: tap it to pick the blend ("All") or one library - the same
+            filter the old chip row drove - and to "Add a library" without a trip to Settings. With 2+
+            libraries the menu lists them all; with one it's just the Add row (so a solo user can still
+            add a second from here). */}
         <div className='libhead'>
-          {canSwitch
-            ? (
-              <button
-                className={'libpick' + (libMenuOpen ? ' open' : '')}
-                onClick={() => setLibMenuOpen(o => !o)}
-                aria-haspopup='menu'
-                aria-expanded={libMenuOpen}
-              >
-                <h1>{libTitle}</h1>
-                <CaretDown size={16} weight='bold' className='libcaret' />
-              </button>
-              )
-            : <h1>{libTitle}</h1>}
-          <button className='icon libadd' onClick={onAddLibrary} aria-label='Add a library'>
-            <Plus size={20} weight='bold' />
+          <button
+            className={'libpick' + (libMenuOpen ? ' open' : '')}
+            onClick={() => setLibMenuOpen(o => !o)}
+            aria-haspopup='menu'
+            aria-expanded={libMenuOpen}
+          >
+            <h1>{libTitle}</h1>
+            <CaretDown size={16} weight='bold' className='libcaret' />
           </button>
 
-          {libMenuOpen && canSwitch && (
+          {libMenuOpen && (
             <>
               <div className='libmenu-backdrop' onClick={() => setLibMenuOpen(false)} />
               <div className='libmenu' role='menu'>
-                <button
-                  role='menuitem'
-                  className={filter === '_all' ? 'on' : ''}
-                  onClick={() => { onFilter('_all'); setLibMenuOpen(false) }}
-                >
-                  All libraries
-                </button>
-                {merged.libraries.map(l => (
-                  <button
-                    key={l.libraryId}
-                    role='menuitem'
-                    className={(filter === l.libraryId ? 'on' : '') + (l.connected ? '' : ' off')}
-                    onClick={() => { onFilter(l.libraryId); setLibMenuOpen(false) }}
-                    title={l.connected ? undefined : 'Offline'}
-                  >
-                    {l.libraryName || 'Library'}
-                  </button>
-                ))}
-                <div className='libmenu-sep' />
+                {/* Library filter (blend + per-library) only makes sense with 2+ libraries. */}
+                {canSwitch && (
+                  <>
+                    <button
+                      role='menuitem'
+                      className={filter === '_all' ? 'on' : ''}
+                      onClick={() => { onFilter('_all'); setLibMenuOpen(false) }}
+                    >
+                      All libraries
+                    </button>
+                    {merged.libraries.map(l => (
+                      <button
+                        key={l.libraryId}
+                        role='menuitem'
+                        className={(filter === l.libraryId ? 'on' : '') + (l.connected ? '' : ' off')}
+                        onClick={() => { onFilter(l.libraryId); setLibMenuOpen(false) }}
+                        title={l.connected ? undefined : 'Offline'}
+                      >
+                        {l.libraryName || 'Library'}
+                      </button>
+                    ))}
+                    <div className='libmenu-sep' />
+                  </>
+                )}
                 <button
                   role='menuitem'
                   className='libmenu-add'

@@ -66,8 +66,8 @@ h2 {
 header { padding: .35rem 0 .3rem; text-align: center; }
 
 /* Library switcher in the header (2026-07-24, replaced the source-filter chip row). The centred title
-   is a dropdown when 2+ libraries are blended; the + (top-right) adds a library without going to
-   Settings. `position: relative` anchors both the absolute + and the dropdown. */
+   is a dropdown menu: switch which library you're viewing (blend / one library) and "Add a library".
+   `position: relative` anchors the dropdown. */
 .libhead { position: relative; display: flex; align-items: center; justify-content: center; min-height: 2.2rem; }
 .libhead h1 { margin: 0; }
 .libpick {
@@ -76,10 +76,6 @@ header { padding: .35rem 0 .3rem; text-align: center; }
 }
 .libcaret { color: var(--color-text-muted); transition: transform .18s ease; flex: none; }
 .libpick.open .libcaret { transform: rotate(180deg); }
-.libadd {
-  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
-  color: var(--color-text-secondary);
-}
 /* Full-screen catcher so a tap anywhere else closes the menu. */
 .libmenu-backdrop { position: fixed; inset: 0; z-index: 40; }
 .libmenu {
