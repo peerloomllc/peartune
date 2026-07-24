@@ -2,6 +2,40 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-24 - Multi-host: removing the ACTIVE library stranded the survivor (fixed)
+Tier: T1 (app logic, no wire/grant/protocol change). Branch fix/multihost-remove-active-strands-survivor, PR #171.
+The MIRROR of the 2026-07-23 add-library bug (#166), in the remove direction.
+
+SYMPTOM (Tim, on the TCL): with two libraries paired + merged, deleting the one currently ACTIVE removed it
+correctly (revoked on its dashboard) but the OTHER library then disconnected and stuck at "Reconnecting" /
+"Not connected", even though its host was reachable. Reproduced on hardware.
+
+ROOT CAUSE: removeHost's wasActive branch promoted the next host via connectTo(next). But that host already
+had a live POOL connection, and Hyperswarm dedups one connection per peer - so connectTo re-dialed, never got
+a fresh 'connection' event, attachActive never fired, and the promotion hung forever. Exactly the dedup trap
+#166 documented, hit from the other side: #166 was add-strands-the-old-active; this is
+remove-active-strands-the-pooled-survivor.
+
+FIX: promotePoolToActive(next), the mirror of demoteActiveToPool. When the promoted host is already
+pool-connected, ADOPT that live connection into the active slot - reuse the SAME client + conn (no reconnect,
+no second Protomux channel), null the pool entry's client so its close handler goes inert, take the topic
+membership over as active (joinActiveTopic re-grabs the same live session, idempotent), and wire an
+active-style close handler. removeHost tries the adopt first and only dials cold when the pool has no live
+connection (safe - no existing conn = no dedup).
+
+3+ LIBRARIES: promotePoolToActive also refreshes the merged view (emit merged:updated + conditional
+rebuildIndex, like demoteActiveToPool/attachPool). With 3+ libraries the view STAYS merged after removing the
+active one (it only collapses to single-host at <2), so without that refresh the promoted host could read
+stale pool state in the blend. No-op at 2 libraries (mergedMode is already off there).
+
+VALIDATED on the TCL (fixed debug APK built + installed):
+  - 2 libraries: pair Umbrel + Mac (merged, both connected) -> remove the active Mac -> survivor Umbrel went
+    straight to Active/connected and browses. Before the fix the same steps stuck it at "Not connected".
+  - 3 libraries: pair Umbrel + Mac + a throwaway laptop host (all merged, all connected) -> remove the active
+    laptop host -> BOTH survivors (Umbrel + Mac) stayed Active/connected AND the blend stayed merged (did not
+    collapse). Confirms the 3+ path.
+verify green 472/472. NOT unit-tested (bare.js multi-host globals aren't isolable, same as #166).
+
 ## 2026-07-24 - Relay-ops watch: host-wipe DHT reachability (measured; controlled wipe recovers <1s)
 Tier: T1 (host announce hardening, no wire/grant/protocol change). Branch fix/host-early-reannounce, PR #169.
 
