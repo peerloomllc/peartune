@@ -20,7 +20,7 @@ import {
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
   Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode,
-  WarningCircle, LockKey, DeviceMobile
+  WarningCircle, LockKey, DeviceMobile, MusicNotesPlus
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
@@ -112,6 +112,8 @@ export default function App () {
   const [addingLibrary, setAddingLibrary] = useState(false)
   const [donate, setDonate] = useState(false)
   const [nudge, setNudge] = useState(false) // the after-two-weeks donation reminder
+  const [reqComposer, setReqComposer] = useState(null) // music-request composer: { name } prefill, or null
+  const [reqSupported, setReqSupported] = useState(true) // false = active host too old for requests
   const [confirming, setConfirming] = useState(null)
   const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
   const [queue, setQueue] = useState(null) // the up-next list, when opened
@@ -572,10 +574,10 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, nudge, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
+  navRef.current = { scanning, donate, nudge, reqComposer, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
 
   const canBack = !!(
-    scanning || donate || nudge || confirming || menu || viewing || expanded ||
+    scanning || donate || nudge || reqComposer || confirming || menu || viewing || expanded ||
     stack.length || tab !== 'library' ||
     // On the onboarding wall there is no stack, but there are cards to walk back
     // through. At the intro there is nothing behind us, so the OS closes the app.
@@ -594,6 +596,7 @@ export default function App () {
     // Backing out of the nudge is a "maybe later" - it counts as answered, or it
     // would greet you again next launch. Same as tapping Maybe later.
     if (n.nudge) { call('setSettings', { donationNudgeShown: true }).catch(() => {}); return setNudge(false) }
+    if (n.reqComposer) return setReqComposer(null)
     if (n.confirming) return setConfirming(null)
     if (n.scanning) return setScanning(false)
     if (n.expanded) return setExpanded(false)
@@ -1657,6 +1660,7 @@ export default function App () {
         onOpenGenre={(g) => push({ type: 'genre', id: g.id, name: g.name })}
         onPlay={playFrom}
         onLong={setMenu}
+        onRequest={reqSupported ? (name => { haptic('light'); setReqComposer({ name: name || '' }) }) : null}
       />
     )
   }
@@ -1733,6 +1737,11 @@ export default function App () {
         />
       )}
       {donate && <DonationSheet onClose={() => setDonate(false)} />}
+      {reqComposer && (
+        <RequestComposer prefill={reqComposer.name} toast={toast}
+          onUnsupported={() => { setReqSupported(false); setReqComposer(null) }}
+          onClose={() => setReqComposer(null)} />
+      )}
       {nudge && (
         <DonationNudge
           // Whichever button they press, it is answered - the nudge is one-shot.
@@ -2182,7 +2191,7 @@ function Library ({
   browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting, firstConnect,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
-  onOpenAlbum, onOpenArtist, onOpenGenre, onPlay, onLong
+  onOpenAlbum, onOpenArtist, onOpenGenre, onPlay, onLong, onRequest
 }) {
   // Bind the generic onFav(kind, item) to per-kind heart handlers for the leaves.
   const favTrack = onFav ? (t => onFav('track', t)) : null
@@ -2495,6 +2504,7 @@ function Library ({
           <SearchResults
             results={results} now={now} d={D} artBase={artBase} favs={favs} onFav={onFav}
             onOpenAlbum={onOpenAlbum} onOpenArtist={onOpenArtist} onPlay={onPlay} onLong={onLong}
+            query={query} onRequest={onRequest}
           />
           )
         : browse === 'songs'
@@ -3204,7 +3214,7 @@ function SkeletonRows ({ n = 8 }) {
 //
 // A group with a handful of hits opens itself: making someone tap to reveal two
 // results is a worse tax than the scrolling was.
-function SearchResults ({ results, now, d, artBase, favs, onFav, onOpenAlbum, onOpenArtist, onPlay, onLong }) {
+function SearchResults ({ results, now, d, artBase, favs, onFav, onOpenAlbum, onOpenArtist, onPlay, onLong, query, onRequest }) {
   const groups = [
     { key: 'artists', label: 'Artists', items: results.artists || [] },
     { key: 'albums', label: 'Albums', items: results.albums || [] },
@@ -3219,7 +3229,23 @@ function SearchResults ({ results, now, d, artBase, favs, onFav, onOpenAlbum, on
   const [open, setOpen] = useState({})
   useEffect(() => { setOpen({}) }, [results]) // a new search starts fresh
 
-  if (!groups.length) return <p className='muted center-p'>Nothing found.</p>
+  // Nothing in the library matches - the one place a REQUEST makes sense: the music you
+  // searched for is not here, so offer to ask the owner to add it (proposal 2026-07-24,
+  // P1). Only when the host supports requests (onRequest set) and you actually typed
+  // something. The trimmed query prefills the composer.
+  if (!groups.length) {
+    const q = (query || '').trim()
+    return (
+      <div className='center-p'>
+        <p className='muted'>Nothing found.</p>
+        {onRequest && q && (
+          <button className='primary' style={{ marginTop: '.6rem' }} onClick={() => onRequest(q)}>
+            <MusicNotesPlus size={18} weight='bold' /> Request “{q}”
+          </button>
+        )}
+      </div>
+    )
+  }
 
   return (
     <>
@@ -4916,6 +4942,85 @@ function Section ({ id, title, Icon, open, onToggle, children }) {
       </button>
       <div className={'body' + (open ? ' open' : '')}>
         <div className='inner'>{children}</div>
+      </div>
+    </div>
+  )
+}
+
+// Ask the owner to add music (proposal 2026-07-24, P1). Two panes in one sheet: the
+// composer (kind + name + optional artist), and - after sending, or via the toggle -
+// "Your requests", so you see it landed as pending and can check status later. v1 is a
+// human queue: the owner adds it by hand and it appears on the next scan.
+function RequestComposer ({ prefill, onClose, toast, onUnsupported }) {
+  const [view, setView] = useState('new') // 'new' | 'mine'
+  const [kind, setKind] = useState('album')
+  const [name, setName] = useState(prefill || '')
+  const [artist, setArtist] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [mine, setMine] = useState(null) // this device's own requests (loaded for the "mine" view)
+
+  const loadMine = async () => {
+    const r = await call('requestList').catch(() => null)
+    setMine(r?.requests || [])
+  }
+  const send = async () => {
+    const nm = name.trim()
+    if (!nm) return
+    setBusy(true)
+    const r = await call('requestAdd', { kind, name: nm, artist: artist.trim() || undefined }).catch(() => null)
+    setBusy(false)
+    if (!r?.ok) {
+      haptic('warn')
+      // An old host with no request method: tell the app to hide the affordance for the
+      // rest of the session (feature-detect, same posture as favorites/playlists), then close.
+      if (r?.supported === false) { toast('This library’s server is too old for requests', true); return onUnsupported?.() }
+      return toast('Could not send the request', true)
+    }
+    haptic('success')
+    toast(r.count > 1 ? 'Already requested - the owner has been reminded.' : 'Requested. The owner will see it.')
+    setName(''); setArtist('')
+    setView('mine'); loadMine()
+  }
+  const openMine = () => { setView('mine'); loadMine() }
+
+  const KINDS = [['album', 'Album'], ['artist', 'Artist'], ['track', 'Track']]
+  const label = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
+
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Request music</h1>
+        {view === 'new'
+          ? <>
+              <p className='muted sm'>Ask whoever runs this library to add something that isn’t here yet. They decide.</p>
+              <div className='seg wide' style={{ marginTop: '.4rem' }}>
+                {KINDS.map(([k, l]) => <button key={k} className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>{l}</button>)}
+              </div>
+              <input value={name} autoFocus placeholder={kind === 'artist' ? 'Artist name' : kind === 'album' ? 'Album title' : 'Song title'}
+                maxLength={200} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && !busy && send()} />
+              {kind !== 'artist' &&
+                <input value={artist} placeholder='Artist (optional)' maxLength={200} onChange={e => setArtist(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !busy && send()} />}
+              <button className='primary wide' style={{ marginTop: '.5rem' }} onClick={send} disabled={busy || !name.trim()}>
+                {busy ? 'Sending…' : 'Send request'}
+              </button>
+              <button className='wide' onClick={openMine}>Your requests</button>
+            </>
+          : <>
+              {mine == null
+                ? <p className='muted center-p'>Loading…</p>
+                : mine.length === 0
+                  ? <p className='muted center-p'>You haven’t requested anything yet.</p>
+                  : <ul className='reqlist'>
+                      {mine.map(r =>
+                        <li key={r.id}>
+                          <span className='rq-name'>{label(r)}</span>
+                          <span className={'rq-status ' + r.status}>{r.status}</span>
+                        </li>)}
+                    </ul>}
+              <button className='primary wide' style={{ marginTop: '.5rem' }} onClick={() => setView('new')}>Request something else</button>
+              <button className='wide' onClick={onClose}>Close</button>
+            </>}
       </div>
     </div>
   )

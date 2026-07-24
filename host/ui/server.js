@@ -118,8 +118,20 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         }))
         const devices = await host.listDevices()
         const persons = await host.grants.listPersons()
+        // Music requests (proposal 2026-07-24, P1), enriched with WHO asked so the
+        // operator sees a name, not an opaque ownerId. Riding /api/state keeps the
+        // Requests panel + its badge on the existing 3s poll - personal scale, so the
+        // whole (usually short) list is cheap to carry. Requester text is escaped by
+        // React on render (the dashboard is JSX), and length-capped at the host writer.
+        const reqName = (ownerId) => {
+          if (ownerId?.startsWith('p:')) return persons.find(p => p.id === ownerId.slice(2))?.name || 'Someone'
+          if (ownerId?.startsWith('d:')) return devices.find(d => d.deviceKey === ownerId.slice(2))?.label || 'A device'
+          return 'Someone'
+        }
+        const requests = (await host.userState.listRequests()).map(r => ({ ...r, requesterName: reqName(r.requester) }))
         return json(res, 200, {
           persons,
+          requests,
           source: host.sourceView,
           sourceError: host.sourceError || null,
           libraryName: host.libraryName,
@@ -387,6 +399,29 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         // it, because "revoked" and "revoked AND the music stopped" are different
         // claims and the operator deserves to know which one happened.
         return json(res, 200, { ok: true, killed })
+      }
+
+      // --- music requests (proposal 2026-07-24, P1) -----------------------
+      // The operator resolves a request: 'added' (they put the music in - it appears
+      // on the next source scan) or 'declined'. Delete removes a resolved row so the
+      // panel does not grow forever. The dashboard is password-gated, so these need no
+      // further auth - the operator is trusted here, as with revoke.
+      if (req.method === 'POST' && url.pathname === '/api/requests/resolve') {
+        const { id, status } = await readBody(req)
+        if (!id || !['added', 'declined'].includes(status)) return json(res, 400, { error: 'id and status (added|declined) required' })
+        const row = await host.userState.resolveRequest(id, status)
+        if (!row) return json(res, 404, { error: 'no such request' })
+        // P3 pushes request:resolved to the requester here; P1 leaves them to see it on
+        // their own next request.list.
+        return json(res, 200, { ok: true, status: row.status })
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/requests/delete') {
+        const { id } = await readBody(req)
+        if (!id) return json(res, 400, { error: 'id required' })
+        const deleted = await host.userState.deleteRequest(id)
+        if (!deleted) return json(res, 404, { error: 'no such request' })
+        return json(res, 200, { ok: true })
       }
 
       // Cleanup for the teeth: remove a REVOKED device's tombstone row from the store,

@@ -2669,6 +2669,34 @@ const methods = {
     }
   },
 
+  // --- music requests (proposal 2026-07-24, P1) -----------------------------
+  // File a request against the ACTIVE host (the one whose library you are browsing).
+  // supported:false = an old host with no request method, so the app hides the
+  // affordance rather than showing a dead control (same shape as favorites/playlists).
+  async requestAdd ({ kind, name, artist, album, mbid }) {
+    try {
+      await ensureConnected()
+      const r = await client.requestAdd({ kind, name, artist, album, mbid })
+      return { ...r, supported: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { ok: false, supported: false }
+      return { ok: false, error: e?.message || 'could not send the request' }
+    }
+  },
+
+  // This device's own requests + their status (pending / added / declined), against the
+  // active host. Empty on an old host, so the "Your requests" view is simply absent there.
+  async requestList () {
+    try {
+      await ensureConnected()
+      const { requests } = await client.requestList()
+      return { requests: requests || [], supported: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { requests: [], supported: false }
+      return { requests: [], offline: true }
+    }
+  },
+
   // One playlist. We return BOTH the raw ordered trackIds and the resolved tracks:
   // a track that no longer resolves (source changed, file gone) is left out of the
   // rendered list, but its id STAYS in trackIds and each resolved track carries its raw

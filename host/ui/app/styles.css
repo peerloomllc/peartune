@@ -431,6 +431,19 @@ button.destructive { background: var(--bad); color: #fff; }
 .tabbar > button.on { background: var(--primary); color: var(--on-primary); border-color: transparent; }
 /* a source problem shows on its tab even while you're on the People tab */
 .tabbar > button.warn:not(.on) { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+/* pending-request count on the Requests tab - same idea as an app badge. */
+.tabbadge {
+  flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  display: inline-grid; place-items: center; font-size: 11px; font-weight: 700; line-height: 1;
+  background: var(--primary); color: var(--on-primary);
+}
+.tabbar > button.on .tabbadge { background: var(--on-primary); color: var(--primary); }
+
+/* A request row: like a device row, but the "music" it names does not exist yet, so
+   there is no art - just the text, the kind, who asked, and the resolve actions. */
+.reqrow { display: flex; align-items: center; gap: 10px; padding: 11px 4px; border-top: 1px solid var(--border); }
+.reqrow:first-child { border-top: 0; }
+.reqrow.done { opacity: .6; }
 
 .tabpanes { flex: 1 1 auto; min-height: 0; display: flex; }
 .tabpane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }

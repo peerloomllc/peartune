@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   MusicNotes, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
   CaretRight, Plus, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
-  Lightning, CheckCircle, Wrench, Compass
+  Lightning, CheckCircle, Wrench, Compass, Prohibit, Trash, Check
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
 import { api, copyText, ago, until, fmtDur, platformLabel, DONATE } from './api'
@@ -85,6 +85,7 @@ export default function App () {
   const st = state.stats || {}
   const liveDevices = (state.devices || []).filter(d => !d.revokedAt)
   const online = liveDevices.filter(d => d.online).length
+  const pendingRequests = (state.requests || []).filter(r => r.status === 'pending').length
 
   return (
     <div className='app'>
@@ -109,6 +110,10 @@ export default function App () {
             className={(tab === 'source' ? 'on' : '') + (state.sourceError ? ' warn' : '')} onClick={() => setTab('source')}>
             Music Source
           </button>
+          <button role='tab' id='tab-requests' aria-controls='pane-requests' aria-selected={tab === 'requests'}
+            className={tab === 'requests' ? 'on' : ''} onClick={() => setTab('requests')}>
+            Requests{pendingRequests > 0 && <span className='tabbadge'>{pendingRequests}</span>}
+          </button>
         </div>
 
         {/* Both panels stay mounted (hidden, not unmounted) so in-flight edits -
@@ -119,6 +124,9 @@ export default function App () {
           </div>
           <div className='tabpane' id='pane-source' role='tabpanel' aria-labelledby='tab-source' hidden={tab !== 'source'}>
             <SourcePanel state={state} refresh={refresh} toast={toast} />
+          </div>
+          <div className='tabpane' id='pane-requests' role='tabpanel' aria-labelledby='tab-requests' hidden={tab !== 'requests'}>
+            <RequestsPanel state={state} refresh={refresh} toast={toast} />
           </div>
         </div>
       </div>
@@ -452,6 +460,79 @@ function AccessPanel ({ state, refresh, toast, online }) {
         {revokedCount ?
           <div className='footer-toggle'>{revokedCount} revoked · <button className='link' onClick={() => setShowRevoked(v => !v)}>{showRevoked ? 'hide' : 'show'}</button></div>
           : null}
+      </div>
+    </div>
+  )
+}
+
+/* ---- music requests (proposal 2026-07-24, P1) ----------------------------- */
+// What paired devices have asked the operator to add. v1 is a HUMAN queue: the
+// operator adds the music by hand (or via their own downloader) and marks it added;
+// it appears on the next source scan. Pending first, then resolved (dimmed) for a
+// record. All request text is escaped by React on render + capped at the host.
+function RequestsPanel ({ state, refresh, toast }) {
+  const requests = state.requests || []
+  const pending = requests.filter(r => r.status === 'pending')
+  const resolved = requests.filter(r => r.status !== 'pending')
+
+  const act = async (path, id, ok) => {
+    const r = await api(path, { id, ...(ok?.status ? { status: ok.status } : {}) })
+    if (r.error) return toast('Failed: ' + r.error, true)
+    if (ok?.msg) toast(ok.msg)
+    refresh()
+  }
+  const resolve = (r, status) => act('/api/requests/resolve', r.id, {
+    status, msg: status === 'added' ? `Marked "${r.name}" added.` : `Declined "${r.name}".`
+  })
+  const remove = async (r) => {
+    if (!await askConfirm({ title: 'Remove this request?', message: 'It just clears the row. It does not un-add any music.', confirmLabel: 'Remove' })) return
+    act('/api/requests/delete', r.id, { msg: 'Removed.' })
+  }
+
+  // A request describes music that does NOT exist in the library yet, so it has no
+  // trackId/coverId and no art - a line of text is all there is to show.
+  const line = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
+  const KIND = { artist: 'Artist', album: 'Album', track: 'Track' }
+
+  return (
+    <div className='panel grow'>
+      <div className='panel-head'>
+        <h2>Requests</h2>
+        <span className='count'>{pending.length ? `· ${pending.length} pending` : ''}</span>
+      </div>
+      <div className='list'>
+        {!requests.length
+          ? <div className='empty'><strong>No requests yet.</strong><br />When someone you’ve shared with asks for music in the app, it shows up here.</div>
+          : <>
+              {pending.map(r =>
+                <div className='reqrow' key={r.id}>
+                  <div className='who'>
+                    <div className='name'>
+                      {line(r)}
+                      <span className='badge plat'>{KIND[r.kind] || r.kind}</span>
+                      {r.count > 1 && <span className='badge'>×{r.count}</span>}
+                    </div>
+                    <div className='sub'><span>{r.requesterName} · asked {ago(r.createdAt)}</span></div>
+                  </div>
+                  <button className='ghost small' onClick={() => resolve(r, 'added')}><Check size={14} weight='bold' /> Added</button>
+                  <button className='ghost small danger' onClick={() => resolve(r, 'declined')}><Prohibit size={14} /> Decline</button>
+                </div>)}
+              {resolved.length > 0 &&
+                <>
+                  <div className='group-h'>Resolved</div>
+                  {resolved.map(r =>
+                    <div className='reqrow done' key={r.id}>
+                      <div className='who'>
+                        <div className='name'>
+                          {line(r)}
+                          <span className={'badge' + (r.status === 'added' ? ' guest' : '')}>{r.status}</span>
+                        </div>
+                        <div className='sub rev'><span>{r.requesterName} · {r.status} {ago(r.resolvedAt || r.updatedAt)}</span></div>
+                      </div>
+                      <button className='iconbtn' aria-label='Remove' onClick={() => remove(r)}><Trash size={14} /></button>
+                    </div>)}
+                </>}
+            </>}
       </div>
     </div>
   )
