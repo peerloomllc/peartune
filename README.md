@@ -2,7 +2,7 @@
 
 Your self-hosted music, playable anywhere. No port forwarding, no VPN, no dynamic DNS, no account, no cloud copy of your files.
 
-PearTune is a peer-to-peer music player. Your library stays on a machine you own - an Umbrel, a NAS, an old desktop - and your phone reaches it directly over an encrypted peer-to-peer connection. Nothing is exposed to the internet, and nothing routes through anyone else's server.
+PearTune is a peer-to-peer music player. Your library stays on a machine you own - an Umbrel, a NAS, an old desktop - and your phone reaches it directly over an encrypted peer-to-peer connection. Nothing is exposed to the internet, and your files are never copied to anyone else's server.
 
 ## Why
 
@@ -16,6 +16,10 @@ Two pieces:
 - **The app** runs on your phone. It pairs with the host by scanning a QR code, once.
 
 Every connection is end-to-end encrypted and mutually authenticated. The host knows exactly which device is calling, because the connection itself proves it. There are no passwords or connection strings to leak.
+
+### When the phone can't reach the host directly
+
+Most of the time your phone connects straight to your host. But some mobile carriers and locked-down wifi refuse a direct peer-to-peer connection, and when that happens PearTune can fall back to a relay run by PeerLoom. The relay only forwards traffic that is already encrypted: it can see that your device is talking to your host and how much data moves, but never the contents, and it never keeps a copy of anything. It is on by default and you can turn it off in **Settings > Connection**. Full explanation at [peerloomllc.com/relay](https://peerloomllc.com/relay).
 
 ## Library sources
 
