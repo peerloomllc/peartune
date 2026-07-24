@@ -1001,10 +1001,10 @@ export default function App () {
 
   async function runSearch (q) {
     setQuery(q)
-    // The SONGS view filters what is already loaded, client-side (instant, works offline) -
-    // so no server round-trip there. Albums/Artists still search the whole library server-
-    // side. The Library render does the actual filtering off `query`.
-    if (!q.trim() || browse === 'songs') return setResults(null)
+    // SONGS and GENRES filter what is already loaded, client-side (instant, works offline) - so no
+    // server round-trip there (the server search returns no genres anyway). Albums/Artists still
+    // search the whole library server-side. The Library render does the actual filtering off `query`.
+    if (!q.trim() || browse === 'songs' || browse === 'genres') return setResults(null)
     try {
       setResults(await call('search', { q, libraryId: filterRef.current }))
     } catch (e) {
@@ -2108,15 +2108,23 @@ function Library ({
 }) {
   // Bind the generic onFav(kind, item) to per-kind heart handlers for the leaves.
   const favTrack = onFav ? (t => onFav('track', t)) : null
-  // Server search shows its own results view - but NOT on Songs, which filters the
-  // already-loaded list in place (see songFilter below and runSearch).
-  const searching = results && query.trim() && browse !== 'songs'
+  // Server search shows its own results view - but NOT on Songs or Genres, which filter the
+  // already-loaded list in place (see songFilter/genreFilter below and runSearch). The server
+  // search only returns artists/albums/tracks (never genres), so on the Genres view a query has
+  // to filter the loaded genres or it does nothing at all (Tim, 2026-07-24).
+  const searching = results && query.trim() && browse !== 'songs' && browse !== 'genres'
   // The Songs client-side filter: match title / artist / album, case-insensitive.
   const songFilter = browse === 'songs' ? query.trim().toLowerCase() : ''
   const shownSongs = songFilter
     ? (songs || []).filter(t =>
         `${t.title || ''} ${t.artist || ''} ${t.album || ''}`.toLowerCase().includes(songFilter))
     : songs
+  // The Genres client-side filter: match the genre name. Genres load in full (not paged), so this
+  // reaches every genre - no "load more to filter" caveat like Songs has.
+  const genreFilter = browse === 'genres' ? query.trim().toLowerCase() : ''
+  const shownGenres = genreFilter
+    ? (genres || []).filter(g => (g.name || '').toLowerCase().includes(genreFilter))
+    : genres
   const D = densityOf(density)
   // Can we actually REACH what we are looking at? In the blend a source filter names one
   // library, so ask that one; on '_all' any live host counts. Single-host falls back to the
@@ -2328,7 +2336,9 @@ function Library ({
         <p className='muted sm'>
           {songFilter
             ? `${shownSongs.length} of ${songs ? songs.length : 0} loaded songs`
-            : count(browse, { albums, artists, genres, songs })}
+            : genreFilter
+              ? `${(shownGenres || []).length} of ${genres ? genres.length : 0} genres`
+              : count(browse, { albums, artists, genres, songs })}
           {/* In the blended view the source kind belongs to the active host, not the blend, so show
               the library COUNT instead ("2 libraries"); a single-host filter shows its source. */}
           {mergedAll
@@ -2343,7 +2353,7 @@ function Library ({
             className='search'
             value={query}
             onChange={e => onSearch(e.target.value)}
-            placeholder={browse === 'songs' ? 'Filter loaded songs' : 'Search artists, albums, tracks'}
+            placeholder={browse === 'songs' ? 'Filter loaded songs' : browse === 'genres' ? 'Filter genres' : 'Search artists, albums, tracks'}
           />
           {query && (
             <button className='searchclear' onClick={() => onSearch('')} aria-label='Clear search'>
@@ -2442,7 +2452,9 @@ function Library ({
               : <SkeletonRows />)
           : browse === 'genres'
             ? (genres
-                ? <GenreGrid genres={genres} onOpen={onOpenGenre} d={D} />
+                ? (shownGenres.length
+                    ? <GenreGrid genres={shownGenres} onOpen={onOpenGenre} d={D} />
+                    : <div className='blank'><p className='muted sm'>No genre matches “{query.trim()}”.</p></div>)
                 : <SkeletonGrid d={D} />)
           : browse === 'artists'
             ? (artists
