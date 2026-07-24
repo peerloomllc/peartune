@@ -2943,7 +2943,7 @@ function RequestsView ({ requests, onNew, onRemove }) {
                 (which also pulls it from the operator's queue). Instant, like the queue's
                 remove - low stakes, and the host refuses anything not yours. */}
             <button className='rqv-rm iconbtn' aria-label={r.status === 'pending' ? 'Withdraw request' : 'Remove request'} onClick={() => onRemove(r)}>
-              <X size={15} weight='bold' />
+              <Trash size={17} weight='regular' />
             </button>
           </li>
         ))}
