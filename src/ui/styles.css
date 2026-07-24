@@ -74,6 +74,9 @@ header { padding: .35rem 0 .3rem; text-align: center; }
   display: inline-flex; align-items: center; gap: .35rem;
   background: none; border: 0; padding: 0; color: inherit; cursor: pointer; font: inherit;
 }
+/* Mirror the caret's width on the LEFT so the TITLE TEXT is what's centred, not text+caret - the
+   caret just hangs off the right (Tim, 2026-07-24). Keep this equal to the CaretDown size (16). */
+.libpick::before { content: ''; width: 16px; flex: none; }
 .libcaret { color: var(--color-text-muted); transition: transform .18s ease; flex: none; }
 .libpick.open .libcaret { transform: rotate(180deg); }
 /* Full-screen catcher so a tap anywhere else closes the menu. */
