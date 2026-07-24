@@ -20,7 +20,7 @@ import {
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
   Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode,
-  WarningCircle
+  WarningCircle, LockKey, DeviceMobile
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
@@ -99,6 +99,13 @@ export default function App () {
   // was happening (you were dropped back on the onboarding screen mid-handshake).
   const [pairNames, setPairNames] = useState({ deviceName: '', userName: '' })
   const [pairing, setPairing] = useState(false)
+  // Which onboarding card is up, and (on the "whose library" card) which answer was
+  // picked. Up HERE rather than inside Onboarding for the same reason the names are:
+  // the component unmounts on a scan or a failed pair, and coming back to the intro
+  // every time would be a fresh start you did not ask for. It is also what lets
+  // Android back walk the cards (the 'back' listener below).
+  const [obPhase, setObPhase] = useState('intro') // 'intro' | 'whose' | 'names' | 'pair'
+  const [obOwner, setObOwner] = useState(null) // 'mine' | 'friend' | null
   // Adding ANOTHER library from Settings (multi-host, 2026-07-19). Shows the same pairing
   // flow as onboarding, but over the running app instead of the pairing wall.
   const [addingLibrary, setAddingLibrary] = useState(false)
@@ -542,11 +549,14 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, confirming, menu, viewing, expanded, stack, tab }
+  navRef.current = { scanning, donate, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
 
   const canBack = !!(
     scanning || donate || confirming || menu || viewing || expanded ||
-    stack.length || tab !== 'library'
+    stack.length || tab !== 'library' ||
+    // On the onboarding wall there is no stack, but there are cards to walk back
+    // through. At the intro there is nothing behind us, so the OS closes the app.
+    (!state.host && obPhase !== 'intro')
   )
   useEffect(() => { call('shell:navState', { canBack }).catch(() => {}) }, [canBack])
 
@@ -561,6 +571,15 @@ export default function App () {
     if (n.confirming) return setConfirming(null)
     if (n.scanning) return setScanning(false)
     if (n.expanded) return setExpanded(false)
+    // The onboarding wall walks its cards back. On "whose library" an answer is
+    // undone first, so back returns you to the two choices rather than skipping
+    // the whole card.
+    if (!n.host) {
+      if (n.obPhase === 'pair') return setObPhase('names')
+      if (n.obPhase === 'names') return setObPhase('whose')
+      if (n.obPhase === 'whose') return n.obOwner ? setObOwner(null) : setObPhase('intro')
+      return
+    }
     if (n.stack.length) return setStack(s => s.slice(0, -1))
     if (n.tab !== 'library') return setTab('library')
   }), [])
@@ -1410,8 +1429,14 @@ export default function App () {
         />
         )
       : (
-        <Welcome
+        <Onboarding
           addHost
+          // Adding a library is the last card only: this device is already named and
+          // already claims a user, so there is nothing to introduce or ask.
+          phase='pair'
+          setPhase={() => {}}
+          owner={null}
+          setOwner={() => {}}
           names={pairNames}
           setNames={setPairNames}
           onScan={() => { setError(null); setScanning(true) }}
@@ -1435,7 +1460,11 @@ export default function App () {
         />
         )
       : (
-        <Welcome
+        <Onboarding
+          phase={obPhase}
+          setPhase={setObPhase}
+          owner={obOwner}
+          setOwner={setObOwner}
           names={pairNames}
           setNames={setPairNames}
           // Clear any stale error when opening the scanner - a failure from a
@@ -4901,36 +4930,108 @@ function DonationSheet ({ onClose }) {
   )
 }
 
-// --- pairing -----------------------------------------------------------------
+// --- pairing / onboarding ----------------------------------------------------
 
-// The names are asked for BEFORE pairing, because the device name rides in the
-// pairing handshake itself (deviceHello already carries it) - and because the
-// alternative is what we shipped until now: every device on the operator's
-// dashboard called "Android phone", telling them nothing about which phone to
-// revoke.
-function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost = false }) {
+// A brand-new install is walked through four cards rather than dropped straight
+// onto a form:
+//
+//   intro -> whose library -> who are you -> pair
+//
+// The second one is PearTune's own problem, and the reason this is not just the
+// siblings' intro-then-name flow. Every other PeerLoom app is phone-to-phone and
+// works the moment it is installed; PearTune needs a SERVER running somewhere,
+// and someone who installs the app first has nothing to scan and nothing telling
+// them why. That card says so, and splits the two ways people arrive: running
+// their own library, or being let into a friend's.
+//
+// ADDING a second library (Settings > Libraries > Add) skips to the last card:
+// the identity is already established, and re-asking would be a wall on the way
+// to scanning another server's code.
+//
+// The phase lives in App, not here, so Android back can walk it (see the 'back'
+// listener); this component is told which card to draw.
+function Onboarding ({
+  phase, setPhase, owner, setOwner,
+  names, setNames, onScan, onPaste, onCancel, error, addHost = false
+}) {
   const [link, setLink] = useState('')
 
   // Your name is REQUIRED at ONBOARDING: on the host it is the human a device is confirmed as
   // (per-person revoke needs a person), so an unnamed device is a worse dashboard for the operator.
   // The device name stays optional - it has a sensible fallback. But when ADDING a second library
   // (addHost), the identity is already established (this device is already named + claims a user),
-  // so we hide the name fields and pair straight through with the stored identity - re-asking would
-  // be a redundant onboarding wall on the way to just scanning another server's code.
+  // so the name card is skipped entirely and we pair straight through with the stored identity.
   const named = names.userName.trim().length > 0
   const ready = addHost || named
 
-  return (
-    <div className='center onboard'>
-      <h1>Pear<span className='tune'>Tune</span></h1>
-      <p className='muted'>
-        {addHost
-          ? 'Open the PearTune dashboard on the server you want to add - yours or a friend\'s - and show its pairing code.'
-          : 'The music on your own server, or a friend\'s, playable anywhere. Open the PearTune dashboard on that server and show its pairing code.'}
-      </p>
-      <Problem error={error} />
+  const Wordmark = () => <h1>Pear<span className='tune'>Tune</span></h1>
 
-      {!addHost && (
+  if (phase === 'intro') {
+    return (
+      <div className='center onboard'>
+        <Wordmark />
+        <p className='muted'>Your music, or a friend’s. Anywhere.</p>
+        <div className='namebox obwhy'>
+          <div><MusicNotes size={18} weight='bold' /><span>Plays straight off a computer you or a friend owns - an Umbrel, a NAS, an old desktop.</span></div>
+          <div><LockKey size={18} weight='bold' /><span>No account, no cloud copy of the files, and nothing on that machine exposed to the internet.</span></div>
+          <div><DeviceMobile size={18} weight='bold' /><span>Scan a code once and this phone is allowed in. Whoever runs the library can cut it off any time.</span></div>
+        </div>
+        <button className='primary' onClick={() => { haptic('light'); setPhase('whose') }}>Get started</button>
+      </div>
+    )
+  }
+
+  // Whose library is it? The choice is not cosmetic - it decides whether the next
+  // thing you need is a server to install or a friend to ask. Picking one swaps
+  // the buttons for that answer; Android back clears the pick before leaving the card.
+  if (phase === 'whose') {
+    return (
+      <div className='center onboard'>
+        <Wordmark />
+        <p className='muted'>PearTune plays from a <b>PearTune server</b>: a computer with the music on it, running the PearTune host.</p>
+        {!owner
+          ? (
+            <>
+              <button className='primary' onClick={() => { haptic('light'); setOwner('mine') }}>It’s mine</button>
+              <button onClick={() => { haptic('light'); setOwner('friend') }}>It’s a friend’s</button>
+            </>
+            )
+          : (
+            <>
+              <div className='namebox'>
+                {owner === 'mine'
+                  ? <p className='sm'>
+                      Install the PearTune host on that computer and open its dashboard - it walks you
+                      through naming the library, pointing it at your music and showing a pairing code.
+                      Then come back here and scan it - or copy the pairing link under the code and paste
+                      it instead, at the pairing step.
+                    </p>
+                  : <p className='sm'>
+                      Ask them to open their PearTune dashboard and press <b>Pair a device</b>. If you are
+                      with them, scan the QR code it shows. If you are not, they can copy the pairing link
+                      underneath it and send it to you - you can paste that instead of scanning, at the
+                      pairing step. Either way it lasts five minutes, and you do not have to be on their
+                      wifi.
+                    </p>}
+              </div>
+              {/* The one link a new operator follows OUT of the app. It points at the product
+                  page for now; repoint it at the install/setup guide as soon as the site has one
+                  (Tim, 2026-07-24 - tracked in TODO). */}
+              {owner === 'mine' &&
+                <button onClick={() => { haptic('light'); openUrl('https://peerloomllc.com/peartune/') }}>How to set up a server ↗</button>}
+              <button className='primary' onClick={() => { haptic('light'); setPhase('names') }}>Continue</button>
+              <button onClick={() => { haptic('light'); setOwner(null) }}>Back</button>
+            </>
+            )}
+      </div>
+    )
+  }
+
+  if (phase === 'names') {
+    return (
+      <div className='center onboard'>
+        <Wordmark />
+        <p className='muted'>Who is this?</p>
         <div className='namebox'>
           {/* YOUR NAME first, then the device - the same order Settings uses. The two screens
               disagreeing made the pair-then-check-Settings flow read as if the fields had swapped
@@ -4950,13 +5051,30 @@ function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost =
             maxLength={64}
           />
           <p className='muted sm hint'>
-            The person running the server sees these, so they know whose device this
-            is. They confirm your name before it means anything.
+            Whoever runs the library sees these, so they know whose device this is.
+            They confirm your name before it means anything.
           </p>
         </div>
-      )}
+        <button className='primary' onClick={() => { haptic('light'); setPhase('pair') }} disabled={!ready}>Continue</button>
+        <button onClick={() => { haptic('light'); setPhase('whose') }}>Back</button>
+      </div>
+    )
+  }
 
-      <button className='primary scanbtn' onClick={onScan} disabled={!ready}>
+  // The last card: the scanner and the paste-a-link fallback.
+  return (
+    <div className='center onboard'>
+      <Wordmark />
+      <p className='muted'>
+        {addHost
+          ? 'Open the PearTune dashboard on the server you want to add - yours or a friend’s - and show its pairing code.'
+          : owner === 'friend'
+            ? 'Scan the pairing code from their dashboard - or paste the link they sent you.'
+            : 'Show the pairing code on the server’s dashboard and scan it - or paste the link under it.'}
+      </p>
+      <Problem error={error} />
+
+      <button className='primary scanbtn' onClick={() => { haptic('medium'); onScan() }} disabled={!ready}>
         <QrCode size={20} weight='bold' /> Scan QR
       </button>
       <details>
@@ -4974,9 +5092,10 @@ function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost =
           autocomplete='off'
           spellcheck={false}
         />
-        <button onClick={() => onPaste(link.trim())} disabled={!ready || !link.trim()}>Pair</button>
+        <button onClick={() => { haptic('medium'); onPaste(link.trim()) }} disabled={!ready || !link.trim()}>Pair</button>
       </details>
-      {onCancel && <button onClick={onCancel}>Cancel</button>}
+      {!addHost && <button onClick={() => { haptic('light'); setPhase('names') }}>Back</button>}
+      {onCancel && <button onClick={() => { haptic('light'); onCancel() }}>Cancel</button>}
     </div>
   )
 }
