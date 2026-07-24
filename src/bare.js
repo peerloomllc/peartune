@@ -892,6 +892,14 @@ async function promotePoolToActive (host) {
     shimPort,
     artBase: shim.artBase()
   })
+  // With 3+ libraries the view STAYS merged after removing the active one (it only drops to single-host
+  // at <2). Refresh the merged status so the promoted host reads Active/connected in the blend right away
+  // rather than lagging on stale pool state - the same refresh demoteActiveToPool/attachPool do. (At 2
+  // libraries mergedMode() is already off here, so this is a no-op for the common case.)
+  if (mergedMode()) {
+    emit('merged:updated', mergedStatusData())
+    if (!mergedConnected.has(libId)) rebuildIndex().catch(() => {})
+  }
   flushOutbox().catch(() => {}) // drain anything queued while this host was a background pool member
   return true
 }
