@@ -12,7 +12,7 @@
 // has nothing to show yet, and the source step opens the folder browser in a modal
 // of its own (a modal inside a modal is a stacking bug waiting to happen).
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { CheckCircle, MusicNotes, Broadcast, Tag, Lock, CaretLeft, Sun, Moon } from '@phosphor-icons/react'
 import { api } from './api'
 import { SourcePanel } from './SourcePanel'
@@ -58,6 +58,26 @@ export default function SetupWizard ({ state, refresh, toast, isDark, onTheme, o
     const t = setTimeout(() => setLeaving(null), SLIDE_MS)
     return () => clearTimeout(t)
   }, [leaving])
+
+  // ONE HEIGHT FOR EVERY CARD, so the buttons under it do not hop around as you go
+  // (Tim, 2026-07-24). The steps are genuinely different sizes - four bullets, one
+  // input, a whole source form - and we cannot know the tallest without rendering
+  // it, so the stage RATCHETS: it grows to the tallest card seen and never shrinks.
+  // Measured off the card's CONTENT (.wizbody keeps its natural height inside a
+  // stretched card), so the floor cannot feed back into itself and grow forever.
+  const stage = useRef(null)
+  const [floor, setFloor] = useState(0)
+  useLayoutEffect(() => {
+    const body = stage.current?.querySelector('.wizslide:not(.leaving) .wizbody')
+    if (body) setFloor(h => Math.max(h, body.scrollHeight))
+  })
+  // A resize re-wraps the text, so the old floor may now be far too tall. Drop it
+  // and let the ratchet build again from what is actually on screen.
+  useEffect(() => {
+    const onResize = () => setFloor(0)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   // The dots skip the bookends: "Welcome" and "All set" are not work to be done.
   const dots = steps.filter(s => s !== 'welcome' && s !== 'done')
@@ -113,7 +133,7 @@ export default function SetupWizard ({ state, refresh, toast, isDark, onTheme, o
             incoming slot to the leaving one. Re-keying per slot would remount it, and
             a pair step sliding away would flash back to its "Show pairing code"
             state instead of sliding away with its QR on it. */}
-        <div className='wizstage'>
+        <div className='wizstage' ref={stage} style={floor ? { minHeight: floor } : undefined}>
           {leaving &&
             <div key={'step-' + leaving.from} className={'wizslide leaving ' + (leaving.dir > 0 ? 'fwd' : 'back')}>
               {card(steps[leaving.from])}

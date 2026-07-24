@@ -448,7 +448,11 @@ button.destructive { background: var(--bad); color: #fff; }
    and the source step opens the folder browser in a modal of its own. */
 .wizcard { flex: 0 0 auto; }
 .wizbody { padding: 22px 20px; display: flex; flex-direction: column; }
-.wizbody.center { align-items: center; text-align: center; gap: 6px; }
+/* margin-block auto centres the last card's content in the (uniform, and so for it
+   over-tall) card. Auto margins and not a stretched flex item on purpose: the stage
+   ratchet measures this element's scrollHeight, and stretching it would peg that
+   measurement to the current floor and stop it ever growing again. */
+.wizbody.center { align-items: center; text-align: center; gap: 6px; margin-block: auto; }
 .wizh { font-size: 19px; font-weight: 600; margin: 0 0 10px; letter-spacing: -0.01em; text-align: center; }
 .wizbody.center .wizh { margin: 8px 0 4px; }
 .wizbody .hint + .hint { margin-top: 10px; }
@@ -483,9 +487,12 @@ button.destructive { background: var(--bad); color: #fff; }
    still shows above and below. `clip` (not hidden/auto) is deliberate: it adds no
    scroll container, so it cannot turn .main's overflow-y:auto into a second
    horizontal scrollbar the way a padding/negative-margin pair did. */
-.wizstage { position: relative; overflow-x: clip; overflow-y: visible; }
-.wizslide { animation-duration: .3s; animation-timing-function: cubic-bezier(.3,.85,.35,1); animation-fill-mode: both; }
-.wizslide.leaving { position: absolute; top: 0; left: 0; right: 0; }
+/* A grid of one cell: the incoming card is the cell, so it STRETCHES to the stage's
+   ratcheted min-height (set inline from JS) and every step is the same size box. */
+.wizstage { position: relative; display: grid; overflow-x: clip; overflow-y: visible; }
+.wizslide { grid-area: 1 / 1; animation-duration: .3s; animation-timing-function: cubic-bezier(.3,.85,.35,1); animation-fill-mode: both; }
+.wizslide.leaving { position: absolute; inset: 0; }
+.wizslide > .wizcard { height: 100%; }
 /* Forward: the old card exits left, the new one arrives from the right. Back reverses. */
 .wizslide.fwd { animation-name: wiz-in-right; }
 .wizslide.leaving.fwd { animation-name: wiz-out-left; }
@@ -515,7 +522,9 @@ button.destructive { background: var(--bad); color: #fff; }
 
 /* The music-source panel, minus its own card: it is already inside the wizard's. */
 .srcembed { margin-top: 14px; }
-.srcembed .srcfields { min-height: 0; }
+/* .srcfields keeps its 278px floor here too: without it, switching Folder <-> a
+   server form resizes the step from the inside, which is the same jumping the
+   stage ratchet exists to stop. */
 .srcembed .srcactions { grid-template-columns: repeat(2, 1fr); }
 .good-line { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--good); margin-top: 2px; }
 
