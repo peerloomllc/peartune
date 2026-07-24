@@ -65,6 +65,41 @@ h2 {
    count line. The controls below (search, pickers, cards) stay left-aligned. */
 header { padding: .35rem 0 .3rem; text-align: center; }
 
+/* Library switcher in the header (2026-07-24, replaced the source-filter chip row). The centred title
+   is a dropdown when 2+ libraries are blended; the + (top-right) adds a library without going to
+   Settings. `position: relative` anchors both the absolute + and the dropdown. */
+.libhead { position: relative; display: flex; align-items: center; justify-content: center; min-height: 2.2rem; }
+.libhead h1 { margin: 0; }
+.libpick {
+  display: inline-flex; align-items: center; gap: .35rem;
+  background: none; border: 0; padding: 0; color: inherit; cursor: pointer; font: inherit;
+}
+.libcaret { color: var(--color-text-muted); transition: transform .18s ease; flex: none; }
+.libpick.open .libcaret { transform: rotate(180deg); }
+.libadd {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  color: var(--color-text-secondary);
+}
+/* Full-screen catcher so a tap anywhere else closes the menu. */
+.libmenu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.libmenu {
+  position: absolute; top: calc(100% + .3rem); left: 50%; transform: translateX(-50%);
+  z-index: 41; min-width: 220px; max-width: 92vw; max-height: 60vh; overflow-y: auto;
+  text-align: left; background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border); border-radius: 14px; padding: .35rem;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .45); animation: peartune-fade .14s ease both;
+}
+.libmenu button {
+  display: flex; align-items: center; gap: .5rem; width: 100%; text-align: left;
+  background: none; border: 0; color: var(--color-text-primary); cursor: pointer;
+  padding: .6rem .7rem; border-radius: 9px; font-size: 1rem; line-height: 1.2;
+}
+.libmenu button:active { background: var(--color-surface-input); }
+.libmenu button.on { color: var(--color-primary); font-weight: 600; }
+.libmenu button.off { opacity: .5; }
+.libmenu-sep { height: 1px; background: var(--color-divider); margin: .35rem .3rem; }
+.libmenu-add { color: var(--color-text-secondary); }
+
 button {
   font: inherit; font-weight: 500; padding: .7rem 1.2rem; border-radius: 10px;
   border: 1px solid var(--color-border); background: var(--color-surface-card);
