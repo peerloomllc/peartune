@@ -5003,14 +5003,15 @@ function Onboarding ({
                   ? <p className='sm'>
                       Install the PearTune host on that computer and open its dashboard - it walks you
                       through naming the library, pointing it at your music and showing a pairing code.
-                      Then come back here and scan it, or copy the pairing link under the code and paste
-                      it on the next screen.
+                      Then come back here and scan it - or copy the pairing link under the code and paste
+                      it instead, at the pairing step.
                     </p>
                   : <p className='sm'>
                       Ask them to open their PearTune dashboard and press <b>Pair a device</b>. If you are
                       with them, scan the QR code it shows. If you are not, they can copy the pairing link
-                      underneath it and send it to you - paste it on the next screen. Either way it lasts
-                      five minutes, and you do not have to be on their wifi.
+                      underneath it and send it to you - you can paste that instead of scanning, at the
+                      pairing step. Either way it lasts five minutes, and you do not have to be on their
+                      wifi.
                     </p>}
               </div>
               {owner === 'mine' &&
