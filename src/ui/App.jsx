@@ -981,6 +981,14 @@ export default function App () {
     setYouView('requests')
     await loadRequests(force)
   }
+  // Remove one of MY requests - a completed one I'm done with, or a pending one I want to
+  // withdraw. Optimistic (drop it from the list now); the host refuses anything not mine.
+  async function removeRequest (row) {
+    haptic('light')
+    setMyRequests(list => (list || []).filter(r => r !== row))
+    const r = await call('requestDelete', { refs: row.refs }).catch(() => null)
+    if (!r?.ok) { toast('Could not remove that request', true); loadRequests(true) }
+  }
   // Pin (download) an album. Progress arrives via pin:progress events; this just kicks it
   // off and reflects the optimistic "downloading" state.
   async function pinAlbum (albumId) {
@@ -1609,6 +1617,7 @@ export default function App () {
         downloads={downloads}
         reqSupported={reqSupported} myRequests={myRequests}
         onNewRequest={() => { haptic('light'); setReqComposer({ name: '' }) }}
+        onRemoveRequest={removeRequest}
         onOpenPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name })}
         onOpenServerPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name, server: true })}
         onOpenDownload={(dl) => push({ type: 'download', id: dl.id, name: dl.name })}
@@ -2667,7 +2676,7 @@ function You ({
   state, density, now, handoff, playing, onPlayHere, youView, onYouView,
   favSupported, favItems, mostPlayed, favs, onFav,
   playlists, plSupported, serverPls, sourceName, downloads,
-  reqSupported, myRequests, onNewRequest,
+  reqSupported, myRequests, onNewRequest, onRemoveRequest,
   onOpenPlaylist, onOpenServerPlaylist, onOpenDownload, onNewPlaylist,
   onPlay, onLong, onOpenAlbum, onOpenArtist
 }) {
@@ -2741,7 +2750,7 @@ function You ({
           : view === 'downloads'
             ? <DownloadsView downloads={downloads} d={D} onOpen={onOpenDownload} />
           : view === 'requests'
-            ? <RequestsView requests={myRequests} onNew={onNewRequest} />
+            ? <RequestsView requests={myRequests} onNew={onNewRequest} onRemove={onRemoveRequest} />
           : (mostPlayed
               ? (mostPlayed.items.length
                   ? (
@@ -2895,7 +2904,7 @@ function DownloadsEmpty () {
 // scrolling screen - the composer bottom-sheet only CREATES a request now, this is where
 // they live and scale. In a blend collapseRequests (worklet) folds each ask to one row
 // showing the best status + which libraries.
-function RequestsView ({ requests, onNew }) {
+function RequestsView ({ requests, onNew, onRemove }) {
   if (!requests) return <SkeletonRows />
   const line = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
   const KIND = { artist: 'Artist', album: 'Album', track: 'Track' }
@@ -2930,6 +2939,12 @@ function RequestsView ({ requests, onNew }) {
               </span>
             </div>
             <span className={'rq-status ' + r.status}>{r.status}</span>
+            {/* Remove YOUR request: clear a finished one, or withdraw a pending one
+                (which also pulls it from the operator's queue). Instant, like the queue's
+                remove - low stakes, and the host refuses anything not yours. */}
+            <button className='rqv-rm iconbtn' aria-label={r.status === 'pending' ? 'Withdraw request' : 'Remove request'} onClick={() => onRemove(r)}>
+              <X size={15} weight='bold' />
+            </button>
           </li>
         ))}
       </ul>

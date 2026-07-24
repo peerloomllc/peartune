@@ -174,6 +174,9 @@ test('collapseRequests folds the same ask across hosts into one row', () => {
   const out = M.collapseRequests(rows)
   assert.equal(out.length, 1)
   assert.deepEqual(out[0].libraries.sort(), ['Mac', 'Umbrel'])
+  // refs carry every per-host (libraryId, id), so REMOVE can delete on all of them
+  assert.deepEqual(out[0].refs.map(x => x.id).sort(), ['a', 'b'])
+  assert.deepEqual(out[0].refs.map(x => x.libraryId).sort(), ['libM', 'libU'])
 })
 
 test('collapseRequests shows the BEST status - if any host added it, the music is coming', () => {

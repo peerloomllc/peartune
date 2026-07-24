@@ -1196,6 +1196,7 @@ button.shead .caret.open { transform: rotate(90deg); }
 .rq-status { flex: none; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; color: var(--color-text-muted); }
 .rq-status.added { color: var(--color-success); }
 .rq-status.declined { color: var(--color-error); }
+.rqv-rm { flex: none; width: 32px; height: 32px; color: var(--color-text-muted); }
 
 /* --- identity (naming a device, claiming a user) -------------------------- */
 .namebox {

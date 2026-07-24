@@ -483,6 +483,7 @@ class PearTuneClient {
   // operator's, on the dashboard - not a client method.
   requestAdd (params) { return this._request('request.add', params) }
   requestList () { return this._request('request.list') }
+  requestDelete (params) { return this._request('request.delete', params) }
 
   // Play session (cross-device handoff, proposal 2026-07-17). The host takes the owner +
   // acting device from the connection; claim/set are gated by the generation CAS host-side.

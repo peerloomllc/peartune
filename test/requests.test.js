@@ -113,6 +113,15 @@ test('free-text fields are length-capped at the writer', async (t) => {
   assert.ok(r.name.length <= 200)
 })
 
+test('deleteRequest removes one row and reports whether it existed', async (t) => {
+  const s = await newState(t)
+  const r = await s.addRequest('p:alice', { kind: 'track', name: 'Coyote' })
+  assert.equal(await s.deleteRequest(r.id), true)
+  assert.equal(await s.getRequest(r.id), null)
+  assert.equal(await s.deleteRequest(r.id), false) // already gone
+  assert.equal((await s.listRequests()).length, 0)
+})
+
 test('deleting a person takes their requests with them', async (t) => {
   const s = await newState(t)
   await s.addRequest('p:alice', { kind: 'album', name: 'A' })

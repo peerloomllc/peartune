@@ -20,7 +20,10 @@ const MUTATING = new Set([
   'session.claim', 'session.set',
   // Filing a music request writes a host row, so a readonly grant is refused here
   // (proposal 2026-07-24, P1). Resolving is dashboard-only, not a media method.
-  'request.add'
+  'request.add',
+  // Removing your OWN request (You > Requests). Ownership is checked in the handler;
+  // MUTATING just keeps a readonly grant out (it has no requests to remove anyway).
+  'request.delete'
 ])
 
 // WHO owns the user state on this connection. Derived from the grant the firewall
@@ -379,6 +382,20 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         // The caller's OWN requests only - the operator's all-requests view is dashboard-side.
         return send.res.send({ id, body: { requests: await state.listRequests({ requester: ownerOf(grant) }) } })
+      }
+
+      case 'request.delete': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        // You can only remove YOUR OWN request. The requester on the row is host-derived
+        // (ownerOf), so this compares the caller's identity to it - a device cannot delete
+        // someone else's request by guessing an id. A resolved OR a pending one (withdraw).
+        const row = await state.getRequest(params.id)
+        if (!row) return send.res.send({ id, body: { ok: true, deleted: false } }) // already gone
+        if (row.requester !== ownerOf(grant)) return safeErr(id, ERR.FORBIDDEN, 'not your request')
+        const deleted = await state.deleteRequest(params.id)
+        log('request:delete', { deleted })
+        return send.res.send({ id, body: { ok: true, deleted } })
       }
 
       // --- play session: cross-device handoff (proposal 2026-07-17) ----------

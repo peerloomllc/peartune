@@ -2729,11 +2729,28 @@ const methods = {
     try {
       await ensureConnected()
       const { requests } = await client.requestList()
-      return { requests: requests || [], supported: true }
+      // Give single-host rows a `refs` too, so the app's REMOVE path is uniform with the
+      // merged one (delete every (libraryId,id) the ask lives on).
+      const refs = (r) => [{ libraryId: activeLibraryId, id: r.id }]
+      return { requests: (requests || []).map((r) => ({ ...r, refs: refs(r) })), supported: true }
     } catch (e) {
       if (e?.code === 'ENOMETHOD') return { requests: [], supported: false }
       return { requests: [], offline: true }
     }
+  },
+
+  // Remove the caller's OWN request. `refs` is every per-host (libraryId, id) the collapsed
+  // row covers (one in single-host, N in a blend), so REMOVE clears it everywhere it lives.
+  // The host refuses to delete a request that is not yours (media.js checks ownership).
+  async requestDelete ({ refs }) {
+    const list = Array.isArray(refs) ? refs.filter((x) => x && x.libraryId && x.id) : []
+    if (!list.length) return { ok: false }
+    const settled = await Promise.allSettled(list.map(({ libraryId, id }) => {
+      const c = poolClient(libraryId)
+      return c ? c.requestDelete({ id }) : Promise.reject(new Error('offline'))
+    }))
+    const ok = settled.some((r) => r.status === 'fulfilled' && r.value?.ok)
+    return { ok }
   },
 
   // One playlist. We return BOTH the raw ordered trackIds and the resolved tracks:

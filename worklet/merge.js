@@ -262,10 +262,13 @@ function collapseRequests (rows) {
     if (!r) continue
     const key = `${r.kind}|${norm(r.name)}|${norm(r.artist)}`
     let g = byKey.get(key)
-    if (!g) { g = { ...r, libraries: [], _rank: 0 }; byKey.set(key, g) }
+    // `refs` carries every per-host (libraryId, id) this ask lives on, so REMOVE can delete
+    // it on all of them - a collapsed row hides the fact that it is N host rows.
+    if (!g) { g = { ...r, libraries: [], refs: [], _rank: 0 }; byKey.set(key, g) }
     const rank = REQUEST_STATUS_RANK[r.status] || 0
     if (rank > g._rank) { g._rank = rank; g.status = r.status; g.resolvedAt = r.resolvedAt || null }
     if (r.libraryName && !g.libraries.includes(r.libraryName)) g.libraries.push(r.libraryName)
+    if (r.libraryId && r.id) g.refs.push({ libraryId: r.libraryId, id: r.id })
     g.createdAt = Math.max(g.createdAt || 0, r.createdAt || 0)
     g.count = Math.max(g.count || 1, r.count || 1)
   }
