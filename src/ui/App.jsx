@@ -25,6 +25,7 @@ import {
 import { call, on, haptic } from './bridge'
 import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
+import { shouldShowNudge } from './donation'
 
 // --- About + donation (suite config, shared across PeerLoom apps) ------------
 const APP_VERSION = '0.1.0'
@@ -110,6 +111,7 @@ export default function App () {
   // flow as onboarding, but over the running app instead of the pairing wall.
   const [addingLibrary, setAddingLibrary] = useState(false)
   const [donate, setDonate] = useState(false)
+  const [nudge, setNudge] = useState(false) // the after-two-weeks donation reminder
   const [confirming, setConfirming] = useState(null)
   const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
   const [queue, setQueue] = useState(null) // the up-next list, when opened
@@ -202,6 +204,13 @@ export default function App () {
         // Paired but not connected YET: the background connect is in flight, so show
         // a spinner rather than a verdict until it lands or fails.
         else if (s.host) setFirstConnect(true)
+
+        // The two-week donation nudge the siblings show. shouldShowNudge (src/ui/
+        // donation.js) owns the rule; decided once here off init, not re-checked, so
+        // it cannot pop mid-session.
+        if (shouldShowNudge({ settings: s.settings, host: s.host, ios: isIOS(), now: Date.now() })) {
+          setNudge(true)
+        }
       })
       .catch(e => setState({ loading: false, error: e.message }))
 
@@ -563,10 +572,10 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
+  navRef.current = { scanning, donate, nudge, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
 
   const canBack = !!(
-    scanning || donate || confirming || menu || viewing || expanded ||
+    scanning || donate || nudge || confirming || menu || viewing || expanded ||
     stack.length || tab !== 'library' ||
     // On the onboarding wall there is no stack, but there are cards to walk back
     // through. At the intro there is nothing behind us, so the OS closes the app.
@@ -582,6 +591,9 @@ export default function App () {
     if (n.viewing) return setViewing(null)
     if (n.menu) return setMenu(null)
     if (n.donate) return setDonate(false)
+    // Backing out of the nudge is a "maybe later" - it counts as answered, or it
+    // would greet you again next launch. Same as tapping Maybe later.
+    if (n.nudge) { call('setSettings', { donationNudgeShown: true }).catch(() => {}); return setNudge(false) }
     if (n.confirming) return setConfirming(null)
     if (n.scanning) return setScanning(false)
     if (n.expanded) return setExpanded(false)
@@ -1721,6 +1733,13 @@ export default function App () {
         />
       )}
       {donate && <DonationSheet onClose={() => setDonate(false)} />}
+      {nudge && (
+        <DonationNudge
+          // Whichever button they press, it is answered - the nudge is one-shot.
+          onDonate={() => { call('setSettings', { donationNudgeShown: true }).catch(() => {}); setNudge(false); setDonate(true) }}
+          onDismiss={() => { call('setSettings', { donationNudgeShown: true }).catch(() => {}); setNudge(false) }}
+        />
+      )}
       {confirming && (
         <Confirm
           {...confirming}
@@ -4897,6 +4916,29 @@ function Section ({ id, title, Icon, open, onToggle, children }) {
       </button>
       <div className={'body' + (open ? ' open' : '')}>
         <div className='inner'>{children}</div>
+      </div>
+    </div>
+  )
+}
+
+// The two-week nudge (the siblings all show one). Deliberately NOT the full rail
+// chooser - just the ask, once. "Donate" opens the real DonationSheet; either quiet
+// option answers it for good. Same sheet chrome as Confirm, so it reads as part of
+// the app and not a pop-up ad.
+function DonationNudge ({ onDonate, onDismiss }) {
+  return (
+    <div className='sheetwrap' onClick={onDismiss}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>⚡ Enjoying PearTune?</h1>
+        <p className='muted sm'>
+          PearTune is free and open source - no ads, no accounts, no subscriptions. If it
+          is useful to you, a tip helps keep it that way. Entirely optional.
+        </p>
+        <div className='acts'>
+          <button className='primary wide' onClick={() => { haptic('light'); onDonate() }}>Support PearTune</button>
+          <button className='wide' onClick={() => { haptic('light'); onDismiss() }}>Maybe later</button>
+          <button className='wide' onClick={() => { haptic('light'); onDismiss() }}>Already did · thanks ✓</button>
+        </div>
       </div>
     </div>
   )
