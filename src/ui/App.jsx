@@ -1553,7 +1553,7 @@ export default function App () {
     screen = (
       <Library
         state={state} albums={albums} artists={artists} genres={genres} songs={songs} recent={recent}
-        merged={merged} filter={filter} onFilter={pickFilter}
+        merged={merged} filter={filter} onFilter={pickFilter} onAddLibrary={openAddLibrary}
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         onDismissError={() => setError(null)}
@@ -2100,7 +2100,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 }
 
 function Library ({
-  state, albums, artists, genres, songs, recent, merged, filter, onFilter, cursor, songCursor, density,
+  state, albums, artists, genres, songs, recent, merged, filter, onFilter, onAddLibrary, cursor, songCursor, density,
   browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
@@ -2163,6 +2163,11 @@ function Library ({
   const [refreshing, setRefreshing] = useState(false)
   const startY = useRef(null)
   const TRIGGER = 60
+
+  // Library switcher: the header title is a dropdown (replaces the old source-filter chips, 2026-07-24).
+  // Only a switcher with 2+ libraries in the blend; a single library shows a plain, un-tappable title.
+  const [libMenuOpen, setLibMenuOpen] = useState(false)
+  const canSwitch = !!(merged?.merged && merged.libraries?.length >= 2)
 
   const onTouchStart = (e) => {
     startY.current = window.scrollY <= 0 && !refreshing ? e.touches[0].clientY : null
@@ -2266,7 +2271,60 @@ function Library ({
           the title sticky as well would cost twice the height for a word you
           already know. */}
       <header>
-        <h1>{libTitle}</h1>
+        {/* The title IS the library menu: tap it to pick the blend ("All") or one library - the same
+            filter the old chip row drove - and to "Add a library" without a trip to Settings. With 2+
+            libraries the menu lists them all; with one it's just the Add row (so a solo user can still
+            add a second from here). */}
+        <div className='libhead'>
+          <button
+            className={'libpick' + (libMenuOpen ? ' open' : '')}
+            onClick={() => setLibMenuOpen(o => !o)}
+            aria-haspopup='menu'
+            aria-expanded={libMenuOpen}
+          >
+            <h1>{libTitle}</h1>
+            <CaretDown size={16} weight='bold' className='libcaret' />
+          </button>
+
+          {libMenuOpen && (
+            <>
+              <div className='libmenu-backdrop' onClick={() => setLibMenuOpen(false)} />
+              <div className='libmenu' role='menu'>
+                {/* Library filter (blend + per-library) only makes sense with 2+ libraries. */}
+                {canSwitch && (
+                  <>
+                    <button
+                      role='menuitem'
+                      className={filter === '_all' ? 'on' : ''}
+                      onClick={() => { onFilter('_all'); setLibMenuOpen(false) }}
+                    >
+                      All libraries
+                    </button>
+                    {merged.libraries.map(l => (
+                      <button
+                        key={l.libraryId}
+                        role='menuitem'
+                        className={(filter === l.libraryId ? 'on' : '') + (l.connected ? '' : ' off')}
+                        onClick={() => { onFilter(l.libraryId); setLibMenuOpen(false) }}
+                        title={l.connected ? undefined : 'Offline'}
+                      >
+                        {l.libraryName || 'Library'}
+                      </button>
+                    ))}
+                    <div className='libmenu-sep' />
+                  </>
+                )}
+                <button
+                  role='menuitem'
+                  className='libmenu-add'
+                  onClick={() => { setLibMenuOpen(false); onAddLibrary() }}
+                >
+                  <Plus size={15} weight='bold' /> Add a library
+                </button>
+              </div>
+            </>
+          )}
+        </div>
         <p className='muted sm'>
           {songFilter
             ? `${shownSongs.length} of ${songs ? songs.length : 0} loaded songs`
@@ -2316,13 +2374,7 @@ function Library ({
             </button>
           </div>
         )}
-        {/* The source-filter chips (multi-host step 2): [All] + one per library. The blended view is
-            the default; a chip narrows to one host (which is just the merged index filtered). Shown
-            only with 2+ libraries and not while searching. An offline host is greyed but still
-            selectable (its tracks in the last blend remain browsable, just unplayable). */}
-        {!searching && merged && (merged.libraries?.length >= 2) && (
-          <SourceChips libraries={merged.libraries} filter={merged.merged ? filter : null} onPick={onFilter} />
-        )}
+        {/* The old source-filter chip row lived here; it's now the header title dropdown (2026-07-24). */}
       </div>
 
       {/* Dismiss has to come DOWN as a prop: this is Library, and setError lives in
@@ -3144,24 +3196,6 @@ function RecentShelf ({ albums, onOpen, artBase }) {
 // chip narrows to one library. An offline library (not in the current blend) is greyed but still
 // tappable. `filter` is the active chip id, or null when a Settings switch has focused one host (so
 // nothing here is lit and tapping any chip returns to the blended view).
-function SourceChips ({ libraries, filter, onPick }) {
-  return (
-    <div className='chips'>
-      <button className={'chip' + (filter === '_all' ? ' on' : '')} onClick={() => onPick('_all')}>All</button>
-      {libraries.map(l => (
-        <button
-          key={l.libraryId}
-          className={'chip' + (filter === l.libraryId ? ' on' : '') + (l.connected ? '' : ' off')}
-          onClick={() => onPick(l.libraryId)}
-          title={l.connected ? undefined : 'Offline'}
-        >
-          {l.libraryName || 'Library'}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase, favs, onFav }) {
   if (!albums.length) return null
   const list = d.cols === 1
