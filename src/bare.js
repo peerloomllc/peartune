@@ -25,8 +25,6 @@ const Hyperswarm = require('hyperswarm')
 // Internal NAT sampler, used best-effort by the diagnostics to classify THIS phone's
 // NAT (open / consistent / random). Deep-path require, so it is wrapped in try/catch at
 // the call site - if hyperdht moves it, the diagnostic just omits the classification.
-const NatSampler = require('hyperdht/lib/nat')
-const { FIREWALL: NAT_FIREWALL } = require('hyperdht/lib/constants')
 const { PearTuneClient } = require('../client')
 const { createAudioShim, mimeFor, DEFAULT_ART_SIZE } = require('../worklet/shim')
 const { streamParams } = require('../worklet/quality')
@@ -344,39 +342,6 @@ function saveSettings (patch) {
   fs.mkdirSync(DATA_DIR, { recursive: true })
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(next))
   return next
-}
-
-// Classify THIS phone's NAT the way hyperdht does before a punch: sample our own observed
-// port across several DHT nodes and see whether it stays put (CONSISTENT / OPEN, punchable)
-// or moves per-peer (RANDOM / symmetric, effectively unpunchable without a relay). This is
-// THE datum that decides whether "punch harder" (random-punch tuning) can help a given
-// network: the random-punch birthday attack only engages for a RANDOM NAT, so a CONSISTENT
-// phone that still fails is a different problem than a RANDOM one. Needs only the DHT
-// bootstrap - no host, no pairing - so it works off-LAN on cellular. Best-effort: any
-// failure (incl. hyperdht moving the internal sampler) yields null and the report omits it.
-async function classifyNat (node) {
-  const NAMES = { 0: 'unknown', 1: 'open', 2: 'consistent', 3: 'random' }
-  let session = null
-  let holder = null
-  try {
-    session = node.session()
-    holder = node._socketPool.acquire()
-    const nat = new NatSampler(node, session, holder.socket)
-    nat.autoSample()
-    await Promise.race([nat.analyzing, new Promise((r) => setTimeout(r, 8000))])
-    return {
-      firewall: nat.firewall,
-      type: NAMES[nat.firewall] || 'unknown',
-      samples: nat.sampled,
-      // A RANDOM NAT is the one the relay exists for and the one "punch harder" targets.
-      punchable: nat.firewall === NAT_FIREWALL.OPEN || nat.firewall === NAT_FIREWALL.CONSISTENT
-    }
-  } catch {
-    return null
-  } finally {
-    try { if (holder) holder.release() } catch {}
-    try { if (session) session.destroy() } catch {}
-  }
 }
 
 // The favorites cache mirrors the host's grouped shape { track, album, artist } (each
@@ -2188,120 +2153,6 @@ const methods = {
       // a countdown banner. Only meaningful when we actually reached the host this call.
       expiresAt: remote?.expiresAt ?? null,
       supported: remote !== null
-    }
-  },
-
-  // --- connection diagnostics --------------------------------------------------
-  //
-  // Why this exists: the off-LAN failure can only be reproduced on Tim's phone (the test
-  // phone has no SIM), so every previous attempt at it was blind. "Couldn't reach your
-  // library" is the same message whether the DHT never bootstrapped, the host was never
-  // found, or the hole-punch was refused by a carrier NAT - and those need completely
-  // different fixes. This runs the transport for real and reports WHERE it stopped, in a
-  // form that can be copied out of the app and pasted into a bug report.
-  //
-  // It deliberately dials with hyperdht directly rather than through PearTuneClient: no
-  // retries, no friendly error mapping, nothing between the report and the transport.
-  async diagnose () {
-    const started = Date.now()
-    if (!dht) dht = new HyperDHT()
-    try { await dht.ready() } catch {}
-
-    const snap = () => JSON.parse(JSON.stringify(dht.stats || {}))
-    const before = snap()
-
-    // What the DHT knows about US. `remoteAddress()` is null until the node has learned its
-    // own public address - on a carrier NAT that alone is a finding, and `firewalled` says
-    // whether other peers can reach us unsolicited.
-    const remote = (() => { try { return dht.remoteAddress() } catch { return null } })()
-    const node = {
-      bootstrapped: !!dht.bootstrapped,
-      online: !!dht.online,
-      firewalled: dht.firewalled !== false,
-      publicAddress: remote ? remote.host + ':' + remote.port : null,
-      localPort: dht.port || null,
-      // The NAT classification (best-effort, may be null). `natType.type` is
-      // open/consistent/random/unknown; random = symmetric, the case a relay exists for
-      // and the only case "punch harder" (random-punch tuning) can move the needle on.
-      natType: await classifyNat(dht)
-    }
-
-    const hosts = loadHostsFile().hosts || []
-    const results = []
-    // THREE dials per host, not one. Tim's two off-LAN runs eight minutes apart - same phone,
-    // same DHT node - went abort-abort then reach-reach, so a single dial measures the moment
-    // rather than the network. What we need to know is the HIT RATE.
-    // FOUR, to match the app's own connect policy (client/index.js CONNECT_ATTEMPTS). A report
-    // that tries fewer times than the app understates what the app can do - and one that tried
-    // MORE is how the diagnostics came to disagree with the library screen in the first place.
-    const ATTEMPTS = 4
-    for (const h of hosts) {
-      const tries = []
-      for (let i = 0; i < ATTEMPTS; i++) {
-      const t0 = Date.now()
-      let outcome = null
-      try {
-        outcome = await new Promise((resolve) => {
-          let settled = false
-          const done = (v) => { if (!settled) { settled = true; resolve(v) } }
-          let conn = null
-          try {
-            conn = dht.connect(z32.decode(h.hostKey), { keyPair: identity })
-          } catch (e) {
-            return done({ ok: false, code: 'EBADKEY', detail: e?.message || String(e) })
-          }
-          // The hyperdht code is the forensic detail: PEER_NOT_FOUND means the host is not
-          // announcing (or the lookup never got there), while PEER_CONNECTION_FAILED /
-          // CANNOT_HOLEPUNCH mean we FOUND it and the network would not let us through.
-          const timer = setTimeout(() => done({ ok: false, code: 'ETIMEDOUT', detail: 'no answer inside 15s' }), 15_000)
-          const finish = (v) => { clearTimeout(timer); done(v); try { conn.destroy() } catch {} }
-          conn.on('error', (e) => finish({ ok: false, code: e?.code || 'EUNKNOWN', detail: e?.message || null }))
-          conn.on('open', () => finish({ ok: true }))
-          // A close with no error and no open is its own signal: the far side hung up on us.
-          conn.once('close', () => finish({ ok: false, code: 'ECLOSED', detail: 'closed before it opened' }))
-        })
-      } catch (e) {
-        outcome = { ok: false, code: 'ETHREW', detail: e?.message || String(e) }
-      }
-      tries.push({ ms: Date.now() - t0, ...outcome })
-      if (outcome.ok) break // no point measuring again once it works
-      }
-      const ok = tries.some(t => t.ok)
-      results.push({
-        library: h.libraryName || h.libraryId || '(unnamed)',
-        hostKey: String(h.hostKey || '').slice(0, 8),
-        ok,
-        attempts: tries.length,
-        ms: tries.reduce((n, t) => n + t.ms, 0),
-        // Every attempt, kept: "failed twice then worked" is the whole finding, and a
-        // summary that only reported the last one would have hidden it.
-        tries
-      })
-    }
-
-    const after = snap()
-    // The DELTA is the interesting part: punches attempted during THIS run, and whether any
-    // relaying was tried. `stats.relaying { attempts, successes, aborts }` climbs only when
-    // the swarm escalated to the blind relay (proposal 2026-07-23) - so a report where direct
-    // failed but relaying.successes rose is the relay doing its job. NB this diagnostic dials
-    // raw hyperdht with no relayThrough, so its OWN dials never relay; the counters here are
-    // the cumulative node total, which the real swarm connections feed.
-    const delta = (a, b) => {
-      const out = {}
-      for (const k of Object.keys(b || {})) {
-        if (typeof b[k] === 'object') { const d = delta(a?.[k], b[k]); if (Object.keys(d).length) out[k] = d }
-        else if ((b[k] || 0) !== (a?.[k] || 0)) out[k] = (b[k] || 0) - (a?.[k] || 0)
-      }
-      return out
-    }
-
-    return {
-      at: new Date(started).toISOString(),
-      tookMs: Date.now() - started,
-      node,
-      hosts: results,
-      during: delta(before, after),
-      stats: after
     }
   },
 
