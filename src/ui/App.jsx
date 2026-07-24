@@ -4976,7 +4976,7 @@ function Onboarding ({
           <div><LockKey size={18} weight='bold' /><span>No account, no cloud copy of the files, and nothing on that machine exposed to the internet.</span></div>
           <div><DeviceMobile size={18} weight='bold' /><span>Scan a code once and this phone is allowed in. Whoever runs the library can cut it off any time.</span></div>
         </div>
-        <button className='primary' onClick={() => setPhase('whose')}>Get started</button>
+        <button className='primary' onClick={() => { haptic('light'); setPhase('whose') }}>Get started</button>
       </div>
     )
   }
@@ -4992,8 +4992,8 @@ function Onboarding ({
         {!owner
           ? (
             <>
-              <button className='primary' onClick={() => setOwner('mine')}>It’s mine - I have a computer with my music on it</button>
-              <button onClick={() => setOwner('friend')}>A friend is sharing theirs with me</button>
+              <button className='primary' onClick={() => { haptic('light'); setOwner('mine') }}>It’s mine</button>
+              <button onClick={() => { haptic('light'); setOwner('friend') }}>It’s a friend’s</button>
             </>
             )
           : (
@@ -5003,18 +5003,20 @@ function Onboarding ({
                   ? <p className='sm'>
                       Install the PearTune host on that computer and open its dashboard - it walks you
                       through naming the library, pointing it at your music and showing a pairing code.
-                      Then come back here and scan it.
+                      Then come back here and scan it, or copy the pairing link under the code and paste
+                      it on the next screen.
                     </p>
                   : <p className='sm'>
-                      Ask them to open their PearTune dashboard and press <b>Pair a device</b>. They will
-                      see a QR code to show you. It lasts five minutes, and you can be anywhere - you do
-                      not have to be on their wifi.
+                      Ask them to open their PearTune dashboard and press <b>Pair a device</b>. If you are
+                      with them, scan the QR code it shows. If you are not, they can copy the pairing link
+                      underneath it and send it to you - paste it on the next screen. Either way it lasts
+                      five minutes, and you do not have to be on their wifi.
                     </p>}
               </div>
               {owner === 'mine' &&
-                <button onClick={() => openUrl('https://peerloomllc.com/peartune/')}>How to set up a server ↗</button>}
-              <button className='primary' onClick={() => setPhase('names')}>Continue</button>
-              <button onClick={() => setOwner(null)}>Back</button>
+                <button onClick={() => { haptic('light'); openUrl('https://peerloomllc.com/peartune/') }}>How to set up a server ↗</button>}
+              <button className='primary' onClick={() => { haptic('light'); setPhase('names') }}>Continue</button>
+              <button onClick={() => { haptic('light'); setOwner(null) }}>Back</button>
             </>
             )}
       </div>
@@ -5049,8 +5051,8 @@ function Onboarding ({
             They confirm your name before it means anything.
           </p>
         </div>
-        <button className='primary' onClick={() => setPhase('pair')} disabled={!ready}>Continue</button>
-        <button onClick={() => setPhase('whose')}>Back</button>
+        <button className='primary' onClick={() => { haptic('light'); setPhase('pair') }} disabled={!ready}>Continue</button>
+        <button onClick={() => { haptic('light'); setPhase('whose') }}>Back</button>
       </div>
     )
   }
@@ -5063,12 +5065,12 @@ function Onboarding ({
         {addHost
           ? 'Open the PearTune dashboard on the server you want to add - yours or a friend’s - and show its pairing code.'
           : owner === 'friend'
-            ? 'Ask them to show you the pairing code from their dashboard, then scan it.'
-            : 'Open the PearTune dashboard on the server and show its pairing code, then scan it.'}
+            ? 'Scan the pairing code from their dashboard - or paste the link they sent you.'
+            : 'Show the pairing code on the server’s dashboard and scan it - or paste the link under it.'}
       </p>
       <Problem error={error} />
 
-      <button className='primary scanbtn' onClick={onScan} disabled={!ready}>
+      <button className='primary scanbtn' onClick={() => { haptic('medium'); onScan() }} disabled={!ready}>
         <QrCode size={20} weight='bold' /> Scan QR
       </button>
       <details>
@@ -5086,10 +5088,10 @@ function Onboarding ({
           autocomplete='off'
           spellcheck={false}
         />
-        <button onClick={() => onPaste(link.trim())} disabled={!ready || !link.trim()}>Pair</button>
+        <button onClick={() => { haptic('medium'); onPaste(link.trim()) }} disabled={!ready || !link.trim()}>Pair</button>
       </details>
-      {!addHost && <button onClick={() => setPhase('names')}>Back</button>}
-      {onCancel && <button onClick={onCancel}>Cancel</button>}
+      {!addHost && <button onClick={() => { haptic('light'); setPhase('names') }}>Back</button>}
+      {onCancel && <button onClick={() => { haptic('light'); onCancel() }}>Cancel</button>}
     </div>
   )
 }
