@@ -35,7 +35,7 @@ const BUYMEACOFFEE_URL = 'https://buymeacoffee.com/peerloomllc'
 const GITHUB_URL = 'https://github.com/peerloomllc/peartune'
 const CONTACT_EMAIL = 'peerloomllc@proton.me'
 const CONTACT_URL = `mailto:${CONTACT_EMAIL}?subject=%5BPearTune%5D%20Feedback`
-const SHARE_TEXT = 'PearTune - your self-hosted music, playable anywhere. No port forwarding, no VPN, no account.\n\nhttps://peerloomllc.com/peartune/'
+const SHARE_TEXT = 'PearTune - the music on your own server, or a friend's, playable anywhere. No port forwarding, no VPN, no account.\n\nhttps://peerloomllc.com/peartune/'
 // iOS hides the donation section per App Store guideline 3.1.1 (no external
 // donation links). The shell injects the platform before the bundle runs.
 const isIOS = () => typeof window !== 'undefined' && window.__pearPlatform === 'ios'
@@ -497,7 +497,7 @@ export default function App () {
     // one you had just saved.
     setState(s => ({ ...s, settings: { ...(s.settings || {}), deviceName, userName } }))
     haptic('success')
-    toast('Sent to your server')
+    toast('Sent to the server')
     return r
   }
 
@@ -2547,7 +2547,7 @@ function FavEmpty () {
       <h2>No favorites yet</h2>
       <p className='muted sm'>
         Tap the heart on any track, album or artist to save it here. Your favorites live
-        on your server, so they follow you to your other devices.
+        on the server, so they follow you to your other devices.
       </p>
     </div>
   )
@@ -2686,7 +2686,7 @@ function PlaylistsView ({ playlists, serverPls, sourceName, onOpen, onOpenServer
           <h2>No playlists yet</h2>
           <p className='muted sm'>
             Make one, then add tracks, albums or artists to it from their ⋯ menu. Your
-            playlists live on your server, so they follow you to your other devices.
+            playlists live on the server, so they follow you to your other devices.
           </p>
         </div>
       )}
@@ -2700,7 +2700,7 @@ function PlaylistsView ({ playlists, serverPls, sourceName, onOpen, onOpenServer
 
       {theirs.length > 0 && (
         <section className='plserver'>
-          <h3 className='favh'>{sourceName ? `From ${sourceName}` : 'From your server'}</h3>
+          <h3 className='favh'>{sourceName ? `From ${sourceName}` : 'From the server'}</h3>
           <PlaylistRows items={theirs} onOpen={onOpenServer} server />
         </section>
       )}
@@ -3054,22 +3054,22 @@ function pairError (msg = '') {
   // is the only case where we actually know the code was the problem, so it is the only
   // case allowed to say so.
   if (/host refused|denied/i.test(m)) {
-    return 'Your server turned that pairing code down. It has most likely expired, so show a fresh one on the dashboard and try again.'
+    return 'That server turned that pairing code down. It has most likely expired, so show a fresh one on the dashboard and try again.'
   }
   if (/not a peartune|not a valid|invalid|malformed/i.test(m)) {
-    return "That doesn't look like a PearTune pairing code. Copy it again from your server's dashboard."
+    return "That doesn't look like a PearTune pairing code. Copy it again from the dashboard you are pairing with."
   }
   // The connection never opened. The transport CANNOT tell a firewall deny (no pairing
   // window) from a dropped holepunch - both arrive as "could not connect" - so neither may
   // be asserted here. Saying "it has expired" for a network blip is what sent an earlier
   // investigation down the wrong path.
   if (/no answer from the host|never answered|unreachable|timed out|timeout/i.test(m)) {
-    return "Couldn't set up with your library. Your server didn't answer - the pairing window may have closed, or this phone can't reach it right now. Show a fresh code on the dashboard, and check both are on a network that can reach each other."
+    return "Couldn't set up with your library. The server didn't answer - the pairing window may have closed, or this phone can't reach it right now. Show a fresh code on the dashboard, and check both are on a network that can reach each other."
   }
   if (/expired/i.test(m)) {
-    return 'That pairing code has expired. Show a fresh one on your server and try again.'
+    return 'That pairing code has expired. Show a fresh one on the dashboard and try again.'
   }
-  return 'Pairing failed. Show a fresh code on your server and try again.'
+  return 'Pairing failed. Show a fresh code on the dashboard and try again.'
 }
 
 function count (browse, { albums, artists, genres, songs }) {
@@ -4559,15 +4559,15 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
       {ident?.userName && (
         <div className='profile-note desc'>
           {ident.confirmed
-            ? `Your server has confirmed this device belongs to ${ident.userName}.`
+            ? `The server has confirmed this device belongs to ${ident.userName}.`
             : ident.belongsTo
-              ? `Your server still has this device down as ${ident.belongsTo}. It is waiting to confirm you are ${ident.userName} — only the person running it can move a device to someone else.`
-              : `Waiting for your server to confirm you are ${ident.userName}. Until then this is only a label.`}
+              ? `The server still has this device down as ${ident.belongsTo}. It is waiting to confirm you are ${ident.userName} — only the person running it can move a device to someone else.`
+              : `Waiting for the server to confirm you are ${ident.userName}. Until then this is only a label.`}
         </div>
       )}
       {ident && ident.supported === false && (
         <div className='profile-note desc'>
-          Your server is running an older PearTune and cannot be told about names yet.
+          That server is running an older PearTune and cannot be told about names yet.
           Update it, or re-pair to set the device name.
         </div>
       )}
@@ -4744,7 +4744,7 @@ function About ({ onDonate }) {
     <div className='app'>
       <div className='wordmark'>
         <div className='name'>Pear<span className='tune'>Tune</span></div>
-        <div className='muted sm'>Your music. Your server. Anywhere.</div>
+        <div className='muted sm'>Your music, or a friend’s. Anywhere.</div>
       </div>
 
       <Section id='how' title='How it works' Icon={Info} open={open === 'how'} onToggle={toggle}>
@@ -4755,6 +4755,12 @@ function About ({ onDonate }) {
           no copy of your library in anyone's cloud.
         </p>
         <p>
+          The machine does not have to be yours. Whoever runs a library can let a
+          friend or family member in, each as their own person with their own
+          devices, favourites and resume points - no login to pass around, and no
+          copy of a single file.
+        </p>
+        <p>
           The server keeps the list of which devices are allowed in, and can cut one
           off in the middle of a song.
         </p>
@@ -4763,7 +4769,7 @@ function About ({ onDonate }) {
           and only then, your phone routes through a relay run by PeerLoom. It carries
           the still-encrypted stream in transit only - never a stored copy of your
           music, and it cannot see the contents, just that your device is reaching
-          your server. It is optional: turn it off in Settings → Connection for pure
+          that server. It is optional: turn it off in Settings → Connection for pure
           peer-to-peer, at the cost of connecting from some networks.
         </p>
         <div className='btnrow'>
@@ -4919,8 +4925,8 @@ function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost =
       <h1>Pear<span className='tune'>Tune</span></h1>
       <p className='muted'>
         {addHost
-          ? 'Open the PearTune dashboard on the server you want to add and show its pairing code.'
-          : 'Your self-hosted music, anywhere. Open the PearTune dashboard on your server and show the pairing code.'}
+          ? 'Open the PearTune dashboard on the server you want to add - yours or a friend's - and show its pairing code.'
+          : 'The music on your own server, or a friend's, playable anywhere. Open the PearTune dashboard on that server and show its pairing code.'}
       </p>
       <Problem error={error} />
 

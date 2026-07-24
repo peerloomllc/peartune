@@ -1,8 +1,10 @@
 # PearTune
 
-Your self-hosted music, playable anywhere. No port forwarding, no VPN, no dynamic DNS, no account, no cloud copy of your files.
+The music on your own server, or a friend's, playable anywhere. No port forwarding, no VPN, no dynamic DNS, no account, no cloud copy of your files.
 
-PearTune is a peer-to-peer music player. Your library stays on a machine you own - an Umbrel, a NAS, an old desktop - and your phone reaches it directly over an encrypted peer-to-peer connection. Nothing is exposed to the internet, and your files are never copied to anyone else's server.
+PearTune is a peer-to-peer music player. The library stays on a machine someone owns - an Umbrel, a NAS, an old desktop - and a phone reaches it directly over an encrypted peer-to-peer connection. Nothing is exposed to the internet, and files are never copied to anyone else's server.
+
+That machine does not have to be yours. A library's owner can let a friend or family member in, each as their own person with their own devices, and cut any of them off again in a second. So PearTune is two things at once: how you reach your own music from anywhere, and how someone shares theirs with you without handing out a login or copying a file.
 
 ## Why
 
