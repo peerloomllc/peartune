@@ -168,11 +168,13 @@ function Nav ({ step, state, at, onBack, onNext, onExit }) {
   const skippable = step === 'source' || step === 'password' || step === 'pair'
 
   // Three fixed slots - Back left, Skip centred, the primary right - so the two
-  // buttons keep their edges whether or not the middle one is there. The opening
-  // card is the exception: nothing to go back to and nothing to skip, so "Get
-  // started" sits in the middle rather than hanging off one edge alone (Tim).
+  // buttons keep their edges whether or not the middle one is there. The two
+  // bookends are the exception: nothing to go back to on the first card, nothing
+  // to skip on the last, so their one button sits in the middle rather than
+  // hanging off an edge alone (Tim).
+  const solo = step === 'welcome' || step === 'done'
   return (
-    <div className={'wiznav' + (step === 'welcome' ? ' solo' : '')}>
+    <div className={'wiznav' + (solo ? ' solo' : '')}>
       <div className='wiznav-l'>
         {at > 0 && step !== 'done' && <button className='ghost' onClick={onBack}><CaretLeft size={15} /> Back</button>}
       </div>
