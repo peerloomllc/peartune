@@ -4974,10 +4974,14 @@ function RequestComposer ({ prefill, onClose, toast, onUnsupported }) {
       // An old host with no request method: tell the app to hide the affordance for the
       // rest of the session (feature-detect, same posture as favorites/playlists), then close.
       if (r?.supported === false) { toast('This library’s server is too old for requests', true); return onUnsupported?.() }
-      return toast('Could not send the request', true)
+      return toast(r?.error || 'Could not send the request', true)
     }
     haptic('success')
-    toast(r.count > 1 ? 'Already requested - the owner has been reminded.' : 'Requested. The owner will see it.')
+    // Merged mode fans out to every connected library (r.sent); single-host returns a
+    // fold count. Either way, say it landed.
+    toast(r.sent > 1 ? `Requested from ${r.sent} libraries. An owner will see it.`
+      : r.count > 1 ? 'Already requested - the owner has been reminded.'
+        : 'Requested. The owner will see it.')
     setName(''); setArtist('')
     setView('mine'); loadMine()
   }
@@ -5014,7 +5018,9 @@ function RequestComposer ({ prefill, onClose, toast, onUnsupported }) {
                   : <ul className='reqlist'>
                       {mine.map(r =>
                         <li key={r.id}>
-                          <span className='rq-name'>{label(r)}</span>
+                          {/* In a blend the same ask spans several libraries; collapseRequests
+                              folds them to one row and lists which, so name it when it helps. */}
+                          <span className='rq-name'>{label(r)}{r.libraries?.length > 1 && <span className='rq-libs'> · {r.libraries.length} libraries</span>}</span>
                           <span className={'rq-status ' + r.status}>{r.status}</span>
                         </li>)}
                     </ul>}

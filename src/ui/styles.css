@@ -1191,6 +1191,7 @@ button.shead .caret.open { transform: rotate(90deg); }
 .reqlist li { display: flex; align-items: center; gap: .6rem; padding: .5rem .1rem; border-top: 1px solid var(--color-border); }
 .reqlist li:first-child { border-top: 0; }
 .rq-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.rq-libs { color: var(--color-text-muted); font-size: .78rem; }
 .rq-status { flex: none; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; color: var(--color-text-muted); }
 .rq-status.added { color: var(--color-success); }
 .rq-status.declined { color: var(--color-error); }

@@ -160,3 +160,49 @@ test('bestCopy prefers a connected host, falls back in order, and defaults to pr
   assert.equal(M.bestCopy(airbag).libraryId, 'libM', 'no connected set -> primary')
   assert.equal(M.bestCopy(null), null)
 })
+
+// --- collapseRequests (blended-library requests, P1) ------------------------
+// In a blend a request is filed with every connected host, so the requester's "Your
+// requests" would show the same ask N times. collapseRequests folds them to one row with
+// the BEST status (added > pending > declined) and which libraries.
+
+test('collapseRequests folds the same ask across hosts into one row', () => {
+  const rows = [
+    { id: 'a', kind: 'album', name: 'In Rainbows', artist: 'Radiohead', status: 'pending', createdAt: 100, libraryId: 'libU', libraryName: 'Umbrel' },
+    { id: 'b', kind: 'album', name: 'in rainbows', artist: 'radiohead!', status: 'pending', createdAt: 90, libraryId: 'libM', libraryName: 'Mac' }
+  ]
+  const out = M.collapseRequests(rows)
+  assert.equal(out.length, 1)
+  assert.deepEqual(out[0].libraries.sort(), ['Mac', 'Umbrel'])
+})
+
+test('collapseRequests shows the BEST status - if any host added it, the music is coming', () => {
+  const rows = [
+    { kind: 'album', name: 'X', artist: 'Y', status: 'pending', createdAt: 1, libraryName: 'A' },
+    { kind: 'album', name: 'X', artist: 'Y', status: 'added', createdAt: 2, libraryName: 'B' },
+    { kind: 'album', name: 'X', artist: 'Y', status: 'declined', createdAt: 3, libraryName: 'C' }
+  ]
+  assert.equal(M.collapseRequests(rows)[0].status, 'added')
+  // pending beats declined when nothing is added
+  const noAdd = rows.filter((r) => r.status !== 'added')
+  assert.equal(M.collapseRequests(noAdd)[0].status, 'pending')
+  // all declined -> declined
+  assert.equal(M.collapseRequests(rows.filter((r) => r.status === 'declined'))[0].status, 'declined')
+})
+
+test('collapseRequests keeps DIFFERENT asks separate and sorts newest first', () => {
+  const rows = [
+    { kind: 'album', name: 'Old', artist: 'Z', status: 'pending', createdAt: 10, libraryName: 'A' },
+    { kind: 'album', name: 'New', artist: 'Z', status: 'pending', createdAt: 20, libraryName: 'A' },
+    { kind: 'track', name: 'Old', artist: 'Z', status: 'pending', createdAt: 15, libraryName: 'A' } // kind differs
+  ]
+  const out = M.collapseRequests(rows)
+  assert.equal(out.length, 3)
+  assert.equal(out[0].name, 'New') // newest first
+})
+
+test('collapseRequests handles empty / null safely', () => {
+  assert.deepEqual(M.collapseRequests([]), [])
+  assert.deepEqual(M.collapseRequests(null), [])
+  assert.deepEqual(M.collapseRequests([null, undefined]), [])
+})

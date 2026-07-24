@@ -2670,13 +2670,34 @@ const methods = {
   },
 
   // --- music requests (proposal 2026-07-24, P1) -----------------------------
-  // File a request against the ACTIVE host (the one whose library you are browsing).
-  // supported:false = an old host with no request method, so the app hides the
-  // affordance rather than showing a dead control (same shape as favorites/playlists).
+  // File a request. In a BLENDED library nobody has the music (that is WHY you are
+  // requesting it), so it goes to EVERY connected host - any of their owners might add
+  // it (Tim, 2026-07-24). Single-host mode sends to the one active host. supported:false
+  // only when NO reachable host understands requests (all old), so the affordance hides
+  // just like favorites/playlists on an old host.
   async requestAdd ({ kind, name, artist, album, mbid }) {
+    const params = { kind, name, artist, album, mbid }
+    if (mergedMode()) {
+      const libs = [...connectedLibs()]
+      if (!libs.length) return { ok: false, error: 'not connected to any library' }
+      const settled = await Promise.allSettled(libs.map((lib) => {
+        const c = poolClient(lib)
+        return c ? c.requestAdd(params) : Promise.reject(new Error('offline'))
+      }))
+      let ok = 0
+      let anySupported = false
+      for (const r of settled) {
+        if (r.status === 'fulfilled' && r.value?.ok) { ok++; anySupported = true }
+        else if (r.reason?.code !== 'ENOMETHOD' && r.status === 'rejected') { /* transport error, not "old host" */ anySupported = true }
+      }
+      if (ok > 0) return { ok: true, supported: true, sent: ok }
+      // Nobody accepted. If every reachable host answered ENOMETHOD it is a support gap;
+      // otherwise it was a transport failure worth reporting as such.
+      return anySupported ? { ok: false, error: 'could not reach a library to request from' } : { ok: false, supported: false }
+    }
     try {
       await ensureConnected()
-      const r = await client.requestAdd({ kind, name, artist, album, mbid })
+      const r = await client.requestAdd(params)
       return { ...r, supported: true }
     } catch (e) {
       if (e?.code === 'ENOMETHOD') return { ok: false, supported: false }
@@ -2684,9 +2705,27 @@ const methods = {
     }
   },
 
-  // This device's own requests + their status (pending / added / declined), against the
-  // active host. Empty on an old host, so the "Your requests" view is simply absent there.
+  // This device's own requests + their status. In merged mode, UNION across every connected
+  // host and COLLAPSE identical asks to one row carrying the best status (added > pending >
+  // declined - if any host added it, the music is coming) + which libraries it went to.
+  // Single-host = just the active host's. Empty (not shown) on an all-old set of hosts.
   async requestList () {
+    if (mergedMode()) {
+      const libs = [...connectedLibs()]
+      const names = new Map(loadHostsFile().hosts.map((h) => [h.libraryId, h.libraryName]))
+      const settled = await Promise.allSettled(libs.map((lib) => {
+        const c = poolClient(lib)
+        return c ? c.requestList().then((v) => ({ lib, requests: v.requests || [] })) : Promise.reject(new Error('offline'))
+      }))
+      const tagged = []
+      let anySupported = false
+      for (const r of settled) {
+        if (r.status !== 'fulfilled') continue
+        anySupported = true
+        for (const req of r.value.requests) tagged.push({ ...req, libraryId: r.value.lib, libraryName: names.get(r.value.lib) || null })
+      }
+      return { requests: merge.collapseRequests(tagged), supported: anySupported }
+    }
     try {
       await ensureConnected()
       const { requests } = await client.requestList()
