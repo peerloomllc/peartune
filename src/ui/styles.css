@@ -1186,12 +1186,13 @@ button.shead .caret.open { transform: rotate(90deg); }
 .sheet > p { text-align: center; margin: .25rem 0 1rem; }
 .sheet h2 { margin: 1.2rem 0 0; }
 
-/* --- music requests: "Your requests" list in the composer sheet ------------ */
-.reqlist { list-style: none; margin: .4rem 0 0; padding: 0; display: flex; flex-direction: column; }
-.reqlist li { display: flex; align-items: center; gap: .6rem; padding: .5rem .1rem; border-top: 1px solid var(--color-border); }
-.reqlist li:first-child { border-top: 0; }
-.rq-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-.rq-libs { color: var(--color-text-muted); font-size: .78rem; }
+/* --- music requests: the You > Requests view ------------------------------- */
+.reqview { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.reqview li { display: flex; align-items: center; gap: .6rem; padding: .7rem .1rem; border-top: 1px solid var(--color-border); }
+.reqview li:first-child { border-top: 0; }
+.rqv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .1rem; }
+.rqv-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rqv-sub { }
 .rq-status { flex: none; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; color: var(--color-text-muted); }
 .rq-status.added { color: var(--color-success); }
 .rq-status.declined { color: var(--color-error); }

@@ -114,6 +114,7 @@ export default function App () {
   const [nudge, setNudge] = useState(false) // the after-two-weeks donation reminder
   const [reqComposer, setReqComposer] = useState(null) // music-request composer: { name } prefill, or null
   const [reqSupported, setReqSupported] = useState(true) // false = active host too old for requests
+  const [myRequests, setMyRequests] = useState(null) // this device's own requests (the You > Requests view)
   const [confirming, setConfirming] = useState(null)
   const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
   const [queue, setQueue] = useState(null) // the up-next list, when opened
@@ -636,6 +637,7 @@ export default function App () {
   // on an empty, unswitchable Favorites list.
   const openYou = (v) => {
     if (v === 'downloads') showDownloads()
+    else if (v === 'requests') showRequests()
     else if (v === 'playlists') showPlaylists()
     else if (v === 'top' || !favSupported) showMostPlayed()
     else showFavorites()
@@ -964,6 +966,20 @@ export default function App () {
   async function showDownloads (force) {
     setYouView('downloads')
     await loadDownloads(force)
+  }
+  // The requester's OWN requests (You > Requests). Merged mode unions + collapses across
+  // hosts in the worklet; supported:false hides the tab (an old host, like favorites).
+  async function loadRequests (force) {
+    if (myRequests && !force) return
+    try {
+      const r = await call('requestList')
+      setMyRequests(r.requests || [])
+      if (r.supported === false) setReqSupported(false)
+    } catch { setMyRequests(m => m || []) }
+  }
+  async function showRequests (force) {
+    setYouView('requests')
+    await loadRequests(force)
   }
   // Pin (download) an album. Progress arrives via pin:progress events; this just kicks it
   // off and reflects the optimistic "downloading" state.
@@ -1591,6 +1607,8 @@ export default function App () {
         playlists={playlists} plSupported={plSupported}
         serverPls={serverPls} sourceName={sourceText(state)}
         downloads={downloads}
+        reqSupported={reqSupported} myRequests={myRequests}
+        onNewRequest={() => { haptic('light'); setReqComposer({ name: '' }) }}
         onOpenPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name })}
         onOpenServerPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name, server: true })}
         onOpenDownload={(dl) => push({ type: 'download', id: dl.id, name: dl.name })}
@@ -1740,6 +1758,7 @@ export default function App () {
       {reqComposer && (
         <RequestComposer prefill={reqComposer.name} toast={toast}
           onUnsupported={() => { setReqSupported(false); setReqComposer(null) }}
+          onSent={() => loadRequests(true)}
           onClose={() => setReqComposer(null)} />
       )}
       {nudge && (
@@ -2648,6 +2667,7 @@ function You ({
   state, density, now, handoff, playing, onPlayHere, youView, onYouView,
   favSupported, favItems, mostPlayed, favs, onFav,
   playlists, plSupported, serverPls, sourceName, downloads,
+  reqSupported, myRequests, onNewRequest,
   onOpenPlaylist, onOpenServerPlaylist, onOpenDownload, onNewPlaylist,
   onPlay, onLong, onOpenAlbum, onOpenArtist
 }) {
@@ -2661,7 +2681,7 @@ function You ({
     <div className='app'>
       <header>
         <h1>You</h1>
-        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists, serverPls, downloads })}</p>
+        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists, serverPls, downloads, myRequests })}</p>
       </header>
 
       <div className='sticky'>
@@ -2692,6 +2712,12 @@ function You ({
               <DownloadSimple size={17} weight={view === 'downloads' ? 'fill' : 'regular'} />
               {view === 'downloads' && <span>Downloads</span>}
             </button>
+            {reqSupported && (
+              <button className={view === 'requests' ? 'on' : ''} aria-label='Requests' onClick={() => onYouView('requests')}>
+                <MusicNotesPlus size={17} weight={view === 'requests' ? 'fill' : 'regular'} />
+                {view === 'requests' && <span>Requests</span>}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -2714,6 +2740,8 @@ function You ({
             />
           : view === 'downloads'
             ? <DownloadsView downloads={downloads} d={D} onOpen={onOpenDownload} />
+          : view === 'requests'
+            ? <RequestsView requests={myRequests} onNew={onNewRequest} />
           : (mostPlayed
               ? (mostPlayed.items.length
                   ? (
@@ -2733,7 +2761,12 @@ function You ({
   )
 }
 
-function youCount (view, { favItems, mostPlayed, playlists, serverPls, downloads }) {
+function youCount (view, { favItems, mostPlayed, playlists, serverPls, downloads, myRequests }) {
+  if (view === 'requests') {
+    if (!myRequests) return 'Loading requests…'
+    const pend = myRequests.filter(r => r.status === 'pending').length
+    return myRequests.length ? `${myRequests.length} request${myRequests.length === 1 ? '' : 's'}${pend ? ` · ${pend} pending` : ''}` : 'No requests yet'
+  }
   if (view === 'top') return mostPlayed ? `${mostPlayed.items.length} most played` : 'Loading…'
   if (view === 'downloads') {
     if (!downloads) return 'Loading downloads…'
@@ -2855,6 +2888,52 @@ function DownloadsEmpty () {
         connection - on a plane, on the subway, anywhere.
       </p>
     </div>
+  )
+}
+
+// The requester's OWN music requests (You > Requests, proposal 2026-07-24). A full
+// scrolling screen - the composer bottom-sheet only CREATES a request now, this is where
+// they live and scale. In a blend collapseRequests (worklet) folds each ask to one row
+// showing the best status + which libraries.
+function RequestsView ({ requests, onNew }) {
+  if (!requests) return <SkeletonRows />
+  const line = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
+  const KIND = { artist: 'Artist', album: 'Album', track: 'Track' }
+  if (!requests.length) {
+    return (
+      <div className='blank'>
+        <MusicNotesPlus size={40} weight='thin' />
+        <h2>No requests yet</h2>
+        <p className='muted sm'>
+          Search for music that isn’t in the library and tap Request. Whoever runs the
+          library sees it and can add it - you’ll see the status here.
+        </p>
+        <button className='primary' style={{ marginTop: '1rem' }} onClick={onNew}>
+          <MusicNotesPlus size={18} weight='bold' /> Request music
+        </button>
+      </div>
+    )
+  }
+  return (
+    <>
+      <button className='wide' style={{ marginBottom: '.6rem' }} onClick={onNew}>
+        <MusicNotesPlus size={17} weight='bold' /> Request music
+      </button>
+      <ul className='reqview'>
+        {requests.map(r => (
+          <li key={r.id || `${r.kind}:${r.name}`}>
+            <div className='rqv-main'>
+              <span className='rqv-name'>{line(r)}</span>
+              <span className='rqv-sub muted sm'>
+                {KIND[r.kind] || r.kind}
+                {r.libraries?.length > 1 && ` · ${r.libraries.length} libraries`}
+              </span>
+            </div>
+            <span className={'rq-status ' + r.status}>{r.status}</span>
+          </li>
+        ))}
+      </ul>
+    </>
   )
 }
 
@@ -4947,22 +5026,17 @@ function Section ({ id, title, Icon, open, onToggle, children }) {
   )
 }
 
-// Ask the owner to add music (proposal 2026-07-24, P1). Two panes in one sheet: the
-// composer (kind + name + optional artist), and - after sending, or via the toggle -
-// "Your requests", so you see it landed as pending and can check status later. v1 is a
-// human queue: the owner adds it by hand and it appears on the next scan.
-function RequestComposer ({ prefill, onClose, toast, onUnsupported }) {
-  const [view, setView] = useState('new') // 'new' | 'mine'
+// Ask the owner to add music (proposal 2026-07-24, P1). CREATE only: kind + name +
+// optional artist. Your requests + their status live in You > Requests now (a full
+// scrolling screen), not here - a bottom-sheet list did not scale (Tim, 2026-07-24).
+// On send it closes and onSent refreshes that view. v1 is a human queue: the owner adds
+// the music by hand and it appears on the next scan.
+function RequestComposer ({ prefill, onClose, toast, onUnsupported, onSent }) {
   const [kind, setKind] = useState('album')
   const [name, setName] = useState(prefill || '')
   const [artist, setArtist] = useState('')
   const [busy, setBusy] = useState(false)
-  const [mine, setMine] = useState(null) // this device's own requests (loaded for the "mine" view)
 
-  const loadMine = async () => {
-    const r = await call('requestList').catch(() => null)
-    setMine(r?.requests || [])
-  }
   const send = async () => {
     const nm = name.trim()
     if (!nm) return
@@ -4978,55 +5052,33 @@ function RequestComposer ({ prefill, onClose, toast, onUnsupported }) {
     }
     haptic('success')
     // Merged mode fans out to every connected library (r.sent); single-host returns a
-    // fold count. Either way, say it landed.
-    toast(r.sent > 1 ? `Requested from ${r.sent} libraries. An owner will see it.`
+    // fold count. Either way, say it landed - and point at where to watch it.
+    toast(r.sent > 1 ? `Requested from ${r.sent} libraries. See it in You › Requests.`
       : r.count > 1 ? 'Already requested - the owner has been reminded.'
-        : 'Requested. The owner will see it.')
-    setName(''); setArtist('')
-    setView('mine'); loadMine()
+        : 'Requested. See it in You › Requests.')
+    onSent?.()
+    onClose()
   }
-  const openMine = () => { setView('mine'); loadMine() }
 
   const KINDS = [['album', 'Album'], ['artist', 'Artist'], ['track', 'Track']]
-  const label = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
 
   return (
     <div className='sheetwrap' onClick={onClose}>
       <div className='sheet' onClick={e => e.stopPropagation()}>
         <h1>Request music</h1>
-        {view === 'new'
-          ? <>
-              <p className='muted sm'>Ask whoever runs this library to add something that isn’t here yet. They decide.</p>
-              <div className='seg wide' style={{ marginTop: '.4rem' }}>
-                {KINDS.map(([k, l]) => <button key={k} className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>{l}</button>)}
-              </div>
-              <input value={name} autoFocus placeholder={kind === 'artist' ? 'Artist name' : kind === 'album' ? 'Album title' : 'Song title'}
-                maxLength={200} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && !busy && send()} />
-              {kind !== 'artist' &&
-                <input value={artist} placeholder='Artist (optional)' maxLength={200} onChange={e => setArtist(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && !busy && send()} />}
-              <button className='primary wide' style={{ marginTop: '.5rem' }} onClick={send} disabled={busy || !name.trim()}>
-                {busy ? 'Sending…' : 'Send request'}
-              </button>
-              <button className='wide' onClick={openMine}>Your requests</button>
-            </>
-          : <>
-              {mine == null
-                ? <p className='muted center-p'>Loading…</p>
-                : mine.length === 0
-                  ? <p className='muted center-p'>You haven’t requested anything yet.</p>
-                  : <ul className='reqlist'>
-                      {mine.map(r =>
-                        <li key={r.id}>
-                          {/* In a blend the same ask spans several libraries; collapseRequests
-                              folds them to one row and lists which, so name it when it helps. */}
-                          <span className='rq-name'>{label(r)}{r.libraries?.length > 1 && <span className='rq-libs'> · {r.libraries.length} libraries</span>}</span>
-                          <span className={'rq-status ' + r.status}>{r.status}</span>
-                        </li>)}
-                    </ul>}
-              <button className='primary wide' style={{ marginTop: '.5rem' }} onClick={() => setView('new')}>Request something else</button>
-              <button className='wide' onClick={onClose}>Close</button>
-            </>}
+        <p className='muted sm'>Ask whoever runs this library to add something that isn’t here yet. They decide.</p>
+        <div className='seg wide' style={{ marginTop: '.4rem' }}>
+          {KINDS.map(([k, l]) => <button key={k} className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>{l}</button>)}
+        </div>
+        <input value={name} autoFocus placeholder={kind === 'artist' ? 'Artist name' : kind === 'album' ? 'Album title' : 'Song title'}
+          maxLength={200} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && !busy && send()} />
+        {kind !== 'artist' &&
+          <input value={artist} placeholder='Artist (optional)' maxLength={200} onChange={e => setArtist(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && !busy && send()} />}
+        <button className='primary wide' style={{ marginTop: '.5rem' }} onClick={send} disabled={busy || !name.trim()}>
+          {busy ? 'Sending…' : 'Send request'}
+        </button>
+        <button className='wide' onClick={onClose}>Cancel</button>
       </div>
     </div>
   )
