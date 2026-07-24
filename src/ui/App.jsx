@@ -2942,8 +2942,8 @@ function RequestsView ({ requests, onNew, onRemove }) {
             {/* Remove YOUR request: clear a finished one, or withdraw a pending one
                 (which also pulls it from the operator's queue). Instant, like the queue's
                 remove - low stakes, and the host refuses anything not yours. */}
-            <button className='rqv-rm iconbtn' aria-label={r.status === 'pending' ? 'Withdraw request' : 'Remove request'} onClick={() => onRemove(r)}>
-              <Trash size={17} weight='regular' />
+            <button className='rqv-rm' aria-label={r.status === 'pending' ? 'Withdraw request' : 'Remove request'} onClick={() => onRemove(r)}>
+              <Trash size={18} weight='regular' />
             </button>
           </li>
         ))}

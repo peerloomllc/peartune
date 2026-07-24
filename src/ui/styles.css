@@ -1196,7 +1196,10 @@ button.shead .caret.open { transform: rotate(90deg); }
 .rq-status { flex: none; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; color: var(--color-text-muted); }
 .rq-status.added { color: var(--color-success); }
 .rq-status.declined { color: var(--color-error); }
-.rqv-rm { flex: none; width: 32px; height: 32px; color: var(--color-text-muted); }
+/* A bare icon button, like the queue's remove - no box/border (the default button
+   chrome was drawing that weird container). */
+.rqv-rm { flex: none; background: none; border: 0; padding: .4rem; color: var(--color-text-muted); display: inline-flex; line-height: 0; cursor: pointer; }
+.rqv-rm:active { color: var(--color-error); }
 
 /* --- identity (naming a device, claiming a user) -------------------------- */
 .namebox {
