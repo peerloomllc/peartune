@@ -6,7 +6,9 @@ Constitution applies. See `/home/tim/peerloomllc/CONSTITUTION.md` for risk tiers
 
 ## Project Overview
 
-PearTune is a peer-to-peer music player for a self-hosted library. The music lives on a machine you own (an Umbrel, a NAS, an old desktop). The phone is a thin client that reaches it over HyperDHT with no port forwarding, no VPN, no dynamic DNS, no account and no cloud copy of your files.
+PearTune is a peer-to-peer music player for a self-hosted library. The music lives on a machine someone owns (an Umbrel, a NAS, an old desktop). The phone is a thin client that reaches it over HyperDHT with no port forwarding, no VPN, no dynamic DNS, no account and no cloud copy of the files.
+
+**That machine does not have to be YOURS.** A library's owner can let a friend or family member in, each as their own person holding their own devices, revocable in a second. So PearTune is two products in one sentence: how you reach your own music from anywhere, and how someone shares theirs with you without handing out a login or copying a file. Copy anywhere in the app, the dashboard, the README or the store listings must not frame a library as your-own-machine-only (Tim, 2026-07-24).
 
 The pitch, in one line: **your music collection, playable anywhere, without exposing your server to the internet.**
 

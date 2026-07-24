@@ -203,7 +203,7 @@ function Welcome ({ hasPassword }) {
         <li><Tag size={17} weight='bold' /><div><b>Name this library</b><span>What your phone will call it.</span></div></li>
         <li><MusicNotes size={17} weight='bold' /><div><b>Point it at your music</b><span>A folder on this machine, or a music server you already run.</span></div></li>
         {hasPassword && <li><Lock size={17} weight='bold' /><div><b>Set a password</b><span>The lock on this page. Optional, but do it.</span></div></li>}
-        <li><Broadcast size={17} weight='bold' /><div><b>Pair your phone</b><span>Scan a code once. That phone is then allowed in, and only that phone.</span></div></li>
+        <li><Broadcast size={17} weight='bold' /><div><b>Pair a phone</b><span>Yours, or a friend’s you want to share with. Scan a code once and that phone is allowed in, and only that phone.</span></div></li>
       </ol>
     </div>
   )
@@ -274,10 +274,12 @@ function PasswordStep ({ state, refresh, toast }) {
 function PairStep ({ onNext, toast }) {
   return (
     <div className='wizbody'>
-      <h2 className='wizh'>Pair your phone</h2>
+      <h2 className='wizh'>Pair a phone</h2>
       <p className='hint'>
-        Install PearTune on your phone, open it and scan this code. Pairing is what allows a
-        device in - you can revoke it from this page at any time, and it loses access immediately.
+        Install PearTune on the phone, open it and scan this code. It can be your own, or a
+        friend’s you want to share this library with - they get their own place on this page,
+        with their own favourites. Pairing is what allows a device in, and you can revoke it
+        from here at any time, immediately.
       </p>
       <PairFlow toast={toast} guestOption={false} onDone={onNext} />
     </div>

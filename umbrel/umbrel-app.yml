@@ -1,7 +1,7 @@
 manifestVersion: 1
 id: peerloom-peartune
 name: PearTune
-tagline: Your self-hosted music, playable anywhere
+tagline: Your music, playable anywhere - and shareable with friends
 category: media
 version: "0.1.0"
 port: 8741
@@ -29,6 +29,13 @@ description: >-
   within a second, mid-song - not "on next login". Revoke a person and every device
   they hold dies at once. There are no shared passwords or bearer tokens anywhere in
   the design: every connection is authenticated by the phone's own key.
+
+
+  That is what makes SHARING safe. Your library is not only for your own phones: let a
+  friend or a family member in and they get their own place here, with their own
+  devices, their own favourites and their own resume points - and no login to pass
+  around. Hand out a guest pass that expires by itself, or cut someone off the moment
+  you want to. They never get a copy of a single file.
 
 
   Pair a phone by scanning the QR code on this dashboard with the PearTune app.
