@@ -479,6 +479,10 @@ button.destructive { background: var(--bad); color: #fff; }
 .wiznav-l { justify-self: start; }
 .wiznav-c { justify-self: center; }
 .wiznav-r { justify-self: end; }
+/* The opening card: one button, in the middle. */
+.wiznav.solo { grid-template-columns: 1fr; }
+.wiznav.solo .wiznav-l, .wiznav.solo .wiznav-c { display: none; }
+.wiznav.solo .wiznav-r { justify-self: center; }
 .wiznav button:not(.link) { min-width: 158px; justify-content: center; }
 
 /* The step cards live on a stage: the outgoing one is lifted out of flow and both
