@@ -2115,18 +2115,36 @@ const methods = {
   // AND pushed to the host, which is the authority on what its dashboard shows.
   async identity () {
     const local = loadSettings()
+    // Read the live identity from an ALREADY-CONNECTED host, and NEVER dial. identity() used to
+    // `await ensureConnected()`, so a down ACTIVE host blocked the name/confirm fields for the whole
+    // 45s connect budget - Settings sat blank until the dial finally failed (Tim, 2026-07-22, off-LAN
+    // with the active host down). Now the local names return immediately; loadIdentity() re-fires on
+    // host:connected and picks up the remote data then.
+    //
+    // Source: the active client when it's up, else (merged mode) any connected pool host - the device
+    // identity is one keypair shared across every host, so a down active host must not starve the
+    // fields when another host IS connected (fix (b) in the report).
+    let c = (connected && client && client.conn && !client.conn.destroyed) ? client : null
+    if (!c && mergedMode()) {
+      const lib = [...connectedLibs()][0]
+      if (lib) c = poolClient(lib)
+    }
     let remote = null
-    try {
-      await ensureConnected()
-      remote = await client.getIdentity()
-    } catch {
-      // Offline, or an old host. The local names are still the truth about what we
-      // last asked for.
+    if (c) {
+      try {
+        remote = await c.getIdentity()
+      } catch {
+        // The connection dropped mid-read, or an old host. Local names are still the truth about
+        // what we last asked for.
+      }
     }
     // Live library-name update: the operator can rename the library on the dashboard, and identity.get
     // carries the CURRENT name. If it changed, persist it to the host record and tell the UI, so the
-    // header + switcher + merged chips update without a re-pair.
-    if (remote?.libraryName) {
+    // header + switcher + merged chips update without a re-pair. Guard on `c === client`: `remote` may
+    // have come from a POOL host (when the active host is down), whose name belongs to a DIFFERENT
+    // record - renaming the active host to it would be wrong. A pool host's own name is synced by the
+    // merged block just below.
+    if (c === client && remote?.libraryName) {
       const active = loadActiveHost()
       if (active && active.libraryName !== remote.libraryName) {
         saveHostsFile(hostList.renameHost(loadHostsFile(), active.hostKey, remote.libraryName))
@@ -2143,16 +2161,24 @@ const methods = {
       const others = loadHostsFile().hosts.filter((h) => h.hostKey !== activeKey && poolClient(h.libraryId))
       if (others.length) syncHostNames(others).catch(() => {})
     }
+    // Persist the confirmation state we just learned, so it survives OFFLINE the same way the names do:
+    // a confirmed device must keep reading "confirmed" when it can't reach the host, not fall back to a
+    // scary "waiting / only a label" (Tim, 2026-07-22). Only when we actually reached a host this call.
+    if (remote) saveSettings({ confirmed: !!remote.user?.confirmed, belongsTo: remote.belongsTo || '' })
     return {
       deviceName: remote?.deviceName || local.deviceName || '',
       userName: remote?.user?.name || local.userName || '',
-      confirmed: !!remote?.user?.confirmed,
-      belongsTo: remote?.belongsTo || null,
+      // Fall back to the last-known values offline (see saveSettings above).
+      confirmed: remote ? !!remote.user?.confirmed : !!local.confirmed,
+      belongsTo: remote ? (remote.belongsTo || null) : (local.belongsTo || null),
       libraryName: remote?.libraryName || null,
       // A guest pass's expiry (null = permanent / offline / old host), so the UI can show
       // a countdown banner. Only meaningful when we actually reached the host this call.
       expiresAt: remote?.expiresAt ?? null,
-      supported: remote !== null
+      // `supported` distinguishes an OLD host (reached, but no identity method) from OFFLINE (never
+      // reached). Only false when we HAD a connection and it didn't answer - so a plain offline phone
+      // never shows the misleading "your server is running an older PearTune" message.
+      supported: remote !== null || !c
     }
   },
 

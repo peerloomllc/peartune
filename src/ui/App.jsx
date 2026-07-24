@@ -171,6 +171,11 @@ export default function App () {
         const savedSort = s.settings?.sort && typeof s.settings.sort === 'object' ? s.settings.sort : null
         if (savedSort) setSort(savedSort)
         loadPinned() // pins are local - available even offline
+        // Load the identity on mount, not only on host:connected: fully offline (no host ever
+        // connects) that event never fires, so the Name/Device fields sat blank forever. identity()
+        // returns the LOCAL names immediately now (never blocks on a connect), so this is instant
+        // online or off; a later host:connected re-runs it to fold in the confirmed status (Tim, 2026-07-22).
+        loadIdentity()
         // Restore the paused queue from the last session (the shell rebuilds it and
         // emits play:started, which lights up the mini-player). Fire-and-forget: a
         // cached queue restores offline; an uncached one waits for the connection.
