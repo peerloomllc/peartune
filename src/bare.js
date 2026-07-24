@@ -1685,6 +1685,12 @@ const methods = {
     identity = loadIdentity()
     const f = loadHostsFile()
     const host = hostList.activeHost(f)
+    // Stamp the first-run time ONCE, so the donation nudge (src/ui, 2 weeks later) has an
+    // anchor. Done here, not in DEFAULT_SETTINGS, because a default cannot be "now" - and
+    // done on first init rather than first pair so the clock starts when the app is first
+    // opened, matching the siblings (they anchor on the profile's createdAt).
+    let settings = loadSettings()
+    if (!settings.firstRunAt) settings = saveSettings({ firstRunAt: Date.now() })
     const state = {
       deviceKey: b4a.toString(identity.publicKey, 'hex'),
       // The SAME encoding the host's dashboard prints in its device rows (grants
@@ -1695,7 +1701,7 @@ const methods = {
       // The full paired-library list (active flagged), so Settings can render the switcher
       // on launch without a second round-trip.
       hosts: f.hosts.map((h) => ({ ...h, active: h.hostKey === f.activeHostKey })),
-      settings: loadSettings(),
+      settings,
       connected: false
     }
 
