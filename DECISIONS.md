@@ -2,6 +2,42 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-24 - Relay-ops watch: host-wipe DHT reachability (measured; controlled wipe recovers <1s)
+Tier: T1 (host announce hardening, no wire/grant/protocol change). Branch fix/host-early-reannounce, PR #169.
+
+CONTEXT: after a `--network host` container wipe on 2026-07-23 the Umbrel was briefly unreachable over the DHT
+until a re-wipe fixed it. Item was "confirm a host wipe reliably leaves the container DHT-connectable." Tim
+chose to reproduce on the live Umbrel.
+
+METHOD (all off-host, from Tim's laptop): a topic-visibility probe - boot a HyperDHT node, `dht.lookup(hostTopic(hostKey))`,
+report whether the host's own announce record is found + time-to-first-hit. This measures the exact symptom
+(announce propagated?) WITHOUT needing a grant, since lookup is not firewalled. Probe/monitor scripts in the
+session scratchpad (dht-probe.js, dht-monitor.js, wipe-capture.js).
+
+FINDINGS:
+  1. BASELINE: the live host was VISIBLE, first hit 162ms. Probe validated.
+  2. RESTART-ONLY (same key, non-destructive, both phones stayed paired): monitored the key continuously across
+     a `docker rm -f` + redeploy - NEVER went invisible. WHY: `dht.lookup` reads the stored ANNOUNCE RECORD,
+     which storing nodes cache for a TTL (~20 min, defaultMaxAge). A same-key restart is faster than that TTL,
+     so the residual record masks the gap. CONCLUSION: a restart CANNOT reproduce the wipe symptom - only a
+     WIPE (new key = brand-new topic with zero prior records) can.
+  3. FULL WIPE (fresh key 9putst3f…, both phones un-paired): auto-captured the new identity from the dashboard
+     the instant it came up, then timed visibility. DHT-VISIBLE in 0.9s (130ms first hit, settling ~30ms),
+     stable. The symptom did NOT reproduce. So the 2026-07-23 incident was a rare, self-healing transient, not
+     a deterministic bug.
+
+REAL LATENT WEAKNESS FOUND (separate from the symptom): the host announces once at startup, then re-announces
+only every 10 min (TOPIC_REANNOUNCE_MS), and `_announceTopic` swallows failures. So IF a startup announce
+silently fails to propagate against a cold routing table, the host stays unfindable for up to 10 min. That is
+the shape of the incident.
+
+FIX (belt-and-suspenders, not a reproduced-bug fix): TOPIC_EARLY_REANNOUNCE_MS = [20s, 60s, 120s] - ready()
+schedules a few early one-shot re-announces before the 10-min cadence, shrinking the worst-case unfindable
+window from ~10 min to <2 min. unref'd (never hold the process open), cleared in close(). +1 test asserting
+the timers are scheduled. verify green 472/472. NOT hammered with repeated wipes (each un-pairs both phones);
+one clean controlled wipe + the code weakness were enough to act. Both phones re-paired to the wiped host
+afterward (TCL driven via adb; Pixel by Tim).
+
 ## 2026-07-23 - Multi-host: adding a 2nd library stranded the 1st as "offline" (fixed)
 Tier: T1 (app logic, no wire/grant/protocol change). Branch fix/multihost-demote-orphan.
 
