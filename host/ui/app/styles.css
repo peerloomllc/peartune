@@ -364,7 +364,9 @@ input:focus, select:focus { outline: none; border-color: var(--primary); }
 .pairdone { margin: 0; font-size: 15.5px; }
 .pairacts { display: flex; gap: 8px; justify-content: center; }
 /* Equal width: Close and New Code share the row evenly instead of sizing to their (unequal) text. */
-.pairacts button { flex: 1 1 0; justify-content: center; display: inline-flex; align-items: center; gap: 6px; }
+/* nowrap: the row is content-width, so a flex-basis of 0 lets a two-word label
+   ("New code") break across two lines and make the pair of buttons uneven. */
+.pairacts button { flex: 1 1 0; justify-content: center; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .btnrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 a.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none; background: var(--primary); color: var(--on-primary); padding: 9px 15px; border-radius: 9px; font-size: 13.5px; font-weight: 500; cursor: pointer; }
 a.btn.ghost { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
@@ -441,6 +443,48 @@ button.destructive { background: var(--bad); color: #fff; }
 .tabpane > .panel > .list { padding-top: 14px; }
 .tabpane > .panel > .panel-body { padding-top: 14px; }
 
+/* ---- first-run setup wizard ----------------------------------------------- */
+/* A full-page view, not a modal: the dashboard behind it has nothing to show yet,
+   and the source step opens the folder browser in a modal of its own. */
+.wizcard { flex: 0 0 auto; }
+.wizbody { padding: 22px 20px; display: flex; flex-direction: column; }
+.wizbody.center { align-items: center; text-align: center; gap: 6px; }
+.wizh { font-size: 19px; font-weight: 600; margin: 0 0 10px; letter-spacing: -0.01em; }
+.wizbody.center .wizh { margin: 8px 0 4px; }
+.wizbody .hint + .hint { margin-top: 10px; }
+.wizbody > input { margin-top: 4px; }
+
+/* The step rail. The bookends (welcome, done) are not steps, so they get no dot. */
+.wizdots { display: flex; align-items: center; gap: 6px; list-style: none; margin: 2px 0 0; padding: 0; }
+.wizdots li { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--subtle); font-size: 12px; }
+.wizdots li.now { color: var(--primary); }
+.wizdots li.done { color: var(--muted); }
+.wizlbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wizdot {
+  flex: none; width: 20px; height: 20px; border-radius: 999px; display: grid; place-items: center;
+  border: 1.5px solid currentColor; background: transparent; transition: background .18s ease;
+  font-size: 11px; font-weight: 600; line-height: 1;
+}
+.wizdots li.now .wizdot { background: color-mix(in srgb, var(--primary) 22%, transparent); }
+.wizdots li.done .wizdot { border-color: var(--good); color: var(--good); }
+
+.wiznav { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 2px 6px; }
+.wiznav button:not(.ghost):not(.link) { min-width: 150px; }
+
+.wizlist { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.wizlist li { display: flex; align-items: flex-start; gap: 11px; color: var(--primary); }
+.wizlist li > div { display: flex; flex-direction: column; gap: 1px; color: var(--text); font-size: 14px; }
+.wizlist li span { color: var(--muted); font-size: 13px; }
+
+.wizsum { list-style: none; margin: 10px 0 14px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.wizsum li { display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 14px; }
+
+/* The music-source panel, minus its own card: it is already inside the wizard's. */
+.srcembed { margin-top: 14px; }
+.srcembed .srcfields { min-height: 0; }
+.srcembed .srcactions { grid-template-columns: repeat(2, 1fr); }
+.good-line { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--good); margin-top: 2px; }
+
 /* ---- mobile --------------------------------------------------------------- */
 @media (max-width: 620px) {
   .app { padding: 0 12px; }
@@ -489,4 +533,13 @@ button.destructive { background: var(--bad); color: #fff; }
   .prow { flex-wrap: wrap; }
   .who { min-width: 165px; }
   .prow > button { flex: 1 1 auto; }
+
+  /* Setup: the step rail keeps the dots and drops the words (four labels do not fit
+     a phone), and the nav buttons stop being a fixed 150px so Back + Continue share
+     the row instead of overflowing it. */
+  .wizdots li { flex: 0 0 auto; }
+  .wizdots li:not(.now) .wizlbl { display: none; }
+  .wizbody { padding: 18px 14px; }
+  .wiznav { flex-wrap: wrap; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
+  .wiznav button:not(.ghost):not(.link) { min-width: 120px; flex: 1 1 auto; }
 }

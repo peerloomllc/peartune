@@ -1,13 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  MusicNotes, UsersThree, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
-  CaretRight, Plus, X, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
-  Lightning, CheckCircle, Folder, CaretLeft, Wrench, Clock
+  MusicNotes, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
+  CaretRight, Plus, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
+  Lightning, CheckCircle, Wrench, Compass
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
 import { api, copyText, ago, until, fmtDur, platformLabel, DONATE } from './api'
 import { loadThemePref, applyThemePref, resolveTheme } from './theme'
 import { PEAR_MARK } from './icon'
+import { Collapse, ConfirmHost, Modal, askConfirm } from './ui'
+import { SourcePanel } from './SourcePanel'
+import { PairModal, DAY_MS } from './Pair'
+import { MaintenanceModal } from './Maintenance'
+import SetupWizard from './Wizard'
+import { needsSetup, setupDismissed, dismissSetup, undismissSetup } from './setup'
 
 // The operator control plane, as an app shell adapted from the PearCircle seeder's
 // #153 redesign: a fixed top bar, a scrollable middle (stats + the people-first
@@ -16,53 +22,10 @@ import { PEAR_MARK } from './icon'
 // XSS and two syntax-in-a-string bugs; React escapes by default, so that class of
 // bug is gone.
 
-/* ---- themed confirm (replaces window.confirm on the control plane) --------- */
-let _pushConfirm = null
-function askConfirm (opts) {
-  return new Promise(resolve => {
-    if (!_pushConfirm) return resolve(window.confirm(opts.message || opts.title))
-    _pushConfirm({ ...opts, resolve })
-  })
-}
-// An informational popup (single button), themed like the confirm dialog. Used
-// for the outcome of Test / Save / Rescan instead of a line of loose green text.
-function notify (title, message) {
-  return askConfirm({ title, message, confirmLabel: 'Done', info: true })
-}
-
 // Capitalise the first letter of each word for display, leaving the rest as-is so
 // an already-cased or all-caps name is not mangled. The music source reports its
 // own name (often lower-case, e.g. "navidrome", "nextcloud music").
 const titleCase = s => String(s || '').replace(/\b\w/g, c => c.toUpperCase())
-
-// A height+fade collapse, always mounted so it animates BOTH ways (open and close).
-function Collapse ({ open, children }) {
-  return <div className={'collapse' + (open ? ' open' : '')}>{children}</div>
-}
-function ConfirmHost () {
-  const [c, setC] = useState(null)
-  useEffect(() => { _pushConfirm = setC; return () => { _pushConfirm = null } }, [])
-  useEffect(() => {
-    if (!c) return
-    const h = e => { if (e.key === 'Escape') { c.resolve(false); setC(null) } }
-    document.addEventListener('keydown', h)
-    return () => document.removeEventListener('keydown', h)
-  }, [c])
-  if (!c) return null
-  const close = v => { c.resolve(v); setC(null) }
-  return (
-    <div className='overlay' onMouseDown={e => { if (e.target === e.currentTarget) close(false) }}>
-      <div className='modal confirm' role='alertdialog' aria-modal='true'>
-        <h3>{c.title}</h3>
-        {c.message && <p className='hint'>{c.message}</p>}
-        <div className={'confirm-actions' + (c.info ? ' center' : '')}>
-          {!c.info && <button className='ghost' onClick={() => close(false)}>{c.cancelLabel || 'Cancel'}</button>}
-          <button className={c.danger ? 'destructive' : ''} onClick={() => close(true)} autoFocus>{c.confirmLabel || 'Confirm'}</button>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 export default function App () {
   const [state, setState] = useState(null)
@@ -70,6 +33,10 @@ export default function App () {
   const [modal, setModal] = useState(null) // 'pair' | 'support' | null
   const [tab, setTab] = useState('people') // 'people' | 'source'
   const [pref, setPref] = useState(loadThemePref())
+  // null until the first /api/state answers - a fresh host opens the wizard, and a
+  // configured one never sees it. Once set, it is the operator's, not the poll's:
+  // finishing or skipping must not be undone by the next refresh.
+  const [setup, setSetup] = useState(null)
 
   useEffect(() => { applyThemePref(pref) }, [pref])
 
@@ -81,7 +48,12 @@ export default function App () {
 
   const refresh = useCallback(async () => {
     const s = await api('/api/state')
-    if (s && s.stats) setState(s)
+    if (s && s.stats) {
+      setState(s)
+      // Decided once, off the first state we ever see. Re-deciding on every poll
+      // would yank the wizard away the moment its own source step saved.
+      setSetup(v => v === null ? (needsSetup(s) && !setupDismissed()) : v)
+    }
   }, [])
 
   useEffect(() => {
@@ -92,9 +64,22 @@ export default function App () {
 
   const cycleTheme = () => setPref(resolveTheme(pref) === 'dark' ? 'light' : 'dark')
   const isDark = resolveTheme(pref) === 'dark'
+  const leaveSetup = () => { dismissSetup(); setSetup(false) }
+  const openSetup = () => { undismissSetup(); setSetup(true) }
 
   if (!state) {
     return <div className='app'><div className='main'><div className='empty'>Connecting to the host…</div></div></div>
+  }
+
+  if (setup) {
+    return (
+      <>
+        <SetupWizard state={state} refresh={refresh} toast={toast}
+          isDark={isDark} onTheme={cycleTheme} onExit={leaveSetup} />
+        {note && <div className={'toast' + (note.bad ? ' err' : '')}>{note.msg}</div>}
+        <ConfirmHost />
+      </>
+    )
   }
 
   const st = state.stats || {}
@@ -103,7 +88,7 @@ export default function App () {
 
   return (
     <div className='app'>
-      <TopBar state={state} isDark={isDark} onTheme={cycleTheme} onOpen={setModal} />
+      <TopBar state={state} isDark={isDark} onTheme={cycleTheme} onOpen={setModal} onSetup={openSetup} />
 
       <div className='main'>
         {state.sourceError &&
@@ -154,7 +139,7 @@ export default function App () {
 }
 
 /* ---- top bar -------------------------------------------------------------- */
-function TopBar ({ state, isDark, onTheme, onOpen }) {
+function TopBar ({ state, isDark, onTheme, onOpen, onSetup }) {
   const [menu, setMenu] = useState(false)
   const ref = useRef(null)
   useEffect(() => {
@@ -189,6 +174,7 @@ function TopBar ({ state, isDark, onTheme, onOpen }) {
           <button className='iconbtn' onClick={() => setMenu(v => !v)} aria-label='Menu' aria-expanded={menu}><GearSix size={17} /></button>
           {menu &&
             <div className='menu' role='menu'>
+              <button onClick={() => { setMenu(false); onSetup() }}><Compass size={16} /> Setup guide</button>
               <button onClick={() => { setMenu(false); onOpen('maintenance') }}><Wrench size={16} /> Maintenance</button>
               <button onClick={() => { setMenu(false); onOpen('support') }}><Heart size={16} /> Support Development</button>
               <div className='sep' />
@@ -552,506 +538,7 @@ function PendingCard ({ d, onConfirm, onRevoke }) {
   )
 }
 
-/* ---- music source panel --------------------------------------------------- */
-const SERVERS = {
-  subsonic: { label: 'Subsonic server', placeholder: 'http://localhost:4533' },
-  jellyfin: { label: 'Jellyfin / Emby', placeholder: 'http://localhost:8096' }
-}
-
-function SourcePanel ({ state, refresh, toast }) {
-  const [kind, setKind] = useState('folder')
-  const [cfg, setCfg] = useState({})
-  const [dirty, setDirty] = useState(false)
-  const [busy, setBusy] = useState(null) // 'test' | 'save' | 'rescan' | null
-  const [browse, setBrowse] = useState(null)
-  const [newRoot, setNewRoot] = useState('') // the "add a folder" input
-  const [detected, setDetected] = useState(null) // null=not scanned, []=none, [...]=found
-  const dirtyRef = useRef(false)
-  dirtyRef.current = dirty
-
-  // Look for a Jellyfin/Nextcloud/Subsonic server co-located on this box, once, so
-  // the operator can pre-fill its internal address instead of having to know it
-  // (jellyfin.embassy:8096 and friends). Best-effort: a failure just shows nothing.
-  useEffect(() => {
-    let live = true
-    api('/api/source/detect').then(r => { if (live) setDetected((r && r.sources) || []) })
-    return () => { live = false }
-  }, [])
-
-  // Pre-fill a detected server: switch to its tab and drop in its URL. Sets cfg for
-  // the target kind directly (not via `set`, which closes over the old `kind`).
-  const useDetected = (d) => {
-    setKind(d.kind); setDirty(true); setBrowse(null)
-    setCfg(c => ({ ...c, [d.kind]: { ...(c[d.kind] || {}), url: d.url } }))
-  }
-
-  useEffect(() => {
-    if (dirtyRef.current) return
-    const kinds = (state.source && state.source.kinds) || {}
-    setKind((state.source && state.source.active) || 'folder')
-    const roots = (kinds.folder && kinds.folder.roots && kinds.folder.roots.length) ? kinds.folder.roots : ['/music']
-    setCfg({
-      subsonic: { url: '', username: '', ...(kinds.subsonic || {}) },
-      jellyfin: { url: '', username: '', ...(kinds.jellyfin || {}) },
-      folder: { roots }
-    })
-  }, [state.source])
-
-  const touch = () => setDirty(true)
-  const set = (k, v) => { setCfg(c => ({ ...c, [kind]: { ...c[kind], [k]: v } })); touch() }
-  const pick = k => { setKind(k); touch(); setBrowse(null) }
-  const cancel = () => { setDirty(false); setBrowse(null); refresh() }
-  const tracks = n => `${(n || 0).toLocaleString()} track${n === 1 ? '' : 's'}`
-  // tracks, plus albums/artists when the source reports them (folder always; Subsonic
-  // and Jellyfin/Emby after this change; a subset server may still omit albums).
-  const summary = r => {
-    const parts = [tracks(r.tracks)]
-    if (r.albums) parts.push(`${r.albums.toLocaleString()} album${r.albums === 1 ? '' : 's'}`)
-    if (r.artists) parts.push(`${r.artists.toLocaleString()} artist${r.artists === 1 ? '' : 's'}`)
-    return parts.join(' · ')
-  }
-
-  // A folder source is a LIST of directories now. Add/remove operate on that list;
-  // duplicates are ignored so tapping "Choose this folder" on one you already have
-  // is a no-op rather than a double entry.
-  const roots = () => (cfg.folder && cfg.folder.roots) || []
-  const addRoot = (p) => {
-    const clean = String(p || '').trim()
-    if (!clean) return
-    const existing = roots()
-    if (existing.includes(clean)) return // exact duplicate: silently ignored
-    // Overlapping folders are either redundant (a subfolder of one you already have)
-    // or would supersede others (a parent of ones you have - which the scan drops,
-    // and if that drops your PRIMARY folder every track id re-keys). Block both with
-    // a reason rather than silently doing something surprising. Container paths are posix.
-    const norm = s => s.replace(/\/+$/, '')
-    const inside = (a, b) => norm(a) === norm(b) || norm(a).startsWith(norm(b) + '/')
-    const parent = existing.find(r => inside(clean, r))
-    if (parent) {
-      notify('Already covered', <>That folder is inside <span className='hl'>{parent}</span>, which you already have — its music is already included.</>)
-      return
-    }
-    const children = existing.filter(r => inside(r, clean))
-    if (children.length) {
-      const hitsPrimary = children.includes(existing[0])
-      notify('Folders overlap', <>
-        <span className='hl'>{clean}</span> contains {children.length === 1 ? 'a folder' : 'folders'} you already have ({children.join(', ')}). Remove {children.length === 1 ? 'it' : 'them'} first if you want to use the parent instead.
-        {hitsPrimary ? <> That would also re-key your library, since it replaces your primary folder.</> : null}
-      </>)
-      return
-    }
-    setCfg(c => ({ ...c, folder: { roots: [...existing, clean] } })); touch()
-  }
-  const removeRoot = (p) => {
-    setCfg(c => ({ ...c, folder: { roots: roots().filter(r => r !== p) } })); touch()
-  }
-
-  const form = () => {
-    const c = cfg[kind] || {}
-    if (kind === 'folder') return { kind: 'folder', roots: roots().map(r => r.trim()).filter(Boolean) }
-    const out = { kind, url: (c.url || '').trim(), username: (c.username || '').trim() }
-    if (c.password) out.password = c.password
-    if (kind === 'subsonic' && c.apiKey) out.apiKey = c.apiKey
-    return out
-  }
-  const test = async () => {
-    setBusy('test')
-    const r = await api('/api/source/test', form())
-    setBusy(null)
-    if (!r.ok) return notify('Connection failed', r.error || 'The music source could not be reached.')
-    notify(
-      r.tracks ? 'Connection successful' : 'No music found',
-      r.tracks
-        ? <>PearTune reached the music source and found <span className='hl'>{tracks(r.tracks)}</span>.</>
-        : 'The music source is reachable, but no tracks were found there. Check the folder path or the server credentials.'
-    )
-  }
-  const save = async () => {
-    setBusy('save')
-    const r = await api('/api/source', form())
-    if (!r.ok) { setBusy(null); return notify('Could not save the music source', r.error || 'The music source could not be saved.') }
-    setDirty(false); setBrowse(null)
-    await refresh()
-    setBusy(null)
-    notify('Music source saved', <>The music source has been updated. <span className='hl'>{summary(r)}</span> are now available to your devices.</>)
-  }
-  const rescan = async () => {
-    setBusy('rescan')
-    const r = await api('/api/source/rescan', {})
-    await refresh()
-    setBusy(null)
-    if (!r.ok) return notify('Rescan failed', r.error || 'The library could not be rescanned.')
-    notify('Rescan complete', <>The library was rescanned and now contains <span className='hl'>{summary(r)}</span>.</>)
-  }
-  const setAutoRescan = async (e) => {
-    const min = Number(e.target.value)
-    const r = await api('/api/rescan-interval', { minutes: min })
-    if (r.error || r.ok === false) return toast('Failed: ' + (r.error || 'could not set auto-rescan'), true)
-    await refresh()
-    const label = { 0: 'off', 15: 'every 15 minutes', 30: 'every 30 minutes', 60: 'every hour', 360: 'every 6 hours' }[min] || `every ${min} minutes`
-    toast(min ? `Auto-rescan ${label}.` : 'Auto-rescan off.')
-  }
-  const openBrowse = async path => {
-    const start = path || roots()[roots().length - 1] || '/'
-    // Keep the path in the loading state so the modal's header does not flicker
-    // or resize while the next listing loads.
-    setBrowse(b => ({ loading: true, path: start, dirs: (b && b.dirs) || [], parent: b && b.parent }))
-    let r = await api('/api/source/folders?path=' + encodeURIComponent(start))
-    if (r.error) r = await api('/api/source/folders?path=/')
-    setBrowse(r.error ? { error: r.error, path: start } : r)
-  }
-
-  const c = cfg[kind] || {}
-  const server = SERVERS[kind]
-
-  return (
-    <div className='panel'>
-      <div className='panel-head'><h2><MusicNotes size={13} weight='bold' style={{ verticalAlign: '-2px', marginRight: 5 }} />Music source</h2></div>
-      <div className='panel-body'>
-        <div className='seg'>
-          <button className={kind === 'folder' ? 'on' : ''} onClick={() => pick('folder')}>Folder</button>
-          <button className={kind === 'subsonic' ? 'on' : ''} onClick={() => pick('subsonic')}>Subsonic</button>
-          <button className={kind === 'jellyfin' ? 'on' : ''} onClick={() => pick('jellyfin')}>Jellyfin / Emby</button>
-        </div>
-
-        {detected && detected.length > 0 &&
-          <div className='srcdetect'>
-            <span className='subtle'>Found on this server — tap to use its address:</span>
-            <div className='srcdetect-row'>
-              {detected.map((d, i) =>
-                <button key={i} className='detectchip' onClick={() => useDetected(d)} title={d.url}>
-                  {d.server} · {d.name}
-                </button>)}
-            </div>
-          </div>}
-
-        <div className='srcfields'>
-          {kind === 'folder'
-            ? <>
-                <label>Folders <span className='subtle'>— paths inside the PearTune container</span></label>
-                <div className='rootlist'>
-                  {roots().length
-                    ? roots().map((r, i) =>
-                        <div className='rootrow' key={r}>
-                          <span className='rootpath' title={r}>{r}{i === 0 && roots().length > 1 && <span className='subtle'> · primary</span>}</span>
-                          <button className='iconbtn' aria-label={'Remove ' + r} onClick={() => removeRoot(r)}><X size={13} /></button>
-                        </div>)
-                    : <div className='rootrow'><span className='subtle'>No folders yet — add one below.</span></div>}
-                </div>
-                <div className='pick'>
-                  <input value={newRoot} placeholder='/music' onChange={e => setNewRoot(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && newRoot.trim()) { addRoot(newRoot); setNewRoot('') } }} />
-                  <button className='ghost' onClick={() => { if (newRoot.trim()) { addRoot(newRoot); setNewRoot('') } else openBrowse() }}>{newRoot.trim() ? 'Add' : 'Browse…'}</button>
-                </div>
-              </>
-            : <>
-                <label>{server.label} URL</label>
-                <input value={c.url || ''} placeholder={server.placeholder} onChange={e => set('url', e.target.value)} />
-                <label>Username</label>
-                <input value={c.username || ''} placeholder='umbrel' onChange={e => set('username', e.target.value)} />
-                <label>Password</label>
-                <input type='password' placeholder={c.hasPassword ? 'Unchanged' : 'Password'} onChange={e => set('password', e.target.value)} />
-                {kind === 'subsonic' && <>
-                  <label>API key <span className='subtle'>— optional; for servers that use one</span></label>
-                  <input type='password' placeholder={c.hasApiKey ? 'Unchanged' : 'Leave blank to use username and password'} onChange={e => set('apiKey', e.target.value)} />
-                </>}
-              </>}
-        </div>
-
-        <div className='srcactions'>
-          <button className='ghost' onClick={test} disabled={!!busy}>{busy === 'test' ? 'Testing…' : 'Test'}</button>
-          <button onClick={save} disabled={!!busy}>{busy === 'save' ? 'Saving…' : 'Save'}</button>
-          <button className='ghost' onClick={rescan} disabled={!!busy}>{busy === 'rescan' ? 'Rescanning…' : 'Rescan'}</button>
-        </div>
-        {/* Scheduled auto-rescan: pick it up without a manual Rescan when files land.
-            Most useful for a folder library (a server watches its own). */}
-        <label className='autoscan'>
-          <span>Auto-rescan</span>
-          <select value={state.rescanIntervalMin || 0} onChange={setAutoRescan}>
-            <option value={0}>Off</option>
-            <option value={15}>Every 15 minutes</option>
-            <option value={30}>Every 30 minutes</option>
-            <option value={60}>Every hour</option>
-            <option value={360}>Every 6 hours</option>
-          </select>
-        </label>
-        {/* Always rendered so its appearance/disappearance never resizes the panel. */}
-        <div className='srcdiscard'>{dirty && <button className='link' onClick={cancel}>Discard changes</button>}</div>
-      </div>
-      {browse &&
-        <Modal title='Choose a Folder' onClose={() => setBrowse(null)}>
-          <FolderBrowser browse={browse} onOpen={openBrowse} onUse={p => { addRoot(p); setBrowse(null) }} />
-        </Modal>}
-    </div>
-  )
-}
-
-function FolderBrowser ({ browse, onOpen, onUse }) {
-  const path = browse.path || '/'
-  const dirs = browse.dirs || []
-  return (
-    <div className='fb'>
-      <div className='fb-head'>
-        <span className='fb-path' title={path}>{path}</span>
-        {browse.here ? <span className='fb-count'>{browse.here} audio files</span> : null}
-      </div>
-      <div className='fb-list'>
-        {browse.error
-          ? <div className='fb-empty'>{browse.error}</div>
-          : browse.loading
-            ? <div className='fb-empty'>Looking…</div>
-            : <ul className='fb-ul' key={path}>
-                {browse.parent && <li><button onClick={() => onOpen(browse.parent)}><span className='fb-name'><CaretLeft size={15} className='fb-up' /><span>Up a level</span></span></button></li>}
-                {dirs.map(d =>
-                  <li key={d.path}><button onClick={() => onOpen(d.path)}>
-                    <span className='fb-name'><Folder size={16} weight={d.music ? 'fill' : 'regular'} className='fb-up' /><span>{d.name}</span></span>
-                    {d.music && <span className='fb-has'>music</span>}
-                  </button></li>)}
-                {!dirs.length && !browse.here && <li><div className='fb-empty' style={{ height: 'auto', padding: '16px' }}>Nothing in here</div></li>}
-              </ul>}
-      </div>
-      <button className='block' onClick={() => onUse(path)}>Choose this folder</button>
-    </div>
-  )
-}
-
-/* ---- modals --------------------------------------------------------------- */
-function Modal ({ title, onClose, children }) {
-  useEffect(() => {
-    const h = e => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', h)
-    return () => document.removeEventListener('keydown', h)
-  }, [onClose])
-  return (
-    <div className='overlay' onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className='modal' role='dialog' aria-modal='true' aria-label={title}>
-        <div className='modal-head'>
-          <h3>{title}</h3>
-          <button className='iconbtn' onClick={onClose} aria-label='Close'><X size={17} /></button>
-        </div>
-        {children}
-      </div>
-    </div>
-  )
-}
-
-const DAY_MS = 86400000
-const GUEST_DURATIONS = [
-  { ms: DAY_MS, label: '24 hours' },
-  { ms: 7 * DAY_MS, label: '7 days' },
-  { ms: 30 * DAY_MS, label: '30 days' }
-]
-
-function PairModal ({ onClose, toast }) {
-  const [qr, setQr] = useState(null) // { link, dataUrl, guest, expiresMs }
-  const [busy, setBusy] = useState(false)
-  const [guest, setGuest] = useState(false)
-  const [durMs, setDurMs] = useState(DAY_MS)
-  const [copied, setCopied] = useState(false)
-  const [outcome, setOutcome] = useState(null) // { ok: true, label } | { ok: false } once the window ends
-  // deviceKey -> grantedAt BEFORE the window opened. A pair is detected by a device whose grantedAt
-  // is NEW or CHANGED - not merely a new key. A device that was here with a REVOKED grant (common
-  // after any pair/revoke churn) re-pairs to a FRESH grantedAt (grant() stamps Date.now() every
-  // time), so keying on the key alone missed it and the modal wrongly said "expired" on a success.
-  const seenGrants = useRef(new Map())
-  const copyLink = async () => { if (await copyText(qr.link)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }
-
-  // Watch the open window and SAY what happened, instead of leaving the operator holding a QR with
-  // no idea whether it worked. The host's pair window is one-shot - pair.js close('paired') - so
-  // `pairing` flips true->false either way; a device that pairs THROUGH this window (a new grant, or
-  // a re-activated one with a fresh grantedAt) is what separates "paired" from "expired". Polls
-  // faster than the dashboard's 3s so the confirmation feels immediate, and only while a code is up.
-  useEffect(() => {
-    if (!qr || outcome) return
-    let done = false
-    const t = setInterval(async () => {
-      if (done) return
-      const st = await api('/api/state').catch(() => null)
-      if (!st || done) return
-      const fresh = (st.devices || []).find(d => !d.revokedAt && seenGrants.current.get(d.deviceKey) !== d.grantedAt)
-      if (fresh) {
-        done = true
-        setOutcome({ ok: true, label: fresh.label || 'a device' })
-        // The window is already closed host-side, so there is nothing to stop - close straight
-        // through the parent, not the modal's own handler (which would POST /api/pair/stop).
-        setTimeout(() => onClose(), 2200)
-      } else if (st.pairing === false) {
-        // The window ended with nobody through it. Do NOT auto-close: the operator is standing
-        // there and needs a fresh code, not a modal that vanishes.
-        done = true
-        setOutcome({ ok: false })
-      }
-    }, 1000)
-    return () => { done = true; clearInterval(t) }
-  }, [qr, outcome])
-  const start = async () => {
-    setBusy(true)
-    // Remember who was here BEFORE the window opened. A device key that was not in this set is the
-    // one that just paired through it - which is what lets us say WHICH device, and lets us tell a
-    // successful pair from a window that simply timed out.
-    const before = await api('/api/state').catch(() => null)
-    seenGrants.current = new Map((before?.devices || []).map(d => [d.deviceKey, d.grantedAt]))
-    // A guest window carries the operator's chosen duration; a full window sends nothing.
-    const r = await api('/api/pair/start', guest ? { expiresMs: durMs } : {})
-    // margin 4 = the spec's full quiet zone (was 1). A too-thin quiet zone hurts scanning, and it
-    // bites hardest in DARK mode: the white QR card is a bright island in a dark page, so the phone
-    // camera meters the dark surroundings and blows out the card, washing out the modules. A proper
-    // quiet zone + a bigger .qr card (below) keep contrast even, so it scans in either theme.
-    const dataUrl = await QRCode.toDataURL(r.link, { width: 256, margin: 4, errorCorrectionLevel: 'M' }).catch(() => null)
-    setQr({ link: r.link, dataUrl, guest: r.guest, expiresMs: r.expiresMs })
-    setBusy(false)
-  }
-  const stop = async () => { await api('/api/pair/stop', {}); setQr(null); toast('Pairing window closed.') }
-  return (
-    <Modal title='Pair a Device' onClose={async () => { if (qr) await api('/api/pair/stop', {}); onClose() }}>
-      {!qr
-        ? <div className='stack center'>
-            <div className='seg wide'>
-              <button className={guest ? '' : 'on'} onClick={() => setGuest(false)}>Full access</button>
-              <button className={guest ? 'on' : ''} onClick={() => setGuest(true)}>Guest pass</button>
-            </div>
-            {guest
-              ? <label className='hint center dur'>Access expires
-                  <select value={durMs} onChange={e => setDurMs(Number(e.target.value))}>
-                    {GUEST_DURATIONS.map(o => <option key={o.ms} value={o.ms}>{o.label} after pairing</option>)}
-                  </select>
-                </label>
-              : <p className='hint center'>Permanent access. Scan the code in PearTune on your phone.</p>}
-            <button onClick={start} disabled={busy}>{busy ? 'Starting…' : 'Show pairing code'}</button>
-          </div>
-        : outcome
-          ? <div className='stack center'>
-              {outcome.ok
-                ? <>
-                    <CheckCircle size={44} weight='fill' color='var(--good)' />
-                    <h3 className='pairdone'>Paired with {outcome.label}</h3>
-                    <p className='hint center'>It can reach your library now. Closing…</p>
-                  </>
-                : <>
-                    <Clock size={40} weight='regular' color='var(--muted)' />
-                    <h3 className='pairdone'>That code expired</h3>
-                    <p className='hint center'>Nobody paired through it. Show a fresh one when the phone is ready.</p>
-                    <div className='pairacts'>
-                      <button className='ghost' onClick={onClose}>Close</button>
-                      <button onClick={() => { setOutcome(null); setQr(null) }}>New code</button>
-                    </div>
-                  </>}
-            </div>
-          : <div className='stack center'>
-            <div className='qrpanel'>
-              {qr.dataUrl && <img className='qr' src={qr.dataUrl} alt='Pairing QR code' />}
-              <div className='qrcap'>
-                {qr.guest
-                  ? `Guest pass — access expires ${fmtDur(qr.expiresMs)} after this device pairs.`
-                  : 'Valid for 5 minutes. Closes as soon as one device pairs.'}
-              </div>
-            </div>
-            <div className='keyrow'>
-              <div className='key addr'>{qr.link}</div>
-            </div>
-            <div className='pairacts'>
-              <button className='ghost' onClick={stop}>Cancel</button>
-              <button onClick={copyLink}>
-                {copied ? <><CheckCircle size={15} weight='fill' color='var(--good)' /> Copied</> : <><Copy size={15} /> Copy</>}
-              </button>
-            </div>
-          </div>}
-    </Modal>
-  )
-}
-
-// Operator maintenance. A sectioned modal - Library name is the first section;
-// more (guest grants, listening history, danger zone, …) can be added as siblings
-// without reshaping this.
-function MaintenanceModal ({ state, onClose, onSaved, toast }) {
-  return (
-    <Modal title='Maintenance' onClose={onClose}>
-      <div className='maint'>
-        <LibraryNameSection state={state} onSaved={onSaved} toast={toast} />
-        <PasswordSection state={state} onSaved={onSaved} toast={toast} />
-      </div>
-    </Modal>
-  )
-}
-
-// A readable random password (no 0/o/1/l/i to misread). Fills the New field so the
-// operator can set a strong one without inventing it.
-function suggestPassword () {
-  const a = 'abcdefghjkmnpqrstuvwxyz23456789'
-  const r = new Uint8Array(16)
-  ;(window.crypto || window.msCrypto).getRandomValues(r)
-  let s = ''
-  for (let i = 0; i < 16; i++) { s += a[r[i] % a.length]; if (i % 4 === 3 && i < 15) s += '-' }
-  return s
-}
-
-function PasswordSection ({ state, onSaved, toast }) {
-  const src = state.passwordSource
-  const [next, setNext] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  // Loopback with no gate: nothing to manage.
-  if (src === 'none' || src == null) return null
-
-  // Platform-owned (PEARTUNE_PASSWORD): a change here would be lost on restart, so
-  // say where to change it instead of offering a control that silently no-ops.
-  if (src === 'explicit') {
-    return (
-      <section className='maint-section'>
-        <h4>Dashboard password</h4>
-        <p className='hint'>Set by your platform (the <code>PEARTUNE_PASSWORD</code> environment variable). Change it there — a change here would be overwritten on the next restart.</p>
-      </section>
-    )
-  }
-
-  const canSave = next.trim().length >= 6 && !busy
-  const change = async () => {
-    setBusy(true)
-    const r = await api('/api/password', { next: next.trim() })
-    setBusy(false)
-    if (!r.ok) return toast('Failed: ' + (r.error || 'could not change the password'), true)
-    setNext('')
-    onSaved()
-    toast('Dashboard password changed.')
-  }
-
-  return (
-    <section className='maint-section'>
-      <h4>Dashboard password</h4>
-      <p className='hint'>The lock on this dashboard. Anyone with it can revoke devices and open a pairing window. You are signed in, so you don’t need the old one to set a new one.</p>
-      <input value={next} maxLength={64} placeholder='New password (min 6)' autoComplete='new-password'
-        onChange={e => setNext(e.target.value)} onKeyDown={e => e.key === 'Enter' && canSave && change()} />
-      <div className='srcdiscard'><button className='link' onClick={() => setNext(suggestPassword())}>Suggest a strong one</button></div>
-      <button className='block' style={{ marginTop: 4 }} onClick={change} disabled={!canSave}>{busy ? 'Changing…' : 'Change password'}</button>
-    </section>
-  )
-}
-
-function LibraryNameSection ({ state, onSaved, toast }) {
-  const [name, setName] = useState(state.libraryName || '')
-  const [busy, setBusy] = useState(false)
-  const dirty = name.trim() !== (state.libraryName || '')
-  const save = async () => {
-    const clean = name.trim()
-    if (!clean) return
-    setBusy(true)
-    const r = await api('/api/library', { name: clean })
-    setBusy(false)
-    if (!r.ok) return toast('Failed: ' + (r.error || 'could not rename the library'), true)
-    onSaved()
-    toast('Library renamed.')
-  }
-  return (
-    <section className='maint-section'>
-      <h4>Library name</h4>
-      <p className='hint'>Shown on this dashboard, and to a device when it pairs.</p>
-      <input value={name} maxLength={64} placeholder='My Library'
-        onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && dirty && save()} />
-      <button className='block' style={{ marginTop: 10 }} onClick={save} disabled={busy || !name.trim() || !dirty}>{busy ? 'Saving…' : 'Save'}</button>
-    </section>
-  )
-}
-
+/* ---- the donation modal -------------------------------------------------- */
 // Three no-account rails (Lightning, on-chain BTC, USD/card), one QR each,
 // rendered entirely client-side. Same addresses as the phone app.
 const RAILS = {
