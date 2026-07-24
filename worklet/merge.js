@@ -247,6 +247,36 @@ function filterByLibrary (items, libraryId) {
   )
 }
 
+// --- requests across a blended library (proposal 2026-07-24, P1) ------------
+//
+// In merged mode a request is filed with EVERY connected host (none of them has the music,
+// so any of their owners might add it). Each host keeps its own request row, so the
+// requester's "Your requests" would otherwise show the same ask two or three times with
+// different statuses. Collapse them to ONE row per ask, carrying the BEST status - if any
+// host added it, the music is coming, so that is what the requester should see - plus which
+// libraries it went to. `rows` are per-host requests tagged with { libraryId, libraryName }.
+const REQUEST_STATUS_RANK = { added: 3, pending: 2, declined: 1 }
+function collapseRequests (rows) {
+  const byKey = new Map()
+  for (const r of rows || []) {
+    if (!r) continue
+    const key = `${r.kind}|${norm(r.name)}|${norm(r.artist)}`
+    let g = byKey.get(key)
+    // `refs` carries every per-host (libraryId, id) this ask lives on, so REMOVE can delete
+    // it on all of them - a collapsed row hides the fact that it is N host rows.
+    if (!g) { g = { ...r, libraries: [], refs: [], _rank: 0 }; byKey.set(key, g) }
+    const rank = REQUEST_STATUS_RANK[r.status] || 0
+    if (rank > g._rank) { g._rank = rank; g.status = r.status; g.resolvedAt = r.resolvedAt || null }
+    if (r.libraryName && !g.libraries.includes(r.libraryName)) g.libraries.push(r.libraryName)
+    if (r.libraryId && r.id) g.refs.push({ libraryId: r.libraryId, id: r.id })
+    g.createdAt = Math.max(g.createdAt || 0, r.createdAt || 0)
+    g.count = Math.max(g.count || 1, r.count || 1)
+  }
+  return [...byKey.values()]
+    .map(({ _rank, ...r }) => r)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+}
+
 // The best copy to STREAM: the primary if its host is connected, else the first connected
 // fallback, else the primary anyway (caller will get a connect error / greyed track). `connected`
 // is a Set of libraryIds currently reachable; omit to just take the primary.
@@ -274,5 +304,6 @@ module.exports = {
   sortItems,
   filterByLibrary,
   bestCopy,
+  collapseRequests,
   DUR_BUCKET_MS
 }

@@ -478,6 +478,13 @@ class PearTuneClient {
   playlistAdd (params) { return this._request('playlist.add', params) }
   playlistSetTracks (params) { return this._request('playlist.setTracks', params) }
 
+  // Music requests (proposal 2026-07-24, P1). requestAdd files a request (requester
+  // derived host-side); requestList returns THIS caller's own. Resolving is the
+  // operator's, on the dashboard - not a client method.
+  requestAdd (params) { return this._request('request.add', params) }
+  requestList () { return this._request('request.list') }
+  requestDelete (params) { return this._request('request.delete', params) }
+
   // Play session (cross-device handoff, proposal 2026-07-17). The host takes the owner +
   // acting device from the connection; claim/set are gated by the generation CAS host-side.
   sessionGet (params) { return this._request('session.get', params) }

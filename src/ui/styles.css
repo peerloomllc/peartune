@@ -1186,6 +1186,21 @@ button.shead .caret.open { transform: rotate(90deg); }
 .sheet > p { text-align: center; margin: .25rem 0 1rem; }
 .sheet h2 { margin: 1.2rem 0 0; }
 
+/* --- music requests: the You > Requests view ------------------------------- */
+.reqview { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.reqview li { display: flex; align-items: center; gap: .6rem; padding: .7rem .1rem; border-top: 1px solid var(--color-border); }
+.reqview li:first-child { border-top: 0; }
+.rqv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .1rem; }
+.rqv-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rqv-sub { }
+.rq-status { flex: none; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; color: var(--color-text-muted); }
+.rq-status.added { color: var(--color-success); }
+.rq-status.declined { color: var(--color-error); }
+/* A bare icon button, like the queue's remove - no box/border (the default button
+   chrome was drawing that weird container). */
+.rqv-rm { flex: none; background: none; border: 0; padding: .4rem; color: var(--color-text-muted); display: inline-flex; line-height: 0; cursor: pointer; }
+.rqv-rm:active { color: var(--color-error); }
+
 /* --- identity (naming a device, claiming a user) -------------------------- */
 .namebox {
   width: 100%; max-width: 22rem; text-align: left;

@@ -54,6 +54,32 @@ function sanitizePlaylistName (name) {
   return s || 'Untitled playlist'
 }
 
+// --- music requests (proposal 2026-07-24-owner-in-the-app, P1) ---------------
+// A paired device asks the operator to add music. Host-local, NOT replicated -
+// same posture as the grant store, so a requester can never forge or replay one.
+const REQUEST_KINDS = ['artist', 'album', 'track']
+const REQUEST_FIELD_MAX = 200
+const REQUEST_STATUSES = ['pending', 'added', 'declined']
+
+// Free text from a requester that renders on the DASHBOARD and in the owner app, so it
+// is capped + control-stripped here at the single writer (React escapes the markup; this
+// bounds the value). Empty -> null so an absent artist/album is a clean absence.
+function sanitizeReqField (s, { required = false } = {}) {
+  const v = String(s ?? '').replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, REQUEST_FIELD_MAX)
+  if (!v && required) throw new Error('request needs a name')
+  return v || null
+}
+
+// The dedup fold: lowercase, strip punctuation/accents, collapse whitespace. Two requests
+// that fold to the same key (same kind, name, artist) are the SAME ask - the second bumps
+// the first's count rather than adding a duplicate for the operator to wade through. A
+// deliberately small local copy of worklet/merge's norm; the host must not depend on the
+// worklet.
+function normReq (s) {
+  return String(s ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
 class UserState {
   constructor (bee) {
     this.bee = bee
@@ -345,6 +371,91 @@ class UserState {
   // Scoped by the same `:` .. `;` bound trick listFavs uses, so owner `p:abc` never
   // reaches `p:abcd` ('d' sorts above ';'). Keys are collected before deleting rather
   // than deleted mid-stream. Returns how many rows went.
+  // --- music requests (P1) --------------------------------------------------
+  // Keyed by a random id (flat `request:{id}` prefix) rather than by requester, because
+  // the OPERATOR's view - all requests, newest first - is the primary one; the requester
+  // is a field, and their own-list is the same scan filtered. Personal scale, so scan +
+  // sort in JS beats a second index.
+  _reqKey (id) { return 'request:' + id }
+
+  // Fold key of a still-PENDING request. Resolved requests never fold - a fulfilled ask
+  // that is asked again is a NEW request (they want it re-added / it fell out).
+  _reqFold (r) {
+    return r.status === 'pending' ? `${r.kind}|${normReq(r.name)}|${normReq(r.artist)}` : null
+  }
+
+  // File a request, or fold it into an identical pending one (bumping its count + who).
+  // `requester` is the host-derived ownerId (personId ?? deviceKey) - never client-sent.
+  async addRequest (requester, { kind, name, artist, album, mbid } = {}) {
+    if (!REQUEST_KINDS.includes(kind)) throw new Error('bad request kind: ' + kind)
+    const clean = {
+      kind,
+      name: sanitizeReqField(name, { required: true }),
+      artist: sanitizeReqField(artist),
+      album: sanitizeReqField(album),
+      mbid: sanitizeReqField(mbid)
+    }
+    const fold = `${kind}|${normReq(clean.name)}|${normReq(clean.artist)}`
+    for await (const node of this.bee.createReadStream({ gte: 'request:', lt: 'request;' }, { valueEncoding: 'json' })) {
+      const r = node.value
+      if (r && this._reqFold(r) === fold) {
+        const merged = {
+          ...r,
+          count: (r.count || 1) + 1,
+          // The most recent requester + text win the display, so a second person asking
+          // shows the operator it is wanted by more than one, freshly.
+          requester,
+          name: clean.name,
+          artist: clean.artist,
+          album: clean.album,
+          updatedAt: Date.now()
+        }
+        await this.bee.put(node.key, merged, { valueEncoding: 'json' })
+        return merged
+      }
+    }
+    const id = crypto.randomUUID()
+    const now = Date.now()
+    const row = { id, requester, ...clean, status: 'pending', count: 1, createdAt: now, updatedAt: now, resolvedAt: null }
+    await this.bee.put(this._reqKey(id), row, { valueEncoding: 'json' })
+    return row
+  }
+
+  async getRequest (id) {
+    const node = await this.bee.get(this._reqKey(id), { valueEncoding: 'json' })
+    return node?.value || null
+  }
+
+  // All requests, newest first. `requester` restricts to that owner's own (the app's
+  // request.list); omitted = every request (the operator's dashboard/owner view).
+  async listRequests ({ requester = null } = {}) {
+    const out = []
+    for await (const node of this.bee.createReadStream({ gte: 'request:', lt: 'request;' }, { valueEncoding: 'json' })) {
+      const r = node.value
+      if (r && (!requester || r.requester === requester)) out.push(r)
+    }
+    out.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    return out
+  }
+
+  // Mark a request added or declined (operator action). Returns the updated row, or null
+  // if the id is unknown. Stamps resolvedAt so the requester sees WHEN it was handled.
+  async resolveRequest (id, status) {
+    if (!REQUEST_STATUSES.includes(status) || status === 'pending') throw new Error('bad request status: ' + status)
+    const row = await this.getRequest(id)
+    if (!row) return null
+    const next = { ...row, status, resolvedAt: Date.now(), updatedAt: Date.now() }
+    await this.bee.put(this._reqKey(id), next, { valueEncoding: 'json' })
+    return next
+  }
+
+  async deleteRequest (id) {
+    const key = this._reqKey(id)
+    if (!(await this.bee.get(key))) return false
+    await this.bee.del(key)
+    return true
+  }
+
   async deleteOwner (ownerId) {
     const keys = []
     for (const prefix of ['fav', 'resume', 'count', 'playlist']) {
@@ -355,9 +466,15 @@ class UserState {
     for (const key of [this._sessionKey(ownerId, false), this._sessionKey(ownerId, true)]) {
       if (await this.bee.get(key)) keys.push(key)
     }
+    // Requests are keyed by id, not by an ownerId prefix, so the scan above misses them -
+    // collect this owner's by field. Their listening history goes with them; a stranded
+    // request pointing at a deleted person is worse than dropping it.
+    for await (const node of this.bee.createReadStream({ gte: 'request:', lt: 'request;' }, { valueEncoding: 'json' })) {
+      if (node.value?.requester === ownerId) keys.push(node.key)
+    }
     for (const key of keys) await this.bee.del(key)
     return keys.length
   }
 }
 
-module.exports = { UserState, FAV_KINDS }
+module.exports = { UserState, FAV_KINDS, REQUEST_KINDS, REQUEST_STATUSES }

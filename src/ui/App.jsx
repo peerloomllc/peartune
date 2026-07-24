@@ -20,7 +20,7 @@ import {
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
   Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode,
-  WarningCircle, LockKey, DeviceMobile
+  WarningCircle, LockKey, DeviceMobile, MusicNotesPlus
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
@@ -112,6 +112,9 @@ export default function App () {
   const [addingLibrary, setAddingLibrary] = useState(false)
   const [donate, setDonate] = useState(false)
   const [nudge, setNudge] = useState(false) // the after-two-weeks donation reminder
+  const [reqComposer, setReqComposer] = useState(null) // music-request composer: { name } prefill, or null
+  const [reqSupported, setReqSupported] = useState(true) // false = active host too old for requests
+  const [myRequests, setMyRequests] = useState(null) // this device's own requests (the You > Requests view)
   const [confirming, setConfirming] = useState(null)
   const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
   const [queue, setQueue] = useState(null) // the up-next list, when opened
@@ -572,10 +575,10 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, nudge, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
+  navRef.current = { scanning, donate, nudge, reqComposer, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
 
   const canBack = !!(
-    scanning || donate || nudge || confirming || menu || viewing || expanded ||
+    scanning || donate || nudge || reqComposer || confirming || menu || viewing || expanded ||
     stack.length || tab !== 'library' ||
     // On the onboarding wall there is no stack, but there are cards to walk back
     // through. At the intro there is nothing behind us, so the OS closes the app.
@@ -594,6 +597,7 @@ export default function App () {
     // Backing out of the nudge is a "maybe later" - it counts as answered, or it
     // would greet you again next launch. Same as tapping Maybe later.
     if (n.nudge) { call('setSettings', { donationNudgeShown: true }).catch(() => {}); return setNudge(false) }
+    if (n.reqComposer) return setReqComposer(null)
     if (n.confirming) return setConfirming(null)
     if (n.scanning) return setScanning(false)
     if (n.expanded) return setExpanded(false)
@@ -633,6 +637,7 @@ export default function App () {
   // on an empty, unswitchable Favorites list.
   const openYou = (v) => {
     if (v === 'downloads') showDownloads()
+    else if (v === 'requests') showRequests()
     else if (v === 'playlists') showPlaylists()
     else if (v === 'top' || !favSupported) showMostPlayed()
     else showFavorites()
@@ -961,6 +966,28 @@ export default function App () {
   async function showDownloads (force) {
     setYouView('downloads')
     await loadDownloads(force)
+  }
+  // The requester's OWN requests (You > Requests). Merged mode unions + collapses across
+  // hosts in the worklet; supported:false hides the tab (an old host, like favorites).
+  async function loadRequests (force) {
+    if (myRequests && !force) return
+    try {
+      const r = await call('requestList')
+      setMyRequests(r.requests || [])
+      if (r.supported === false) setReqSupported(false)
+    } catch { setMyRequests(m => m || []) }
+  }
+  async function showRequests (force) {
+    setYouView('requests')
+    await loadRequests(force)
+  }
+  // Remove one of MY requests - a completed one I'm done with, or a pending one I want to
+  // withdraw. Optimistic (drop it from the list now); the host refuses anything not mine.
+  async function removeRequest (row) {
+    haptic('light')
+    setMyRequests(list => (list || []).filter(r => r !== row))
+    const r = await call('requestDelete', { refs: row.refs }).catch(() => null)
+    if (!r?.ok) { toast('Could not remove that request', true); loadRequests(true) }
   }
   // Pin (download) an album. Progress arrives via pin:progress events; this just kicks it
   // off and reflects the optimistic "downloading" state.
@@ -1588,6 +1615,9 @@ export default function App () {
         playlists={playlists} plSupported={plSupported}
         serverPls={serverPls} sourceName={sourceText(state)}
         downloads={downloads}
+        reqSupported={reqSupported} myRequests={myRequests}
+        onNewRequest={() => { haptic('light'); setReqComposer({ name: '' }) }}
+        onRemoveRequest={removeRequest}
         onOpenPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name })}
         onOpenServerPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name, server: true })}
         onOpenDownload={(dl) => push({ type: 'download', id: dl.id, name: dl.name })}
@@ -1657,6 +1687,7 @@ export default function App () {
         onOpenGenre={(g) => push({ type: 'genre', id: g.id, name: g.name })}
         onPlay={playFrom}
         onLong={setMenu}
+        onRequest={reqSupported ? (name => { haptic('light'); setReqComposer({ name: name || '' }) }) : null}
       />
     )
   }
@@ -1733,6 +1764,12 @@ export default function App () {
         />
       )}
       {donate && <DonationSheet onClose={() => setDonate(false)} />}
+      {reqComposer && (
+        <RequestComposer prefill={reqComposer.name} toast={toast}
+          onUnsupported={() => { setReqSupported(false); setReqComposer(null) }}
+          onSent={() => loadRequests(true)}
+          onClose={() => setReqComposer(null)} />
+      )}
       {nudge && (
         <DonationNudge
           // Whichever button they press, it is answered - the nudge is one-shot.
@@ -2182,7 +2219,7 @@ function Library ({
   browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting, firstConnect,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
-  onOpenAlbum, onOpenArtist, onOpenGenre, onPlay, onLong
+  onOpenAlbum, onOpenArtist, onOpenGenre, onPlay, onLong, onRequest
 }) {
   // Bind the generic onFav(kind, item) to per-kind heart handlers for the leaves.
   const favTrack = onFav ? (t => onFav('track', t)) : null
@@ -2495,6 +2532,7 @@ function Library ({
           <SearchResults
             results={results} now={now} d={D} artBase={artBase} favs={favs} onFav={onFav}
             onOpenAlbum={onOpenAlbum} onOpenArtist={onOpenArtist} onPlay={onPlay} onLong={onLong}
+            query={query} onRequest={onRequest}
           />
           )
         : browse === 'songs'
@@ -2638,6 +2676,7 @@ function You ({
   state, density, now, handoff, playing, onPlayHere, youView, onYouView,
   favSupported, favItems, mostPlayed, favs, onFav,
   playlists, plSupported, serverPls, sourceName, downloads,
+  reqSupported, myRequests, onNewRequest, onRemoveRequest,
   onOpenPlaylist, onOpenServerPlaylist, onOpenDownload, onNewPlaylist,
   onPlay, onLong, onOpenAlbum, onOpenArtist
 }) {
@@ -2651,7 +2690,7 @@ function You ({
     <div className='app'>
       <header>
         <h1>You</h1>
-        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists, serverPls, downloads })}</p>
+        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists, serverPls, downloads, myRequests })}</p>
       </header>
 
       <div className='sticky'>
@@ -2682,6 +2721,12 @@ function You ({
               <DownloadSimple size={17} weight={view === 'downloads' ? 'fill' : 'regular'} />
               {view === 'downloads' && <span>Downloads</span>}
             </button>
+            {reqSupported && (
+              <button className={view === 'requests' ? 'on' : ''} aria-label='Requests' onClick={() => onYouView('requests')}>
+                <MusicNotesPlus size={17} weight={view === 'requests' ? 'fill' : 'regular'} />
+                {view === 'requests' && <span>Requests</span>}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -2704,6 +2749,8 @@ function You ({
             />
           : view === 'downloads'
             ? <DownloadsView downloads={downloads} d={D} onOpen={onOpenDownload} />
+          : view === 'requests'
+            ? <RequestsView requests={myRequests} onNew={onNewRequest} onRemove={onRemoveRequest} />
           : (mostPlayed
               ? (mostPlayed.items.length
                   ? (
@@ -2723,7 +2770,12 @@ function You ({
   )
 }
 
-function youCount (view, { favItems, mostPlayed, playlists, serverPls, downloads }) {
+function youCount (view, { favItems, mostPlayed, playlists, serverPls, downloads, myRequests }) {
+  if (view === 'requests') {
+    if (!myRequests) return 'Loading requests…'
+    const pend = myRequests.filter(r => r.status === 'pending').length
+    return myRequests.length ? `${myRequests.length} request${myRequests.length === 1 ? '' : 's'}${pend ? ` · ${pend} pending` : ''}` : 'No requests yet'
+  }
   if (view === 'top') return mostPlayed ? `${mostPlayed.items.length} most played` : 'Loading…'
   if (view === 'downloads') {
     if (!downloads) return 'Loading downloads…'
@@ -2845,6 +2897,58 @@ function DownloadsEmpty () {
         connection - on a plane, on the subway, anywhere.
       </p>
     </div>
+  )
+}
+
+// The requester's OWN music requests (You > Requests, proposal 2026-07-24). A full
+// scrolling screen - the composer bottom-sheet only CREATES a request now, this is where
+// they live and scale. In a blend collapseRequests (worklet) folds each ask to one row
+// showing the best status + which libraries.
+function RequestsView ({ requests, onNew, onRemove }) {
+  if (!requests) return <SkeletonRows />
+  const line = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
+  const KIND = { artist: 'Artist', album: 'Album', track: 'Track' }
+  if (!requests.length) {
+    return (
+      <div className='blank'>
+        <MusicNotesPlus size={40} weight='thin' />
+        <h2>No requests yet</h2>
+        <p className='muted sm'>
+          Search for music that isn’t in the library and tap Request. Whoever runs the
+          library sees it and can add it - you’ll see the status here.
+        </p>
+        <button className='primary' style={{ marginTop: '1rem' }} onClick={onNew}>
+          <MusicNotesPlus size={18} weight='bold' /> Request music
+        </button>
+      </div>
+    )
+  }
+  return (
+    <>
+      <button className='wide' style={{ marginBottom: '.6rem' }} onClick={onNew}>
+        <MusicNotesPlus size={17} weight='bold' /> Request music
+      </button>
+      <ul className='reqview'>
+        {requests.map(r => (
+          <li key={r.id || `${r.kind}:${r.name}`}>
+            <div className='rqv-main'>
+              <span className='rqv-name'>{line(r)}</span>
+              <span className='rqv-sub muted sm'>
+                {KIND[r.kind] || r.kind}
+                {r.libraries?.length > 1 && ` · ${r.libraries.length} libraries`}
+              </span>
+            </div>
+            <span className={'rq-status ' + r.status}>{r.status}</span>
+            {/* Remove YOUR request: clear a finished one, or withdraw a pending one
+                (which also pulls it from the operator's queue). Instant, like the queue's
+                remove - low stakes, and the host refuses anything not yours. */}
+            <button className='rqv-rm' aria-label={r.status === 'pending' ? 'Withdraw request' : 'Remove request'} onClick={() => onRemove(r)}>
+              <Trash size={18} weight='regular' />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
   )
 }
 
@@ -3204,7 +3308,7 @@ function SkeletonRows ({ n = 8 }) {
 //
 // A group with a handful of hits opens itself: making someone tap to reveal two
 // results is a worse tax than the scrolling was.
-function SearchResults ({ results, now, d, artBase, favs, onFav, onOpenAlbum, onOpenArtist, onPlay, onLong }) {
+function SearchResults ({ results, now, d, artBase, favs, onFav, onOpenAlbum, onOpenArtist, onPlay, onLong, query, onRequest }) {
   const groups = [
     { key: 'artists', label: 'Artists', items: results.artists || [] },
     { key: 'albums', label: 'Albums', items: results.albums || [] },
@@ -3219,7 +3323,23 @@ function SearchResults ({ results, now, d, artBase, favs, onFav, onOpenAlbum, on
   const [open, setOpen] = useState({})
   useEffect(() => { setOpen({}) }, [results]) // a new search starts fresh
 
-  if (!groups.length) return <p className='muted center-p'>Nothing found.</p>
+  // Nothing in the library matches - the one place a REQUEST makes sense: the music you
+  // searched for is not here, so offer to ask the owner to add it (proposal 2026-07-24,
+  // P1). Only when the host supports requests (onRequest set) and you actually typed
+  // something. The trimmed query prefills the composer.
+  if (!groups.length) {
+    const q = (query || '').trim()
+    return (
+      <div className='center-p'>
+        <p className='muted'>Nothing found.</p>
+        {onRequest && q && (
+          <button className='primary' style={{ marginTop: '.6rem' }} onClick={() => onRequest(q)}>
+            <MusicNotesPlus size={18} weight='bold' /> Request “{q}”
+          </button>
+        )}
+      </div>
+    )
+  }
 
   return (
     <>
@@ -4916,6 +5036,64 @@ function Section ({ id, title, Icon, open, onToggle, children }) {
       </button>
       <div className={'body' + (open ? ' open' : '')}>
         <div className='inner'>{children}</div>
+      </div>
+    </div>
+  )
+}
+
+// Ask the owner to add music (proposal 2026-07-24, P1). CREATE only: kind + name +
+// optional artist. Your requests + their status live in You > Requests now (a full
+// scrolling screen), not here - a bottom-sheet list did not scale (Tim, 2026-07-24).
+// On send it closes and onSent refreshes that view. v1 is a human queue: the owner adds
+// the music by hand and it appears on the next scan.
+function RequestComposer ({ prefill, onClose, toast, onUnsupported, onSent }) {
+  const [kind, setKind] = useState('album')
+  const [name, setName] = useState(prefill || '')
+  const [artist, setArtist] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const send = async () => {
+    const nm = name.trim()
+    if (!nm) return
+    setBusy(true)
+    const r = await call('requestAdd', { kind, name: nm, artist: artist.trim() || undefined }).catch(() => null)
+    setBusy(false)
+    if (!r?.ok) {
+      haptic('warn')
+      // An old host with no request method: tell the app to hide the affordance for the
+      // rest of the session (feature-detect, same posture as favorites/playlists), then close.
+      if (r?.supported === false) { toast('This library’s server is too old for requests', true); return onUnsupported?.() }
+      return toast(r?.error || 'Could not send the request', true)
+    }
+    haptic('success')
+    // Merged mode fans out to every connected library (r.sent); single-host returns a
+    // fold count. Either way, say it landed - and point at where to watch it.
+    toast(r.sent > 1 ? `Requested from ${r.sent} libraries. See it in You › Requests.`
+      : r.count > 1 ? 'Already requested - the owner has been reminded.'
+        : 'Requested. See it in You › Requests.')
+    onSent?.()
+    onClose()
+  }
+
+  const KINDS = [['album', 'Album'], ['artist', 'Artist'], ['track', 'Track']]
+
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Request music</h1>
+        <p className='muted sm'>Ask whoever runs this library to add something that isn’t here yet. They decide.</p>
+        <div className='seg wide' style={{ marginTop: '.4rem' }}>
+          {KINDS.map(([k, l]) => <button key={k} className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>{l}</button>)}
+        </div>
+        <input value={name} autoFocus placeholder={kind === 'artist' ? 'Artist name' : kind === 'album' ? 'Album title' : 'Song title'}
+          maxLength={200} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && !busy && send()} />
+        {kind !== 'artist' &&
+          <input value={artist} placeholder='Artist (optional)' maxLength={200} onChange={e => setArtist(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && !busy && send()} />}
+        <button className='primary wide' style={{ marginTop: '.5rem' }} onClick={send} disabled={busy || !name.trim()}>
+          {busy ? 'Sending…' : 'Send request'}
+        </button>
+        <button className='wide' onClick={onClose}>Cancel</button>
       </div>
     </div>
   )

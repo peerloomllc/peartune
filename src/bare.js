@@ -2669,6 +2669,90 @@ const methods = {
     }
   },
 
+  // --- music requests (proposal 2026-07-24, P1) -----------------------------
+  // File a request. In a BLENDED library nobody has the music (that is WHY you are
+  // requesting it), so it goes to EVERY connected host - any of their owners might add
+  // it (Tim, 2026-07-24). Single-host mode sends to the one active host. supported:false
+  // only when NO reachable host understands requests (all old), so the affordance hides
+  // just like favorites/playlists on an old host.
+  async requestAdd ({ kind, name, artist, album, mbid }) {
+    const params = { kind, name, artist, album, mbid }
+    if (mergedMode()) {
+      const libs = [...connectedLibs()]
+      if (!libs.length) return { ok: false, error: 'not connected to any library' }
+      const settled = await Promise.allSettled(libs.map((lib) => {
+        const c = poolClient(lib)
+        return c ? c.requestAdd(params) : Promise.reject(new Error('offline'))
+      }))
+      let ok = 0
+      let anySupported = false
+      for (const r of settled) {
+        if (r.status === 'fulfilled' && r.value?.ok) { ok++; anySupported = true }
+        else if (r.reason?.code !== 'ENOMETHOD' && r.status === 'rejected') { /* transport error, not "old host" */ anySupported = true }
+      }
+      if (ok > 0) return { ok: true, supported: true, sent: ok }
+      // Nobody accepted. If every reachable host answered ENOMETHOD it is a support gap;
+      // otherwise it was a transport failure worth reporting as such.
+      return anySupported ? { ok: false, error: 'could not reach a library to request from' } : { ok: false, supported: false }
+    }
+    try {
+      await ensureConnected()
+      const r = await client.requestAdd(params)
+      return { ...r, supported: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { ok: false, supported: false }
+      return { ok: false, error: e?.message || 'could not send the request' }
+    }
+  },
+
+  // This device's own requests + their status. In merged mode, UNION across every connected
+  // host and COLLAPSE identical asks to one row carrying the best status (added > pending >
+  // declined - if any host added it, the music is coming) + which libraries it went to.
+  // Single-host = just the active host's. Empty (not shown) on an all-old set of hosts.
+  async requestList () {
+    if (mergedMode()) {
+      const libs = [...connectedLibs()]
+      const names = new Map(loadHostsFile().hosts.map((h) => [h.libraryId, h.libraryName]))
+      const settled = await Promise.allSettled(libs.map((lib) => {
+        const c = poolClient(lib)
+        return c ? c.requestList().then((v) => ({ lib, requests: v.requests || [] })) : Promise.reject(new Error('offline'))
+      }))
+      const tagged = []
+      let anySupported = false
+      for (const r of settled) {
+        if (r.status !== 'fulfilled') continue
+        anySupported = true
+        for (const req of r.value.requests) tagged.push({ ...req, libraryId: r.value.lib, libraryName: names.get(r.value.lib) || null })
+      }
+      return { requests: merge.collapseRequests(tagged), supported: anySupported }
+    }
+    try {
+      await ensureConnected()
+      const { requests } = await client.requestList()
+      // Give single-host rows a `refs` too, so the app's REMOVE path is uniform with the
+      // merged one (delete every (libraryId,id) the ask lives on).
+      const refs = (r) => [{ libraryId: activeLibraryId, id: r.id }]
+      return { requests: (requests || []).map((r) => ({ ...r, refs: refs(r) })), supported: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { requests: [], supported: false }
+      return { requests: [], offline: true }
+    }
+  },
+
+  // Remove the caller's OWN request. `refs` is every per-host (libraryId, id) the collapsed
+  // row covers (one in single-host, N in a blend), so REMOVE clears it everywhere it lives.
+  // The host refuses to delete a request that is not yours (media.js checks ownership).
+  async requestDelete ({ refs }) {
+    const list = Array.isArray(refs) ? refs.filter((x) => x && x.libraryId && x.id) : []
+    if (!list.length) return { ok: false }
+    const settled = await Promise.allSettled(list.map(({ libraryId, id }) => {
+      const c = poolClient(libraryId)
+      return c ? c.requestDelete({ id }) : Promise.reject(new Error('offline'))
+    }))
+    const ok = settled.some((r) => r.status === 'fulfilled' && r.value?.ok)
+    return { ok }
+  },
+
   // One playlist. We return BOTH the raw ordered trackIds and the resolved tracks:
   // a track that no longer resolves (source changed, file gone) is left out of the
   // rendered list, but its id STAYS in trackIds and each resolved track carries its raw

@@ -10,13 +10,20 @@ const Protomux = require('protomux')
 const b4a = require('b4a')
 const { mediaChannel } = require('../protocol/channels')
 const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
+const { REQUEST_KINDS } = require('./state')
 
 // Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
 // so a new mutating method cannot accidentally ship without a scope check.
 const MUTATING = new Set([
   'identity.set', 'identity.avatar', 'fav.set', 'resume.set', 'count.bump',
   'playlist.create', 'playlist.rename', 'playlist.delete', 'playlist.add', 'playlist.setTracks',
-  'session.claim', 'session.set'
+  'session.claim', 'session.set',
+  // Filing a music request writes a host row, so a readonly grant is refused here
+  // (proposal 2026-07-24, P1). Resolving is dashboard-only, not a media method.
+  'request.add',
+  // Removing your OWN request (You > Requests). Ownership is checked in the handler;
+  // MUTATING just keeps a readonly grant out (it has no requests to remove anyway).
+  'request.delete'
 ])
 
 // WHO owns the user state on this connection. Derived from the grant the firewall
@@ -346,6 +353,49 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
         log('playlist:set-tracks', { id: row.id, count: row.trackIds.length })
         return send.res.send({ id, body: { ok: true, count: row.trackIds.length } })
+      }
+
+      // --- music requests (proposal 2026-07-24-owner-in-the-app, P1) --------
+      //
+      // A device asks the operator to add music. The REQUESTER is ownerOf(grant) -
+      // host-derived, never a param - so a request cannot be filed on someone else's
+      // behalf, and request.list can only ever return the caller's own. Resolving is
+      // the operator's job and lives on the dashboard API, not here.
+      case 'request.add': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!REQUEST_KINDS.includes(params?.kind)) return safeErr(id, ERR.BAD_PARAMS, 'kind must be artist, album or track')
+        let row
+        try {
+          row = await state.addRequest(ownerOf(grant), {
+            kind: params.kind, name: params.name, artist: params.artist, album: params.album, mbid: params.mbid
+          })
+        } catch (e) {
+          return safeErr(id, ERR.BAD_PARAMS, e.message || 'bad request')
+        }
+        log('request:add', { kind: row.kind, folded: row.count > 1 })
+        // P3 will push request:new to connected owners here; P1 surfaces it on the
+        // dashboard (its /api/state poll picks up the new row).
+        return send.res.send({ id, body: { ok: true, id: row.id, status: row.status, count: row.count } })
+      }
+
+      case 'request.list': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        // The caller's OWN requests only - the operator's all-requests view is dashboard-side.
+        return send.res.send({ id, body: { requests: await state.listRequests({ requester: ownerOf(grant) }) } })
+      }
+
+      case 'request.delete': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        // You can only remove YOUR OWN request. The requester on the row is host-derived
+        // (ownerOf), so this compares the caller's identity to it - a device cannot delete
+        // someone else's request by guessing an id. A resolved OR a pending one (withdraw).
+        const row = await state.getRequest(params.id)
+        if (!row) return send.res.send({ id, body: { ok: true, deleted: false } }) // already gone
+        if (row.requester !== ownerOf(grant)) return safeErr(id, ERR.FORBIDDEN, 'not your request')
+        const deleted = await state.deleteRequest(params.id)
+        log('request:delete', { deleted })
+        return send.res.send({ id, body: { ok: true, deleted } })
       }
 
       // --- play session: cross-device handoff (proposal 2026-07-17) ----------
