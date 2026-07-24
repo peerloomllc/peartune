@@ -1073,10 +1073,14 @@ export default function App () {
       // Adding a second library while one was active: clear the previous library's browse so
       // the new active one loads fresh (a no-op on a first pair).
       setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery('')
+      const cameFromAdd = addingLibrary // captured before the flag is cleared, for the toast wording
       setAddingLibrary(false)
       // A successful pair should always land on the Library, not drop back to Settings (where the
       // add-a-library flow was launched from). Harmless on a first pair (already there).
       setTab('library')
+      // Visible confirmation, not just the haptic below: the add-a-library flow used to leave you on
+      // Settings wondering if it worked. "Added" from the in-app add flow, "Paired with" on first run.
+      toast(`${cameFromAdd ? 'Added' : 'Paired with'} ${host.libraryName || 'library'}`)
       // pair() now sends the claim, so the host may ALREADY have confirmed us (a brand-new name
       // auto-creates its person). Re-read the identity or Settings would sit on "Waiting for your
       // server to confirm you are X" until the next reconnect, which is exactly the stale banner
@@ -2243,7 +2247,15 @@ function Library ({
           <ArrowsClockwise
             size={18}
             className={refreshing ? 'spin' : ''}
-            style={{ opacity: Math.min(1, ptr / TRIGGER), transform: `rotate(${ptr * 3}deg)` }}
+            // During the PULL, rotate the icon with the gesture. Once REFRESHING, drop the inline
+            // transform and let `.spin` own it: an inline transform becomes the animation's implicit
+            // `from`, so `.spin` (to: rotate(360deg)) would sweep 132deg->360deg then snap back each
+            // cycle - the top spinner's hitch (Tim, 2026-07-22). The reconnect spinner has no inline
+            // transform, which is why it turns smoothly.
+            style={{
+              opacity: Math.min(1, ptr / TRIGGER),
+              ...(refreshing ? {} : { transform: `rotate(${ptr * 3}deg)` })
+            }}
           />
         )}
       </div>
@@ -5004,7 +5016,19 @@ function Welcome ({ names, setNames, onScan, onPaste, onCancel, error, addHost =
       </button>
       <details>
         <summary className='muted sm'>Paste a link instead</summary>
-        <input value={link} onChange={e => setLink(e.target.value)} placeholder='pear://peartune/pair?…' />
+        {/* autocapitalize/autocorrect off: iOS was capitalizing the scheme to "Pear://", and parseLink is
+            deliberately case-sensitive (for cross-app rejection), so a perfectly good pasted link got
+            rejected with "That doesn't look like a PearTune pairing code" (Tim, 2026-07-22). Kill the
+            mangling at the source rather than loosening the parser. */}
+        <input
+          value={link}
+          onChange={e => setLink(e.target.value)}
+          placeholder='pear://peartune/pair?…'
+          autocapitalize='none'
+          autocorrect='off'
+          autocomplete='off'
+          spellcheck={false}
+        />
         <button onClick={() => onPaste(link.trim())} disabled={!ready || !link.trim()}>Pair</button>
       </details>
       {onCancel && <button onClick={onCancel}>Cancel</button>}
