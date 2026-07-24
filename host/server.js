@@ -62,6 +62,16 @@ const { PAIR_PROTOCOL, MEDIA_PROTOCOL } = require('../protocol/constants')
 // unref'd, so it never keeps the process alive on its own.
 const TOPIC_REANNOUNCE_MS = 10 * 60 * 1000
 
+// A single announce right after startup can silently fail to propagate against a
+// cold DHT routing table (the record resolves but does not reach the topic's
+// keyspace nodes), and the steady re-announce above is 10 min away - long enough
+// that a freshly-started host looks unreachable in the meantime. Observed once
+// after a host wipe (2026-07-23); a controlled wipe on 2026-07-24 recovered in
+// <1s, so this is belt-and-suspenders for the rare cold-announce case, not a fix
+// for a reproduced bug. Re-announce a few times early to shrink that worst case
+// from ~10 min to <2 min. One-shot, unref'd, cleared on close.
+const TOPIC_EARLY_REANNOUNCE_MS = [20 * 1000, 60 * 1000, 120 * 1000]
+
 // Keep this many of RocksDB's rotated info logs (store/db/LOG.old.*) for debugging; prune the
 // rest. RocksDB rotates them only on reopen, so pruning at startup keeps the count bounded; the
 // 12h re-prune is cheap insurance. See host/logprune.js. NOT data - the .sst/.log/MANIFEST are
@@ -143,6 +153,7 @@ class PearTuneHost {
     // hostKey it holds. Set in ready() once the server is listening.
     this._topic = null
     this._reannounce = null
+    this._earlyReannounce = null
   }
 
   get publicKey () {
@@ -298,6 +309,14 @@ class PearTuneHost {
     await this._announceTopic()
     this._reannounce = setInterval(() => { this._announceTopic() }, TOPIC_REANNOUNCE_MS)
     if (this._reannounce.unref) this._reannounce.unref()
+    // Early one-shot re-announces to cover a cold-table first announce (see
+    // TOPIC_EARLY_REANNOUNCE_MS). Best-effort and unref'd, so they never hold the
+    // process open; cleared in close().
+    this._earlyReannounce = TOPIC_EARLY_REANNOUNCE_MS.map((ms) => {
+      const t = setTimeout(() => { this._announceTopic() }, ms)
+      if (t.unref) t.unref()
+      return t
+    })
 
     // Cut guest connections whose grant has expired since they dialed in (see
     // EXPIRY_SWEEP_MS). unref so it never keeps the process alive on its own.
@@ -653,6 +672,7 @@ class PearTuneHost {
     if (this._logPrune) clearInterval(this._logPrune)
     if (this._rescanTimer) clearInterval(this._rescanTimer)
     if (this._reannounce) clearInterval(this._reannounce)
+    if (this._earlyReannounce) for (const t of this._earlyReannounce) clearTimeout(t)
     // Withdraw the discovery record so a lookup stops handing out a dead host.
     // Best-effort: on a crash the record just ages out at its ~20 min TTL.
     if (this._topic) {

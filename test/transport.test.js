@@ -119,6 +119,19 @@ test('backward compat: a raw dht.connect(hostKey) still reaches the host', async
   assert.equal(pong.libraryId, host.libraryId)
 })
 
+test('startup schedules early re-announces to cover a cold-table first announce', async (t) => {
+  const { host } = await scaffold(t)
+
+  // A single startup announce can silently fail to propagate against a cold DHT
+  // routing table, and the steady re-announce is 10 min away. ready() must schedule
+  // a handful of early one-shot re-announces to shrink that worst-case window.
+  assert.ok(Array.isArray(host._earlyReannounce), 'early re-announce timers are scheduled')
+  assert.ok(host._earlyReannounce.length >= 2, 'more than one early re-announce is scheduled')
+  assert.ok(host._earlyReannounce.every((timerObj) => timerObj), 'each early re-announce is a live timer')
+  // They must not hold the process open on their own (unref'd). close() clears them,
+  // which scaffold's t.after exercises on every host in this file.
+})
+
 // The phase-2 phone path: no dht.connect. Join the host topic on a persistent swarm,
 // and when the connection lands, attach the media channel to it. Everything above the
 // socket must work identically, and a revoke must still cut the live connection.
