@@ -97,6 +97,7 @@ export default function SetupWizard ({ state, refresh, toast, isDark, onTheme, o
 function Nav ({ step, state, at, onBack, onNext, onExit }) {
   if (step === 'name') return <div className='wiznav'>{at > 0 && <button className='ghost' onClick={onBack}><CaretLeft size={15} /> Back</button>}</div>
 
+
   const sourceReady = !!(state.source && state.source.from === 'dashboard')
   const primary =
     step === 'welcome' ? { label: 'Get started', on: true, go: onNext }
@@ -112,7 +113,6 @@ function Nav ({ step, state, at, onBack, onNext, onExit }) {
   return (
     <div className='wiznav'>
       {at > 0 && step !== 'done' && <button className='ghost' onClick={onBack}><CaretLeft size={15} /> Back</button>}
-      <div className='spacer' />
       {skippable && <button className='link' onClick={onNext}>Skip this step</button>}
       {primary && <button onClick={primary.go} disabled={!primary.on}>{primary.label}</button>}
     </div>
@@ -183,7 +183,7 @@ function SourceStep ({ state, refresh, toast }) {
       <SourcePanel state={state} refresh={refresh} toast={toast} embedded />
       {saved
         ? <p className='hint good-line'><CheckCircle size={15} weight='fill' /> Saved - {found.toLocaleString()} track{found === 1 ? '' : 's'} in your library.</p>
-        : <p className='hint subtle'>Save your music source to continue.</p>}
+        : <p className='hint subtle center'>Save your music source to continue.</p>}
     </div>
   )
 }

@@ -468,7 +468,9 @@ button.destructive { background: var(--bad); color: #fff; }
 .wizdots li.now .wizdot { background: color-mix(in srgb, var(--primary) 22%, transparent); }
 .wizdots li.done .wizdot { border-color: var(--good); color: var(--good); }
 
-.wiznav { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 2px 6px; }
+/* Centred as one group (Tim, 2026-07-24): Back / Skip / the primary all sit under
+   the middle of the card rather than pinned to its two edges. */
+.wiznav { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 0 2px 6px; }
 .wiznav button:not(.ghost):not(.link) { min-width: 150px; }
 
 .wizlist { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }

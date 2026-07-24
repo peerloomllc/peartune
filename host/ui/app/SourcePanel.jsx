@@ -41,17 +41,29 @@ export function SourcePanel ({ state, refresh, toast, embedded = false, onSaved 
     setCfg(c => ({ ...c, [d.kind]: { ...(c[d.kind] || {}), url: d.url } }))
   }
 
+  // A server we FOUND on this box fills its own URL in, so picking Subsonic or
+  // Jellyfin lands on a filled address instead of an empty box (Tim, 2026-07-24).
+  // Only when nothing is configured for that kind - a saved or env URL always wins,
+  // and detection never overwrites what the operator typed (an edit sets `dirty`,
+  // which stops this whole effect). First detected of a kind wins; the chips below
+  // are how you pick a different one.
+  const detectedUrl = (kind) => (detected || []).find(d => d.kind === kind)?.url || ''
+
   useEffect(() => {
     if (dirtyRef.current) return
     const kinds = (state.source && state.source.kinds) || {}
     setKind((state.source && state.source.active) || 'folder')
     const roots = (kinds.folder && kinds.folder.roots && kinds.folder.roots.length) ? kinds.folder.roots : ['/music']
+    const server = (k) => {
+      const saved = { url: '', username: '', ...(kinds[k] || {}) }
+      return saved.url ? saved : { ...saved, url: detectedUrl(k) }
+    }
     setCfg({
-      subsonic: { url: '', username: '', ...(kinds.subsonic || {}) },
-      jellyfin: { url: '', username: '', ...(kinds.jellyfin || {}) },
+      subsonic: server('subsonic'),
+      jellyfin: server('jellyfin'),
       folder: { roots }
     })
-  }, [state.source])
+  }, [state.source, detected])
 
   const touch = () => setDirty(true)
   const set = (k, v) => { setCfg(c => ({ ...c, [kind]: { ...c[kind], [k]: v } })); touch() }
