@@ -2678,6 +2678,32 @@ button.shead .caret.open {
 .rqv-rm:disabled {
   opacity: .4;
 }
+.mglibs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  margin: 0 0 .8rem;
+}
+.mglibs button {
+  flex: 0 1 auto;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: .35rem .8rem;
+  font-size: .82rem;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mglibs button.on {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-ink, #1a1200);
+  font-weight: 600;
+}
 .mgh {
   display: flex;
   align-items: baseline;

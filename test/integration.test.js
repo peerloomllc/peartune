@@ -315,6 +315,26 @@ test('OWNER WINDOW: pairing through one grants owner scope, and the link is flag
   assert.equal(grant.scope, SCOPE.OWNER, 'a device paired through an owner window gets owner scope')
 })
 
+test('DEVICES CHANGED: revoking a device pushes "devices:changed" to a connected owner', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  // An owner phone (to receive the push) plus a normal device that will be revoked.
+  const owner = newClient(testnet)
+  const victim = newClient(testnet)
+  t.after(() => owner.close())
+  t.after(() => victim.close())
+
+  const po = await owner.pair(host.startPairing({ owner: true }), { label: 'Owner', platform: 'node' })
+  const pv = await victim.pair(host.startPairing(), { label: 'Victim', platform: 'android' })
+  await owner.connect({ hostKey: po.hostKey, libraryId: po.libraryId })
+  await victim.connect({ hostKey: pv.hostKey, libraryId: pv.libraryId })
+
+  // The owner's in-app Manage list refreshes off this push instead of only on reopen.
+  const pushed = oncePush(owner, 'devices:changed')
+  await host.revokeDevice(z32.encode(victim.keyPair.publicKey))
+  const evt = await pushed
+  assert.equal(evt.data.libraryId, host.libraryId, 'the push names the library whose roster changed')
+})
+
 test('stream a whole track, bytes identical to the file on disk', async (t) => {
   const { testnet, host, track } = await scaffold(t)
   const { client } = await pairAndConnect(testnet, host)
