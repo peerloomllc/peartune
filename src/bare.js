@@ -1765,11 +1765,19 @@ const methods = {
       const known = loadHostsFile().hosts.find((h) => h.libraryId === libId)
       const c = known && poolClient(libId)
       if (c) {
-        const r = await c.ownerClaim({ code: z32.encode(parsed.rv) }).catch(() => null)
-        if (r?.ok) log('owner:promoted-live', { host: String(known.hostKey).slice(0, 8) })
+        // Only attempt promotion when the code SAYS it is an owner code (the host still decides).
+        // A normal re-scan of a host we are already on is just a no-op re-activation.
+        let promoted = false
+        let ownerFailed = false
+        if (parsed.owner) {
+          const r = await c.ownerClaim({ code: z32.encode(parsed.rv) }).catch(() => null)
+          promoted = !!r?.ok
+          ownerFailed = !promoted // an owner code that did NOT take - surface it, do not stay normal in silence
+          log(promoted ? 'owner:promoted-live' : 'owner:promote-failed', { host: String(known.hostKey).slice(0, 8) })
+        }
         // Re-activate + return the known record; no re-pair needed, we are already in.
         saveHostsFile(hostList.addHost(loadHostsFile(), known, Date.now()))
-        return { hostKey: known.hostKey, libraryId: known.libraryId, libraryName: known.libraryName, promoted: !!r?.ok }
+        return { hostKey: known.hostKey, libraryId: known.libraryId, libraryName: known.libraryName, promoted, ownerFailed, alreadyPaired: true }
       }
     } catch { /* fall through to a normal pair - a bad/for-another-host link is handled below */ }
 

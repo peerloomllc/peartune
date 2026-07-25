@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 # Redeploy the PearTune host container on the Umbrel to a PINNED image build.
 #
-# Non-destructive: reuses /home/umbrel/peartune-data (identity + grants + library
-# name), so paired devices need no re-pair. Music is mounted read-only.
+# Non-destructive by default: reuses /home/umbrel/peartune-data (identity + grants +
+# library name), so paired devices need no re-pair. Music is mounted read-only.
 #
 # Usage on the Umbrel:
 #   bash host/redeploy-umbrel.sh          # uses sudo for docker; prompts once
 #   sudo bash host/redeploy-umbrel.sh     # if you prefer to elevate up front
+#   WIPE=1 bash host/redeploy-umbrel.sh   # FULL host wipe: clears the data dir first
+#                                         # (pairings, user state AND the source config) for a
+#                                         # from-scratch test. Everything must be re-paired and
+#                                         # the music source reconfigured on the dashboard after.
 #
 # To move to a new build: bump IMG to the new tag@digest and re-run.
 set -euo pipefail
+
+WIPE="${WIPE:-0}"   # 1 = clear the host data dir before starting (see header). Default off.
 
 # Pinned image (tag + digest = reproducible; the digest is what actually deploys).
 # NB: this is the REGISTRY manifest digest (skopeo inspect docker://… .Digest, or the first
 # RepoDigest after a pull) - NOT `podman inspect --format {{.Digest}}`, which is the local digest
 # and yields "manifest unknown" on pull.
-IMG='ghcr.io/peerloomllc/peartune-host:0.2.25@sha256:52d98d0f7ce737a4c39c05933b8d30ea0181d03a0e209296ea4490209a13ae76'
+IMG='ghcr.io/peerloomllc/peartune-host:0.2.27@sha256:15ed960f2105f6357f789f9b05ac9aaad32e1fca8d3b7d912f0005cb329c50ad'
 
 DATA='/home/umbrel/peartune-data'                     # identity + grants (persisted)
 MUSIC_HOST='/home/umbrel/umbrel/home/Downloads'       # mounted at /library (ro); roots = /library/music,/library/downtify
@@ -28,6 +34,12 @@ $SUDO docker pull "$IMG"
 
 echo "== replacing the running peartune-host =="
 $SUDO docker rm -f peartune-host >/dev/null 2>&1 || true
+
+if [ "$WIPE" = "1" ]; then
+  echo "== WIPE=1: clearing $DATA (full host wipe - pairings, user state AND source config) =="
+  $SUDO rm -rf "$DATA"
+  $SUDO mkdir -p "$DATA"
+fi
 
 $SUDO docker run -d \
   --name peartune-host \
@@ -47,4 +59,8 @@ echo "== verifying =="
 sleep 7
 curl -s -o /dev/null -w "dashboard -> %{http_code}\n" http://127.0.0.1:8741/ || true
 $SUDO docker logs --tail 10 peartune-host 2>&1 || true
-echo "== done. /data reused, so no re-pair needed. =="
+if [ "$WIPE" = "1" ]; then
+  echo "== done. FULL WIPE: re-pair every device and set the music source on the dashboard. =="
+else
+  echo "== done. /data reused, so no re-pair needed. =="
+fi

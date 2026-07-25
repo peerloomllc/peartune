@@ -1235,9 +1235,12 @@ export default function App () {
       // A successful pair should always land on the Library, not drop back to Settings (where the
       // add-a-library flow was launched from). Harmless on a first pair (already there).
       setTab('library')
-      // Visible confirmation, not just the haptic below: the add-a-library flow used to leave you on
-      // Settings wondering if it worked. "Added" from the in-app add flow, "Paired with" on first run.
-      toast(`${cameFromAdd ? 'Added' : 'Paired with'} ${host.libraryName || 'library'}`)
+      // Visible confirmation, not just the haptic below. An owner promotion of a library we were
+      // already on gets its own line (and the owner tour fires off the identity re-read below);
+      // an owner code that did NOT take must say so rather than leaving you silently a normal device.
+      if (host.promoted) toast(`You’re now an owner of ${host.libraryName || 'this library'}`)
+      else if (host.ownerFailed) toast('Could not make this device an owner - the owner window may have closed. Open a new one on the dashboard and scan again.', true)
+      else toast(`${cameFromAdd ? 'Added' : 'Paired with'} ${host.libraryName || 'library'}`)
       // pair() now sends the claim, so the host may ALREADY have confirmed us (a brand-new name
       // auto-creates its person). Re-read the identity or Settings would sit on "Waiting for your
       // server to confirm you are X" until the next reconnect, which is exactly the stale banner
