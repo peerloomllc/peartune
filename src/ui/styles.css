@@ -1215,6 +1215,12 @@ button.shead .caret.open { transform: rotate(90deg); }
 /* Owner maintenance: the You > Manage view (P2). Section headings + the compact resolve
    buttons for the request queue. */
 /* Manage library picker: chips over the libraries you own, when you own more than one. */
+/* Settings > Library: two actions up top - add a server, or pair as an owner of one you run. */
+.libactions { display: flex; justify-content: center; gap: 2.5rem; margin: .2rem 0 1rem; }
+.libact { display: flex; flex-direction: column; align-items: center; gap: .4rem; background: none; border: 0; color: var(--color-text); cursor: pointer; padding: .3rem .5rem; }
+.libact span { font-size: .8rem; color: var(--color-text-muted); }
+.libact:active { opacity: .6; }
+
 .mglibs { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .8rem; }
 .mglibs button { flex: 0 1 auto; background: none; border: 1px solid var(--color-border); border-radius: 999px; padding: .35rem .8rem; font-size: .82rem; color: var(--color-text-muted); cursor: pointer; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .mglibs button.on { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-accent-ink, #1a1200); font-weight: 600; }
