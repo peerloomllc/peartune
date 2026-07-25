@@ -1753,6 +1753,26 @@ const methods = {
     if (!isPairLink(link)) throw new Error('That is not a PearTune pairing code.')
     await ensureClient()
 
+    // OWNER PROMOTION over a live connection (proposal 2026-07-24, P2). If this link is for a
+    // host we are ALREADY connected to, a fresh pair handshake is preempted by the live media
+    // connection and never reaches the owner window (found in hardware testing). So present the
+    // window's one-time code over the EXISTING channel instead: if it is an owner window, the
+    // host promotes this device; if not, it is a harmless no-op and we fall through. Only this
+    // known-and-connected case takes the shortcut - a new host still pairs normally below.
+    try {
+      const parsed = parseLink(link)
+      const libId = deriveLibraryId(parsed.hostKey)
+      const known = loadHostsFile().hosts.find((h) => h.libraryId === libId)
+      const c = known && poolClient(libId)
+      if (c) {
+        const r = await c.ownerClaim({ code: z32.encode(parsed.rv) }).catch(() => null)
+        if (r?.ok) log('owner:promoted-live', { host: String(known.hostKey).slice(0, 8) })
+        // Re-activate + return the known record; no re-pair needed, we are already in.
+        saveHostsFile(hostList.addHost(loadHostsFile(), known, Date.now()))
+        return { hostKey: known.hostKey, libraryId: known.libraryId, libraryName: known.libraryName, promoted: !!r?.ok }
+      }
+    } catch { /* fall through to a normal pair - a bad/for-another-host link is handled below */ }
+
     // The name goes out in deviceHello's EXISTING label field, so this half needs
     // no wire change at all - we were simply hardcoding "Android phone" and giving
     // the operator two identical rows to choose between.
