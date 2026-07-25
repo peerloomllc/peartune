@@ -119,6 +119,7 @@ export default function App () {
   const [ownerDevices, setOwnerDevices] = useState(null) // active library's devices, for an owner (You > Manage)
   const [ownerReqs, setOwnerReqs] = useState(null) // the full request queue, for an owner to resolve (You > Manage)
   const [ownerPair, setOwnerPair] = useState(null) // { link } while an owner-opened pairing window is up
+  const [ownerTour, setOwnerTour] = useState(false) // one-shot "you're an owner now" walkthrough
   const [confirming, setConfirming] = useState(null)
   const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
   const [queue, setQueue] = useState(null) // the up-next list, when opened
@@ -378,6 +379,26 @@ export default function App () {
     return () => offs.forEach(f => f())
   }, [])
 
+  // Becoming an owner used to just make a Manage icon quietly appear in the You picker,
+  // with no hint it was there or what it did. So the first time this device is confirmed
+  // an owner, point them at it once. One-shot and gated on a persisted flag, exactly like
+  // the donation nudge - a ref stops it re-firing within the session before the flag lands.
+  const ownerTourRef = useRef(false)
+  useEffect(() => {
+    if (!ident?.owner) return
+    if (ownerTourRef.current || state.settings?.ownerTourShown) return
+    ownerTourRef.current = true
+    setOwnerTour(true)
+  }, [ident?.owner, state.settings?.ownerTourShown])
+  // Whichever way the tour is answered it is done for good. "Show me" also drops the
+  // person straight into You > Manage; a quiet dismiss just closes it.
+  function finishOwnerTour (goManage) {
+    call('setSettings', { ownerTourShown: true }).catch(() => {})
+    setState(s => ({ ...s, settings: { ...s.settings, ownerTourShown: true } }))
+    setOwnerTour(false)
+    if (goManage) { haptic('light'); setStack([]); setTab('you'); showManage() }
+  }
+
   // What the once-registered listeners above need to see, always current.
   const liveRef = useRef({})
   liveRef.current = { host: state.host, connected: state.connected, reconnecting }
@@ -579,10 +600,10 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, nudge, reqComposer, ownerPair, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
+  navRef.current = { scanning, donate, nudge, ownerTour, reqComposer, ownerPair, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
 
   const canBack = !!(
-    scanning || donate || nudge || reqComposer || ownerPair || confirming || menu || viewing || expanded ||
+    scanning || donate || nudge || ownerTour || reqComposer || ownerPair || confirming || menu || viewing || expanded ||
     stack.length || tab !== 'library' ||
     // On the onboarding wall there is no stack, but there are cards to walk back
     // through. At the intro there is nothing behind us, so the OS closes the app.
@@ -601,6 +622,8 @@ export default function App () {
     // Backing out of the nudge is a "maybe later" - it counts as answered, or it
     // would greet you again next launch. Same as tapping Maybe later.
     if (n.nudge) { call('setSettings', { donationNudgeShown: true }).catch(() => {}); return setNudge(false) }
+    // Backing out of the owner tour counts as "got it" - one-shot, don't re-greet.
+    if (n.ownerTour) return finishOwnerTour(false)
     if (n.reqComposer) return setReqComposer(null)
     if (n.ownerPair) return stopOwnerPair()
     if (n.confirming) return setConfirming(null)
@@ -1825,6 +1848,13 @@ export default function App () {
           // Whichever button they press, it is answered - the nudge is one-shot.
           onDonate={() => { call('setSettings', { donationNudgeShown: true }).catch(() => {}); setNudge(false); setDonate(true) }}
           onDismiss={() => { call('setSettings', { donationNudgeShown: true }).catch(() => {}); setNudge(false) }}
+        />
+      )}
+      {ownerTour && (
+        <OwnerTour
+          libraryName={ident?.libraryName || state.host?.libraryName}
+          onShow={() => finishOwnerTour(true)}
+          onDismiss={() => finishOwnerTour(false)}
         />
       )}
       {confirming && (
@@ -5302,6 +5332,30 @@ function DonationNudge ({ onDonate, onDismiss }) {
           <button className='primary wide' onClick={() => { haptic('light'); onDonate() }}>Support PearTune</button>
           <button className='wide' onClick={() => { haptic('light'); onDismiss() }}>Maybe later</button>
           <button className='wide' onClick={() => { haptic('light'); onDismiss() }}>Already did · thanks ✓</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Shown once, the first time a device is confirmed an owner (gated on a persisted flag
+// upstream). Same sheet chrome as the nudge, so it reads as part of the app. It names
+// the new Manage view, says what it does and drops the person straight into it.
+function OwnerTour ({ libraryName, onShow, onDismiss }) {
+  return (
+    <div className='sheetwrap' onClick={onDismiss}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <div className='tourbadge'><UsersThree size={30} weight='fill' /></div>
+        <h1>You’re an owner now</h1>
+        <p className='muted sm'>
+          {libraryName ? <>You look after <b>{libraryName}</b>. </> : <>You look after this library. </>}
+          There’s a new <b>Manage</b> tab under <b>You</b> where you run it: see every device
+          that has access and cut one off at any time, add a device by QR or link, and answer
+          music requests.
+        </p>
+        <div className='acts'>
+          <button className='primary wide' onClick={() => { haptic('light'); onShow() }}>Show me</button>
+          <button className='wide' onClick={() => { haptic('light'); onDismiss() }}>Got it</button>
         </div>
       </div>
     </div>
