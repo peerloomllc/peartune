@@ -20,7 +20,7 @@ import {
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
   Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode,
-  WarningCircle, LockKey, DeviceMobile, MusicNotesPlus
+  WarningCircle, LockKey, DeviceMobile, MusicNotesPlus, XCircle
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
@@ -4717,8 +4717,12 @@ function ManageView ({ devices, libraryName, selfKey, onRevoke, requests, onReso
                   <div className='name'>{line(r)} <span className='badge'>{KIND[r.kind] || r.kind}</span>{r.count > 1 && <span className='badge'>×{r.count}</span>}</div>
                   <div className='sub muted sm'>{r.requesterName} asked</div>
                 </div>
-                <button className='ghostsm' onClick={() => onResolve(r.id, 'added')}>Added</button>
-                <button className='ghostsm danger' onClick={() => onResolve(r.id, 'declined')}>Decline</button>
+                <button className='reqact added' aria-label='Mark added' onClick={() => onResolve(r.id, 'added')}>
+                  <CheckCircle size={24} weight='fill' />
+                </button>
+                <button className='reqact declined' aria-label='Decline' onClick={() => onResolve(r.id, 'declined')}>
+                  <XCircle size={24} weight='fill' />
+                </button>
               </li>
             ))}
           </ul>

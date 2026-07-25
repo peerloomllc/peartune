@@ -1206,8 +1206,11 @@ button.shead .caret.open { transform: rotate(90deg); }
    buttons for the request queue. */
 .mgh { display: flex; align-items: baseline; gap: .4rem; font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--color-text-muted); margin: 1rem 0 .1rem; }
 .mgh .cnt { font-size: .78rem; font-weight: 500; text-transform: none; }
-.ghostsm { flex: none; background: none; border: 1px solid var(--color-border); border-radius: 8px; padding: .3rem .55rem; font-size: .75rem; color: var(--color-text); cursor: pointer; }
-.ghostsm.danger { color: var(--color-error); border-color: color-mix(in srgb, var(--color-error) 45%, var(--color-border)); }
+/* Resolve a request: bare icon buttons - a green check to add, a red x to decline. */
+.reqact { flex: none; background: none; border: 0; padding: .2rem; display: inline-flex; line-height: 0; cursor: pointer; }
+.reqact.added { color: var(--color-success); }
+.reqact.declined { color: var(--color-error); }
+.reqact:active { opacity: .6; }
 .ownerdevs { list-style: none; margin: .5rem 0 0; padding: 0; display: flex; flex-direction: column; }
 .ownerdevs li { display: flex; align-items: center; gap: .6rem; padding: .55rem .1rem; border-top: 1px solid var(--color-border); }
 .ownerdevs li:first-child { border-top: 0; }
