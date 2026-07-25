@@ -115,6 +115,7 @@ export default function App () {
   const [reqComposer, setReqComposer] = useState(null) // music-request composer: { name } prefill, or null
   const [reqSupported, setReqSupported] = useState(true) // false = active host too old for requests
   const [myRequests, setMyRequests] = useState(null) // this device's own requests (the You > Requests view)
+  const [ownerDevices, setOwnerDevices] = useState(null) // active library's devices, for an owner (You > Manage)
   const [confirming, setConfirming] = useState(null)
   const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
   const [queue, setQueue] = useState(null) // the up-next list, when opened
@@ -638,6 +639,7 @@ export default function App () {
   const openYou = (v) => {
     if (v === 'downloads') showDownloads()
     else if (v === 'requests') showRequests()
+    else if (v === 'manage') showManage()
     else if (v === 'playlists') showPlaylists()
     else if (v === 'top' || !favSupported) showMostPlayed()
     else showFavorites()
@@ -980,6 +982,22 @@ export default function App () {
   async function showRequests (force) {
     setYouView('requests')
     await loadRequests(force)
+  }
+  // Owner: the active library's devices (You > Manage). Reloads each open - a revoke or a
+  // new pair should show promptly, and the list is small.
+  async function loadOwnerDevices () {
+    try { setOwnerDevices((await call('ownerDevices')).devices || []) } catch { setOwnerDevices(d => d || []) }
+  }
+  async function showManage () {
+    setYouView('manage')
+    setOwnerDevices(null)
+    await loadOwnerDevices()
+  }
+  async function revokeOwnerDevice (deviceKey) {
+    const r = await call('ownerRevoke', { deviceKey }).catch(() => null)
+    haptic(r?.ok ? 'warn' : 'light')
+    if (!r?.ok) toast('Could not revoke that device', true)
+    loadOwnerDevices()
   }
   // Remove one of MY requests - a completed one I'm done with, or a pending one I want to
   // withdraw. Optimistic (drop it from the list now); the host refuses anything not mine.
@@ -1618,6 +1636,8 @@ export default function App () {
         reqSupported={reqSupported} myRequests={myRequests}
         onNewRequest={() => { haptic('light'); setReqComposer({ name: '' }) }}
         onRemoveRequest={removeRequest}
+        isOwner={!!ident?.owner} ownerLibraryName={ident?.libraryName || state.host?.libraryName}
+        ownerDevices={ownerDevices} selfKey={state.deviceKeyZ32} onRevokeDevice={revokeOwnerDevice}
         onOpenPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name })}
         onOpenServerPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name, server: true })}
         onOpenDownload={(dl) => push({ type: 'download', id: dl.id, name: dl.name })}
@@ -2677,6 +2697,7 @@ function You ({
   favSupported, favItems, mostPlayed, favs, onFav,
   playlists, plSupported, serverPls, sourceName, downloads,
   reqSupported, myRequests, onNewRequest, onRemoveRequest,
+  isOwner, ownerLibraryName, ownerDevices, selfKey, onRevokeDevice,
   onOpenPlaylist, onOpenServerPlaylist, onOpenDownload, onNewPlaylist,
   onPlay, onLong, onOpenAlbum, onOpenArtist
 }) {
@@ -2690,7 +2711,7 @@ function You ({
     <div className='app'>
       <header>
         <h1>You</h1>
-        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists, serverPls, downloads, myRequests })}</p>
+        <p className='muted sm'>{youCount(view, { favItems, mostPlayed, playlists, serverPls, downloads, myRequests, ownerDevices, ownerLibraryName })}</p>
       </header>
 
       <div className='sticky'>
@@ -2727,6 +2748,14 @@ function You ({
                 {view === 'requests' && <span>Requests</span>}
               </button>
             )}
+            {/* Owner-only: manage the ACTIVE library (device list + revoke), proposal 2026-07-24 P2.
+                Shown only for a device the dashboard made an owner of the current library. */}
+            {isOwner && (
+              <button className={view === 'manage' ? 'on' : ''} aria-label='Manage library' onClick={() => onYouView('manage')}>
+                <UsersThree size={17} weight={view === 'manage' ? 'fill' : 'regular'} />
+                {view === 'manage' && <span>Manage</span>}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -2751,6 +2780,8 @@ function You ({
             ? <DownloadsView downloads={downloads} d={D} onOpen={onOpenDownload} />
           : view === 'requests'
             ? <RequestsView requests={myRequests} onNew={onNewRequest} onRemove={onRemoveRequest} />
+          : view === 'manage'
+            ? <ManageView devices={ownerDevices} libraryName={ownerLibraryName} selfKey={selfKey} onRevoke={onRevokeDevice} />
           : (mostPlayed
               ? (mostPlayed.items.length
                   ? (
@@ -2770,7 +2801,11 @@ function You ({
   )
 }
 
-function youCount (view, { favItems, mostPlayed, playlists, serverPls, downloads, myRequests }) {
+function youCount (view, { favItems, mostPlayed, playlists, serverPls, downloads, myRequests, ownerDevices, ownerLibraryName }) {
+  if (view === 'manage') {
+    const live = (ownerDevices || []).filter(d => !d.revokedAt).length
+    return ownerLibraryName ? `Managing ${ownerLibraryName}` : (ownerDevices ? `${live} device${live === 1 ? '' : 's'}` : 'Loading…')
+  }
   if (view === 'requests') {
     if (!myRequests) return 'Loading requests…'
     const pend = myRequests.filter(r => r.status === 'pending').length
@@ -4622,38 +4657,21 @@ function compressToAvatarB64 (dataUrl, size = 256) {
 const IDENT_POLL_MS = 5000
 const IDENT_POLL_MAX = 36 // 3 minutes of asking, then wait for the next time Settings opens
 
-// Owner maintenance in the app (proposal 2026-07-24, P2): the device list for the ACTIVE
-// library, with revoke. Shown only inside the owner-only Settings section. Targets the
-// active host (the worklet's ownerDevices/ownerRevoke), so it manages whatever library you
-// are in. Loads when the section opens (loadNow). A revoke cuts the device off within the
-// second - the same teeth as the dashboard - and the host refuses revoking another OWNER,
-// so that button is hidden here too.
-function OwnerDevices ({ selfKey, loadNow }) {
-  const [devices, setDevices] = useState(null)
+// Owner maintenance in the app (proposal 2026-07-24, P2): the ACTIVE library's device list,
+// with revoke - the You > Manage view, shown only to a device the dashboard made an owner of
+// the current library. Data is fetched by the parent (ownerDevices) and reloaded after a
+// revoke. A revoke cuts the device off within the second (the same teeth as the dashboard);
+// the host refuses revoking another OWNER, so that button is hidden here too.
+function ManageView ({ devices, libraryName, selfKey, onRevoke }) {
   const [confirm, setConfirm] = useState(null) // { device } pending a revoke
-  const [busy, setBusy] = useState(false)
-
-  const load = async () => {
-    const r = await call('ownerDevices').catch(() => null)
-    setDevices(r?.devices || [])
-  }
-  useEffect(() => { if (loadNow && !devices) load() }, [loadNow])
-
-  const doRevoke = async (d) => {
-    setBusy(true)
-    const r = await call('ownerRevoke', { deviceKey: d.deviceKey }).catch(() => null)
-    setBusy(false)
-    setConfirm(null)
-    haptic(r?.ok ? 'warn' : 'light')
-    load()
-  }
-
-  if (!devices) return <p className='muted sm'>Loading…</p>
+  if (!devices) return <SkeletonRows />
   const live = devices.filter(d => !d.revokedAt)
-  if (!live.length) return <p className='muted sm'>No other devices have access.</p>
   return (
     <>
-      <p className='muted sm'>Devices with access to this library. Revoke one and it loses access immediately, even mid-song.</p>
+      <p className='muted sm' style={{ margin: '0 0 .4rem' }}>
+        Everyone with access to {libraryName || 'this library'}. Revoke a device and it loses
+        access immediately, even mid-song.
+      </p>
       <ul className='ownerdevs'>
         {live.map(d => {
           const isSelf = d.deviceKey === selfKey
@@ -4671,7 +4689,7 @@ function OwnerDevices ({ selfKey, loadNow }) {
               {/* No revoke on yourself (unpair is how you leave) or on another owner
                   (dashboard-only, and the host refuses it anyway). */}
               {!isSelf && !isOwner && (
-                <button className='rqv-rm' aria-label={'Revoke ' + d.label} disabled={busy} onClick={() => setConfirm({ device: d })}>
+                <button className='rqv-rm' aria-label={'Revoke ' + d.label} onClick={() => setConfirm({ device: d })}>
                   <Trash size={18} weight='regular' />
                 </button>
               )}
@@ -4684,7 +4702,7 @@ function OwnerDevices ({ selfKey, loadNow }) {
           title={`Revoke “${confirm.device.label}”?`}
           body='It loses access immediately, even mid-song. It would have to pair again to return.'
           yes='Revoke' danger
-          onConfirm={() => doRevoke(confirm.device)}
+          onConfirm={() => { onRevoke(confirm.device.deviceKey); setConfirm(null) }}
           onClose={() => setConfirm(null)}
         />
       )}
@@ -4839,14 +4857,6 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
       )}
 
       <div className='settings-acc'>
-        {/* Owner maintenance (proposal 2026-07-24, P2). Only for a device the dashboard made
-            an owner of the ACTIVE library (ident.owner, host-derived). First, so an owner
-            reaches it fast when away from the server. */}
-        {ident?.owner && (
-          <Section id='owner' title='Manage this library' Icon={UsersThree} open={open === 'owner'} onToggle={toggle}>
-            <OwnerDevices selfKey={state.deviceKeyZ32} loadNow={open === 'owner'} />
-          </Section>
-        )}
         <Section id='appearance' title='Appearance' Icon={Palette} open={open === 'appearance'} onToggle={toggle}>
           <div className='label'>Theme</div>
           <div className='seg'>
