@@ -15,7 +15,7 @@ set -euo pipefail
 # NB: this is the REGISTRY manifest digest (skopeo inspect docker://… .Digest, or the first
 # RepoDigest after a pull) - NOT `podman inspect --format {{.Digest}}`, which is the local digest
 # and yields "manifest unknown" on pull.
-IMG='ghcr.io/peerloomllc/peartune-host:0.2.24@sha256:45d14b2303e869f29c09386ae6b51cbf34eb903deb3a967dcdfd5063678b7b8c'
+IMG='ghcr.io/peerloomllc/peartune-host:0.2.25@sha256:52d98d0f7ce737a4c39c05933b8d30ea0181d03a0e209296ea4490209a13ae76'
 
 DATA='/home/umbrel/peartune-data'                     # identity + grants (persisted)
 MUSIC_HOST='/home/umbrel/umbrel/home/Downloads'       # mounted at /library (ro); roots = /library/music,/library/downtify
