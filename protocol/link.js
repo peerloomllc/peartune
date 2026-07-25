@@ -15,7 +15,7 @@ const z32 = require('z32')
 const b4a = require('b4a')
 const { LINK_SCHEME, LINK_VERSION } = require('./constants')
 
-function encodeLink ({ rv, hostKey, name }) {
+function encodeLink ({ rv, hostKey, name, owner = false }) {
   const rvStr = typeof rv === 'string' ? rv : z32.encode(rv)
   const hostStr = typeof hostKey === 'string' ? hostKey : z32.encode(hostKey)
   const q = [
@@ -24,6 +24,11 @@ function encodeLink ({ rv, hostKey, name }) {
     `host=${hostStr}`
   ]
   if (name) q.push(`name=${encodeURIComponent(name)}`)
+  // A hint, NOT authority: it tells the phone this code is meant to grant ownership, so the app can
+  // say so and can flag a promotion that did not take instead of pairing as a normal device in
+  // silence. The host still decides scope on its side (an owner window) - the flag alone grants
+  // nothing, and a photographed QR learning "this was an owner code" costs nothing.
+  if (owner) q.push('owner=1')
   return `${LINK_SCHEME}?${q.join('&')}`
 }
 
@@ -70,8 +75,10 @@ function parseLink (link) {
   if (hostKey.byteLength !== 32) throw new Error('host key must be 32 bytes')
 
   const name = params.has('name') ? decodeURIComponent(params.get('name')) : null
+  // Owner hint (optional, additive - an old link without it parses as a normal code).
+  const owner = params.get('owner') === '1'
 
-  return { version: v, rv, hostKey, name }
+  return { version: v, rv, hostKey, name, owner }
 }
 
 // Convenience for the phone: does this look like ours at all? Used to route a

@@ -274,14 +274,14 @@ function PasswordStep ({ state, refresh, toast }) {
 function PairStep ({ onNext, toast }) {
   return (
     <div className='wizbody'>
-      <h2 className='wizh'>Pair a phone</h2>
+      <h2 className='wizh'>Pair your phone</h2>
       <p className='hint'>
-        Install PearTune on the phone, open it and scan this code. It can be your own, or a
-        friend’s you want to share this library with - they get their own place on this page,
-        with their own favourites. Pairing is what allows a device in, and you can revoke it
-        from here at any time, immediately.
+        This is YOUR server, so the first phone you pair here becomes its <b>owner</b> - it can
+        manage the library right from the app: see who has access, revoke a device, open a pairing
+        window and answer music requests. Install PearTune on your phone, open it and scan this
+        code. You can add friends (as normal devices) afterwards, from People &amp; Devices.
       </p>
-      <PairFlow toast={toast} guestOption={false} onDone={onNext} />
+      <PairFlow toast={toast} guestOption={false} owner onDone={onNext} />
     </div>
   )
 }

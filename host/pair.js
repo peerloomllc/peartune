@@ -78,7 +78,8 @@ class PairSession {
     return encodeLink({
       rv: this.rv,
       hostKey: this.identity.publicKey,
-      name: this.libraryName
+      name: this.libraryName,
+      owner: this.owner
     })
   }
 

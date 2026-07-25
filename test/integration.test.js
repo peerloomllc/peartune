@@ -22,7 +22,7 @@ const { PearTuneHost } = require('../host/server')
 const { PearTuneClient } = require('../client')
 const { parseLink, encodeLink } = require('../protocol/link')
 const { libraryId } = require('../protocol/ids')
-const { PAIR_PROTOCOL } = require('../protocol/constants')
+const { PAIR_PROTOCOL, SCOPE } = require('../protocol/constants')
 const framing = require('../protocol/framing')
 
 const QUIET = () => {}
@@ -296,6 +296,23 @@ test('HANDOFF: an idempotent re-claim by the current holder pushes nobody', asyn
   await a.client.sessionClaim({ generation: claimed.session.generation })
   await new Promise(r => setTimeout(r, 500))
   assert.equal(bGotPush, false, 'a self re-claim supersedes nobody')
+})
+
+test('OWNER WINDOW: pairing through one grants owner scope, and the link is flagged', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const client = newClient(testnet)
+  t.after(() => client.close())
+
+  // The first-run wizard opens exactly this - an owner window - so the operator's own phone
+  // comes in as the owner rather than a plain device (issue: "It's mine" never granted ownership).
+  const link = host.startPairing({ owner: true })
+  assert.equal(parseLink(link).owner, true, 'an owner window link carries the owner hint for the phone')
+
+  const paired = await client.pair(link, { label: 'MyPhone', platform: 'android' })
+  await client.connect({ hostKey: paired.hostKey, libraryId: paired.libraryId })
+
+  const grant = await host.grants.get(z32.encode(client.keyPair.publicKey))
+  assert.equal(grant.scope, SCOPE.OWNER, 'a device paired through an owner window gets owner scope')
 })
 
 test('stream a whole track, bytes identical to the file on disk', async (t) => {

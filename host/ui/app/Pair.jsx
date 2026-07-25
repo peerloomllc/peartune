@@ -27,11 +27,14 @@ export function PairFlow ({ toast, onDone, guestOption = true, owner = false }) 
   const [durMs, setDurMs] = useState(DAY_MS)
   const [copied, setCopied] = useState(false)
   const [outcome, setOutcome] = useState(null) // { ok: true, label } | { ok: false } once the window ends
-  // deviceKey -> grantedAt BEFORE the window opened. A pair is detected by a device whose grantedAt
-  // is NEW or CHANGED - not merely a new key. A device that was here with a REVOKED grant (common
-  // after any pair/revoke churn) re-pairs to a FRESH grantedAt (grant() stamps Date.now() every
-  // time), so keying on the key alone missed it and the modal wrongly said "expired" on a success.
+  // deviceKey -> "grantedAt|scope" BEFORE the window opened. Success is a device whose signature
+  // CHANGED - not merely a new key. Two things change it: a (re)pair stamps a fresh grantedAt
+  // (grant() sets Date.now() every time, so a revoked-then-repaired device is caught), and an owner
+  // PROMOTION of an already-paired phone flips scope to 'owner' WITHOUT a new grantedAt (it goes
+  // over the live channel via ownerClaim, not this window's hello). Folding scope into the signature
+  // catches both, so an owner promotion no longer wrongly reads as "expired".
   const seenGrants = useRef(new Map())
+  const sig = (d) => `${d.grantedAt}|${d.scope || ''}`
   // Whether a window is still OPEN host-side, readable from the unmount cleanup below
   // (which closes over the FIRST render's state otherwise, and would never stop
   // anything). An outcome means the host already closed it - paired or timed out - so
@@ -58,11 +61,11 @@ export function PairFlow ({ toast, onDone, guestOption = true, owner = false }) 
       if (done) return
       const st = await api('/api/state').catch(() => null)
       if (!st || done) return
-      const fresh = (st.devices || []).find(d => !d.revokedAt && seenGrants.current.get(d.deviceKey) !== d.grantedAt)
+      const fresh = (st.devices || []).find(d => !d.revokedAt && seenGrants.current.get(d.deviceKey) !== sig(d))
       if (fresh) {
         done = true
         const label = fresh.label || 'a device'
-        setOutcome({ ok: true, label })
+        setOutcome({ ok: true, label, owner: owner || fresh.scope === 'owner' })
         setTimeout(() => onDone({ ok: true, label }), 2200)
       } else if (st.pairing === false) {
         // The window ended with nobody through it. Do NOT auto-close: the operator is standing
@@ -80,7 +83,7 @@ export function PairFlow ({ toast, onDone, guestOption = true, owner = false }) 
     // one that just paired through it - which is what lets us say WHICH device, and lets us tell a
     // successful pair from a window that simply timed out.
     const before = await api('/api/state').catch(() => null)
-    seenGrants.current = new Map((before?.devices || []).map(d => [d.deviceKey, d.grantedAt]))
+    seenGrants.current = new Map((before?.devices || []).map(d => [d.deviceKey, sig(d)]))
     // An OWNER window mints scope 'owner' (P2); a guest window carries the chosen duration;
     // a full window sends nothing. Owner and guest are mutually exclusive host-side.
     const r = await api('/api/pair/start', owner ? { owner: true } : guest ? { expiresMs: durMs } : {})
@@ -122,8 +125,8 @@ export function PairFlow ({ toast, onDone, guestOption = true, owner = false }) 
         {outcome.ok
           ? <>
               <CheckCircle size={44} weight='fill' color='var(--good)' />
-              <h3 className='pairdone'>Paired with {outcome.label}</h3>
-              <p className='hint center'>It can reach your library now. Closing…</p>
+              <h3 className='pairdone'>{outcome.owner ? `${outcome.label} is now an owner` : `Paired with ${outcome.label}`}</h3>
+              <p className='hint center'>{outcome.owner ? 'It can manage this library from the app now. Closing…' : 'It can reach your library now. Closing…'}</p>
             </>
           : <>
               <Clock size={40} weight='regular' color='var(--muted)' />

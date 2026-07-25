@@ -30,6 +30,26 @@ test('name is optional', () => {
   assert.equal(parsed.name, null)
 })
 
+test('owner hint round-trips and defaults to false', () => {
+  // A normal code has no owner flag.
+  assert.equal(parseLink(encodeLink({ rv, hostKey })).owner, false)
+  assert.equal(parseLink(encodeLink({ rv, hostKey, owner: false })).owner, false)
+  // An owner window's code carries owner=1.
+  const link = encodeLink({ rv, hostKey, name: 'Tim', owner: true })
+  assert.match(link, /(^|&)owner=1(&|$)/)
+  const parsed = parseLink(link)
+  assert.equal(parsed.owner, true)
+  // The rest still round-trips alongside it.
+  assert.ok(b4a.equals(parsed.rv, rv))
+  assert.equal(parsed.name, 'Tim')
+})
+
+test('a pre-owner-hint link (no owner param) still parses, as a normal code', () => {
+  // Backwards compatible: an old link minted before the hint parses fine and reads owner=false.
+  const old = `pear://peartune/pair?v=1&rv=${z32.encode(rv)}&host=${z32.encode(hostKey)}`
+  assert.equal(parseLink(old).owner, false)
+})
+
 test('a name with & and = survives (url-encoded)', () => {
   const nasty = 'Rock & Roll = Life'
   const parsed = parseLink(encodeLink({ rv, hostKey, name: nasty }))
@@ -43,7 +63,7 @@ test('carries no secret material: only rv and a public key', () => {
   assert.ok(!link.includes('seed'))
   assert.ok(!link.includes('secret'))
   const parsed = parseLink(link)
-  assert.deepEqual(Object.keys(parsed).sort(), ['hostKey', 'name', 'rv', 'version'])
+  assert.deepEqual(Object.keys(parsed).sort(), ['hostKey', 'name', 'owner', 'rv', 'version'])
 })
 
 test('CROSS-REJECT: other apps\' links must not parse as PearTune pairing links', () => {
