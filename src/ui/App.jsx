@@ -116,8 +116,12 @@ export default function App () {
   const [reqComposer, setReqComposer] = useState(null) // music-request composer: { name } prefill, or null
   const [reqSupported, setReqSupported] = useState(true) // false = active host too old for requests
   const [myRequests, setMyRequests] = useState(null) // this device's own requests (the You > Requests view)
-  const [ownerDevices, setOwnerDevices] = useState(null) // active library's devices, for an owner (You > Manage)
+  const [ownerDevices, setOwnerDevices] = useState(null) // the managed library's devices, for an owner (You > Manage)
   const [ownerReqs, setOwnerReqs] = useState(null) // the full request queue, for an owner to resolve (You > Manage)
+  const [ownedLibs, setOwnedLibs] = useState([]) // libraries this device OWNS + can reach (the Manage picker)
+  const [manageLib, setManageLib] = useState(null) // libraryId currently selected in Manage (null = active/default)
+  const manageLibRef = useRef(null) // so the once-registered devices:changed handler reads the live selection
+  manageLibRef.current = manageLib
   const [ownerPair, setOwnerPair] = useState(null) // { link } while an owner-opened pairing window is up
   const [ownerTour, setOwnerTour] = useState(false) // one-shot "you're an owner now" walkthrough
   const [confirming, setConfirming] = useState(null)
@@ -374,6 +378,14 @@ export default function App () {
         const s = liveRef.current
         if (s.host && !s.connected && !s.reconnecting) reconnect()
         loadHandoff() // lazy presence: another device may have started/stopped while we were away
+      }),
+
+      // A host (that we own) told us its device roster changed - a pair, a revoke, a delete, a
+      // promotion on its dashboard. If we are currently managing THAT library, refresh the list
+      // live instead of only on the next open (Tim: a dashboard revoke did not update Manage).
+      on('devices:changed', (d) => {
+        const lib = manageLibRef.current
+        if (lib && (!d?.libraryId || d.libraryId === lib)) loadOwnerDevices()
       })
     ]
     return () => offs.forEach(f => f())
@@ -1012,19 +1024,38 @@ export default function App () {
   }
   // Owner: the active library's devices + request queue (You > Manage). Reloads each open -
   // a revoke, a resolve or a new pair should show promptly, and the lists are small.
-  async function loadOwnerDevices () {
-    try { setOwnerDevices((await call('ownerDevices')).devices || []) } catch { setOwnerDevices(d => d || []) }
+  // Every owner load/action acts on the library currently selected in Manage (manageLibRef), so
+  // an owner of several manages each in turn. Undefined libraryId = the active one (worklet default).
+  async function loadOwnerDevices (libId = manageLibRef.current) {
+    try { setOwnerDevices((await call('ownerDevices', { libraryId: libId })).devices || []) } catch { setOwnerDevices(d => d || []) }
   }
-  async function loadOwnerReqs () {
-    try { setOwnerReqs((await call('ownerRequests')).requests || []) } catch { setOwnerReqs(r => r || []) }
+  async function loadOwnerReqs (libId = manageLibRef.current) {
+    try { setOwnerReqs((await call('ownerRequests', { libraryId: libId })).requests || []) } catch { setOwnerReqs(r => r || []) }
   }
   async function showManage () {
     setYouView('manage')
     setOwnerDevices(null); setOwnerReqs(null)
-    await Promise.all([loadOwnerDevices(), loadOwnerReqs()])
+    // Which libraries do I own AND can reach? Default the picker to the active one if I own it,
+    // else the first owned; keep a prior valid selection across reopens.
+    let libs = []
+    try { libs = (await call('ownedLibraries')).libraries || [] } catch {}
+    setOwnedLibs(libs)
+    const lib = (manageLibRef.current && libs.some(l => l.libraryId === manageLibRef.current))
+      ? manageLibRef.current
+      : (libs.find(l => l.active)?.libraryId || libs[0]?.libraryId || null)
+    setManageLib(lib); manageLibRef.current = lib
+    await Promise.all([loadOwnerDevices(lib), loadOwnerReqs(lib)])
+  }
+  // Switch which owned library Manage is acting on.
+  async function switchManageLib (libId) {
+    if (libId === manageLibRef.current) return
+    haptic('light')
+    setManageLib(libId); manageLibRef.current = libId
+    setOwnerDevices(null); setOwnerReqs(null)
+    await Promise.all([loadOwnerDevices(libId), loadOwnerReqs(libId)])
   }
   async function revokeOwnerDevice (deviceKey) {
-    const r = await call('ownerRevoke', { deviceKey }).catch(() => null)
+    const r = await call('ownerRevoke', { libraryId: manageLibRef.current, deviceKey }).catch(() => null)
     haptic(r?.ok ? 'warn' : 'light')
     if (!r?.ok) toast('Could not revoke that device', true)
     loadOwnerDevices()
@@ -1033,7 +1064,7 @@ export default function App () {
   async function resolveOwnerRequest (id, status) {
     haptic('light')
     setOwnerReqs(list => (list || []).map(r => r.id === id ? { ...r, status } : r))
-    const r = await call('ownerResolveRequest', { id, status }).catch(() => null)
+    const r = await call('ownerResolveRequest', { libraryId: manageLibRef.current, id, status }).catch(() => null)
     if (!r?.ok) toast('Could not update that request', true)
     loadOwnerReqs()
   }
@@ -1041,13 +1072,13 @@ export default function App () {
   // returned link is shared/copied; a device pairs through it. Stop closes the window.
   async function openOwnerPair () {
     haptic('light')
-    const r = await call('ownerPairStart', {}).catch(() => null)
+    const r = await call('ownerPairStart', { libraryId: manageLibRef.current }).catch(() => null)
     if (!r?.ok || !r.link) return toast('Could not open a pairing window', true)
     setOwnerPair({ link: r.link })
   }
   async function stopOwnerPair () {
     setOwnerPair(null)
-    call('ownerPairStop').catch(() => {})
+    call('ownerPairStop', { libraryId: manageLibRef.current }).catch(() => {})
     loadOwnerDevices() // a device may have paired through it
   }
   // Remove one of MY requests - a completed one I'm done with, or a pending one I want to
@@ -1690,7 +1721,9 @@ export default function App () {
         reqSupported={reqSupported} myRequests={myRequests}
         onNewRequest={() => { haptic('light'); setReqComposer({ name: '' }) }}
         onRemoveRequest={removeRequest}
-        isOwner={!!ident?.owner} ownerLibraryName={ident?.libraryName || state.host?.libraryName}
+        isOwner={!!ident?.owner}
+        ownerLibraryName={ownedLibs.find(l => l.libraryId === manageLib)?.libraryName || ident?.libraryName || state.host?.libraryName}
+        ownedLibs={ownedLibs} manageLib={manageLib} onSwitchManageLib={switchManageLib}
         ownerDevices={ownerDevices} selfKey={state.deviceKeyZ32} onRevokeDevice={revokeOwnerDevice}
         ownerReqs={ownerReqs} onResolveRequest={resolveOwnerRequest} onOwnerPair={openOwnerPair}
         onOpenPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name })}
@@ -2760,7 +2793,7 @@ function You ({
   favSupported, favItems, mostPlayed, favs, onFav,
   playlists, plSupported, serverPls, sourceName, downloads,
   reqSupported, myRequests, onNewRequest, onRemoveRequest,
-  isOwner, ownerLibraryName, ownerDevices, selfKey, onRevokeDevice,
+  isOwner, ownerLibraryName, ownedLibs, manageLib, onSwitchManageLib, ownerDevices, selfKey, onRevokeDevice,
   ownerReqs, onResolveRequest, onOwnerPair,
   onOpenPlaylist, onOpenServerPlaylist, onOpenDownload, onNewPlaylist,
   onPlay, onLong, onOpenAlbum, onOpenArtist
@@ -2846,6 +2879,7 @@ function You ({
             ? <RequestsView requests={myRequests} onNew={onNewRequest} onRemove={onRemoveRequest} />
           : view === 'manage'
             ? <ManageView devices={ownerDevices} libraryName={ownerLibraryName} selfKey={selfKey} onRevoke={onRevokeDevice}
+                ownedLibs={ownedLibs} manageLib={manageLib} onSwitchManageLib={onSwitchManageLib}
                 requests={ownerReqs} onResolve={onResolveRequest} onPair={onOwnerPair} />
           : (mostPlayed
               ? (mostPlayed.items.length
@@ -4727,13 +4761,40 @@ const IDENT_POLL_MAX = 36 // 3 minutes of asking, then wait for the next time Se
 // the current library. Data is fetched by the parent (ownerDevices) and reloaded after a
 // revoke. A revoke cuts the device off within the second (the same teeth as the dashboard);
 // the host refuses revoking another OWNER, so that button is hidden here too.
-function ManageView ({ devices, libraryName, selfKey, onRevoke, requests, onResolve, onPair }) {
+function ManageView ({ devices, libraryName, selfKey, onRevoke, ownedLibs = [], manageLib, onSwitchManageLib, requests, onResolve, onPair }) {
   const [confirm, setConfirm] = useState(null) // { device } pending a revoke
-  if (!devices) return <SkeletonRows />
-  const live = devices.filter(d => !d.revokedAt)
-  const pending = (requests || []).filter(r => r.status === 'pending')
+  const multi = (ownedLibs || []).length > 1
   const line = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
   const KIND = { artist: 'Artist', album: 'Album', track: 'Track' }
+  return (
+    <>
+      {/* Own more than one library? Pick which one to manage - devices, requests and pairing all
+          act on the chosen library. Just one owned library shows no picker. */}
+      {multi && (
+        <div className='mglibs'>
+          {ownedLibs.map(l => (
+            <button
+              key={l.libraryId}
+              className={l.libraryId === manageLib ? 'on' : ''}
+              onClick={() => onSwitchManageLib(l.libraryId)}
+            >{l.libraryName}</button>
+          ))}
+        </div>
+      )}
+
+      {!devices ? <SkeletonRows /> : <ManageBody
+        devices={devices} libraryName={libraryName} selfKey={selfKey} onRevoke={onRevoke} onPair={onPair}
+        requests={requests} onResolve={onResolve} confirm={confirm} setConfirm={setConfirm}
+        line={line} KIND={KIND} />}
+    </>
+  )
+}
+
+// The body of Manage for ONE library. Split out so the library picker above can stay put while
+// the list below swaps to a skeleton on a library switch.
+function ManageBody ({ devices, libraryName, selfKey, onRevoke, onPair, requests, onResolve, confirm, setConfirm, line, KIND }) {
+  const live = devices.filter(d => !d.revokedAt)
+  const pending = (requests || []).filter(r => r.status === 'pending')
   return (
     <>
       <button className='wide' style={{ marginBottom: '.7rem' }} onClick={onPair}>
