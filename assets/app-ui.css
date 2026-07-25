@@ -2177,6 +2177,9 @@ button.wide {
   flex: 1;
   font-size: .875rem;
 }
+.pairbtns + .wide {
+  margin-top: .6rem;
+}
 .acc > button {
   width: 100%;
   background: none;
