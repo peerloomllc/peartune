@@ -711,6 +711,7 @@ export default function App () {
   // no favorites support has only Most Played, so fall through to it rather than land
   // on an empty, unswitchable Favorites list.
   const openYou = (v) => {
+    haptic('light')
     if (v === 'downloads') showDownloads()
     else if (v === 'requests') showRequests()
     else if (v === 'manage') showManage()
@@ -750,6 +751,7 @@ export default function App () {
   // are passed straight into the loader rather than read back from state, because
   // setSort has not committed yet when the reload fires.
   function applySort (view, key, order) {
+    haptic('light')
     const entry = key ? { key, order: order || 'asc' } : null
     const next = { ...sort, [view]: entry }
     setSort(next)
@@ -1166,7 +1168,7 @@ export default function App () {
     })
   }
 
-  const promptNewPlaylist = () => setNaming(true)
+  const promptNewPlaylist = () => { haptic('light'); setNaming(true) }
 
   // Make a playlist from the name prompt, then open it - adding tracks is the obvious
   // next act, and an empty playlist is where you do it from.
@@ -1362,6 +1364,7 @@ export default function App () {
   // Open the pairing flow to ADD another library, prefilling the name fields from what this
   // device already goes by so you never re-type your name to add a server.
   function openAddLibrary () {
+    haptic('light')
     // `ident` is the live identity (what Settings shows and what the last Save wrote); the
     // settings mirror is the fallback for the offline case where ident never loaded. Reading
     // the mirror FIRST is what let a stale copy ride through a pair and clobber the real name.
@@ -1532,7 +1535,7 @@ export default function App () {
       setQueue({ items: [], index: 0 })
     }
   }
-  const confirmClearQueue = () => setConfirming({
+  const confirmClearQueue = () => { haptic('light'); setConfirming({
     title: 'Clear the queue?',
     body: now
       ? 'Everything up next is removed. The current song keeps playing.'
@@ -1540,7 +1543,7 @@ export default function App () {
     danger: true,
     yes: 'Clear',
     onYes: clearQueue
-  })
+  }) }
 
   // Reorder the queue. Update the visible list optimistically (so the row does not snap
   // back while the round-trip lands), then reconcile with the shell's authoritative
@@ -1833,7 +1836,7 @@ export default function App () {
           if (b === 'songs') return showSongs()
           return setBrowse('albums')
         }}
-        onDisplay={() => setDisplay(true)}
+        onDisplay={() => { haptic('light'); setDisplay(true) }}
         onSearch={runSearch}
         onReconnect={reconnect}
         onRefresh={refresh}
@@ -2574,7 +2577,7 @@ function Library ({
         <div className='libhead'>
           <button
             className={'libpick' + (libMenuOpen ? ' open' : '')}
-            onClick={() => setLibMenuOpen(o => !o)}
+            onClick={() => { haptic('light'); setLibMenuOpen(o => !o) }}
             aria-haspopup='menu'
             aria-expanded={libMenuOpen}
           >
@@ -5026,7 +5029,7 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
   }
 
   const [open, setOpen] = useState(null)
-  const toggle = (id) => setOpen(o => (o === id ? null : id))
+  const toggle = (id) => { haptic('light'); setOpen(o => (o === id ? null : id)) }
 
   // The avatar shown in the profile header: the last-picked one (optimistic) else what
   // the worklet persisted. `avatar` is base64 JPEG (no data: prefix).
@@ -5187,7 +5190,7 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
             const online = ml ? ml.connected : (h.active && state.connected)
             const showDot = ml ? true : h.active // merged: every row has a status; single: only the active one
             const desc = ml
-              ? (ml.connected ? 'In your blended library' : 'Offline — unreachable')
+              ? (ml.connected ? 'Connected' : 'Offline')
               : (h.active
                   ? (state.connected ? 'Active — connected' : 'Active — connecting…')
                   : 'Tap to switch to this library')
@@ -5270,7 +5273,7 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
 
 function About ({ onDonate }) {
   const [open, setOpen] = useState(null)
-  const toggle = (id) => setOpen(o => (o === id ? null : id))
+  const toggle = (id) => { haptic('light'); setOpen(o => (o === id ? null : id)) }
 
   return (
     <div className='app'>
