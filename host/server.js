@@ -50,7 +50,8 @@ const EXPIRY_SWEEP_MS = 30_000
 // How long a play session stays believable on the dashboard with no heartbeat (listDevices).
 const SESSION_STALE_MS = 15 * 60 * 1000
 const { serveMedia } = require('./media')
-const { PairSession } = require('./pair')
+const { PairSession, tokenEquals } = require('./pair')
+const { SCOPE } = require('../protocol/constants')
 const { SourceStore, buildAdapter } = require('./source')
 const { pruneRocksLogs } = require('./logprune')
 const { hostTopic } = require('../protocol/ids')
@@ -485,6 +486,18 @@ class PearTuneHost {
         // A device sets its own avatar (identity.avatar), keyed by this connection's
         // Noise-authenticated deviceKey - it can only ever write its own.
         avatars: this.avatars,
+        // Owner maintenance from the app (proposal 2026-07-24, P2). Bound host operations,
+        // never the host itself - media.js gates them on grant.scope === 'owner'. Kept to
+        // the small v1 surface: see the device list, and revoke a device (which cuts its
+        // live connections, same teeth as the dashboard).
+        owner: {
+          listDevices: () => this.listDevices(),
+          revokeDevice: (deviceKey) => this.revokeDevice(deviceKey),
+          getGrant: (deviceKey) => this.grants.get(deviceKey),
+          // Promote THIS connection to owner via the open owner window's code (P2, the
+          // connected-device path). deviceKey is bound to the connection's own grant.
+          claim: (deviceKey, code) => this.claimOwner(deviceKey, code)
+        },
         log: (msg, data) => this.log(msg, { device: short, ...data })
       })
     })
@@ -493,14 +506,20 @@ class PearTuneHost {
   // --- operator actions (the dashboard drives these) -----------------------
 
   // expiresMs > 0 opens a GUEST window: devices that pair through it get access that
-  // expires that many ms after pairing. Omitted / null = a normal permanent window.
-  startPairing ({ expiresMs = null } = {}) {
-    // A window is already open. If its GUEST-ness matches what was asked, reuse it;
-    // otherwise close it and open the requested kind, so "Guest pass" never silently
-    // hands back a permanent window (or vice versa).
+  // expires that many ms after pairing. owner:true opens an OWNER window (scope 'owner',
+  // proposal 2026-07-24, P2) - mutually exclusive with guest, so an owner is never
+  // time-limited. Omitted = a normal permanent window.
+  startPairing ({ expiresMs = null, owner = false } = {}) {
+    // Owner XOR guest: an owner window ignores any expiry (an owner is permanent by
+    // definition; a time-limited owner would be a footgun).
+    if (owner) expiresMs = null
+    // A window is already open. Reuse it only if its KIND (guest-ness AND owner-ness)
+    // matches what was asked; otherwise close it and open the requested kind, so the
+    // three window types never silently hand back the wrong one.
     if (this.pairing) {
       const openMs = this.pairSession.expiresMs || null
-      if ((openMs ? 1 : 0) === (expiresMs ? 1 : 0)) return this.pairSession.link
+      const sameKind = (openMs ? 1 : 0) === (expiresMs ? 1 : 0) && !!this.pairSession.owner === !!owner
+      if (sameKind) return this.pairSession.link
       this.pairSession.close('operator')
     }
 
@@ -509,10 +528,33 @@ class PearTuneHost {
       grants: this.grants,
       libraryName: this.libraryName,
       expiresMs: expiresMs && expiresMs > 0 ? expiresMs : null,
+      owner: !!owner,
       log: this.log
     })
-    this.log('pair:open', { ttlMs: this.pairSession.ttl, guest: !!this.pairSession.expiresMs })
+    this.log('pair:open', { ttlMs: this.pairSession.ttl, guest: !!this.pairSession.expiresMs, owner: !!owner })
     return this.pairSession.link
+  }
+
+  // Promote a device to owner over its EXISTING media connection (proposal 2026-07-24, P2).
+  // The re-pair-through-the-owner-window path works only for a DISCONNECTED device - an
+  // already-connected phone's re-pair is preempted by its live media connection and never
+  // reaches the pair window (found in hardware testing). So a connected device claims owner
+  // here instead: it presents the open owner window's one-time code over the channel, we
+  // check it against that window's rv, and promote THIS connection's grant. Same proof as
+  // scanning the QR (you saw the dashboard's owner code), no new secret, and it consumes the
+  // window one-shot like a pair. `deviceKey` is the connection's Noise-authenticated key
+  // (media.js passes grant.deviceKey), so a device can only ever promote ITSELF.
+  async claimOwner (deviceKey, code) {
+    const ps = this.pairSession
+    if (!ps || ps.closed || !ps.owner) return { ok: false, reason: 'no owner window open' }
+    let rv
+    try { rv = z32.decode(code) } catch { return { ok: false, reason: 'bad code' } }
+    if (!tokenEquals(rv, ps.rv)) return { ok: false, reason: 'code mismatch' }
+    const row = await this.grants.setScope(deviceKey, SCOPE.OWNER)
+    if (!row) return { ok: false, reason: 'no grant' }
+    ps.close('owner-claimed')
+    this.log('owner:claimed', { device: String(deviceKey).slice(0, 8) })
+    return { ok: true }
   }
 
   stopPairing () {

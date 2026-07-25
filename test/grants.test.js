@@ -308,3 +308,33 @@ test('setIdentity with a blank claim assigns nobody', async (t) => {
   assert.equal(row.claimedUser, null)
   assert.equal(row.personId, null)
 })
+
+// --- owner scope (proposal 2026-07-24-owner-in-the-app, P2) ------------------
+// The owner scope is minted only by the host (via the dashboard's owner window). These pin
+// the grant-store pieces that back it; the dispatch gate + owner-can't-revoke-owner rule are
+// verified over the wire (media dispatch is connection-bound).
+
+test('a grant can be minted with owner scope, and defaults to full', async (t) => {
+  const g = await store(t)
+  const full = await g.grant({ deviceKey: key(), label: 'phone' })
+  assert.equal(full.scope, 'full')
+  const owner = await g.grant({ deviceKey: key(), label: 'my phone', scope: 'owner' })
+  assert.equal(owner.scope, 'owner')
+})
+
+test('setScope promotes an existing device to owner', async (t) => {
+  const g = await store(t)
+  const dev = await g.grant({ deviceKey: key(), label: 'phone' })
+  assert.equal(dev.scope, 'full')
+  const up = await g.setScope(dev.deviceKey, 'owner')
+  assert.equal(up.scope, 'owner')
+  assert.equal((await g.get(dev.deviceKey)).scope, 'owner', 'persisted')
+})
+
+test('setScope refuses a revoked or unknown device', async (t) => {
+  const g = await store(t)
+  assert.equal(await g.setScope(key(), 'owner'), null) // unknown
+  const dev = await g.grant({ deviceKey: key(), label: 'phone' })
+  await g.revoke(dev.deviceKey, { by: 'operator' })
+  assert.equal(await g.setScope(dev.deviceKey, 'owner'), null) // revoked
+})

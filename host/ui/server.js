@@ -306,7 +306,10 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         // permanent window. The operator sets the duration here, host-side.
         const body = await readBody(req)
         const expiresMs = Number(body.expiresMs) > 0 ? Number(body.expiresMs) : null
-        const link = host.startPairing({ expiresMs })
+        // owner:true opens an OWNER window (scope 'owner', proposal 2026-07-24 P2). Only the
+        // dashboard - which is password-gated - can ask for it, so owner scope stays rooted in
+        // dashboard access. startPairing enforces owner XOR guest.
+        const link = host.startPairing({ expiresMs, owner: !!body.owner })
         // margin 4 = the spec's full quiet zone, matching what the dashboard renders (App.jsx also
         // generates its own QR at margin 4). Nothing renders THIS svg today - the dashboard uses its
         // client-side one - but an API that hands out a harder-to-scan code than the UI shows is a
@@ -315,6 +318,7 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         return json(res, 200, {
           link, svg, ttlMs: host.pairSession.ttl,
           guest: !!host.pairSession.expiresMs,
+          owner: !!host.pairSession.owner,
           expiresMs: host.pairSession.expiresMs || null
         })
       }

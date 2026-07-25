@@ -113,6 +113,18 @@ class Grants {
     return row
   }
 
+  // Change a device's scope (proposal 2026-07-24, P2). Used to PROMOTE an already-paired
+  // device to owner when it re-pairs through the dashboard's owner window. Host-only writer,
+  // like every other grant mutation.
+  async setScope (deviceKey, scope) {
+    const key = Grants.keyOf(deviceKey)
+    const row = await this.get(key)
+    if (!row || row.revokedAt) return null
+    row.scope = scope
+    await this.bee.put('grant:' + key, row, { valueEncoding: 'json' })
+    return row
+  }
+
   async get (deviceKey) {
     const node = await this.bee.get('grant:' + Grants.keyOf(deviceKey), { valueEncoding: 'json' })
     return node ? node.value : null

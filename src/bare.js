@@ -1753,6 +1753,26 @@ const methods = {
     if (!isPairLink(link)) throw new Error('That is not a PearTune pairing code.')
     await ensureClient()
 
+    // OWNER PROMOTION over a live connection (proposal 2026-07-24, P2). If this link is for a
+    // host we are ALREADY connected to, a fresh pair handshake is preempted by the live media
+    // connection and never reaches the owner window (found in hardware testing). So present the
+    // window's one-time code over the EXISTING channel instead: if it is an owner window, the
+    // host promotes this device; if not, it is a harmless no-op and we fall through. Only this
+    // known-and-connected case takes the shortcut - a new host still pairs normally below.
+    try {
+      const parsed = parseLink(link)
+      const libId = deriveLibraryId(parsed.hostKey)
+      const known = loadHostsFile().hosts.find((h) => h.libraryId === libId)
+      const c = known && poolClient(libId)
+      if (c) {
+        const r = await c.ownerClaim({ code: z32.encode(parsed.rv) }).catch(() => null)
+        if (r?.ok) log('owner:promoted-live', { host: String(known.hostKey).slice(0, 8) })
+        // Re-activate + return the known record; no re-pair needed, we are already in.
+        saveHostsFile(hostList.addHost(loadHostsFile(), known, Date.now()))
+        return { hostKey: known.hostKey, libraryId: known.libraryId, libraryName: known.libraryName, promoted: !!r?.ok }
+      }
+    } catch { /* fall through to a normal pair - a bad/for-another-host link is handled below */ }
+
     // The name goes out in deviceHello's EXISTING label field, so this half needs
     // no wire change at all - we were simply hardcoding "Android phone" and giving
     // the operator two identical rows to choose between.
@@ -2181,6 +2201,10 @@ const methods = {
       // A guest pass's expiry (null = permanent / offline / old host), so the UI can show
       // a countdown banner. Only meaningful when we actually reached the host this call.
       expiresAt: remote?.expiresAt ?? null,
+      // Is this device the OWNER of the ACTIVE library (proposal 2026-07-24, P2)? Only when
+      // we actually reached the host this call - never assumed offline, so a lost connection
+      // can't leave a stale owner surface up. Off `remote.owner` (the host's grant scope).
+      owner: !!remote?.owner,
       // `supported` distinguishes an OLD host (reached, but no identity method) from OFFLINE (never
       // reached). Only false when we HAD a connection and it didn't answer - so a plain offline phone
       // never shows the misleading "your server is running an older PearTune" message.
@@ -2736,6 +2760,35 @@ const methods = {
     } catch (e) {
       if (e?.code === 'ENOMETHOD') return { requests: [], supported: false }
       return { requests: [], offline: true }
+    }
+  },
+
+  // --- owner maintenance (proposal 2026-07-24, P2) --------------------------
+  // Target the ACTIVE host - you are an owner OF a specific library, and identity().owner
+  // reflects the active one, so the owner surface manages whatever library you are in.
+  // supported:false = an old host (ENOMETHOD); forbidden:true = this device is not an owner
+  // of the active library (the host said so - the source of truth, not the local flag).
+  async ownerDevices () {
+    try {
+      await ensureConnected()
+      const { devices } = await client.ownerDevices()
+      return { devices: devices || [], supported: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { devices: [], supported: false }
+      if (e?.code === 'EFORBIDDEN') return { devices: [], forbidden: true }
+      return { devices: [], offline: true }
+    }
+  },
+
+  async ownerRevoke ({ deviceKey }) {
+    try {
+      await ensureConnected()
+      const r = await client.ownerRevoke({ deviceKey })
+      return { ...r, supported: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { ok: false, supported: false }
+      if (e?.code === 'EFORBIDDEN') return { ok: false, error: e.message || 'not allowed' }
+      return { ok: false, error: e?.message || 'could not revoke' }
     }
   },
 

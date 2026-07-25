@@ -1200,6 +1200,15 @@ button.shead .caret.open { transform: rotate(90deg); }
    chrome was drawing that weird container). */
 .rqv-rm { flex: none; background: none; border: 0; padding: .4rem; color: var(--color-text-muted); display: inline-flex; line-height: 0; cursor: pointer; }
 .rqv-rm:active { color: var(--color-error); }
+.rqv-rm:disabled { opacity: .4; }
+
+/* Owner maintenance: the device list in Settings > Manage this library (P2). */
+.ownerdevs { list-style: none; margin: .5rem 0 0; padding: 0; display: flex; flex-direction: column; }
+.ownerdevs li { display: flex; align-items: center; gap: .6rem; padding: .55rem .1rem; border-top: 1px solid var(--color-border); }
+.ownerdevs li:first-child { border-top: 0; }
+.ownerdevs .who { flex: 1; min-width: 0; }
+.ownerdevs .name { display: flex; align-items: center; gap: .4rem; }
+.ownerdevs .name .badge { font-size: .62rem; text-transform: uppercase; letter-spacing: .04em; padding: .08rem .35rem; border-radius: 999px; background: var(--color-surface-input); color: var(--color-text-muted); }
 
 /* --- identity (naming a device, claiming a user) -------------------------- */
 .namebox {

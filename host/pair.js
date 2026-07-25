@@ -31,7 +31,7 @@ const Protomux = require('protomux')
 
 const { pairChannel } = require('../protocol/channels')
 const { carryOverPerson } = require('./gate')
-const { PAIR_TTL_MS } = require('../protocol/constants')
+const { PAIR_TTL_MS, SCOPE } = require('../protocol/constants')
 const { randomRv } = require('../protocol/ids')
 const { encodeLink } = require('../protocol/link')
 
@@ -45,7 +45,7 @@ function tokenEquals (a, b) {
 }
 
 class PairSession {
-  constructor ({ identity, grants, libraryName, ttl = PAIR_TTL_MS, expiresMs = null, log = () => {}, onpaired = null }) {
+  constructor ({ identity, grants, libraryName, ttl = PAIR_TTL_MS, expiresMs = null, owner = false, log = () => {}, onpaired = null }) {
     this.identity = identity
     this.grants = grants
     this.libraryName = libraryName
@@ -54,6 +54,10 @@ class PairSession {
     // after pairing. null = a normal window (permanent access). Operator-set, host-side -
     // NEVER read from the device's hello, or a guest could pick its own expiry.
     this.expiresMs = expiresMs
+    // An OWNER window (proposal 2026-07-24, P2): a device pairing through it gets scope
+    // 'owner', not 'full'. Set host-side by the dashboard only - a phone never asserts
+    // its own scope, same rule as the guest expiry above. Mutually exclusive with guest.
+    this.owner = !!owner
     this.log = log
     this.onpaired = onpaired
 
@@ -137,10 +141,16 @@ class PairSession {
         // guest to permanent is a follow-up (dashboard expiry editing).
         if (this.expiresMs) await this.grants.setExpiry(remoteKey, Date.now() + this.expiresMs)
 
+        // An OWNER window PROMOTES an already-paired device to owner (scan the owner QR on
+        // a phone you already use). A normal/guest window never demotes an owner - only the
+        // dashboard changes an owner's scope - so we only ever raise scope here, not lower it.
+        if (this.owner && existing.scope !== SCOPE.OWNER) await this.grants.setScope(remoteKey, SCOPE.OWNER)
+
         this.log('pair:already-granted', {
           device: z32.encode(remoteKey).slice(0, 8),
           label: hello.label || existing.label,
-          guest: !!this.expiresMs
+          guest: !!this.expiresMs,
+          owner: this.owner
         })
       } else {
         // A device that LEFT BY ITSELF and is pairing back comes home to its person
@@ -156,7 +166,9 @@ class PairSession {
           personId: restored,
           label: hello.label || 'device',
           platform: hello.platform || '',
-          grantedBy: this.expiresMs ? 'qr-guest' : 'qr-pair',
+          // An owner window mints scope 'owner'; guest/normal leave it at the FULL default.
+          scope: this.owner ? SCOPE.OWNER : undefined,
+          grantedBy: this.owner ? 'qr-owner' : this.expiresMs ? 'qr-guest' : 'qr-pair',
           expiresAt: this.expiresMs ? Date.now() + this.expiresMs : null,
           // Carried with the person, so the dashboard does not show it assigned yet
           // claiming nobody (claimMismatch reads these two together).
