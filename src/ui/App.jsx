@@ -158,6 +158,8 @@ export default function App () {
   const [handoff, setHandoff] = useState(null) // another device holds the play session: { activeDeviceName, count }
   const [mostPlayed, setMostPlayed] = useState(null) // the Most Played view: { items }
   const [youView, setYouView] = useState('favorites') // the "You" tab's sub-picker: favorites | top | playlists
+  const youViewRef = useRef('favorites') // for the once-registered devices:changed handler
+  youViewRef.current = youView
   const [playlists, setPlaylists] = useState(null) // the Playlists list: [{ id, name, count }]
   const [plSupported, setPlSupported] = useState(true) // false = host too old for playlists
   const [serverPls, setServerPls] = useState(null) // the source's OWN playlists (read-only, v2)
@@ -384,8 +386,11 @@ export default function App () {
       // promotion on its dashboard. If we are currently managing THAT library, refresh the list
       // live instead of only on the next open (Tim: a dashboard revoke did not update Manage).
       on('devices:changed', (d) => {
+        // Only while actually viewing Manage. A null selection means "the active library" (loadOwnerDevices
+        // falls back to it), so reload then too; with a selection, only when the push is for that library.
+        if (youViewRef.current !== 'manage') return
         const lib = manageLibRef.current
-        if (lib && (!d?.libraryId || d.libraryId === lib)) loadOwnerDevices()
+        if (!lib || !d?.libraryId || d.libraryId === lib) loadOwnerDevices()
       })
     ]
     return () => offs.forEach(f => f())
@@ -5157,6 +5162,21 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
               </div>
             </div>
             <button className='primary' onClick={onAddLibrary}>Add</button>
+          </div>
+          {/* Discoverable path to becoming an owner of a library you already use (Tim, 2026-07-24):
+              the only way in before was the add-library scanner, which reads as "add another server".
+              Same scanner, owner framing - a code from the host's "Pair my phone as owner" promotes THIS
+              device over its live connection. */}
+          <div className='row'>
+            <div>
+              <div className='label'>Run one of these servers?</div>
+              <div className='desc'>
+                Make this phone an <b>owner</b> so you can manage the library from the app - see who
+                has access, revoke a device, answer music requests. On the server’s dashboard choose
+                <b> Pair my phone as owner</b>, then scan or paste that code here.
+              </div>
+            </div>
+            <button style={{ whiteSpace: 'nowrap' }} onClick={onAddLibrary}>Pair as owner</button>
           </div>
         </Section>
 
