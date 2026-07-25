@@ -5114,6 +5114,20 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
         </Section>
 
         <Section id='library' title={libsOf(state).length > 1 ? 'Libraries' : 'Library'} Icon={MusicNotesSimple} open={open === 'library'} onToggle={toggle}>
+          {/* Two actions up top: add another server (+), or become an owner of a server you run
+              (the same people icon Manage uses). Both open the pairing scanner - a plain code adds a
+              library, the host's "Pair my phone as owner" code promotes this device. The libraries
+              you are paired to follow beneath. */}
+          <div className='libactions'>
+            <button className='libact' aria-label='Add a library' title='Add a library' onClick={onAddLibrary}>
+              <Plus size={22} weight='bold' />
+              <span>Add server</span>
+            </button>
+            <button className='libact' aria-label='Pair as owner' title='Pair as owner — manage a server you run' onClick={onAddLibrary}>
+              <UsersThree size={22} weight='bold' />
+              <span>Pair as owner</span>
+            </button>
+          </div>
           {libsOf(state).map(h => {
             // In the MERGED view every paired library is part of the blend, so its status is whether
             // it's currently IN the blend (from merged.libraries) - which updates on a rebuild/revoke,
@@ -5153,31 +5167,6 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
               </div>
             )
           })}
-          <div className='row'>
-            <div>
-              <div className='label'>Add a library</div>
-              <div className='desc'>
-                Pair this phone to another server. Switch between them here; your downloads and
-                favorites are kept per library.
-              </div>
-            </div>
-            <button className='primary' onClick={onAddLibrary}>Add</button>
-          </div>
-          {/* Discoverable path to becoming an owner of a library you already use (Tim, 2026-07-24):
-              the only way in before was the add-library scanner, which reads as "add another server".
-              Same scanner, owner framing - a code from the host's "Pair my phone as owner" promotes THIS
-              device over its live connection. */}
-          <div className='row'>
-            <div>
-              <div className='label'>Run one of these servers?</div>
-              <div className='desc'>
-                Make this phone an <b>owner</b> so you can manage the library from the app - see who
-                has access, revoke a device, answer music requests. On the server’s dashboard choose
-                <b> Pair my phone as owner</b>, then scan or paste that code here.
-              </div>
-            </div>
-            <button style={{ whiteSpace: 'nowrap' }} onClick={onAddLibrary}>Pair as owner</button>
-          </div>
         </Section>
 
         {/* Why this is in the shipping app and not a debug build: the off-LAN failure can
