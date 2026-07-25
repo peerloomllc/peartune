@@ -496,7 +496,14 @@ class PearTuneHost {
           getGrant: (deviceKey) => this.grants.get(deviceKey),
           // Promote THIS connection to owner via the open owner window's code (P2, the
           // connected-device path). deviceKey is bound to the connection's own grant.
-          claim: (deviceKey, code) => this.claimOwner(deviceKey, code)
+          claim: (deviceKey, code) => this.claimOwner(deviceKey, code),
+          // P2b: open a pairing window remotely (a NORMAL/guest window - never an owner one,
+          // so an owner phone can't mint more owners - security review), work the request queue.
+          pairStart: ({ expiresMs } = {}) => this.startPairing({ expiresMs, owner: false }),
+          pairStop: () => this.stopPairing(),
+          pairState: () => ({ pairing: this.pairing, link: this.pairSession && !this.pairSession.closed ? this.pairSession.link : null }),
+          requests: () => this.ownerRequestList(),
+          resolveRequest: (id, status) => this.userState.resolveRequest(id, status)
         },
         log: (msg, data) => this.log(msg, { device: short, ...data })
       })
@@ -555,6 +562,19 @@ class PearTuneHost {
     ps.close('owner-claimed')
     this.log('owner:claimed', { device: String(deviceKey).slice(0, 8) })
     return { ok: true }
+  }
+
+  // The request queue for the OWNER app (P2b), enriched with WHO asked - same shape the
+  // dashboard shows. Names are resolved from persons/devices so the owner sees a person,
+  // not an opaque ownerId. Text is length-capped at the host writer + escaped by the app.
+  async ownerRequestList () {
+    const [persons, devices] = await Promise.all([this.grants.listPersons(), this.listDevices()])
+    const reqName = (ownerId) => {
+      if (ownerId?.startsWith('p:')) return persons.find(p => p.id === ownerId.slice(2))?.name || 'Someone'
+      if (ownerId?.startsWith('d:')) return devices.find(d => d.deviceKey === ownerId.slice(2))?.label || 'A device'
+      return 'Someone'
+    }
+    return (await this.userState.listRequests()).map(r => ({ ...r, requesterName: reqName(r.requester) }))
   }
 
   stopPairing () {

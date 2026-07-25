@@ -2156,6 +2156,30 @@ button.wide {
   flex: 1;
   font-size: .875rem;
 }
+.pairqr {
+  display: flex;
+  justify-content: center;
+  margin: .25rem 0 .75rem;
+}
+.pairqr img {
+  width: 220px;
+  height: 220px;
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px;
+}
+.pairbtns {
+  display: flex;
+  gap: .9rem;
+  margin-top: .75rem;
+}
+.pairbtns button {
+  flex: 1;
+  font-size: .875rem;
+}
+.pairbtns + .wide {
+  margin-top: .6rem;
+}
 .acc > button {
   width: 100%;
   background: none;
@@ -2586,6 +2610,136 @@ button.shead .caret.open {
 }
 .sheet h2 {
   margin: 1.2rem 0 0;
+}
+.reqview {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.reqview li {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .7rem .1rem;
+  border-top: 1px solid var(--color-border);
+}
+.reqview li:first-child {
+  border-top: 0;
+}
+.rqv-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .1rem;
+}
+.rqv-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rqv-sub {
+}
+.rq-status {
+  flex: none;
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+.rq-status.added {
+  color: var(--color-success);
+}
+.rq-status.declined {
+  color: var(--color-error);
+}
+.rqv-rm {
+  flex: none;
+  background: none;
+  border: 0;
+  padding: .4rem;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  line-height: 0;
+  cursor: pointer;
+}
+.rqv-rm:active {
+  color: var(--color-error);
+}
+.rqv-rm:disabled {
+  opacity: .4;
+}
+.mgh {
+  display: flex;
+  align-items: baseline;
+  gap: .4rem;
+  font-size: .8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--color-text-muted);
+  margin: 1rem 0 .1rem;
+}
+.mgh .cnt {
+  font-size: .78rem;
+  font-weight: 500;
+  text-transform: none;
+}
+.reqact {
+  flex: none;
+  background: none;
+  border: 0;
+  padding: .2rem;
+  display: inline-flex;
+  line-height: 0;
+  cursor: pointer;
+}
+.reqact.added {
+  color: var(--color-success);
+}
+.reqact.declined {
+  color: var(--color-error);
+}
+.reqact:active {
+  opacity: .6;
+}
+.ownerdevs {
+  list-style: none;
+  margin: .5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ownerdevs li {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .55rem .1rem;
+  border-top: 1px solid var(--color-border);
+}
+.ownerdevs li:first-child {
+  border-top: 0;
+}
+.ownerdevs .who {
+  flex: 1;
+  min-width: 0;
+}
+.ownerdevs .name {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+.ownerdevs .name .badge {
+  font-size: .62rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: .08rem .35rem;
+  border-radius: 999px;
+  background: var(--color-surface-input);
+  color: var(--color-text-muted);
 }
 .namebox {
   width: 100%;

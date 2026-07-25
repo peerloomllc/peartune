@@ -417,6 +417,48 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         return send.res.send({ id, body: { devices: await owner.listDevices() } })
       }
 
+      // Open a pairing window remotely so the owner can let a device in while away (P2b).
+      // A NORMAL/guest window only - owner.pairStart never mints an owner grant (server binds
+      // owner:false), so a stolen owner phone cannot make more owners.
+      case 'owner.pairStart': {
+        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        const link = owner.pairStart({ expiresMs: Number(params?.expiresMs) > 0 ? Number(params.expiresMs) : null })
+        log('owner:pair-start', { guest: !!params?.expiresMs })
+        return send.res.send({ id, body: { link } })
+      }
+
+      case 'owner.pairStop': {
+        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        owner.pairStop()
+        return send.res.send({ id, body: { ok: true } })
+      }
+
+      case 'owner.pairState': {
+        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        return send.res.send({ id, body: owner.pairState() })
+      }
+
+      // The full request queue (all requesters) + resolve, so the owner can work it from the
+      // phone away from the dashboard (P2b).
+      case 'owner.requests': {
+        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        return send.res.send({ id, body: { requests: await owner.requests() } })
+      }
+
+      case 'owner.requestResolve': {
+        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!params?.id || !['added', 'declined'].includes(params?.status)) return safeErr(id, ERR.BAD_PARAMS, 'id and status (added|declined) required')
+        const row = await owner.resolveRequest(params.id, params.status)
+        if (!row) return send.res.send({ id, body: { ok: false, notFound: true } })
+        log('owner:request-resolve', { status: row.status })
+        return send.res.send({ id, body: { ok: true, status: row.status } })
+      }
+
       case 'owner.revoke': {
         if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
         if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')

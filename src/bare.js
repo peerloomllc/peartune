@@ -2792,6 +2792,29 @@ const methods = {
     }
   },
 
+  // P2b: open a pairing window on the ACTIVE host remotely; the owner shares the link so a
+  // device can pair while they are away. Returns the link (a normal window - never an owner one).
+  async ownerPairStart ({ expiresMs } = {}) {
+    try { await ensureConnected(); return { ...(await client.ownerPairStart({ expiresMs })), ok: true } } catch (e) { return { ok: false, error: e?.message || 'could not open a pairing window' } }
+  },
+  async ownerPairStop () {
+    try { await ensureConnected(); return await client.ownerPairStop() } catch { return { ok: false } }
+  },
+  async ownerPairState () {
+    try { await ensureConnected(); return await client.ownerPairState() } catch { return { pairing: false } }
+  },
+
+  // The full request queue on the ACTIVE host + resolve, for the owner to work from the app.
+  async ownerRequests () {
+    try { await ensureConnected(); return { requests: (await client.ownerRequests()).requests || [], supported: true } } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { requests: [], supported: false }
+      return { requests: [], offline: true }
+    }
+  },
+  async ownerResolveRequest ({ id, status }) {
+    try { await ensureConnected(); return { ...(await client.ownerResolveRequest({ id, status })) } } catch (e) { return { ok: false, error: e?.message || 'could not resolve' } }
+  },
+
   // Remove the caller's OWN request. `refs` is every per-host (libraryId, id) the collapsed
   // row covers (one in single-host, N in a blend), so REMOVE clears it everywhere it lives.
   // The host refuses to delete a request that is not yours (media.js checks ownership).

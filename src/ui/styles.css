@@ -991,6 +991,13 @@ button.wide { width: 100%; }
 .btnrow { display: flex; gap: .5rem; margin-top: .25rem; }
 .btnrow button { flex: 1; font-size: .875rem; }
 
+/* Owner pair sheet: a scannable QR up top, and Copy / Share with room to breathe. */
+.pairqr { display: flex; justify-content: center; margin: .25rem 0 .75rem; }
+.pairqr img { width: 220px; height: 220px; border-radius: 12px; background: #fff; padding: 10px; }
+.pairbtns { display: flex; gap: .9rem; margin-top: .75rem; }
+.pairbtns button { flex: 1; font-size: .875rem; }
+.pairbtns + .wide { margin-top: .6rem; }
+
 /* The About accordion: rotating caret + a max-height transition, exactly as in
    PearPetal / PearList / PearCircle. */
 .acc > button {
@@ -1202,7 +1209,15 @@ button.shead .caret.open { transform: rotate(90deg); }
 .rqv-rm:active { color: var(--color-error); }
 .rqv-rm:disabled { opacity: .4; }
 
-/* Owner maintenance: the device list in Settings > Manage this library (P2). */
+/* Owner maintenance: the You > Manage view (P2). Section headings + the compact resolve
+   buttons for the request queue. */
+.mgh { display: flex; align-items: baseline; gap: .4rem; font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--color-text-muted); margin: 1rem 0 .1rem; }
+.mgh .cnt { font-size: .78rem; font-weight: 500; text-transform: none; }
+/* Resolve a request: bare icon buttons - a green check to add, a red x to decline. */
+.reqact { flex: none; background: none; border: 0; padding: .2rem; display: inline-flex; line-height: 0; cursor: pointer; }
+.reqact.added { color: var(--color-success); }
+.reqact.declined { color: var(--color-error); }
+.reqact:active { opacity: .6; }
 .ownerdevs { list-style: none; margin: .5rem 0 0; padding: 0; display: flex; flex-direction: column; }
 .ownerdevs li { display: flex; align-items: center; gap: .6rem; padding: .55rem .1rem; border-top: 1px solid var(--color-border); }
 .ownerdevs li:first-child { border-top: 0; }
