@@ -2180,6 +2180,12 @@ button.wide {
 .pairbtns + .wide {
   margin-top: .6rem;
 }
+.tourbadge {
+  display: flex;
+  justify-content: center;
+  margin: .1rem 0 .5rem;
+  color: var(--color-accent);
+}
 .acc > button {
   width: 100%;
   background: none;

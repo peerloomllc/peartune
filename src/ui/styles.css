@@ -998,6 +998,9 @@ button.wide { width: 100%; }
 .pairbtns button { flex: 1; font-size: .875rem; }
 .pairbtns + .wide { margin-top: .6rem; }
 
+/* Owner walkthrough: a friendly icon badge above the title. */
+.tourbadge { display: flex; justify-content: center; margin: .1rem 0 .5rem; color: var(--color-accent); }
+
 /* The About accordion: rotating caret + a max-height transition, exactly as in
    PearPetal / PearList / PearCircle. */
 .acc > button {
