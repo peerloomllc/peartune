@@ -536,10 +536,25 @@ class PearTuneHost {
       libraryName: this.libraryName,
       expiresMs: expiresMs && expiresMs > 0 ? expiresMs : null,
       owner: !!owner,
-      log: this.log
+      log: this.log,
+      // A device pairing in changes the roster every owner sees, so refresh their live Manage view.
+      onpaired: () => this.notifyOwnersDevicesChanged()
     })
     this.log('pair:open', { ttlMs: this.pairSession.ttl, guest: !!this.pairSession.expiresMs, owner: !!owner })
     return this.pairSession.link
+  }
+
+  // Tell every CONNECTED owner that the device roster changed - a pair, a revoke, a delete, a
+  // promotion - so their in-app Manage list refreshes live instead of only when reopened (Tim: a
+  // dashboard revoke did not update You > Manage in realtime). Rides the presence rail, keyed to
+  // each owner's device; a revoked or offline owner is simply not in the registry. Best-effort,
+  // and carries libraryId so the app reloads the RIGHT library's list in a blended view.
+  async notifyOwnersDevicesChanged () {
+    try {
+      for (const g of await this.grants.list()) {
+        if (g.scope === SCOPE.OWNER && !g.revokedAt) this.presence.notify(g.deviceKey, 'devices:changed', { libraryId: this.libraryId })
+      }
+    } catch (e) { this.log('owners-notify-failed', { err: e?.message }) }
   }
 
   // Promote a device to owner over its EXISTING media connection (proposal 2026-07-24, P2).
@@ -561,6 +576,7 @@ class PearTuneHost {
     if (!row) return { ok: false, reason: 'no grant' }
     ps.close('owner-claimed')
     this.log('owner:claimed', { device: String(deviceKey).slice(0, 8) })
+    this.notifyOwnersDevicesChanged()
     return { ok: true }
   }
 
@@ -592,6 +608,7 @@ class PearTuneHost {
       device: Grants.keyOf(deviceKey).slice(0, 8),
       killedConnections: killed
     })
+    this.notifyOwnersDevicesChanged()
     return { grant: row, killed }
   }
 
@@ -611,6 +628,7 @@ class PearTuneHost {
       device: Grants.keyOf(deviceKey).slice(0, 8),
       killedConnections: killed
     })
+    this.notifyOwnersDevicesChanged()
     return { grant: row, killed }
   }
 
@@ -622,6 +640,7 @@ class PearTuneHost {
     if (!row) return { grant: null, killed: 0 }
     const killed = (expiresAt && Date.now() > expiresAt) ? this.connections.kill(deviceKey) : 0
     this.log('host:expiry-set', { device: Grants.keyOf(deviceKey).slice(0, 8), expiresAt, killed })
+    this.notifyOwnersDevicesChanged()
     return { grant: row, killed }
   }
 
@@ -629,6 +648,7 @@ class PearTuneHost {
     const revoked = await this.grants.revokePerson(personId)
     const killed = this.connections.killAll(revoked.map(r => r.deviceKey))
     this.log('host:revoked-person', { personId, devices: revoked.length, killedConnections: killed })
+    this.notifyOwnersDevicesChanged()
     return { revoked, killed }
   }
 
@@ -644,6 +664,7 @@ class PearTuneHost {
     this.avatars.delete(deviceKey) // don't orphan the photo file
     const killed = this.connections.kill(deviceKey)
     this.log('host:device-deleted', { device: Grants.keyOf(deviceKey).slice(0, 8), killed })
+    this.notifyOwnersDevicesChanged()
     return { deleted: row, killed }
   }
 

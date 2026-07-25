@@ -596,6 +596,13 @@ function makeClient () {
         log('host:renamed-push', { hostKey: rec.hostKey })
         emit('host:renamed', { hostKey: rec.hostKey, libraryName: name })
       }
+    } else if (m?.kind === 'devices:changed') {
+      // An owned host's device roster changed (a pair/revoke/delete/promote on its dashboard). Hand
+      // it to the UI so an open You > Manage reloads that library's list live (carries libraryId so
+      // the app reloads the RIGHT one in a blend). Owner-only by construction: the host pushes it
+      // only to owner-scope grants.
+      log('devices:changed', { library: String(m.data?.libraryId || '').slice(0, 8) })
+      emit('devices:changed', m.data || {})
     }
   }
   return c
@@ -708,6 +715,16 @@ async function ensureHost (host) {
   startPoolNudge(host)  // keep punching until it lands
   await waitForPoolConn(host)
   return poolClient(libId)
+}
+
+// The client for a SPECIFIC owned library - what lets Manage target any library you own, not
+// just the active one (Tim: owning several, Manage only showed the last). No libraryId (or the
+// active one) is the active client, exactly as before; another library rides its pool connection.
+async function ownerClient (libraryId) {
+  if (!libraryId || libraryId === activeLibraryId) { await ensureConnected(); return client }
+  const host = loadHostsFile().hosts.find((h) => h.libraryId === libraryId)
+  if (!host) throw new Error('unknown library')
+  return await ensureHost(host)
 }
 
 // Connect EVERY paired host in parallel for a merged read. An offline host resolves to a
@@ -2776,10 +2793,33 @@ const methods = {
   // reflects the active one, so the owner surface manages whatever library you are in.
   // supported:false = an old host (ENOMETHOD); forbidden:true = this device is not an owner
   // of the active library (the host said so - the source of truth, not the local flag).
-  async ownerDevices () {
+  // The libraries this device OWNS and can currently reach - what the Manage picker lists so an
+  // owner of several can manage each (Tim: Manage only showed the last-paired one). Queries
+  // identity on each connected client; a library you own but are offline to can't be managed, so
+  // it is omitted. The active library is flagged so the picker can default to it.
+  async ownedLibraries () {
+    const out = []
+    for (const h of loadHostsFile().hosts) {
+      // The ACTIVE host rides the active client (poolClient only returns it while the `connected`
+      // flag is up, which it may not be the instant Manage opens - that was leaving ownedLibraries
+      // empty and manageLib null). Non-active hosts use their pool client if it is live.
+      let c = null
+      if (h.libraryId === activeLibraryId) { try { await ensureConnected(); c = client } catch {} }
+      else c = poolClient(h.libraryId)
+      if (!c) continue
+      try {
+        const id = await c.getIdentity()
+        if (id?.owner) out.push({ libraryId: h.libraryId, libraryName: id.libraryName || h.libraryName, active: h.libraryId === activeLibraryId })
+      } catch {}
+    }
+    return { libraries: out }
+  },
+
+  // Every owner.* below takes an optional libraryId so Manage can act on a chosen owned library;
+  // omitted, it falls back to the active one (ownerClient handles both).
+  async ownerDevices ({ libraryId } = {}) {
     try {
-      await ensureConnected()
-      const { devices } = await client.ownerDevices()
+      const { devices } = await (await ownerClient(libraryId)).ownerDevices()
       return { devices: devices || [], supported: true }
     } catch (e) {
       if (e?.code === 'ENOMETHOD') return { devices: [], supported: false }
@@ -2788,10 +2828,9 @@ const methods = {
     }
   },
 
-  async ownerRevoke ({ deviceKey }) {
+  async ownerRevoke ({ libraryId, deviceKey }) {
     try {
-      await ensureConnected()
-      const r = await client.ownerRevoke({ deviceKey })
+      const r = await (await ownerClient(libraryId)).ownerRevoke({ deviceKey })
       return { ...r, supported: true }
     } catch (e) {
       if (e?.code === 'ENOMETHOD') return { ok: false, supported: false }
@@ -2800,27 +2839,27 @@ const methods = {
     }
   },
 
-  // P2b: open a pairing window on the ACTIVE host remotely; the owner shares the link so a
-  // device can pair while they are away. Returns the link (a normal window - never an owner one).
-  async ownerPairStart ({ expiresMs } = {}) {
-    try { await ensureConnected(); return { ...(await client.ownerPairStart({ expiresMs })), ok: true } } catch (e) { return { ok: false, error: e?.message || 'could not open a pairing window' } }
+  // P2b: open a pairing window on a host remotely; the owner shares the link so a device can pair
+  // while they are away. Returns the link (a normal window - never an owner one).
+  async ownerPairStart ({ libraryId, expiresMs } = {}) {
+    try { return { ...(await (await ownerClient(libraryId)).ownerPairStart({ expiresMs })), ok: true } } catch (e) { return { ok: false, error: e?.message || 'could not open a pairing window' } }
   },
-  async ownerPairStop () {
-    try { await ensureConnected(); return await client.ownerPairStop() } catch { return { ok: false } }
+  async ownerPairStop ({ libraryId } = {}) {
+    try { return await (await ownerClient(libraryId)).ownerPairStop() } catch { return { ok: false } }
   },
-  async ownerPairState () {
-    try { await ensureConnected(); return await client.ownerPairState() } catch { return { pairing: false } }
+  async ownerPairState ({ libraryId } = {}) {
+    try { return await (await ownerClient(libraryId)).ownerPairState() } catch { return { pairing: false } }
   },
 
-  // The full request queue on the ACTIVE host + resolve, for the owner to work from the app.
-  async ownerRequests () {
-    try { await ensureConnected(); return { requests: (await client.ownerRequests()).requests || [], supported: true } } catch (e) {
+  // The full request queue on a host + resolve, for the owner to work from the app.
+  async ownerRequests ({ libraryId } = {}) {
+    try { return { requests: (await (await ownerClient(libraryId)).ownerRequests()).requests || [], supported: true } } catch (e) {
       if (e?.code === 'ENOMETHOD') return { requests: [], supported: false }
       return { requests: [], offline: true }
     }
   },
-  async ownerResolveRequest ({ id, status }) {
-    try { await ensureConnected(); return { ...(await client.ownerResolveRequest({ id, status })) } } catch (e) { return { ok: false, error: e?.message || 'could not resolve' } }
+  async ownerResolveRequest ({ libraryId, id, status }) {
+    try { return { ...(await (await ownerClient(libraryId)).ownerResolveRequest({ id, status })) } } catch (e) { return { ok: false, error: e?.message || 'could not resolve' } }
   },
 
   // Remove the caller's OWN request. `refs` is every per-host (libraryId, id) the collapsed
