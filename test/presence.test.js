@@ -90,6 +90,46 @@ test('notifyAll swallows a throwing sender and still reaches the rest', (t) => {
   assert.equal(n, 1) // only the surviving sender counts
 })
 
+test('notifyOwner reaches every device of one PERSON, keyed by ownerId', (t) => {
+  const p = new Presence()
+  const got = []
+  // Same person signed in on two devices (phone + tablet), plus a different person's phone.
+  p.register('PHONE', (e) => got.push(['phone', e]), 'p:sam')
+  p.register('TABLET', (e) => got.push(['tablet', e]), 'p:sam')
+  p.register('OTHER', (e) => got.push(['other', e]), 'p:kim')
+  const n = p.notifyOwner('p:sam', 'request:resolved', { id: 'r1', status: 'added' })
+  assert.equal(n, 2) // both of Sam's devices, not Kim's
+  assert.deepEqual(got.map((g) => g[0]).sort(), ['phone', 'tablet'])
+  for (const [, e] of got) {
+    assert.equal(e.kind, 'request:resolved')
+    assert.deepEqual(e.data, { id: 'r1', status: 'added' })
+  }
+})
+
+test('notifyOwner for an ownerId with nobody connected is a no-op, not a throw', (t) => {
+  const p = new Presence()
+  p.register('PHONE', () => {}, 'p:sam')
+  assert.equal(p.notifyOwner('p:ghost', 'request:resolved'), 0)
+})
+
+test('a channel registered with no ownerId is unreachable by notifyOwner', (t) => {
+  const p = new Presence()
+  let hits = 0
+  p.register('PHONE', () => { hits++ }) // handoff-style registration, device-only
+  assert.equal(p.notifyOwner('p:sam', 'request:resolved'), 0)
+  assert.equal(hits, 0)
+})
+
+test('unregister drops a channel from BOTH the device and the owner index', (t) => {
+  const p = new Presence()
+  let hits = 0
+  const off = p.register('PHONE', () => { hits++ }, 'p:sam')
+  off()
+  assert.equal(p.notify('PHONE', 'request:new'), 0)       // gone from _byDevice
+  assert.equal(p.notifyOwner('p:sam', 'request:resolved'), 0) // and from _byOwner
+  assert.equal(hits, 0)
+})
+
 test('a buffer deviceKey and its z32 string address the same device', (t) => {
   const p = new Presence()
   const raw = Buffer.alloc(32, 7)

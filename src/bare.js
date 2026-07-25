@@ -603,6 +603,17 @@ function makeClient () {
       // only to owner-scope grants.
       log('devices:changed', { library: String(m.data?.libraryId || '').slice(0, 8) })
       emit('devices:changed', m.data || {})
+    } else if (m?.kind === 'request:new') {
+      // Tier A notification (P3): the host only pushes request:new to OWNER devices, so if this
+      // arrives we are an owner - hand it straight to the UI for a banner + badge. Rides whatever
+      // channel it came in on (active or a pool host), which is why it lives here in the shared
+      // client rather than on one connection.
+      log('request:new', { kind: m.data?.kind ?? null })
+      emit('request:new', m.data || {})
+    } else if (m?.kind === 'request:resolved') {
+      // The host pushed this to whoever filed the request, on every device they are signed in on.
+      log('request:resolved', { status: m.data?.status ?? null })
+      emit('request:resolved', m.data || {})
     }
   }
   return c

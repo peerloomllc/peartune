@@ -503,7 +503,7 @@ class PearTuneHost {
           pairStop: () => this.stopPairing(),
           pairState: () => ({ pairing: this.pairing, link: this.pairSession && !this.pairSession.closed ? this.pairSession.link : null }),
           requests: () => this.ownerRequestList(),
-          resolveRequest: (id, status) => this.userState.resolveRequest(id, status)
+          resolveRequest: (id, status) => this.resolveRequestAndNotify(id, status)
         },
         log: (msg, data) => this.log(msg, { device: short, ...data })
       })
@@ -591,6 +591,22 @@ class PearTuneHost {
       return 'Someone'
     }
     return (await this.userState.listRequests()).map(r => ({ ...r, requesterName: reqName(r.requester) }))
+  }
+
+  // Resolve a request AND tell whoever asked (P3). One place, because two doors reach it - the
+  // owner phone (owner.requestResolve on media) and the dashboard (/api/requests/resolve) - and
+  // both must push the same request:resolved to the requester's live devices. Best-effort: if
+  // they are offline the push reaches no one and they see the status on their next request.list.
+  // Keyed by the row's stored requester (the "p:"/"d:" ownerId), so it lands on any device that
+  // person is signed in on. Returns the resolved row (null if there was no such request).
+  async resolveRequestAndNotify (id, status) {
+    const row = await this.userState.resolveRequest(id, status)
+    if (row) {
+      this.presence.notifyOwner(row.requester, 'request:resolved', {
+        id: row.id, status: row.status, kind: row.kind, name: row.name, artist: row.artist
+      })
+    }
+    return row
   }
 
   stopPairing () {

@@ -66,7 +66,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
 
   // This connection is now reachable by an unsolicited push. Keyed by the grant's device -
   // the one the firewall authenticated - so a session.claim on ANOTHER connection can reach it.
-  if (presence) unregisterPresence = presence.register(grant.deviceKey, (evt) => { try { send.push.send(evt) } catch {} })
+  if (presence) unregisterPresence = presence.register(grant.deviceKey, (evt) => { try { send.push.send(evt) } catch {} }, ownerOf(grant))
 
   function safeErr (id, code, message) {
     try {
@@ -377,8 +377,20 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
           return safeErr(id, ERR.BAD_PARAMS, e.message || 'bad request')
         }
         log('request:add', { kind: row.kind, folded: row.count > 1 })
-        // P3 will push request:new to connected owners here; P1 surfaces it on the
-        // dashboard (its /api/state poll picks up the new row).
+        // P3: nudge every CONNECTED owner so a request is not a dead-drop nobody reads. Best-effort
+        // by design (Tier A) - if no owner is online it just waits, and the dashboard/badge still
+        // shows it on their next open. The owner set is the grant store's authority (scope OWNER,
+        // not revoked); presence.notify only reaches the ones with a live channel. requesterName is
+        // derived host-side from the caller's own grant, the same way the dashboard names it.
+        if (presence && grants) {
+          let requesterName = 'Someone'
+          if (grant.personId) requesterName = (await grants.getPerson(grant.personId).catch(() => null))?.name || 'Someone'
+          else requesterName = grant.label || 'A device'
+          const payload = { id: row.id, kind: row.kind, name: row.name, artist: row.artist, requesterName, count: row.count }
+          for (const g of await grants.list().catch(() => [])) {
+            if (g.scope === SCOPE.OWNER && !g.revokedAt) presence.notify(g.deviceKey, 'request:new', payload)
+          }
+        }
         return send.res.send({ id, body: { ok: true, id: row.id, status: row.status, count: row.count } })
       }
 
