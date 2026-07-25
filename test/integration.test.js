@@ -302,7 +302,6 @@ test('OWNER WINDOW: pairing through one grants owner scope, and the link is flag
   const { testnet, host } = await scaffold(t)
   const client = newClient(testnet)
   t.after(() => client.close())
-
   // The first-run wizard opens exactly this - an owner window - so the operator's own phone
   // comes in as the owner rather than a plain device (issue: "It's mine" never granted ownership).
   const link = host.startPairing({ owner: true })
@@ -333,6 +332,76 @@ test('DEVICES CHANGED: revoking a device pushes "devices:changed" to a connected
   await host.revokeDevice(z32.encode(victim.keyPair.publicKey))
   const evt = await pushed
   assert.equal(evt.data.libraryId, host.libraryId, 'the push names the library whose roster changed')
+})
+
+// --- Tier A request notifications (proposal 2026-07-24-owner-in-the-app, P3) ---
+//
+// The host speaks unsolicited on two more occasions: a new request nudges every connected
+// OWNER, and resolving one tells whoever asked. Both ride the same presence rail as handoff.
+// The properties worth pinning over the wire: the owner is reached (with who asked), a
+// non-owner is NOT, and the requester hears the resolution wherever they are signed in.
+
+// Pair a requester (assigned to a person, so the push carries a real name) and an owner (scope
+// promoted host-side, as the dashboard does). Scope + assignment are captured at connect, so
+// both must be set BEFORE connecting - same rule as the handoff owner.
+async function requesterAndOwner (testnet, host, { requesterName = 'Sam' } = {}) {
+  const reqClient = newClient(testnet)
+  const ownClient = newClient(testnet)
+  const paired1 = await reqClient.pair(host.startPairing(), { label: 'Phone', platform: 'android' })
+  const paired2 = await ownClient.pair(host.startPairing(), { label: 'Server', platform: 'node' })
+
+  const person = await host.grants.addPerson(requesterName)
+  await host.grants.assign(z32.encode(reqClient.keyPair.publicKey), person.id)
+  await host.grants.setScope(z32.encode(ownClient.keyPair.publicKey), SCOPE.OWNER)
+
+  await reqClient.connect({ hostKey: paired1.hostKey, libraryId: paired1.libraryId })
+  await ownClient.connect({ hostKey: paired2.hostKey, libraryId: paired2.libraryId })
+  return { req: reqClient, own: ownClient }
+}
+
+test('REQUEST: a new request pushes "request:new" to a connected owner, with who asked', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { req, own } = await requesterAndOwner(testnet, host, { requesterName: 'Sam' })
+  t.after(() => req.close())
+  t.after(() => own.close())
+
+  // The requester must NOT be notified (only owners are), so watch it for a false positive.
+  let reqGotNew = false
+  req.onPush = (m) => { if (m?.kind === 'request:new') reqGotNew = true }
+
+  // Arm the owner's listener BEFORE filing so the push cannot be missed.
+  const pushed = oncePush(own, 'request:new')
+  const added = await req.requestAdd({ kind: 'album', name: 'Discovery', artist: 'Daft Punk' })
+  assert.equal(added.ok, true)
+
+  const evt = await pushed
+  assert.equal(evt.data.name, 'Discovery')
+  assert.equal(evt.data.artist, 'Daft Punk')
+  assert.equal(evt.data.kind, 'album')
+  assert.equal(evt.data.requesterName, 'Sam', 'the push names who asked, host-derived')
+  assert.equal(evt.data.id, added.id, 'the push carries the request id')
+
+  await new Promise(r => setTimeout(r, 300))
+  assert.equal(reqGotNew, false, 'a non-owner requester is never sent request:new')
+})
+
+test('REQUEST: resolving pushes "request:resolved" to the requester over the wire', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { req, own } = await requesterAndOwner(testnet, host, { requesterName: 'Sam' })
+  t.after(() => req.close())
+  t.after(() => own.close())
+
+  const added = await req.requestAdd({ kind: 'track', name: 'One More Time', artist: 'Daft Punk' })
+
+  // Arm the requester's listener, then the owner resolves it from their phone.
+  const pushed = oncePush(req, 'request:resolved')
+  const resolved = await own.ownerResolveRequest({ id: added.id, status: 'added' })
+  assert.equal(resolved.ok, true)
+
+  const evt = await pushed
+  assert.equal(evt.data.id, added.id)
+  assert.equal(evt.data.status, 'added')
+  assert.equal(evt.data.name, 'One More Time')
 })
 
 test('stream a whole track, bytes identical to the file on disk', async (t) => {

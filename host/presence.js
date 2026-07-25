@@ -25,20 +25,31 @@ class Presence {
     // deviceKey (z32 string) -> Set<pushFn>. A Set because one device may hold more than
     // one live connection (a reconnect can briefly overlap the old one); push to all of them.
     this._byDevice = new Map()
+    // ownerId (the host-derived "p:<person>" / "d:<device>" a person's state is stored under)
+    // -> Set<pushFn>. Lets a push reach a PERSON across all their devices (a request:resolved
+    // to whoever asked), where _byDevice reaches one specific device (a session handoff).
+    this._byOwner = new Map()
   }
 
   // Register a live channel's push sender. Returns an unregister function the caller MUST
   // call on channel close, or a dead sender lingers and a later notify() throws into the void.
-  register (deviceKey, pushFn) {
+  // ownerId is optional so the handoff callers that only key by device still work unchanged;
+  // pass it to make the channel reachable by notifyOwner too.
+  register (deviceKey, pushFn, ownerId = null) {
     const key = keyOf(deviceKey)
     let set = this._byDevice.get(key)
     if (!set) { set = new Set(); this._byDevice.set(key, set) }
     set.add(pushFn)
+    let oset = null
+    if (ownerId) {
+      oset = this._byOwner.get(ownerId)
+      if (!oset) { oset = new Set(); this._byOwner.set(ownerId, oset) }
+      oset.add(pushFn)
+    }
     return () => {
       const s = this._byDevice.get(key)
-      if (!s) return
-      s.delete(pushFn)
-      if (s.size === 0) this._byDevice.delete(key)
+      if (s) { s.delete(pushFn); if (s.size === 0) this._byDevice.delete(key) }
+      if (oset) { oset.delete(pushFn); if (oset.size === 0) this._byOwner.delete(ownerId) }
     }
   }
 
@@ -47,6 +58,19 @@ class Presence {
   // must not stop the others, and the close handler will unregister it imminently anyway.
   notify (deviceKey, kind, data = null) {
     const set = this._byDevice.get(keyOf(deviceKey))
+    if (!set) return 0
+    let n = 0
+    for (const pushFn of set) {
+      try { pushFn({ kind, data }); n++ } catch {}
+    }
+    return n
+  }
+
+  // Send a typed event to every live connection of one PERSON (all their devices), keyed by the
+  // ownerId their state is stored under. Best-effort, same swallow-a-bad-sender contract as notify.
+  // Used to tell whoever filed a request that it was resolved, wherever they are signed in.
+  notifyOwner (ownerId, kind, data = null) {
+    const set = this._byOwner.get(ownerId)
     if (!set) return 0
     let n = 0
     for (const pushFn of set) {

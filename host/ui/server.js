@@ -413,10 +413,10 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
       if (req.method === 'POST' && url.pathname === '/api/requests/resolve') {
         const { id, status } = await readBody(req)
         if (!id || !['added', 'declined'].includes(status)) return json(res, 400, { error: 'id and status (added|declined) required' })
-        const row = await host.userState.resolveRequest(id, status)
+        // Resolve AND push request:resolved to the requester's live devices (P3). Same path the
+        // owner phone uses, so the dashboard and the app behave identically.
+        const row = await host.resolveRequestAndNotify(id, status)
         if (!row) return json(res, 404, { error: 'no such request' })
-        // P3 pushes request:resolved to the requester here; P1 leaves them to see it on
-        // their own next request.list.
         return json(res, 200, { ok: true, status: row.status })
       }
 

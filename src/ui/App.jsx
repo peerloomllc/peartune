@@ -122,6 +122,7 @@ export default function App () {
   const [manageLib, setManageLib] = useState(null) // libraryId currently selected in Manage (null = active/default)
   const manageLibRef = useRef(null) // so the once-registered devices:changed handler reads the live selection
   manageLibRef.current = manageLib
+  const [ownerPending, setOwnerPending] = useState(0) // count of unresolved requests, for the You-tab badge
   const [ownerPair, setOwnerPair] = useState(null) // { link } while an owner-opened pairing window is up
   const [ownerTour, setOwnerTour] = useState(false) // one-shot "you're an owner now" walkthrough
   const [confirming, setConfirming] = useState(null)
@@ -391,6 +392,22 @@ export default function App () {
         if (youViewRef.current !== 'manage') return
         const lib = manageLibRef.current
         if (!lib || !d?.libraryId || d.libraryId === lib) loadOwnerDevices()
+      }),
+
+      // Tier A notifications (P3). The host only pushes request:new to OWNER devices, so this
+      // arriving means we are one - banner it and refresh the count the You-tab badge reads. If
+      // Manage is open its list reloads too (loadOwnerReqs also recomputes the pending count).
+      on('request:new', (d) => {
+        toast(d?.name ? `New request: ${d.name}` : 'New music request')
+        if (youViewRef.current === 'manage') loadOwnerReqs()
+        else refreshOwnerPending()
+      }),
+      // Pushed to whoever filed the request, on every device they are on. Tell them and refresh
+      // their own list so the status colour is right the moment they open Requests.
+      on('request:resolved', (d) => {
+        const verb = d?.status === 'added' ? 'added' : 'declined'
+        toast(d?.name ? `Your request for ${d.name} was ${verb}` : `A request was ${verb}`)
+        loadRequests(true)
       })
     ]
     return () => offs.forEach(f => f())
@@ -419,6 +436,19 @@ export default function App () {
   // What the once-registered listeners above need to see, always current.
   const liveRef = useRef({})
   liveRef.current = { host: state.host, connected: state.connected, reconnecting }
+  // The once-registered push handlers (request:new etc.) read owner status through this, since
+  // they closed over the first render and `ident` changes later, on connect. (youViewRef, used by
+  // the same handlers, is declared up by the youView state.)
+  const identRef = useRef(null)
+  identRef.current = ident
+
+  // Prime the You-tab request badge for owners: once this device is a confirmed owner and there
+  // is a connection to ask over, count the unresolved requests so the badge is right before they
+  // ever open Manage. A push keeps it live after that; this covers the cold-open count.
+  useEffect(() => {
+    if (ident?.owner && state.connected) refreshOwnerPending()
+    else if (!ident?.owner) setOwnerPending(0)
+  }, [ident?.owner, state.connected])
 
   // Merged-mode refs, for the same reason as sortRef below: the once-registered listeners (and the
   // loaders they fire) captured the first render, so they read the CURRENT source filter, merged
@@ -1035,7 +1065,17 @@ export default function App () {
     try { setOwnerDevices((await call('ownerDevices', { libraryId: libId })).devices || []) } catch { setOwnerDevices(d => d || []) }
   }
   async function loadOwnerReqs (libId = manageLibRef.current) {
-    try { setOwnerReqs((await call('ownerRequests', { libraryId: libId })).requests || []) } catch { setOwnerReqs(r => r || []) }
+    try {
+      const list = (await call('ownerRequests', { libraryId: libId })).requests || []
+      setOwnerReqs(list)
+      setOwnerPending(list.filter(r => r.status === 'pending').length)
+    } catch { setOwnerReqs(r => r || []) }
+  }
+  // The You-tab badge count, kept fresh without opening Manage: loaded when this device is a
+  // confirmed owner and connected, and again on a request:new push. Non-owners never fetch it.
+  async function refreshOwnerPending () {
+    if (!identRef.current?.owner) { setOwnerPending(0); return }
+    try { setOwnerPending(((await call('ownerRequests')).requests || []).filter(r => r.status === 'pending').length) } catch {}
   }
   async function showManage () {
     setYouView('manage')
@@ -1068,7 +1108,11 @@ export default function App () {
   // Resolve a request from the owner phone (P2b). Optimistic: reflect it now, reload to confirm.
   async function resolveOwnerRequest (id, status) {
     haptic('light')
+    // Optimistic: reflect the new status AND drop the badge now (a pending row is being cleared),
+    // then reload to confirm. loadOwnerReqs recomputes the count from truth, so a failed call or a
+    // race self-corrects.
     setOwnerReqs(list => (list || []).map(r => r.id === id ? { ...r, status } : r))
+    setOwnerPending(n => Math.max(0, n - 1))
     const r = await call('ownerResolveRequest', { libraryId: manageLibRef.current, id, status }).catch(() => null)
     if (!r?.ok) toast('Could not update that request', true)
     loadOwnerReqs()
@@ -1827,7 +1871,7 @@ export default function App () {
             hides it inside a list). A music app's dock is fixed furniture: the
             player sits on top of it, and dropping the navbar under an album would
             make the player jump down the screen mid-song. */}
-        <NavBar active={tab} onTab={goTab} queued={status?.queueLength ?? 0} />
+        <NavBar active={tab} onTab={goTab} queued={status?.queueLength ?? 0} youBadge={ownerPending} />
       </div>
 
       {note && <div className={'toast' + (note.bad ? ' bad' : '')}>{note.msg}</div>}
@@ -1922,17 +1966,22 @@ const TABS = [
 // The queue count rides on the TAB, which is the one thing on screen that is always
 // there - dock or no dock, playing or not. That is the persistent indicator; the
 // player's own counter is just a shortcut to the same screen.
-function NavBar ({ active, onTab, queued }) {
+function NavBar ({ active, onTab, queued, youBadge = 0 }) {
   return (
     <nav className='navbar'>
       {TABS.map(({ key, label, Icon }) => {
         const on = active === key
-        const badge = key === 'queue' && queued > 0 ? queued : null
+        // Queue shows its track count; You shows an owner's unresolved-request count. A tab only
+        // ever carries one badge, and no tab has both meanings.
+        const badge = key === 'queue' && queued > 0 ? queued
+          : key === 'you' && youBadge > 0 ? youBadge
+          : null
+        const badgeLabel = key === 'queue' ? `${badge} tracks` : `${badge} requests`
         return (
           <button
             key={key} className={on ? 'on' : ''} onClick={() => onTab(key)}
             aria-current={on ? 'page' : undefined}
-            aria-label={badge ? `${label}, ${badge} tracks` : label}
+            aria-label={badge ? `${label}, ${badgeLabel}` : label}
           >
             <span className='ic'>
               <Icon size={22} weight={on ? 'fill' : 'regular'} />
