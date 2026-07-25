@@ -5090,10 +5090,12 @@ function RequestComposer ({ prefill, onClose, toast, onUnsupported, onSent }) {
         {kind !== 'artist' &&
           <input value={artist} placeholder='Artist (optional)' maxLength={200} onChange={e => setArtist(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && !busy && send()} />}
-        <button className='primary wide' style={{ marginTop: '.5rem' }} onClick={send} disabled={busy || !name.trim()}>
-          {busy ? 'Sending…' : 'Send request'}
-        </button>
-        <button className='wide' onClick={onClose}>Cancel</button>
+        <div className='btnrow' style={{ marginTop: '.5rem' }}>
+          <button onClick={onClose}>Cancel</button>
+          <button className='primary' onClick={send} disabled={busy || !name.trim()}>
+            {busy ? 'Requesting…' : 'Request'}
+          </button>
+        </div>
       </div>
     </div>
   )
