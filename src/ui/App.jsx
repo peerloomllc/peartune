@@ -12,6 +12,7 @@
 
 import { useEffect, useState, useRef } from 'react'
 import jsQR from 'jsqr'
+import QRCode from 'qrcode'
 import {
   MusicNotes, MusicNotesSimple, UsersThree, Gear, Info, CaretRight, CaretLeft,
   CaretDown, Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, RepeatOnce, X,
@@ -4773,18 +4774,29 @@ function ManageView ({ devices, libraryName, selfKey, onRevoke, requests, onReso
 }
 
 // The owner opens a pairing window remotely (P2b): show the link to share so someone can pair
-// while the owner is away. A link, not a QR - the person is remote, not looking at this screen.
+// The person you're adding might be right next to you (scan the QR) or across town
+// (send the link). Offer both - the QR first, since scanning is the easy path when
+// you're together, with the link and Share underneath for when you're not.
 function OwnerPairSheet ({ link, toast, onClose }) {
   const [copied, setCopied] = useState(false)
+  const [qr, setQr] = useState(null)
+  useEffect(() => {
+    let live = true
+    QRCode.toDataURL(link, { width: 320, margin: 2, errorCorrectionLevel: 'M' })
+      .then(url => { if (live) setQr(url) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [link])
   const copy = () => { copyText(link); setCopied(true); setTimeout(() => setCopied(false), 1500); toast('Link copied') }
   const share = () => call('shell:share', { title: 'PearTune', text: link }).catch(() => {})
   return (
     <div className='sheetwrap' onClick={onClose}>
       <div className='sheet' onClick={e => e.stopPropagation()}>
         <h1>Pair a device</h1>
-        <p className='muted sm'>Send this link to whoever you’re adding. They paste it in PearTune to join. It works for 5 minutes and lets in one device.</p>
+        <p className='muted sm'>If you’re together, they scan this. Otherwise send them the link. It works for 5 minutes and lets in one device.</p>
+        {qr && <div className='pairqr'><img src={qr} alt='Pairing QR code' /></div>}
         <div className='key addr' style={{ marginTop: '.2rem' }}>{link}</div>
-        <div className='btnrow' style={{ marginTop: '.5rem' }}>
+        <div className='pairbtns'>
           <button onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
           <button className='primary' onClick={share}>Share</button>
         </div>

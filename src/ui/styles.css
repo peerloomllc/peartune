@@ -991,6 +991,12 @@ button.wide { width: 100%; }
 .btnrow { display: flex; gap: .5rem; margin-top: .25rem; }
 .btnrow button { flex: 1; font-size: .875rem; }
 
+/* Owner pair sheet: a scannable QR up top, and Copy / Share with room to breathe. */
+.pairqr { display: flex; justify-content: center; margin: .25rem 0 .75rem; }
+.pairqr img { width: 220px; height: 220px; border-radius: 12px; background: #fff; padding: 10px; }
+.pairbtns { display: flex; gap: .9rem; margin-top: .75rem; }
+.pairbtns button { flex: 1; font-size: .875rem; }
+
 /* The About accordion: rotating caret + a max-height transition, exactly as in
    PearPetal / PearList / PearCircle. */
 .acc > button {
