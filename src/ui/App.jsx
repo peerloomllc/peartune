@@ -116,6 +116,8 @@ export default function App () {
   const [reqSupported, setReqSupported] = useState(true) // false = active host too old for requests
   const [myRequests, setMyRequests] = useState(null) // this device's own requests (the You > Requests view)
   const [ownerDevices, setOwnerDevices] = useState(null) // active library's devices, for an owner (You > Manage)
+  const [ownerReqs, setOwnerReqs] = useState(null) // the full request queue, for an owner to resolve (You > Manage)
+  const [ownerPair, setOwnerPair] = useState(null) // { link } while an owner-opened pairing window is up
   const [confirming, setConfirming] = useState(null)
   const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
   const [queue, setQueue] = useState(null) // the up-next list, when opened
@@ -576,10 +578,10 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, nudge, reqComposer, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
+  navRef.current = { scanning, donate, nudge, reqComposer, ownerPair, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
 
   const canBack = !!(
-    scanning || donate || nudge || reqComposer || confirming || menu || viewing || expanded ||
+    scanning || donate || nudge || reqComposer || ownerPair || confirming || menu || viewing || expanded ||
     stack.length || tab !== 'library' ||
     // On the onboarding wall there is no stack, but there are cards to walk back
     // through. At the intro there is nothing behind us, so the OS closes the app.
@@ -599,6 +601,7 @@ export default function App () {
     // would greet you again next launch. Same as tapping Maybe later.
     if (n.nudge) { call('setSettings', { donationNudgeShown: true }).catch(() => {}); return setNudge(false) }
     if (n.reqComposer) return setReqComposer(null)
+    if (n.ownerPair) return stopOwnerPair()
     if (n.confirming) return setConfirming(null)
     if (n.scanning) return setScanning(false)
     if (n.expanded) return setExpanded(false)
@@ -983,21 +986,45 @@ export default function App () {
     setYouView('requests')
     await loadRequests(force)
   }
-  // Owner: the active library's devices (You > Manage). Reloads each open - a revoke or a
-  // new pair should show promptly, and the list is small.
+  // Owner: the active library's devices + request queue (You > Manage). Reloads each open -
+  // a revoke, a resolve or a new pair should show promptly, and the lists are small.
   async function loadOwnerDevices () {
     try { setOwnerDevices((await call('ownerDevices')).devices || []) } catch { setOwnerDevices(d => d || []) }
   }
+  async function loadOwnerReqs () {
+    try { setOwnerReqs((await call('ownerRequests')).requests || []) } catch { setOwnerReqs(r => r || []) }
+  }
   async function showManage () {
     setYouView('manage')
-    setOwnerDevices(null)
-    await loadOwnerDevices()
+    setOwnerDevices(null); setOwnerReqs(null)
+    await Promise.all([loadOwnerDevices(), loadOwnerReqs()])
   }
   async function revokeOwnerDevice (deviceKey) {
     const r = await call('ownerRevoke', { deviceKey }).catch(() => null)
     haptic(r?.ok ? 'warn' : 'light')
     if (!r?.ok) toast('Could not revoke that device', true)
     loadOwnerDevices()
+  }
+  // Resolve a request from the owner phone (P2b). Optimistic: reflect it now, reload to confirm.
+  async function resolveOwnerRequest (id, status) {
+    haptic('light')
+    setOwnerReqs(list => (list || []).map(r => r.id === id ? { ...r, status } : r))
+    const r = await call('ownerResolveRequest', { id, status }).catch(() => null)
+    if (!r?.ok) toast('Could not update that request', true)
+    loadOwnerReqs()
+  }
+  // Open a pairing window remotely so the owner can let a device in while away (P2b). The
+  // returned link is shared/copied; a device pairs through it. Stop closes the window.
+  async function openOwnerPair () {
+    haptic('light')
+    const r = await call('ownerPairStart', {}).catch(() => null)
+    if (!r?.ok || !r.link) return toast('Could not open a pairing window', true)
+    setOwnerPair({ link: r.link })
+  }
+  async function stopOwnerPair () {
+    setOwnerPair(null)
+    call('ownerPairStop').catch(() => {})
+    loadOwnerDevices() // a device may have paired through it
   }
   // Remove one of MY requests - a completed one I'm done with, or a pending one I want to
   // withdraw. Optimistic (drop it from the list now); the host refuses anything not mine.
@@ -1638,6 +1665,7 @@ export default function App () {
         onRemoveRequest={removeRequest}
         isOwner={!!ident?.owner} ownerLibraryName={ident?.libraryName || state.host?.libraryName}
         ownerDevices={ownerDevices} selfKey={state.deviceKeyZ32} onRevokeDevice={revokeOwnerDevice}
+        ownerReqs={ownerReqs} onResolveRequest={resolveOwnerRequest} onOwnerPair={openOwnerPair}
         onOpenPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name })}
         onOpenServerPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name, server: true })}
         onOpenDownload={(dl) => push({ type: 'download', id: dl.id, name: dl.name })}
@@ -1784,6 +1812,7 @@ export default function App () {
         />
       )}
       {donate && <DonationSheet onClose={() => setDonate(false)} />}
+      {ownerPair && <OwnerPairSheet link={ownerPair.link} toast={toast} onClose={stopOwnerPair} />}
       {reqComposer && (
         <RequestComposer prefill={reqComposer.name} toast={toast}
           onUnsupported={() => { setReqSupported(false); setReqComposer(null) }}
@@ -2698,6 +2727,7 @@ function You ({
   playlists, plSupported, serverPls, sourceName, downloads,
   reqSupported, myRequests, onNewRequest, onRemoveRequest,
   isOwner, ownerLibraryName, ownerDevices, selfKey, onRevokeDevice,
+  ownerReqs, onResolveRequest, onOwnerPair,
   onOpenPlaylist, onOpenServerPlaylist, onOpenDownload, onNewPlaylist,
   onPlay, onLong, onOpenAlbum, onOpenArtist
 }) {
@@ -2781,7 +2811,8 @@ function You ({
           : view === 'requests'
             ? <RequestsView requests={myRequests} onNew={onNewRequest} onRemove={onRemoveRequest} />
           : view === 'manage'
-            ? <ManageView devices={ownerDevices} libraryName={ownerLibraryName} selfKey={selfKey} onRevoke={onRevokeDevice} />
+            ? <ManageView devices={ownerDevices} libraryName={ownerLibraryName} selfKey={selfKey} onRevoke={onRevokeDevice}
+                requests={ownerReqs} onResolve={onResolveRequest} onPair={onOwnerPair} />
           : (mostPlayed
               ? (mostPlayed.items.length
                   ? (
@@ -4662,12 +4693,39 @@ const IDENT_POLL_MAX = 36 // 3 minutes of asking, then wait for the next time Se
 // the current library. Data is fetched by the parent (ownerDevices) and reloaded after a
 // revoke. A revoke cuts the device off within the second (the same teeth as the dashboard);
 // the host refuses revoking another OWNER, so that button is hidden here too.
-function ManageView ({ devices, libraryName, selfKey, onRevoke }) {
+function ManageView ({ devices, libraryName, selfKey, onRevoke, requests, onResolve, onPair }) {
   const [confirm, setConfirm] = useState(null) // { device } pending a revoke
   if (!devices) return <SkeletonRows />
   const live = devices.filter(d => !d.revokedAt)
+  const pending = (requests || []).filter(r => r.status === 'pending')
+  const line = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
+  const KIND = { artist: 'Artist', album: 'Album', track: 'Track' }
   return (
     <>
+      <button className='wide' style={{ marginBottom: '.7rem' }} onClick={onPair}>
+        <QrCode size={17} weight='bold' /> Pair a device
+      </button>
+
+      {/* Incoming music requests, so the owner can work the queue away from the dashboard. */}
+      {pending.length > 0 && (
+        <>
+          <div className='mgh'>Requests <span className='cnt'>{pending.length}</span></div>
+          <ul className='ownerdevs'>
+            {pending.map(r => (
+              <li key={r.id}>
+                <div className='who'>
+                  <div className='name'>{line(r)} <span className='badge'>{KIND[r.kind] || r.kind}</span>{r.count > 1 && <span className='badge'>×{r.count}</span>}</div>
+                  <div className='sub muted sm'>{r.requesterName} asked</div>
+                </div>
+                <button className='ghostsm' onClick={() => onResolve(r.id, 'added')}>Added</button>
+                <button className='ghostsm danger' onClick={() => onResolve(r.id, 'declined')}>Decline</button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      <div className='mgh'>Devices</div>
       <p className='muted sm' style={{ margin: '0 0 .4rem' }}>
         Everyone with access to {libraryName || 'this library'}. Revoke a device and it loses
         access immediately, even mid-song.
@@ -4707,6 +4765,28 @@ function ManageView ({ devices, libraryName, selfKey, onRevoke }) {
         />
       )}
     </>
+  )
+}
+
+// The owner opens a pairing window remotely (P2b): show the link to share so someone can pair
+// while the owner is away. A link, not a QR - the person is remote, not looking at this screen.
+function OwnerPairSheet ({ link, toast, onClose }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => { copyText(link); setCopied(true); setTimeout(() => setCopied(false), 1500); toast('Link copied') }
+  const share = () => call('shell:share', { title: 'PearTune', text: link }).catch(() => {})
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Pair a device</h1>
+        <p className='muted sm'>Send this link to whoever you’re adding. They paste it in PearTune to join. It works for 5 minutes and lets in one device.</p>
+        <div className='key addr' style={{ marginTop: '.2rem' }}>{link}</div>
+        <div className='btnrow' style={{ marginTop: '.5rem' }}>
+          <button onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+          <button className='primary' onClick={share}>Share</button>
+        </div>
+        <button className='wide' onClick={onClose}>Done</button>
+      </div>
+    </div>
   )
 }
 

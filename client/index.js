@@ -492,6 +492,12 @@ class PearTuneClient {
   // Promote THIS connection to owner via the dashboard owner window's one-time code, over
   // the existing media channel (P2, for an already-connected device that cannot re-pair).
   ownerClaim (params) { return this._request('owner.claim', params) }
+  // P2b: open/close a pairing window remotely, and work the request queue from the owner app.
+  ownerPairStart (params) { return this._request('owner.pairStart', params) }
+  ownerPairStop () { return this._request('owner.pairStop') }
+  ownerPairState () { return this._request('owner.pairState') }
+  ownerRequests () { return this._request('owner.requests') }
+  ownerResolveRequest (params) { return this._request('owner.requestResolve', params) }
 
   // Play session (cross-device handoff, proposal 2026-07-17). The host takes the owner +
   // acting device from the connection; claim/set are gated by the generation CAS host-side.
