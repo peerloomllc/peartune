@@ -596,6 +596,13 @@ function makeClient () {
         log('host:renamed-push', { hostKey: rec.hostKey })
         emit('host:renamed', { hostKey: rec.hostKey, libraryName: name })
       }
+    } else if (m?.kind === 'devices:changed') {
+      // An owned host's device roster changed (a pair/revoke/delete/promote on its dashboard). Hand
+      // it to the UI so an open You > Manage reloads that library's list live (carries libraryId so
+      // the app reloads the RIGHT one in a blend). Owner-only by construction: the host pushes it
+      // only to owner-scope grants.
+      log('devices:changed', { library: String(m.data?.libraryId || '').slice(0, 8) })
+      emit('devices:changed', m.data || {})
     }
   }
   return c
@@ -2793,10 +2800,15 @@ const methods = {
   async ownedLibraries () {
     const out = []
     for (const h of loadHostsFile().hosts) {
-      const c = poolClient(h.libraryId)
+      // The ACTIVE host rides the active client (poolClient only returns it while the `connected`
+      // flag is up, which it may not be the instant Manage opens - that was leaving ownedLibraries
+      // empty and manageLib null). Non-active hosts use their pool client if it is live.
+      let c = null
+      if (h.libraryId === activeLibraryId) { try { await ensureConnected(); c = client } catch {} }
+      else c = poolClient(h.libraryId)
       if (!c) continue
       try {
-        const id = await c.identity()
+        const id = await c.getIdentity()
         if (id?.owner) out.push({ libraryId: h.libraryId, libraryName: id.libraryName || h.libraryName, active: h.libraryId === activeLibraryId })
       } catch {}
     }
