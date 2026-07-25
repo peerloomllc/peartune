@@ -35,7 +35,7 @@ function ownerOf (grant) {
   return grant.personId ? 'p:' + grant.personId : 'd:' + grant.deviceKey
 }
 
-function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, onLeave = null, log = () => {} }) {
+function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Set once the channel is open (below). Called on close to drop this connection's push
@@ -124,6 +124,10 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // param - a device only ever learns its OWN access. Refreshed on every connect, so
       // an operator extending or clearing it on the dashboard reflects on the phone.
       expiresAt: row?.expiresAt ?? null,
+      // Is THIS device the owner (proposal 2026-07-24, P2)? Off its own grant scope, so the
+      // app shows the owner surface only for a device the dashboard actually made an owner.
+      // Refreshed each connect, so a dashboard promote/revoke reflects on the next connect.
+      owner: row?.scope === SCOPE.OWNER,
       user: claim
         ? {
             name: claim,
@@ -382,6 +386,34 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         // The caller's OWN requests only - the operator's all-requests view is dashboard-side.
         return send.res.send({ id, body: { requests: await state.listRequests({ requester: ownerOf(grant) }) } })
+      }
+
+      // --- owner maintenance (proposal 2026-07-24-owner-in-the-app, P2) -----
+      //
+      // Gated on the OWNER scope, which is minted only by pairing through the dashboard's
+      // owner window (host-side) - a phone can never assert it. The gate is here at
+      // dispatch, so a full/readonly/guest grant is refused before any owner op runs.
+      case 'owner.devices': {
+        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        return send.res.send({ id, body: { devices: await owner.listDevices() } })
+      }
+
+      case 'owner.revoke': {
+        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!params?.deviceKey) return safeErr(id, ERR.BAD_PARAMS, 'deviceKey required')
+        // An owner phone may NOT revoke another OWNER device (proposal security review):
+        // owner-vs-owner stays a dashboard-only action, so a stolen owner phone cannot lock
+        // out the real owner's other owner devices. It CAN revoke full/guest/readonly.
+        const target = await owner.getGrant(params.deviceKey)
+        if (target && !target.revokedAt && target.scope === SCOPE.OWNER) {
+          return safeErr(id, ERR.FORBIDDEN, 'revoke an owner device from the dashboard')
+        }
+        const { grant: row, killed } = await owner.revokeDevice(params.deviceKey)
+        if (!row) return send.res.send({ id, body: { ok: false, notFound: true } })
+        log('owner:revoke', { killed })
+        return send.res.send({ id, body: { ok: true, killed } })
       }
 
       case 'request.delete': {

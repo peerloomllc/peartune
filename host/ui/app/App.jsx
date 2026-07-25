@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   MusicNotes, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
   CaretRight, Plus, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
-  Lightning, CheckCircle, Wrench, Compass, Prohibit, Trash, Check
+  Lightning, CheckCircle, Wrench, Compass, Prohibit, Trash, Check, DeviceMobile
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
 import { api, copyText, ago, until, fmtDur, platformLabel, DONATE } from './api'
@@ -138,6 +138,7 @@ export default function App () {
       </div>
 
       {modal === 'pair' && <PairModal onClose={() => setModal(null)} toast={toast} />}
+      {modal === 'pair-owner' && <PairModal owner onClose={() => setModal(null)} toast={toast} />}
       {modal === 'support' && <SupportModal onClose={() => setModal(null)} />}
       {modal === 'maintenance' && <MaintenanceModal state={state} onClose={() => setModal(null)} onSaved={refresh} toast={toast} />}
       {note && <div className={'toast' + (note.bad ? ' err' : '')}>{note.msg}</div>}
@@ -183,6 +184,7 @@ function TopBar ({ state, isDark, onTheme, onOpen, onSetup }) {
           {menu &&
             <div className='menu' role='menu'>
               <button onClick={() => { setMenu(false); onSetup() }}><Compass size={16} /> Setup guide</button>
+              <button onClick={() => { setMenu(false); onOpen('pair-owner') }}><DeviceMobile size={16} /> Pair my phone as owner</button>
               <button onClick={() => { setMenu(false); onOpen('maintenance') }}><Wrench size={16} /> Maintenance</button>
               <button onClick={() => { setMenu(false); onOpen('support') }}><Heart size={16} /> Support Development</button>
               <div className='sep' />

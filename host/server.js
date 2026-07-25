@@ -485,6 +485,15 @@ class PearTuneHost {
         // A device sets its own avatar (identity.avatar), keyed by this connection's
         // Noise-authenticated deviceKey - it can only ever write its own.
         avatars: this.avatars,
+        // Owner maintenance from the app (proposal 2026-07-24, P2). Bound host operations,
+        // never the host itself - media.js gates them on grant.scope === 'owner'. Kept to
+        // the small v1 surface: see the device list, and revoke a device (which cuts its
+        // live connections, same teeth as the dashboard).
+        owner: {
+          listDevices: () => this.listDevices(),
+          revokeDevice: (deviceKey) => this.revokeDevice(deviceKey),
+          getGrant: (deviceKey) => this.grants.get(deviceKey)
+        },
         log: (msg, data) => this.log(msg, { device: short, ...data })
       })
     })
@@ -493,14 +502,20 @@ class PearTuneHost {
   // --- operator actions (the dashboard drives these) -----------------------
 
   // expiresMs > 0 opens a GUEST window: devices that pair through it get access that
-  // expires that many ms after pairing. Omitted / null = a normal permanent window.
-  startPairing ({ expiresMs = null } = {}) {
-    // A window is already open. If its GUEST-ness matches what was asked, reuse it;
-    // otherwise close it and open the requested kind, so "Guest pass" never silently
-    // hands back a permanent window (or vice versa).
+  // expires that many ms after pairing. owner:true opens an OWNER window (scope 'owner',
+  // proposal 2026-07-24, P2) - mutually exclusive with guest, so an owner is never
+  // time-limited. Omitted = a normal permanent window.
+  startPairing ({ expiresMs = null, owner = false } = {}) {
+    // Owner XOR guest: an owner window ignores any expiry (an owner is permanent by
+    // definition; a time-limited owner would be a footgun).
+    if (owner) expiresMs = null
+    // A window is already open. Reuse it only if its KIND (guest-ness AND owner-ness)
+    // matches what was asked; otherwise close it and open the requested kind, so the
+    // three window types never silently hand back the wrong one.
     if (this.pairing) {
       const openMs = this.pairSession.expiresMs || null
-      if ((openMs ? 1 : 0) === (expiresMs ? 1 : 0)) return this.pairSession.link
+      const sameKind = (openMs ? 1 : 0) === (expiresMs ? 1 : 0) && !!this.pairSession.owner === !!owner
+      if (sameKind) return this.pairSession.link
       this.pairSession.close('operator')
     }
 
@@ -509,9 +524,10 @@ class PearTuneHost {
       grants: this.grants,
       libraryName: this.libraryName,
       expiresMs: expiresMs && expiresMs > 0 ? expiresMs : null,
+      owner: !!owner,
       log: this.log
     })
-    this.log('pair:open', { ttlMs: this.pairSession.ttl, guest: !!this.pairSession.expiresMs })
+    this.log('pair:open', { ttlMs: this.pairSession.ttl, guest: !!this.pairSession.expiresMs, owner: !!owner })
     return this.pairSession.link
   }
 

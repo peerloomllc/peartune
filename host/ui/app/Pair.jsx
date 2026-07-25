@@ -20,7 +20,7 @@ const GUEST_DURATIONS = [
 // ({ ok: true, label }), or when they dismiss the expired card ({ ok: false }).
 // `guestOption` hides the full/guest choice - a host being set up for the first time
 // is pairing its owner's phone, not handing out a day pass.
-export function PairFlow ({ toast, onDone, guestOption = true }) {
+export function PairFlow ({ toast, onDone, guestOption = true, owner = false }) {
   const [qr, setQr] = useState(null) // { link, dataUrl, guest, expiresMs }
   const [busy, setBusy] = useState(false)
   const [guest, setGuest] = useState(false)
@@ -81,14 +81,15 @@ export function PairFlow ({ toast, onDone, guestOption = true }) {
     // successful pair from a window that simply timed out.
     const before = await api('/api/state').catch(() => null)
     seenGrants.current = new Map((before?.devices || []).map(d => [d.deviceKey, d.grantedAt]))
-    // A guest window carries the operator's chosen duration; a full window sends nothing.
-    const r = await api('/api/pair/start', guest ? { expiresMs: durMs } : {})
+    // An OWNER window mints scope 'owner' (P2); a guest window carries the chosen duration;
+    // a full window sends nothing. Owner and guest are mutually exclusive host-side.
+    const r = await api('/api/pair/start', owner ? { owner: true } : guest ? { expiresMs: durMs } : {})
     // margin 4 = the spec's full quiet zone (was 1). A too-thin quiet zone hurts scanning, and it
     // bites hardest in DARK mode: the white QR card is a bright island in a dark page, so the phone
     // camera meters the dark surroundings and blows out the card, washing out the modules. A proper
     // quiet zone + a bigger .qr card (below) keep contrast even, so it scans in either theme.
     const dataUrl = await QRCode.toDataURL(r.link, { width: 256, margin: 4, errorCorrectionLevel: 'M' }).catch(() => null)
-    setQr({ link: r.link, dataUrl, guest: r.guest, expiresMs: r.expiresMs })
+    setQr({ link: r.link, dataUrl, guest: r.guest, owner: r.owner, expiresMs: r.expiresMs })
     setBusy(false)
   }
   const stop = async () => { await api('/api/pair/stop', {}); setQr(null); if (toast) toast('Pairing window closed.') }
@@ -96,18 +97,20 @@ export function PairFlow ({ toast, onDone, guestOption = true }) {
   if (!qr) {
     return (
       <div className='stack center'>
-        {guestOption &&
+        {guestOption && !owner &&
           <div className='seg wide'>
             <button className={guest ? '' : 'on'} onClick={() => setGuest(false)}>Full access</button>
             <button className={guest ? 'on' : ''} onClick={() => setGuest(true)}>Guest pass</button>
           </div>}
-        {guest
-          ? <label className='hint center dur'>Access expires
-              <select value={durMs} onChange={e => setDurMs(Number(e.target.value))}>
-                {GUEST_DURATIONS.map(o => <option key={o.ms} value={o.ms}>{o.label} after pairing</option>)}
-              </select>
-            </label>
-          : <p className='hint center'>Permanent access. Scan the code in PearTune on your phone.</p>}
+        {owner
+          ? <p className='hint center'>Scan this in PearTune on the phone you want to make an <b>owner</b>. It can then manage this library from the app - see devices, revoke, open a pairing window.</p>
+          : guest
+            ? <label className='hint center dur'>Access expires
+                <select value={durMs} onChange={e => setDurMs(Number(e.target.value))}>
+                  {GUEST_DURATIONS.map(o => <option key={o.ms} value={o.ms}>{o.label} after pairing</option>)}
+                </select>
+              </label>
+            : <p className='hint center'>Permanent access. Scan the code in PearTune on your phone.</p>}
         <button onClick={start} disabled={busy}>{busy ? 'Starting…' : 'Show pairing code'}</button>
       </div>
     )
@@ -140,9 +143,11 @@ export function PairFlow ({ toast, onDone, guestOption = true }) {
       <div className='qrpanel'>
         {qr.dataUrl && <img className='qr' src={qr.dataUrl} alt='Pairing QR code' />}
         <div className='qrcap'>
-          {qr.guest
-            ? `Guest pass — access expires ${fmtDur(qr.expiresMs)} after this device pairs.`
-            : 'Valid for 5 minutes. Closes as soon as one device pairs.'}
+          {qr.owner
+            ? 'Owner pairing — this phone gains library management. Valid for 5 minutes.'
+            : qr.guest
+              ? `Guest pass — access expires ${fmtDur(qr.expiresMs)} after this device pairs.`
+              : 'Valid for 5 minutes. Closes as soon as one device pairs.'}
         </div>
       </div>
       <div className='keyrow'>
@@ -158,10 +163,10 @@ export function PairFlow ({ toast, onDone, guestOption = true }) {
   )
 }
 
-export function PairModal ({ onClose, toast }) {
+export function PairModal ({ onClose, toast, owner = false }) {
   return (
-    <Modal title='Pair a Device' onClose={onClose}>
-      <PairFlow toast={toast} onDone={onClose} />
+    <Modal title={owner ? 'Pair an Owner Phone' : 'Pair a Device'} onClose={onClose}>
+      <PairFlow toast={toast} onDone={onClose} owner={owner} />
     </Modal>
   )
 }

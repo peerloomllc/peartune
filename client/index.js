@@ -485,6 +485,11 @@ class PearTuneClient {
   requestList () { return this._request('request.list') }
   requestDelete (params) { return this._request('request.delete', params) }
 
+  // Owner maintenance (proposal 2026-07-24, P2). Only answered for an owner-scoped grant;
+  // any other grant gets FORBIDDEN, and an old host answers ENOMETHOD.
+  ownerDevices () { return this._request('owner.devices') }
+  ownerRevoke (params) { return this._request('owner.revoke', params) }
+
   // Play session (cross-device handoff, proposal 2026-07-17). The host takes the owner +
   // acting device from the connection; claim/set are gated by the generation CAS host-side.
   sessionGet (params) { return this._request('session.get', params) }

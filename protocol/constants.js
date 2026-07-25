@@ -37,6 +37,12 @@ module.exports = {
 
   SCOPE: {
     FULL: 'full',
-    READONLY: 'readonly'
+    READONLY: 'readonly',
+    // The OWNER of the library, from the app (proposal 2026-07-24-owner-in-the-app, P2).
+    // A strict SUPERSET of FULL - browses/streams/favorites like any device, PLUS the
+    // owner.* maintenance methods. Minted ONLY by pairing through the dashboard's
+    // "pair as owner" window (host-side; a phone can never assert it), so it stays as
+    // forgery-proof as every other grant value.
+    OWNER: 'owner'
   }
 }

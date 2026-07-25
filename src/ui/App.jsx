@@ -4622,6 +4622,76 @@ function compressToAvatarB64 (dataUrl, size = 256) {
 const IDENT_POLL_MS = 5000
 const IDENT_POLL_MAX = 36 // 3 minutes of asking, then wait for the next time Settings opens
 
+// Owner maintenance in the app (proposal 2026-07-24, P2): the device list for the ACTIVE
+// library, with revoke. Shown only inside the owner-only Settings section. Targets the
+// active host (the worklet's ownerDevices/ownerRevoke), so it manages whatever library you
+// are in. Loads when the section opens (loadNow). A revoke cuts the device off within the
+// second - the same teeth as the dashboard - and the host refuses revoking another OWNER,
+// so that button is hidden here too.
+function OwnerDevices ({ selfKey, loadNow }) {
+  const [devices, setDevices] = useState(null)
+  const [confirm, setConfirm] = useState(null) // { device } pending a revoke
+  const [busy, setBusy] = useState(false)
+
+  const load = async () => {
+    const r = await call('ownerDevices').catch(() => null)
+    setDevices(r?.devices || [])
+  }
+  useEffect(() => { if (loadNow && !devices) load() }, [loadNow])
+
+  const doRevoke = async (d) => {
+    setBusy(true)
+    const r = await call('ownerRevoke', { deviceKey: d.deviceKey }).catch(() => null)
+    setBusy(false)
+    setConfirm(null)
+    haptic(r?.ok ? 'warn' : 'light')
+    load()
+  }
+
+  if (!devices) return <p className='muted sm'>Loading…</p>
+  const live = devices.filter(d => !d.revokedAt)
+  if (!live.length) return <p className='muted sm'>No other devices have access.</p>
+  return (
+    <>
+      <p className='muted sm'>Devices with access to this library. Revoke one and it loses access immediately, even mid-song.</p>
+      <ul className='ownerdevs'>
+        {live.map(d => {
+          const isSelf = d.deviceKey === selfKey
+          const isOwner = d.scope === 'owner'
+          return (
+            <li key={d.deviceKey}>
+              <div className='who'>
+                <div className='name'>
+                  {d.label}
+                  {isOwner && <span className='badge'>owner</span>}
+                  {isSelf && <span className='badge'>this phone</span>}
+                </div>
+                <div className='sub muted sm'>{d.online ? 'Connected' : 'Offline'}{d.claimedUser ? ` · ${d.claimedUser}` : ''}</div>
+              </div>
+              {/* No revoke on yourself (unpair is how you leave) or on another owner
+                  (dashboard-only, and the host refuses it anyway). */}
+              {!isSelf && !isOwner && (
+                <button className='rqv-rm' aria-label={'Revoke ' + d.label} disabled={busy} onClick={() => setConfirm({ device: d })}>
+                  <Trash size={18} weight='regular' />
+                </button>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+      {confirm && (
+        <Confirm
+          title={`Revoke “${confirm.device.label}”?`}
+          body='It loses access immediately, even mid-song. It would have to pair again to return.'
+          yes='Revoke' danger
+          onConfirm={() => doRevoke(confirm.device)}
+          onClose={() => setConfirm(null)}
+        />
+      )}
+    </>
+  )
+}
+
 function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [copied, setCopied] = useState(false)
@@ -4769,6 +4839,14 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
       )}
 
       <div className='settings-acc'>
+        {/* Owner maintenance (proposal 2026-07-24, P2). Only for a device the dashboard made
+            an owner of the ACTIVE library (ident.owner, host-derived). First, so an owner
+            reaches it fast when away from the server. */}
+        {ident?.owner && (
+          <Section id='owner' title='Manage this library' Icon={UsersThree} open={open === 'owner'} onToggle={toggle}>
+            <OwnerDevices selfKey={state.deviceKeyZ32} loadNow={open === 'owner'} />
+          </Section>
+        )}
         <Section id='appearance' title='Appearance' Icon={Palette} open={open === 'appearance'} onToggle={toggle}>
           <div className='label'>Theme</div>
           <div className='seg'>
