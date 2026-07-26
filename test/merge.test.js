@@ -209,3 +209,53 @@ test('collapseRequests handles empty / null safely', () => {
   assert.deepEqual(M.collapseRequests(null), [])
   assert.deepEqual(M.collapseRequests([null, undefined]), [])
 })
+
+// --- the OWNER's side of the same fold (2026-07-25) -------------------------
+// You > Manage folds the queue across every library the owner holds, so one resolve can clear
+// every copy of a fanned-out ask. That view is a to-do list, so its ranking is inverted: still
+// pending anywhere = still work.
+
+test('collapseRequests pendingWins keeps an ask visible while ANY library still has it pending', () => {
+  const rows = [
+    { id: 'a', kind: 'album', name: 'X', artist: 'Y', status: 'added', createdAt: 2, libraryId: 'libU', libraryName: 'Umbrel' },
+    { id: 'b', kind: 'album', name: 'X', artist: 'Y', status: 'pending', createdAt: 1, libraryId: 'libM', libraryName: 'Mac' }
+  ]
+  // The requester sees the good news; the owner still sees work to do.
+  assert.equal(M.collapseRequests(rows)[0].status, 'added')
+  assert.equal(M.collapseRequests(rows, { pendingWins: true })[0].status, 'pending')
+  // Fully resolved everywhere -> off the queue (added outranks declined, so it reads as handled).
+  const done = rows.map((r) => ({ ...r, status: r.id === 'a' ? 'added' : 'declined' }))
+  assert.equal(M.collapseRequests(done, { pendingWins: true })[0].status, 'added')
+})
+
+test('resolveTargets fans a resolve to every PENDING copy and no other', () => {
+  const row = {
+    id: 'a',
+    refs: [
+      { libraryId: 'libU', id: 'a', status: 'pending' },
+      { libraryId: 'libM', id: 'b', status: 'pending' },
+      { libraryId: 'libS', id: 'c', status: 'declined' } // already handled elsewhere - leave it
+    ]
+  }
+  assert.deepEqual(M.resolveTargets(row, 'libU'), [{ libraryId: 'libU', id: 'a' }, { libraryId: 'libM', id: 'b' }])
+  // No refs (single-host read / an older row shape): the row's own id on the active library.
+  assert.deepEqual(M.resolveTargets({ id: 'z' }, 'libU'), [{ libraryId: 'libU', id: 'z' }])
+  assert.deepEqual(M.resolveTargets({ id: 'z', libraryId: 'libM' }, 'libU'), [{ libraryId: 'libM', id: 'z' }])
+  // Nothing resolvable: every copy settled, or no id at all.
+  assert.deepEqual(M.resolveTargets({ refs: [{ libraryId: 'libU', id: 'a', status: 'added' }] }, 'libU'), [])
+  assert.deepEqual(M.resolveTargets({}, 'libU'), [])
+  assert.deepEqual(M.resolveTargets(undefined, null), [])
+})
+
+test('collapseRequests refs carry each copy status, so a resolve touches only the pending ones', () => {
+  const rows = [
+    { id: 'a', kind: 'track', name: 'Weird Fishes', artist: 'Radiohead', status: 'declined', createdAt: 2, libraryId: 'libU', libraryName: 'Umbrel' },
+    { id: 'b', kind: 'track', name: 'weird fishes', artist: 'Radiohead', status: 'pending', createdAt: 1, libraryId: 'libM', libraryName: 'Mac' }
+  ]
+  const out = M.collapseRequests(rows, { pendingWins: true })
+  assert.equal(out.length, 1)
+  const pendingRefs = out[0].refs.filter((x) => x.status === 'pending')
+  // An "added" fan-out must not rewrite the copy another owner already declined.
+  assert.deepEqual(pendingRefs.map((x) => x.libraryId), ['libM'])
+  assert.deepEqual(out[0].libraries.sort(), ['Mac', 'Umbrel'])
+})
