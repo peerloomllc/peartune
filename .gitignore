@@ -7,6 +7,10 @@ web-build/
 assets/bare-universal.bundle
 assets/bare-ios.bundle
 assets/app-ui.bundle
+# esbuild emits the stylesheet beside the bundle; build-ui.mjs then INLINES it into
+# assets/index.html, which is what the app loads. So this is an intermediate like the
+# bundle beside it, not a shipped file - it was tracked by oversight until 2026-07-26.
+assets/app-ui.css
 assets/index.html
 host/ui/build/
 # Intermediate esbuild outputs for the dashboard; host/ui/dashboard.html (the
