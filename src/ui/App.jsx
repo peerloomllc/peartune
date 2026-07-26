@@ -1066,9 +1066,12 @@ export default function App () {
   async function loadOwnerDevices (libId = manageLibRef.current) {
     try { setOwnerDevices((await call('ownerDevices', { libraryId: libId })).devices || []) } catch { setOwnerDevices(d => d || []) }
   }
-  async function loadOwnerReqs (libId = manageLibRef.current) {
+  // The request queue is the ONE part of Manage that is not per-library: an ask fans out to every
+  // library, so the owner's queue aggregates back across every library they own (no libraryId -
+  // the worklet unions + folds). That is also why the picker does not reload it.
+  async function loadOwnerReqs () {
     try {
-      const list = (await call('ownerRequests', { libraryId: libId })).requests || []
+      const list = (await call('ownerRequests')).requests || []
       setOwnerReqs(list)
       setOwnerPending(list.filter(r => r.status === 'pending').length)
     } catch { setOwnerReqs(r => r || []) }
@@ -1091,15 +1094,16 @@ export default function App () {
       ? manageLibRef.current
       : (libs.find(l => l.active)?.libraryId || libs[0]?.libraryId || null)
     setManageLib(lib); manageLibRef.current = lib
-    await Promise.all([loadOwnerDevices(lib), loadOwnerReqs(lib)])
+    await Promise.all([loadOwnerDevices(lib), loadOwnerReqs()])
   }
-  // Switch which owned library Manage is acting on.
+  // Switch which owned library Manage is acting on. Devices + pairing are per-library; the request
+  // queue above them is the aggregate, so it stays put rather than reloading on every switch.
   async function switchManageLib (libId) {
     if (libId === manageLibRef.current) return
     haptic('light')
     setManageLib(libId); manageLibRef.current = libId
-    setOwnerDevices(null); setOwnerReqs(null)
-    await Promise.all([loadOwnerDevices(libId), loadOwnerReqs(libId)])
+    setOwnerDevices(null)
+    await loadOwnerDevices(libId)
   }
   async function revokeOwnerDevice (deviceKey) {
     const r = await call('ownerRevoke', { libraryId: manageLibRef.current, deviceKey }).catch(() => null)
@@ -1108,15 +1112,20 @@ export default function App () {
     loadOwnerDevices()
   }
   // Resolve a request from the owner phone (P2b). Optimistic: reflect it now, reload to confirm.
-  async function resolveOwnerRequest (id, status) {
+  // The row is a COLLAPSED ask, so it carries `refs` - every (libraryId, id) copy the fan-out
+  // created - and resolving clears the pending copy on each, not just the library in view.
+  async function resolveOwnerRequest (row, status) {
     haptic('light')
     // Optimistic: reflect the new status AND drop the badge now (a pending row is being cleared),
     // then reload to confirm. loadOwnerReqs recomputes the count from truth, so a failed call or a
     // race self-corrects.
-    setOwnerReqs(list => (list || []).map(r => r.id === id ? { ...r, status } : r))
+    setOwnerReqs(list => (list || []).map(r => r.id === row.id ? { ...r, status } : r))
     setOwnerPending(n => Math.max(0, n - 1))
-    const r = await call('ownerResolveRequest', { libraryId: manageLibRef.current, id, status }).catch(() => null)
+    const r = await call('ownerResolveRequest', { id: row.id, libraryId: row.libraryId, refs: row.refs, status }).catch(() => null)
     if (!r?.ok) toast('Could not update that request', true)
+    // A library that was offline keeps its copy pending. Say so rather than letting the row
+    // quietly reappear on the next read looking like the tap did not take.
+    else if (r.partial) toast(`Cleared on ${r.resolved} of ${r.total} libraries`)
     loadOwnerReqs()
   }
   // Open a pairing window remotely so the owner can let a device in while away (P2b). The
@@ -4825,8 +4834,12 @@ function ManageView ({ devices, libraryName, selfKey, onRevoke, ownedLibs = [], 
   const KIND = { artist: 'Artist', album: 'Album', track: 'Track' }
   return (
     <>
-      {/* Own more than one library? Pick which one to manage - devices, requests and pairing all
-          act on the chosen library. Just one owned library shows no picker. */}
+      {/* Requests sit ABOVE the picker because they are not per-library: an ask fans out to every
+          library, so the queue is aggregated back across all of them and one tap clears every copy
+          (Tim, 2026-07-25). Devices and pairing below ARE per-library and follow the picker. */}
+      <ManageRequests requests={requests} onResolve={onResolve} line={line} KIND={KIND} multi={multi} />
+
+      {/* Own more than one library? Pick which one's devices to manage. Just one shows no picker. */}
       {multi && (
         <div className='mglibs'>
           {ownedLibs.map(l => (
@@ -4841,45 +4854,51 @@ function ManageView ({ devices, libraryName, selfKey, onRevoke, ownedLibs = [], 
 
       {!devices ? <SkeletonRows /> : <ManageBody
         devices={devices} libraryName={libraryName} selfKey={selfKey} onRevoke={onRevoke} onPair={onPair}
-        requests={requests} onResolve={onResolve} confirm={confirm} setConfirm={setConfirm}
-        line={line} KIND={KIND} />}
+        confirm={confirm} setConfirm={setConfirm} />}
     </>
   )
 }
 
-// The body of Manage for ONE library. Split out so the library picker above can stay put while
-// the list below swaps to a skeleton on a library switch.
-function ManageBody ({ devices, libraryName, selfKey, onRevoke, onPair, requests, onResolve, confirm, setConfirm, line, KIND }) {
-  const live = devices.filter(d => !d.revokedAt)
+// The owner's incoming music requests, folded across every library they own. A row may cover
+// several libraries (the same ask fanned out), so it names them when there is more than one to
+// tell apart - and resolving hands the whole row back so the fan-out can be undone everywhere.
+function ManageRequests ({ requests, onResolve, line, KIND, multi }) {
   const pending = (requests || []).filter(r => r.status === 'pending')
+  if (!pending.length) return null
+  return (
+    <>
+      <div className='mgh'>Requests <span className='cnt'>{pending.length}</span></div>
+      <ul className='ownerdevs'>
+        {pending.map(r => (
+          <li key={r.id}>
+            <div className='who'>
+              <div className='name'>{line(r)} <span className='badge'>{KIND[r.kind] || r.kind}</span>{r.count > 1 && <span className='badge'>×{r.count}</span>}</div>
+              <div className='sub muted sm'>
+                {r.requesterName} asked{multi && r.libraries?.length ? ` · ${r.libraries.join(', ')}` : ''}
+              </div>
+            </div>
+            <button className='reqact added' aria-label='Mark added' onClick={() => onResolve(r, 'added')}>
+              <CheckCircle size={24} weight='fill' />
+            </button>
+            <button className='reqact declined' aria-label='Decline' onClick={() => onResolve(r, 'declined')}>
+              <XCircle size={24} weight='fill' />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
+
+// The body of Manage for ONE library: its devices + pairing. Split out so the library picker
+// above can stay put while the list below swaps to a skeleton on a library switch.
+function ManageBody ({ devices, libraryName, selfKey, onRevoke, onPair, confirm, setConfirm }) {
+  const live = devices.filter(d => !d.revokedAt)
   return (
     <>
       <button className='wide' style={{ marginBottom: '.7rem' }} onClick={onPair}>
         <QrCode size={17} weight='bold' /> Pair a device
       </button>
-
-      {/* Incoming music requests, so the owner can work the queue away from the dashboard. */}
-      {pending.length > 0 && (
-        <>
-          <div className='mgh'>Requests <span className='cnt'>{pending.length}</span></div>
-          <ul className='ownerdevs'>
-            {pending.map(r => (
-              <li key={r.id}>
-                <div className='who'>
-                  <div className='name'>{line(r)} <span className='badge'>{KIND[r.kind] || r.kind}</span>{r.count > 1 && <span className='badge'>×{r.count}</span>}</div>
-                  <div className='sub muted sm'>{r.requesterName} asked</div>
-                </div>
-                <button className='reqact added' aria-label='Mark added' onClick={() => onResolve(r.id, 'added')}>
-                  <CheckCircle size={24} weight='fill' />
-                </button>
-                <button className='reqact declined' aria-label='Decline' onClick={() => onResolve(r.id, 'declined')}>
-                  <XCircle size={24} weight='fill' />
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
 
       <div className='mgh'>Devices</div>
       <p className='muted sm' style={{ margin: '0 0 .4rem' }}>

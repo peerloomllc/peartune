@@ -731,6 +731,28 @@ async function ensureHost (host) {
 // The client for a SPECIFIC owned library - what lets Manage target any library you own, not
 // just the active one (Tim: owning several, Manage only showed the last). No libraryId (or the
 // active one) is the active client, exactly as before; another library rides its pool connection.
+// The libraries this device OWNS and can currently reach, each with a live client. Backs both the
+// Manage picker (ownedLibraries) and the aggregated owner request queue, so the two can never
+// disagree about which libraries are in play. A library you own but are offline to cannot be
+// managed, so it is omitted.
+async function ownedLibraryList () {
+  const out = []
+  for (const h of loadHostsFile().hosts) {
+    // The ACTIVE host rides the active client (poolClient only returns it while the `connected`
+    // flag is up, which it may not be the instant Manage opens - that was leaving ownedLibraries
+    // empty and manageLib null). Non-active hosts use their pool client if it is live.
+    let c = null
+    if (h.libraryId === activeLibraryId) { try { await ensureConnected(); c = client } catch {} }
+    else c = poolClient(h.libraryId)
+    if (!c) continue
+    try {
+      const id = await c.getIdentity()
+      if (id?.owner) out.push({ libraryId: h.libraryId, libraryName: id.libraryName || h.libraryName, active: h.libraryId === activeLibraryId, client: c })
+    } catch {}
+  }
+  return out
+}
+
 async function ownerClient (libraryId) {
   if (!libraryId || libraryId === activeLibraryId) { await ensureConnected(); return client }
   const host = loadHostsFile().hosts.find((h) => h.libraryId === libraryId)
@@ -2809,21 +2831,8 @@ const methods = {
   // identity on each connected client; a library you own but are offline to can't be managed, so
   // it is omitted. The active library is flagged so the picker can default to it.
   async ownedLibraries () {
-    const out = []
-    for (const h of loadHostsFile().hosts) {
-      // The ACTIVE host rides the active client (poolClient only returns it while the `connected`
-      // flag is up, which it may not be the instant Manage opens - that was leaving ownedLibraries
-      // empty and manageLib null). Non-active hosts use their pool client if it is live.
-      let c = null
-      if (h.libraryId === activeLibraryId) { try { await ensureConnected(); c = client } catch {} }
-      else c = poolClient(h.libraryId)
-      if (!c) continue
-      try {
-        const id = await c.getIdentity()
-        if (id?.owner) out.push({ libraryId: h.libraryId, libraryName: id.libraryName || h.libraryName, active: h.libraryId === activeLibraryId })
-      } catch {}
-    }
-    return { libraries: out }
+    // Drop the live client - the list crosses the IPC boundary as JSON.
+    return { libraries: (await ownedLibraryList()).map(({ client: _c, ...l }) => l) }
   },
 
   // Every owner.* below takes an optional libraryId so Manage can act on a chosen owned library;
@@ -2862,15 +2871,56 @@ const methods = {
     try { return await (await ownerClient(libraryId)).ownerPairState() } catch { return { pairing: false } }
   },
 
-  // The full request queue on a host + resolve, for the owner to work from the app.
+  // The full request queue for the owner to work from the app - AGGREGATED across every library
+  // this device owns and can reach, not just the one Manage's picker has selected (Tim,
+  // 2026-07-25). A request from a blended library is filed with EVERY connected host, so a
+  // per-library queue showed the same ask once per library and, worse, the You-tab badge (which
+  // asks with no libraryId) only ever counted the ACTIVE library - pending work on a second owned
+  // library was silent. Mirrors the requester side exactly: union, tag with the library, fold
+  // identical asks to one row. `pendingWins` because this view is a to-do list - see merge.js.
+  //
+  // `libraryId` narrows it back to one library (kept for a caller that wants a single host's
+  // queue); omitted = the aggregate, which is what Manage and the badge use.
   async ownerRequests ({ libraryId } = {}) {
-    try { return { requests: (await (await ownerClient(libraryId)).ownerRequests()).requests || [], supported: true } } catch (e) {
-      if (e?.code === 'ENOMETHOD') return { requests: [], supported: false }
-      return { requests: [], offline: true }
+    if (libraryId) {
+      try { return { requests: (await (await ownerClient(libraryId)).ownerRequests()).requests || [], supported: true } } catch (e) {
+        if (e?.code === 'ENOMETHOD') return { requests: [], supported: false }
+        return { requests: [], offline: true }
+      }
     }
+    const libs = await ownedLibraryList()
+    if (!libs.length) return { requests: [], offline: true }
+    const settled = await Promise.allSettled(libs.map((l) => l.client.ownerRequests().then((v) => ({ l, requests: v.requests || [] }))))
+    const tagged = []
+    let anySupported = false
+    for (const r of settled) {
+      if (r.status !== 'fulfilled') continue
+      anySupported = true
+      for (const req of r.value.requests) tagged.push({ ...req, libraryId: r.value.l.libraryId, libraryName: r.value.l.libraryName })
+    }
+    if (!anySupported) return { requests: [], supported: false }
+    return { requests: merge.collapseRequests(tagged, { pendingWins: true }), supported: true, libraries: libs.length }
   },
-  async ownerResolveRequest ({ libraryId, id, status }) {
-    try { return { ...(await (await ownerClient(libraryId)).ownerResolveRequest({ id, status })) } } catch (e) { return { ok: false, error: e?.message || 'could not resolve' } }
+
+  // Resolve an ask. `refs` is every per-host (libraryId, id, status) the collapsed row covers, so
+  // one tap clears the ask on ALL the owner's libraries rather than leaving copies pending on the
+  // others. Only the PENDING copies are touched: an "added" fan-out must never rewrite a row some
+  // other owner already declined, and re-resolving a settled row would move its resolvedAt for no
+  // reason. Best-effort - a library that is offline or fails keeps its copy pending, which is
+  // exactly what the next queue read shows (the row stays up carrying only what is left).
+  async ownerResolveRequest ({ libraryId, id, status, refs }) {
+    const list = merge.resolveTargets({ refs, id, libraryId }, activeLibraryId)
+    if (!list.length) return { ok: false, error: 'nothing to resolve' }
+    const settled = await Promise.allSettled(list.map((ref) => (async () => {
+      const c = await ownerClient(ref.libraryId)
+      return await c.ownerResolveRequest({ id: ref.id, status })
+    })()))
+    const done = settled.filter((r) => r.status === 'fulfilled' && r.value?.ok !== false).length
+    if (!done) {
+      const err = settled.find((r) => r.status === 'rejected')?.reason
+      return { ok: false, error: err?.message || 'could not resolve' }
+    }
+    return { ok: true, resolved: done, total: list.length, partial: done < list.length }
   },
 
   // Remove the caller's OWN request. `refs` is every per-host (libraryId, id) the collapsed

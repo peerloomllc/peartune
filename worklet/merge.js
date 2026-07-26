@@ -255,26 +255,49 @@ function filterByLibrary (items, libraryId) {
 // different statuses. Collapse them to ONE row per ask, carrying the BEST status - if any
 // host added it, the music is coming, so that is what the requester should see - plus which
 // libraries it went to. `rows` are per-host requests tagged with { libraryId, libraryName }.
+//
+// The OWNER's queue (You > Manage) folds the same way but wants the opposite ranking, so it
+// passes `pendingWins`. That view is a to-do list, not a status report: an ask that is still
+// pending on ANY library you own is still work, so one library resolved must not hide the
+// copies that are not (Tim, 2026-07-25). See the `refs` note below - a partial fan-out (a
+// library offline at resolve time) leaves the row up carrying only what is left to do.
 const REQUEST_STATUS_RANK = { added: 3, pending: 2, declined: 1 }
-function collapseRequests (rows) {
+const REQUEST_STATUS_RANK_PENDING_FIRST = { pending: 3, added: 2, declined: 1 }
+function collapseRequests (rows, { pendingWins = false } = {}) {
+  const rank = pendingWins ? REQUEST_STATUS_RANK_PENDING_FIRST : REQUEST_STATUS_RANK
   const byKey = new Map()
   for (const r of rows || []) {
     if (!r) continue
     const key = `${r.kind}|${norm(r.name)}|${norm(r.artist)}`
     let g = byKey.get(key)
-    // `refs` carries every per-host (libraryId, id) this ask lives on, so REMOVE can delete
-    // it on all of them - a collapsed row hides the fact that it is N host rows.
+    // `refs` carries every per-host (libraryId, id, status) this ask lives on, so REMOVE can
+    // delete it on all of them and RESOLVE can fan out to just the ones still pending - a
+    // collapsed row hides the fact that it is N host rows.
     if (!g) { g = { ...r, libraries: [], refs: [], _rank: 0 }; byKey.set(key, g) }
-    const rank = REQUEST_STATUS_RANK[r.status] || 0
-    if (rank > g._rank) { g._rank = rank; g.status = r.status; g.resolvedAt = r.resolvedAt || null }
+    const n = rank[r.status] || 0
+    if (n > g._rank) { g._rank = n; g.status = r.status; g.resolvedAt = r.resolvedAt || null }
     if (r.libraryName && !g.libraries.includes(r.libraryName)) g.libraries.push(r.libraryName)
-    if (r.libraryId && r.id) g.refs.push({ libraryId: r.libraryId, id: r.id })
+    if (r.libraryId && r.id) g.refs.push({ libraryId: r.libraryId, id: r.id, status: r.status })
     g.createdAt = Math.max(g.createdAt || 0, r.createdAt || 0)
     g.count = Math.max(g.count || 1, r.count || 1)
   }
   return [...byKey.values()]
     .map(({ _rank, ...r }) => r)
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+}
+
+// The inverse of the collapse: which per-host copies a RESOLVE should be sent to. Only the ones
+// still pending - an "added" fan-out must never rewrite a copy another owner already declined,
+// and re-resolving a settled copy would move its resolvedAt for nothing. A row with no refs (an
+// old shape, or a single-host read) falls back to its own id on `fallbackLibraryId`.
+function resolveTargets ({ refs, id, libraryId } = {}, fallbackLibraryId = null) {
+  if (Array.isArray(refs) && refs.length) {
+    return refs
+      .filter((r) => r && r.libraryId && r.id && (!r.status || r.status === 'pending'))
+      .map((r) => ({ libraryId: r.libraryId, id: r.id }))
+  }
+  const lib = libraryId || fallbackLibraryId
+  return id && lib ? [{ libraryId: lib, id }] : []
 }
 
 // The best copy to STREAM: the primary if its host is connected, else the first connected
@@ -305,5 +328,6 @@ module.exports = {
   filterByLibrary,
   bestCopy,
   collapseRequests,
+  resolveTargets,
   DUR_BUCKET_MS
 }
