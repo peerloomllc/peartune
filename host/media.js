@@ -113,9 +113,12 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
   async function identityOf (row) {
     const person = row?.personId && grants ? await grants.getPerson(row.personId) : null
     const claim = row?.claimedUser || null
+    // Disambiguated where two people share a name, so "belongs to Sam" on the phone names the
+    // SAME Sam the dashboard's revoke button does (see grants.personLabels).
+    const labels = person && grants ? await grants.personLabels() : null
     return {
       deviceName: row?.label || null,
-      belongsTo: person ? person.name : null,
+      belongsTo: person ? (labels?.get(person.id) || person.name) : null,
       // The library's CURRENT name (a getter, read now), so a dashboard rename reflects on the
       // phone on its next connect - the app updates its stored host record + UI from this.
       libraryName: libraryName ? libraryName() : null,
@@ -384,8 +387,13 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         // derived host-side from the caller's own grant, the same way the dashboard names it.
         if (presence && grants) {
           let requesterName = 'Someone'
-          if (grant.personId) requesterName = (await grants.getPerson(grant.personId).catch(() => null))?.name || 'Someone'
-          else requesterName = grant.label || 'A device'
+          if (grant.personId) {
+            // Suffixed where two people share a name - "Sam asked" must not be a coin flip on
+            // the banner that an owner acts on.
+            const labels = await grants.personLabels().catch(() => null)
+            requesterName = labels?.get(grant.personId) ||
+              (await grants.getPerson(grant.personId).catch(() => null))?.name || 'Someone'
+          } else requesterName = grant.label || 'A device'
           const payload = { id: row.id, kind: row.kind, name: row.name, artist: row.artist, requesterName, count: row.count }
           for (const g of await grants.list().catch(() => [])) {
             if (g.scope === SCOPE.OWNER && !g.revokedAt) presence.notify(g.deviceKey, 'request:new', payload)

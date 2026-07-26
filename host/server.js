@@ -584,9 +584,9 @@ class PearTuneHost {
   // dashboard shows. Names are resolved from persons/devices so the owner sees a person,
   // not an opaque ownerId. Text is length-capped at the host writer + escaped by the app.
   async ownerRequestList () {
-    const [persons, devices] = await Promise.all([this.grants.listPersons(), this.listDevices()])
+    const [personLabel, devices] = await Promise.all([this.grants.personLabels(), this.listDevices()])
     const reqName = (ownerId) => {
-      if (ownerId?.startsWith('p:')) return persons.find(p => p.id === ownerId.slice(2))?.name || 'Someone'
+      if (ownerId?.startsWith('p:')) return personLabel.get(ownerId.slice(2)) || 'Someone'
       if (ownerId?.startsWith('d:')) return devices.find(d => d.deviceKey === ownerId.slice(2))?.label || 'A device'
       return 'Someone'
     }
@@ -710,6 +710,10 @@ class PearTuneHost {
     // the right trade against announcing a track from three days ago as "now playing".
     const fresh = (s) => Date.now() - (s.updatedAt || 0) < SESSION_STALE_MS
     const rows = await this.grants.list()
+    // Who each device BELONGS TO, disambiguated where two people share a name (grants
+    // personLabels). Carried on the row so the owner phone's device list names the same Sam the
+    // dashboard's revoke button does - claimedUser is only what the device SAID, and stays raw.
+    const personLabel = await this.grants.personLabels()
     // The play session is per OWNER (a person, or an unclaimed device is its own
     // owner) and names ONE activeDeviceKey - only that device is playing. Load each
     // owner's session once, then attach now-playing to the device that holds it; every
@@ -749,7 +753,14 @@ class PearTuneHost {
           }
         }
       }
-      return { ...r, online, nowPlaying, hasAvatar: this.avatars.has(r.deviceKey), avatarAt: this.avatars.at(r.deviceKey) }
+      return {
+        ...r,
+        online,
+        nowPlaying,
+        belongsTo: r.personId ? (personLabel.get(r.personId) || null) : null,
+        hasAvatar: this.avatars.has(r.deviceKey),
+        avatarAt: this.avatars.at(r.deviceKey)
+      }
     }))
   }
 

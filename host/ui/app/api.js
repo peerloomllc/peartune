@@ -67,6 +67,16 @@ export function platformLabel (p) {
   return p ? p[0].toUpperCase() + p.slice(1) : null
 }
 
+// A device's public key, abbreviated for display. The key is the device's REAL identity - the
+// one thing it cannot lie about, since Noise proves it on every connection - while labels and
+// claimed names are only what the device said. So when two rows look alike, this is what tells
+// them apart for certain. Shown short because 52 z32 characters would swamp a row; the full key
+// stays in the title attribute and on the copy button (Tim, 2026-07-26).
+export function shortKey (k) {
+  const s = String(k || '')
+  return s.length > 14 ? s.slice(0, 6) + '…' + s.slice(-4) : s
+}
+
 // A guest-pass DURATION in ms as coarse words, for the pairing modal.
 export function fmtDur (ms) {
   const d = Math.round(ms / 86400000)

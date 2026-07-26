@@ -4917,7 +4917,10 @@ function ManageBody ({ devices, libraryName, selfKey, onRevoke, onPair, confirm,
                   {isOwner && <span className='badge'>owner</span>}
                   {isSelf && <span className='badge'>this phone</span>}
                 </div>
-                <div className='sub muted sm'>{d.online ? 'Connected' : 'Offline'}{d.claimedUser ? ` · ${d.claimedUser}` : ''}</div>
+                {/* Prefer the host's disambiguated person label (suffixed only when two people
+                    share a name) over the raw claimedUser, which is merely what the device said
+                    and would print two identical "Sam"s. */}
+                <div className='sub muted sm'>{d.online ? 'Connected' : 'Offline'}{(d.belongsTo || d.claimedUser) ? ` · ${d.belongsTo || d.claimedUser}` : ''}</div>
               </div>
               {/* No revoke on yourself (unpair is how you leave) or on another owner
                   (dashboard-only, and the host refuses it anyway). */}

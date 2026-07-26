@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   MusicNotes, Broadcast, Heart, Sun, Moon, GearSix, SignOut,
-  CaretRight, Plus, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
+  CaretRight, Copy, ArrowSquareOut, CurrencyBtc, CurrencyDollar,
   Lightning, CheckCircle, Wrench, Compass, Prohibit, Trash, Check, DeviceMobile
 } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
-import { api, copyText, ago, until, fmtDur, platformLabel, DONATE } from './api'
+import { api, copyText, ago, until, fmtDur, platformLabel, shortKey, DONATE } from './api'
 import { loadThemePref, applyThemePref, resolveTheme } from './theme'
 import { PEAR_MARK } from './icon'
 import { Collapse, ConfirmHost, Modal, askConfirm } from './ui'
@@ -238,7 +238,6 @@ function Avatar ({ keyId, hasAvatar, avatarAt, name, online }) {
 function AccessPanel ({ state, refresh, toast, online }) {
   const [open, setOpen] = useState({})
   const [showRevoked, setShowRevoked] = useState(false)
-  const [pname, setPname] = useState('')
   const [renaming, setRenaming] = useState(null) // { id, draft } while editing a person's name
 
   const devices = state.devices || []
@@ -272,6 +271,19 @@ function AccessPanel ({ state, refresh, toast, online }) {
     return !holder || holder.name.toLowerCase() !== d.claimedUser.toLowerCase()
   }
   const pending = devices.filter(claimMismatch)
+  // The LIVE people already holding a claimed name. 0 = confirming just mints, 1 = the operator
+  // chooses join-or-new, 2+ = they must also say WHICH one (personByName would otherwise join a
+  // coin flip). Drives PendingCard's actions.
+  const holdersOf = name => !name
+    ? []
+    : persons.filter(p => p.name.toLowerCase() === String(name).toLowerCase())
+      .map(p => {
+        // Name the devices they already hold. Two rows reading "Sam #4f2a" and "Sam #9c11" are
+        // unambiguous but meaningless; "Sam - TCL, iPad" is how the operator actually knows which
+        // Sam they mean.
+        const held = byPerson(p.id).filter(d => !d.revokedAt).map(d => d.label)
+        return { ...p, hint: held.length ? held.join(', ') : 'no devices yet' }
+      })
   const unassigned = devices.filter(d => !d.personId && !d.revokedAt && !claimMismatch(d))
   const revokedLoose = devices.filter(d => !d.personId && d.revokedAt)
   const revokedCount = devices.filter(d => d.revokedAt).length
@@ -281,12 +293,6 @@ function AccessPanel ({ state, refresh, toast, online }) {
     if (r.error) return toast('Failed: ' + r.error, true)
     if (ok) toast(ok(r))
     refresh()
-  }
-  const addPerson = () => {
-    const name = pname.trim()
-    if (!name) return
-    setPname('')
-    mutate('/api/person', { name }, () => `Added ${name}.`)
   }
   const revokePerson = async p => {
     if (!await askConfirm({ title: `Revoke all of ${p.name}'s devices?`, message: 'They lose access immediately, even mid-song. Nobody else is affected. Their play counts stay in your history.', confirmLabel: 'Revoke all', danger: true })) return
@@ -344,7 +350,12 @@ function AccessPanel ({ state, refresh, toast, online }) {
   }
   // Confirm is direct: the Needs-confirmation card already shows the claim in full,
   // so a second dialog would be redundant. (Revoke still double-checks - it's destructive.)
-  const confirmClaim = d => mutate('/api/person/confirm', { deviceKey: d.deviceKey }, r => `${d.label} now belongs to ${r.person.name}.`)
+  //
+  // `opts` carries the operator's answer when the claimed name is not unambiguous: {asNew} for a
+  // genuinely different person of the same name, {personId} to say WHICH same-named person to
+  // join. Plain confirm (no opts) keeps the old behaviour - join the one holder, or mint.
+  const confirmClaim = (d, opts = {}) =>
+    mutate('/api/person/confirm', { deviceKey: d.deviceKey, ...opts }, r => `${d.label} now belongs to ${r.person.label}.`)
   const assign = (d, personId) => mutate('/api/assign', { deviceKey: d.deviceKey, personId: personId || null })
   // Edit a guest's expiry: a duration re-limits (from now), 'permanent' clears it. This is
   // how you promote a guest to permanent, or extend a pass without making them re-scan.
@@ -367,7 +378,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
               {pending.length > 0 &&
                 <>
                   <div className='pend-hdr'>⚑ Needs confirmation</div>
-                  {pending.map(d => <PendingCard key={d.deviceKey} d={d} onConfirm={confirmClaim} onRevoke={revoke} />)}
+                  {pending.map(d => <PendingCard key={d.deviceKey} d={d} holders={holdersOf(d.claimedUser)} onConfirm={confirmClaim} onRevoke={revoke} />)}
                 </>}
               {persons.map(p => {
                 const live = byPerson(p.id).filter(d => !d.revokedAt && !claimMismatch(d))
@@ -406,7 +417,10 @@ function AccessPanel ({ state, refresh, toast, online }) {
                           </>
                         : <>
                             <div className='who'>
-                              <div className='name'>{p.name}</div>
+                              {/* The disambiguated label (name + #suffix only when a name is
+                                  shared) - the operator must know WHOSE access this revoke
+                                  button cuts. Rename still edits the plain name. */}
+                              <div className='name'>{p.label || p.name}</div>
                               {/* One <span>, never a bare text node: `.sub > span` is what
                                   ellipsizes, and loose text overflows the row instead
                                   (it used to wrap under the buttons on a phone). */}
@@ -425,11 +439,11 @@ function AccessPanel ({ state, refresh, toast, online }) {
                           </>}
                     </div>
                     <div className={'devices-sub' + (isOpen ? ' open' : '')}>
-                      {live.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} onExpiry={changeExpiry} />)}
+                      {live.map(d => <DeviceRow key={d.deviceKey} d={d} onCopied={() => toast("Device key copied")} onRevoke={revoke} onDelete={deleteDevice} onExpiry={changeExpiry} />)}
                       {revoked.length > 0 &&
                         <Collapse open={showRevoked}>
                           <div className='revoked-stack'>
-                            {revoked.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} />)}
+                            {revoked.map(d => <DeviceRow key={d.deviceKey} d={d} onCopied={() => toast("Device key copied")} onRevoke={revoke} onDelete={deleteDevice} />)}
                           </div>
                         </Collapse>}
                     </div>
@@ -444,21 +458,17 @@ function AccessPanel ({ state, refresh, toast, online }) {
               {(unassigned.length || revokedLoose.length) ?
                 <>
                   <div className='group-h'>Unassigned</div>
-                  {unassigned.map(d => <DeviceRow key={d.deviceKey} d={d} persons={persons} onAssign={assign} onRevoke={revoke} onDelete={deleteDevice} onExpiry={changeExpiry} loose />)}
+                  {unassigned.map(d => <DeviceRow key={d.deviceKey} d={d} onCopied={() => toast("Device key copied")} persons={persons} onAssign={assign} onRevoke={revoke} onDelete={deleteDevice} onExpiry={changeExpiry} loose />)}
                   {revokedLoose.length > 0 &&
                     <Collapse open={showRevoked}>
                       <div className='revoked-stack'>
-                        {revokedLoose.map(d => <DeviceRow key={d.deviceKey} d={d} onRevoke={revoke} onDelete={deleteDevice} loose />)}
+                        {revokedLoose.map(d => <DeviceRow key={d.deviceKey} d={d} onCopied={() => toast("Device key copied")} onRevoke={revoke} onDelete={deleteDevice} loose />)}
                       </div>
                     </Collapse>}
                 </> : null}
             </>}
       </div>
       <div style={{ padding: '0 16px 14px' }}>
-        <div className='addrow'>
-          <input value={pname} placeholder='Name (e.g. Ben)' onChange={e => setPname(e.target.value)} onKeyDown={e => e.key === 'Enter' && addPerson()} />
-          <button className='ghost' onClick={addPerson}><Plus size={15} weight='bold' /> Add</button>
-        </div>
         {revokedCount ?
           <div className='footer-toggle'>{revokedCount} revoked · <button className='link' onClick={() => setShowRevoked(v => !v)}>{showRevoked ? 'hide' : 'show'}</button></div>
           : null}
@@ -559,7 +569,7 @@ function NowPlaying ({ np }) {
   )
 }
 
-function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, loose }) {
+function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, onCopied, loose }) {
   const guest = !!d.expiresAt && !d.revokedAt
   const expired = guest && Date.now() > d.expiresAt
   return (
@@ -578,12 +588,22 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, loose 
             {!d.revokedAt && d.grantedAt && <span>{`· paired ${ago(d.grantedAt)}`}</span>}
             {guest && <span>{expired ? ' · pass expired' : ` · expires in ${until(d.expiresAt)}`}</span>}
           </div>
+          {/* The device's public key: its one unforgeable identity (Noise proves it on every
+              connection), where the label and the claimed name are only what the device SAID.
+              So this is what settles it when two rows look alike. Click to copy the full key -
+              the phone shows the same value under Settings > Device key, so an operator and
+              whoever holds the phone can check they mean the same device. */}
+          <button
+            className='devkey'
+            title={d.deviceKey}
+            onClick={() => { copyText(d.deviceKey); onCopied && onCopied() }}
+          >{shortKey(d.deviceKey)}<Copy size={11} weight='bold' /></button>
           <NowPlaying np={d.nowPlaying} />
         </div>
         {onAssign && !d.revokedAt &&
           <select className='assign' value={d.personId || ''} onChange={e => onAssign(d, e.target.value)}>
             <option value=''>— Unassigned —</option>
-            {(persons || []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {(persons || []).map(p => <option key={p.id} value={p.id}>{p.label || p.name}</option>)}
           </select>}
         {/* Guest-pass controls: re-limit (from now) or promote to permanent. A permanent
             device shows nothing here - limit new guests via the guest pairing window. */}
@@ -605,7 +625,20 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, loose 
 
 // A device claiming an identity, given room to be read and acted on. Confirm and
 // Revoke are equal-width; Confirm is direct, Revoke double-checks.
-function PendingCard ({ d, onConfirm, onRevoke }) {
+// A device claiming an identity, awaiting the operator's word. The actions depend on whether
+// anyone already holds the claimed name, because confirming means different things:
+//
+//   nobody holds it  -> "Confirm" mints that person. Unambiguous, one button, as it always was.
+//   one holder       -> "Join <name>" or "New person". This is the case that used to silently
+//                       join, which is wrong for two real Sams (Tim, 2026-07-26).
+//   several holders  -> pick WHICH one to join, or New person. Without this the host would join
+//                       whichever the keyspace yields first.
+//
+// Only the operator is ever offered these. A device saying "I'm Sam" must never be able to seat
+// itself beside the real Sam - that is the rule the whole confirmation step exists to enforce.
+function PendingCard ({ d, holders = [], onConfirm, onRevoke }) {
+  const [pick, setPick] = useState('')
+  const many = holders.length > 1
   return (
     <div className='pending'>
       <div className='pend-top'>
@@ -613,8 +646,27 @@ function PendingCard ({ d, onConfirm, onRevoke }) {
         <span className='pend-st'><span className={'live' + (d.online ? '' : ' off')} aria-hidden='true' />{d.online ? 'Connected' : 'Last seen ' + ago(d.lastSeenAt)}</span>
       </div>
       <div className='pend-claim'>Claims to be <b>{d.claimedUser}</b></div>
+      <div className='pend-key' title={d.deviceKey}>{shortKey(d.deviceKey)}</div>
+      {holders.length > 0 && (
+        <div className='pend-note'>
+          {many
+            ? `${holders.length} people are called ${d.claimedUser}. Pick who this device belongs to, or add another.`
+            : `${d.claimedUser} is already here. Is this their device, or a different ${d.claimedUser}?`}
+        </div>
+      )}
+      {many && (
+        <select className='assign pend-pick' value={pick} onChange={e => setPick(e.target.value)}>
+          <option value=''>Choose {d.claimedUser}…</option>
+          {holders.map(p => <option key={p.id} value={p.id}>{p.label || p.name} · {p.hint}</option>)}
+        </select>
+      )}
       <div className='pend-acts'>
-        <button onClick={() => onConfirm(d)}>Confirm</button>
+        {holders.length === 0
+          ? <button onClick={() => onConfirm(d)}>Confirm</button>
+          : many
+            ? <button disabled={!pick} onClick={() => onConfirm(d, { personId: pick })}>Join</button>
+            : <button onClick={() => onConfirm(d, { personId: holders[0].id })}>Join {holders[0].label || holders[0].name}</button>}
+        {holders.length > 0 && <button className='ghost' onClick={() => onConfirm(d, { asNew: true })}>New person</button>}
         <button className='ghost danger' onClick={() => onRevoke(d)}>Revoke</button>
       </div>
     </div>
