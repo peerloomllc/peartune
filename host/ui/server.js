@@ -117,14 +117,20 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
           source: host.adapter.kind, tracks: 0, albums: 0, artists: 0, scannedAt: null
         }))
         const devices = await host.listDevices()
-        const persons = await host.grants.listPersons()
+        // `label` is the name to SHOW: the plain name, or name + #suffix where two people share
+        // one. Computed at the authority so the dashboard, the phone's "asked" lines and the
+        // owner device list can never disagree about who is who. `name` stays the raw name -
+        // it is the join key confirmClaim matches on, so it must not grow a suffix.
+        const personLabel = await host.grants.personLabels()
+        const persons = (await host.grants.listPersons())
+          .map(p => ({ ...p, label: personLabel.get(p.id) || p.name }))
         // Music requests (proposal 2026-07-24, P1), enriched with WHO asked so the
         // operator sees a name, not an opaque ownerId. Riding /api/state keeps the
         // Requests panel + its badge on the existing 3s poll - personal scale, so the
         // whole (usually short) list is cheap to carry. Requester text is escaped by
         // React on render (the dashboard is JSX), and length-capped at the host writer.
         const reqName = (ownerId) => {
-          if (ownerId?.startsWith('p:')) return persons.find(p => p.id === ownerId.slice(2))?.name || 'Someone'
+          if (ownerId?.startsWith('p:')) return persons.find(p => p.id === ownerId.slice(2))?.label || 'Someone'
           if (ownerId?.startsWith('d:')) return devices.find(d => d.deviceKey === ownerId.slice(2))?.label || 'A device'
           return 'Someone'
         }
@@ -154,6 +160,9 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
             // (proposal 2026-07-14) - the dashboard shows it with a Confirm button.
             claimedUser: d.claimedUser || null,
             claimedAt: d.claimedAt || null,
+            // Who the device actually belongs to, disambiguated where two people share a name
+            // (grants.personLabels). claimedUser above is only what the device SAID.
+            belongsTo: d.belongsTo || null,
             platform: d.platform,
             scope: d.scope,
             grantedAt: d.grantedAt,
@@ -329,23 +338,35 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
       }
 
       // --- people ---
-      if (req.method === 'POST' && url.pathname === '/api/person') {
-        const { name } = await readBody(req)
-        if (!name || !String(name).trim()) return json(res, 400, { error: 'name required' })
-        return json(res, 200, await host.grants.addPerson(String(name).trim()))
-      }
+      //
+      // There is deliberately NO "create a person" route. Every person is born from a device
+      // claiming a name: pairing REQUIRES a user name (the app gates Continue on it), and
+      // setIdentity mints the person outright when the name is free. A free-text Add box on the
+      // dashboard added nothing to that flow and was the one path that could mint two live
+      // people of the same name by accident - every other path refuses (renamePerson) or joins
+      // (confirmClaim). Removed 2026-07-26 (Tim); duplicates now exist only when the operator
+      // asks for one below, which is what makes the #suffix mean something.
 
       // Attach a device to a person, so revocation has a subject a human
       // recognises instead of a 52-character key.
       // The operator confirming a device's self-declared user. The ONLY path from
       // "claims to be Tim" to "is Tim" - see proposal 2026-07-14.
+      // `asNew` mints a distinct person of the same name (two real Sams); `personId` picks WHICH
+      // same-named person to join when more than one holds the name. Both operator-only - the
+      // device does not get a say in which identity it lands on.
       if (req.method === 'POST' && url.pathname === '/api/person/confirm') {
-        const { deviceKey } = await readBody(req)
+        const { deviceKey, asNew, personId } = await readBody(req)
         if (!deviceKey) return json(res, 400, { error: 'deviceKey required' })
-        const row = await host.grants.confirmClaim(deviceKey)
+        let row
+        try {
+          row = await host.grants.confirmClaim(deviceKey, { asNew: !!asNew, personId: personId || null })
+        } catch (e) {
+          return json(res, 400, { error: e.message || 'could not confirm' })
+        }
         if (!row) return json(res, 400, { error: 'no claim to confirm' })
         const person = await host.grants.getPerson(row.personId)
-        return json(res, 200, { ok: true, person })
+        const labels = await host.grants.personLabels()
+        return json(res, 200, { ok: true, person: { ...person, label: labels.get(person.id) || person.name } })
       }
 
       if (req.method === 'POST' && url.pathname === '/api/assign') {

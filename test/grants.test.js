@@ -338,3 +338,113 @@ test('setScope refuses a revoked or unknown device', async (t) => {
   await g.revoke(dev.deviceKey, { by: 'operator' })
   assert.equal(await g.setScope(dev.deviceKey, 'owner'), null) // revoked
 })
+
+// --- two people with the same name (2026-07-26) -----------------------------
+//
+// Duplicates used to be impossible by accident and impossible on purpose: renamePerson refuses
+// a taken name and confirmClaim joins rather than mints, while the dashboard's free-text "Add
+// person" box could mint one by accident (removed). Now a duplicate exists ONLY when the
+// operator asks for one, and personLabels suffixes them so a revoke button names someone
+// specific.
+
+const { personLabels } = require('../host/grants')
+
+test('personLabels suffixes ONLY the names that clash', () => {
+  const labels = personLabels([
+    { id: 'aaaa1111', name: 'Sam' },
+    { id: 'bbbb2222', name: 'Sam' },
+    { id: 'cccc3333', name: 'Asa' }
+  ])
+  // A lone name stays plain - the suffix is a technical token, so it shows only where it means
+  // something (Tim, 2026-07-26).
+  assert.equal(labels.get('cccc3333'), 'Asa')
+  assert.equal(labels.get('aaaa1111'), 'Sam #aaaa')
+  assert.equal(labels.get('bbbb2222'), 'Sam #bbbb')
+})
+
+test('personLabels treats a clash case-insensitively, and counts revoked people', () => {
+  const labels = personLabels([
+    { id: 'aaaa1111', name: 'Sam' },
+    { id: 'bbbb2222', name: 'sam', revokedAt: 123 }
+  ])
+  // The revoked one still renders behind "show revoked", so two Sams there are just as
+  // ambiguous as two live ones.
+  assert.equal(labels.get('aaaa1111'), 'Sam #aaaa')
+  assert.equal(labels.get('bbbb2222'), 'sam #bbbb')
+})
+
+test('confirmClaim JOINS an existing person of that name by default (the "one Tim" rule)', async (t) => {
+  const g = await store(t)
+  const a = await g.grant({ deviceKey: key(), label: 'phone A' })
+  await g.setIdentity(a.deviceKey, { userName: 'Sam' })
+  const first = await g.confirmClaim(a.deviceKey)
+
+  const b = await g.grant({ deviceKey: key(), label: 'phone B' })
+  await g.setIdentity(b.deviceKey, { userName: 'Sam' })
+  const second = await g.confirmClaim(b.deviceKey)
+
+  assert.equal(second.personId, first.personId, 'both phones land on ONE Sam')
+  assert.equal((await g.listPersons()).length, 1)
+})
+
+test('confirmClaim asNew mints a DISTINCT person of the same name (two real Sams)', async (t) => {
+  const g = await store(t)
+  const a = await g.grant({ deviceKey: key(), label: 'phone A' })
+  await g.setIdentity(a.deviceKey, { userName: 'Sam' })
+  const first = await g.confirmClaim(a.deviceKey)
+
+  const b = await g.grant({ deviceKey: key(), label: 'phone B' })
+  await g.setIdentity(b.deviceKey, { userName: 'Sam' })
+  const second = await g.confirmClaim(b.deviceKey, { asNew: true })
+
+  assert.notEqual(second.personId, first.personId, 'a deliberate second Sam')
+  const persons = await g.listPersons()
+  assert.equal(persons.length, 2)
+  // ...and from here on the operator can tell them apart.
+  const labels = personLabels(persons)
+  assert.notEqual(labels.get(first.personId), labels.get(second.personId))
+  for (const id of [first.personId, second.personId]) assert.match(labels.get(id), /^Sam #/)
+})
+
+test('confirmClaim personId picks WHICH same-named person to join, and refuses a mismatch', async (t) => {
+  const g = await store(t)
+  const a = await g.grant({ deviceKey: key(), label: 'phone A' })
+  await g.setIdentity(a.deviceKey, { userName: 'Sam' })
+  const samA = (await g.confirmClaim(a.deviceKey)).personId
+  const b = await g.grant({ deviceKey: key(), label: 'phone B' })
+  await g.setIdentity(b.deviceKey, { userName: 'Sam' })
+  const samB = (await g.confirmClaim(b.deviceKey, { asNew: true })).personId
+
+  // A third Sam device: without an explicit pick the host would join whichever the keyspace
+  // yields first, so the operator names one.
+  const c = await g.grant({ deviceKey: key(), label: 'phone C' })
+  await g.setIdentity(c.deviceKey, { userName: 'Sam' })
+  const joined = await g.confirmClaim(c.deviceKey, { personId: samB })
+  assert.equal(joined.personId, samB)
+  assert.notEqual(joined.personId, samA)
+
+  // Confirm stays "confirm this claim" - it cannot be used to assign to an unrelated person.
+  const other = await g.addPerson('Asa')
+  const d = await g.grant({ deviceKey: key(), label: 'phone D' })
+  await g.setIdentity(d.deviceKey, { userName: 'Sam' })
+  await assert.rejects(() => g.confirmClaim(d.deviceKey, { personId: other.id }), /does not hold the claimed name/)
+  assert.equal((await g.get(d.deviceKey)).personId, null, 'the refused confirm left it pending')
+})
+
+test('personsByName lists the live holders a pending claim must choose between', async (t) => {
+  const g = await store(t)
+  const a = await g.grant({ deviceKey: key(), label: 'A' })
+  await g.setIdentity(a.deviceKey, { userName: 'Sam' })
+  await g.confirmClaim(a.deviceKey)
+  const b = await g.grant({ deviceKey: key(), label: 'B' })
+  await g.setIdentity(b.deviceKey, { userName: 'Sam' })
+  const samB = (await g.confirmClaim(b.deviceKey, { asNew: true })).personId
+
+  assert.equal((await g.personsByName('sam')).length, 2, 'case-insensitive')
+  assert.equal((await g.personsByName('Asa')).length, 0)
+
+  // A revoked person is not a join target - they would be resurrected by the back door.
+  await g.revokePerson(samB)
+  assert.deepEqual((await g.personsByName('Sam')).map(p => p.id), [(await g.personsByName('Sam'))[0].id])
+  assert.equal((await g.personsByName('Sam')).length, 1)
+})

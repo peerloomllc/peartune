@@ -190,6 +190,21 @@ a { color: var(--primary-strong); }
 .pend-claim b { color: var(--warn); font-weight: 700; }
 .pend-acts { display: flex; gap: 8px; margin-top: 11px; }
 .pend-acts button { flex: 1 1 0; }
+/* Why this claim needs an answer rather than a bare Confirm - the name is already taken. */
+.pend-note { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.35; }
+.pend-pick { width: 100%; margin-top: 8px; }
+/* The claiming device's own key, so an ambiguous claim can still be pinned to a device. */
+.pend-key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); opacity: .75; margin-top: 3px; }
+
+/* A device's public key on its row: quiet by default (it is reference data, not something you
+   read every time), legible and clickable when you go looking for it. */
+.devkey {
+  display: inline-flex; align-items: center; gap: 4px; margin-top: 2px;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  color: var(--muted); opacity: .6;
+}
+.devkey:hover { opacity: 1; color: var(--fg); }
 /* now-playing: a thumbnail + track under a device's status (or on a collapsed person
    row). Tinted primary while playing; the track ellipsises so a long title never
    reflows the row. */

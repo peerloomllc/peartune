@@ -1212,6 +1212,15 @@ button.shead .caret.open { transform: rotate(90deg); }
 .rqv-rm:active { color: var(--color-error); }
 .rqv-rm:disabled { opacity: .4; }
 
+/* A device's public key on its Manage row: quiet reference data, tap to copy. Mirrors the
+   dashboard's .devkey so the two surfaces print the same thing and can be compared. */
+.mgkey {
+  background: none; border: 0; padding: .1rem 0 0; margin: 0; cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .68rem;
+  color: var(--color-text-muted); opacity: .6; letter-spacing: .01em;
+}
+.mgkey:active { opacity: 1; color: var(--color-text); }
+
 /* Owner maintenance: the You > Manage view (P2). Section headings + the compact resolve
    buttons for the request queue. */
 /* Manage library picker: chips over the libraries you own, when you own more than one. */

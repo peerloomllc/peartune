@@ -44,6 +44,9 @@ const isIOS = () => typeof window !== 'undefined' && window.__pearPlatform === '
 
 const openUrl = (url) => { call('shell:openUrl', { url }).catch(() => {}) }
 const copyText = (text) => call('shell:clipboard', { text }).catch(() => {})
+// A device public key, abbreviated for a row. Same shape the dashboard uses, so the two surfaces
+// print the same thing and can be compared at a glance.
+const shortKey = (k) => { const s = String(k || ''); return s.length > 14 ? s.slice(0, 6) + '…' + s.slice(-4) : s }
 
 // Grid density. One control, not two: "grid or list" and "how many per row" are the
 // same axis, and splitting them would give four states to explain for one decision.
@@ -1786,7 +1789,7 @@ export default function App () {
         ownerLibraryName={ownedLibs.find(l => l.libraryId === manageLib)?.libraryName || ident?.libraryName || state.host?.libraryName}
         ownedLibs={ownedLibs} manageLib={manageLib} onSwitchManageLib={switchManageLib}
         ownerDevices={ownerDevices} selfKey={state.deviceKeyZ32} onRevokeDevice={revokeOwnerDevice}
-        ownerReqs={ownerReqs} onResolveRequest={resolveOwnerRequest} onOwnerPair={openOwnerPair}
+        ownerReqs={ownerReqs} onResolveRequest={resolveOwnerRequest} onOwnerPair={openOwnerPair} onToast={toast}
         onOpenPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name })}
         onOpenServerPlaylist={(pl) => push({ type: 'playlist', id: pl.id, name: pl.name, server: true })}
         onOpenDownload={(dl) => push({ type: 'download', id: dl.id, name: dl.name })}
@@ -2860,7 +2863,7 @@ function You ({
   playlists, plSupported, serverPls, sourceName, downloads,
   reqSupported, myRequests, onNewRequest, onRemoveRequest,
   isOwner, ownerLibraryName, ownedLibs, manageLib, onSwitchManageLib, ownerDevices, selfKey, onRevokeDevice,
-  ownerReqs, onResolveRequest, onOwnerPair,
+  ownerReqs, onResolveRequest, onOwnerPair, onToast,
   onOpenPlaylist, onOpenServerPlaylist, onOpenDownload, onNewPlaylist,
   onPlay, onLong, onOpenAlbum, onOpenArtist
 }) {
@@ -2946,7 +2949,7 @@ function You ({
           : view === 'manage'
             ? <ManageView devices={ownerDevices} libraryName={ownerLibraryName} selfKey={selfKey} onRevoke={onRevokeDevice}
                 ownedLibs={ownedLibs} manageLib={manageLib} onSwitchManageLib={onSwitchManageLib}
-                requests={ownerReqs} onResolve={onResolveRequest} onPair={onOwnerPair} />
+                requests={ownerReqs} onResolve={onResolveRequest} onPair={onOwnerPair} onToast={onToast} />
           : (mostPlayed
               ? (mostPlayed.items.length
                   ? (
@@ -4827,7 +4830,7 @@ const IDENT_POLL_MAX = 36 // 3 minutes of asking, then wait for the next time Se
 // the current library. Data is fetched by the parent (ownerDevices) and reloaded after a
 // revoke. A revoke cuts the device off within the second (the same teeth as the dashboard);
 // the host refuses revoking another OWNER, so that button is hidden here too.
-function ManageView ({ devices, libraryName, selfKey, onRevoke, ownedLibs = [], manageLib, onSwitchManageLib, requests, onResolve, onPair }) {
+function ManageView ({ devices, libraryName, selfKey, onRevoke, ownedLibs = [], manageLib, onSwitchManageLib, requests, onResolve, onPair, onToast }) {
   const [confirm, setConfirm] = useState(null) // { device } pending a revoke
   const multi = (ownedLibs || []).length > 1
   const line = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
@@ -4854,7 +4857,7 @@ function ManageView ({ devices, libraryName, selfKey, onRevoke, ownedLibs = [], 
 
       {!devices ? <SkeletonRows /> : <ManageBody
         devices={devices} libraryName={libraryName} selfKey={selfKey} onRevoke={onRevoke} onPair={onPair}
-        confirm={confirm} setConfirm={setConfirm} />}
+        confirm={confirm} setConfirm={setConfirm} onToast={onToast} />}
     </>
   )
 }
@@ -4892,7 +4895,8 @@ function ManageRequests ({ requests, onResolve, line, KIND, multi }) {
 
 // The body of Manage for ONE library: its devices + pairing. Split out so the library picker
 // above can stay put while the list below swaps to a skeleton on a library switch.
-function ManageBody ({ devices, libraryName, selfKey, onRevoke, onPair, confirm, setConfirm }) {
+function ManageBody ({ devices, libraryName, selfKey, onRevoke, onPair, confirm, setConfirm, onToast }) {
+  const onCopyKey = (d) => { copyText(d.deviceKey); haptic('success'); onToast && onToast('Device key copied') }
   const live = devices.filter(d => !d.revokedAt)
   return (
     <>
@@ -4917,7 +4921,18 @@ function ManageBody ({ devices, libraryName, selfKey, onRevoke, onPair, confirm,
                   {isOwner && <span className='badge'>owner</span>}
                   {isSelf && <span className='badge'>this phone</span>}
                 </div>
-                <div className='sub muted sm'>{d.online ? 'Connected' : 'Offline'}{d.claimedUser ? ` · ${d.claimedUser}` : ''}</div>
+                {/* Prefer the host's disambiguated person label (suffixed only when two people
+                    share a name) over the raw claimedUser, which is merely what the device said
+                    and would print two identical "Sam"s. */}
+                <div className='sub muted sm'>{d.online ? 'Connected' : 'Offline'}{(d.belongsTo || d.claimedUser) ? ` · ${d.belongsTo || d.claimedUser}` : ''}</div>
+                {/* The device's public key, tap to copy. The suffix says WHICH Sam; this says
+                    which DEVICE, and it is the one thing a device cannot misreport (Noise proves
+                    it per connection). Whoever holds that phone can read the same value back to
+                    you from Settings > Device key, so an owner working away from the dashboard
+                    can still confirm they are about to revoke the right one (Tim, 2026-07-26). */}
+                <button className='mgkey' aria-label={'Copy device key for ' + d.label} onClick={() => onCopyKey(d)}>
+                  {shortKey(d.deviceKey)}
+                </button>
               </div>
               {/* No revoke on yourself (unpair is how you leave) or on another owner
                   (dashboard-only, and the host refuses it anyway). */}
@@ -5109,7 +5124,11 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
       {ident?.userName && (
         <div className='profile-note desc'>
           {ident.confirmed
-            ? `The server has confirmed this device belongs to ${ident.userName}.`
+            // belongsTo, not userName: the CONFIRMED identity as the host labels it, suffixed
+            // where two people share a name. userName is only what this device typed, so it
+            // would read "Sam" while the operator's dashboard reads "Sam #4f2a" - and then the
+            // two of them cannot check they mean the same person (Tim, 2026-07-26).
+            ? `The server has confirmed this device belongs to ${ident.belongsTo || ident.userName}.`
             : ident.belongsTo
               ? `The server still has this device down as ${ident.belongsTo}. It is waiting to confirm you are ${ident.userName} — only the person running it can move a device to someone else.`
               : `Waiting for the server to confirm you are ${ident.userName}. Until then this is only a label.`}

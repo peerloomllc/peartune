@@ -37,9 +37,41 @@ function cleanName (s) {
   return s.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, NAME_MAX)
 }
 
+// Two people may legitimately share a name - a household with two Sams - and the operator
+// creates that case deliberately (confirmClaim's `asNew`), so it is never an accident. When
+// it happens, a bare "Sam" on a revoke button is a real hazard: the operator cannot tell whose
+// access they are about to cut. Suffix BOTH with a short slice of their (random z32) id.
+//
+// Only on a clash. A lone Sam stays "Sam" everywhere (Tim, 2026-07-26) - the suffix is a
+// technical token, so it should appear exactly when it is carrying meaning and never otherwise.
+// Revoked people count toward a clash: they still render in the People list behind "show
+// revoked", so two Sams there are just as ambiguous as two live ones.
+const SUFFIX_LEN = 4
+function personLabels (persons) {
+  const byName = new Map()
+  for (const p of persons || []) {
+    if (!p) continue
+    const k = String(p.name || '').toLowerCase()
+    byName.set(k, (byName.get(k) || 0) + 1)
+  }
+  const out = new Map()
+  for (const p of persons || []) {
+    if (!p) continue
+    const clashes = byName.get(String(p.name || '').toLowerCase()) > 1
+    out.set(p.id, clashes ? `${p.name} #${String(p.id).slice(0, SUFFIX_LEN)}` : p.name)
+  }
+  return out
+}
+
 class Grants {
   constructor (bee) {
     this.bee = bee
+  }
+
+  // Display names for every person, disambiguated only where a name is shared. One call so the
+  // dashboard and the phone never label the same person differently.
+  async personLabels () {
+    return personLabels(await this.listPersons())
   }
 
   static keyOf (deviceKey) {
@@ -316,18 +348,50 @@ class Grants {
     return row
   }
 
-  // The operator turning a device's CLAIM into a real assignment. Joins an existing
-  // person of that name rather than minting a second one, so two phones both
-  // claiming "Tim" end up under one Tim.
-  async confirmClaim (deviceKey) {
+  // The operator turning a device's CLAIM into a real assignment. Joins an existing person of
+  // that name rather than minting a second one, so two phones both claiming "Tim" end up under
+  // one Tim - that join is the whole reason confirmation is an operator decision, since it
+  // inherits another identity's shared state.
+  //
+  // `asNew` is the escape hatch for when the join would be WRONG: a genuinely different person
+  // who happens to share a name (two Sams in one house). It mints a distinct person, and
+  // personLabels then suffixes both so the operator can tell them apart from that point on.
+  //
+  // `personId` picks WHICH one to join, which is needed the moment two people share the claimed
+  // name - personByName would otherwise return whichever the keyspace happens to yield first and
+  // silently join a coin-flip. It is restricted to people actually holding the claimed name, so
+  // this stays "confirm this claim" and cannot become a back door to arbitrary assignment
+  // (assign() is that, and it is a separate deliberate operator action).
+  //
+  // Both are OPERATOR-only. A device may never pick which person it becomes, or "claims to be
+  // Sam" would be enough to sit down beside the real Sam. See proposal 2026-07-14.
+  async confirmClaim (deviceKey, { asNew = false, personId = null } = {}) {
     const key = Grants.keyOf(deviceKey)
     const row = await this.get(key)
     if (!row || !row.claimedUser) return null
 
-    const person = (await this.personByName(row.claimedUser)) ||
-      (await this.addPerson(row.claimedUser))
+    let person
+    if (asNew) {
+      person = await this.addPerson(row.claimedUser)
+    } else if (personId) {
+      person = await this.getPerson(personId)
+      const clean = cleanName(row.claimedUser).toLowerCase()
+      if (!person || person.revokedAt || person.name.toLowerCase() !== clean) {
+        throw new Error('that person does not hold the claimed name')
+      }
+    } else {
+      person = (await this.personByName(row.claimedUser)) || (await this.addPerson(row.claimedUser))
+    }
 
     return this.assign(key, person.id)
+  }
+
+  // Every LIVE person holding this name - what the dashboard needs to know whether confirming is
+  // unambiguous (0 or 1) or a choice (2+).
+  async personsByName (name) {
+    const clean = cleanName(name).toLowerCase()
+    if (!clean) return []
+    return (await this.listPersons()).filter(p => !p.revokedAt && p.name.toLowerCase() === clean)
   }
 
   async touch (deviceKey) {
@@ -348,4 +412,4 @@ class Grants {
   }
 }
 
-module.exports = { Grants, b4a }
+module.exports = { Grants, personLabels, b4a }
