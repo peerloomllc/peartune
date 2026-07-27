@@ -107,7 +107,7 @@ function parseRange (header, size) {
 // to transcode. The worklet owns the policy (a Settings choice, and later the network
 // type); the shim just asks it at the moment a track is requested, so a change takes
 // effect on the next track without rebuilding anything.
-function createAudioShim ({ log = () => {}, defaultClient = async () => null, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostClient = null, libForTrack = null, libForCover = null }) {
+function createAudioShim ({ log = () => {}, defaultClient = async () => null, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostClient = null, libForTrack = null, libForCover = null, altCopy = null, onRehost = null }) {
   if (!http) http = require('bare-http1') // on-device only; see the note at the top of this file
   const meta = new Map() // trackId -> { size, mime }
 
@@ -230,13 +230,56 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
 
       // streamTo, NOT stream: accumulate nothing. The player asked for a window
       // of audio, not the whole album in RAM.
+      let written = 0
       try {
         await conn.streamTo({ trackId, offset: start, length }, (chunk) => {
+          written += chunk.length
           res.write(chunk)
           if (sink) sink.write(chunk)
         })
       } catch (e) {
+        // MID-SONG FAILOVER (proposal 2026-07-27). The library we were streaming from just went
+        // away - a revoke, a reboot, a dropped link. If ANOTHER paired library holds the same
+        // track and is reachable, carry on from there rather than cutting the music: same HTTP
+        // response, same content-length, continuing at the byte we stopped on. The player never
+        // learns anything happened.
+        //
+        // Only when the copies are BYTE-IDENTICAL. The merge prefers a lossless primary, so
+        // FLAC-here / MP3-there is normal, and splicing those produces noise. Everything else
+        // falls through to onRehost + the hard teardown below, which is today's behaviour.
+        const lib = trackLib || (conn && conn.libraryId) || null
+        const alt = altCopy ? altCopy(trackId, lib) : null
+        // The cache entry can never be assembled from two sources: equal size is strong evidence,
+        // not proof, of equal bytes, and a corrupt "complete" download outlives the playback.
         if (sink) sink.abort()
+        if (alt && alt.identical && written < length && hostClient) {
+          const spliceAt = start + written // where the first host stopped; fixed before `written` grows again
+          try {
+            const conn2 = await hostClient(alt.libraryId)
+            if (!conn2) throw new Error('no client for the fallback library')
+            await conn2.streamTo({ trackId: alt.id, offset: spliceAt, length: length - written }, (chunk) => {
+              res.write(chunk)
+            })
+            res.end()
+            log('shim:failover', {
+              track: trackId.slice(0, 8),
+              from: String(lib || '').slice(0, 8),
+              to: alt.libraryId.slice(0, 8),
+              splicedAt: spliceAt,
+              of: m.size
+            })
+            return
+          } catch (e2) {
+            log('shim:failover-failed', { track: trackId.slice(0, 8), err: e2?.message })
+          }
+        }
+        // A copy exists but we cannot splice into it (different encode, a transcode with no
+        // stable offsets, or the splice itself failed). The shim cannot restart a player, so tell
+        // the worklet: the shell re-opens the track on the other library and seeks to the same
+        // TIMESTAMP - a gap, but the music continues.
+        if (alt && onRehost) {
+          try { onRehost({ trackId, from: lib, to: alt, bytesServed: start + written, size: m.size }) } catch {}
+        }
         throw e
       }
 

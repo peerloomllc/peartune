@@ -34,6 +34,7 @@ const { RELAY_PUBLIC_KEY, relayThroughFor } = require('../protocol/relay')
 const hostList = require('../worklet/hosts')
 const { linkActions, WATCHDOG_MS, PING_TIMEOUT_MS } = require('../worklet/link-health')
 const { createRebuildGate } = require('../worklet/rebuild-gate')
+const { pickAltCopy } = require('../worklet/failover')
 const merge = require('../worklet/merge')
 const catalog = require('../worklet/catalog')
 const { coalesce, clientCall } = require('../worklet/outbox')
@@ -1359,6 +1360,16 @@ function routeTrack ({ trackId, libraryId, copies }) {
   return null
 }
 
+// MID-SONG FAILOVER (proposal 2026-07-27). The copy to continue from when a stream dies mid-track:
+// another library that holds the same song and is reachable RIGHT NOW. `identical` says whether its
+// bytes line up, which is what lets the shim splice into the same HTTP response instead of stopping
+// the music. Null when nothing else has this track - then the old behaviour stands.
+function altCopyFor (trackId, failedLibraryId) {
+  const track = trackByAnyId.get(trackId)
+  if (!track) return null
+  return pickAltCopy({ track, failedLibraryId, connected: connectedLibs(), currentId: trackId })
+}
+
 // Attach a track's merged COPIES (every host that has it, primary first) by dedup-key lookup in the
 // index. A track fetched from one host only knows its own copy; the index knows the rest, which is
 // what lets streaming (slice 4) fail over to another host. Falls back to the track's own single copy
@@ -1402,7 +1413,23 @@ async function ensureShim () {
     // (no libraryId in the URL, resolvers return null), so that path is unchanged.
     hostClient: ensureHostById,
     libForTrack,
-    libForCover
+    libForCover,
+    // Mid-song failover: which copy to continue from, and - when the copies are not byte-identical
+    // and a splice is impossible - a nudge to the shell to re-open the track on the other library
+    // at the same TIMESTAMP. The shim cannot restart a player; only the shell can.
+    altCopy: altCopyFor,
+    onRehost: ({ trackId, from, to, bytesServed, size }) => {
+      log('play:rehost', { track: String(trackId).slice(0, 8), to: String(to.libraryId).slice(0, 8) })
+      emit('play:rehost', {
+        trackId,
+        fromLibraryId: from || null,
+        libraryId: to.libraryId,
+        id: to.id,
+        // How far the old copy had been served, so the shell can seek proportionally when the new
+        // copy is a different encode (different byte length, same music).
+        fraction: size ? Math.max(0, Math.min(1, bytesServed / size)) : null
+      })
+    }
   })
   shimPort = await shim.listen()
   return shimPort
