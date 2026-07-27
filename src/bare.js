@@ -32,6 +32,8 @@ const { isPairLink, parseLink } = require('../protocol/link')
 const { hostTopic, libraryId: deriveLibraryId } = require('../protocol/ids')
 const { RELAY_PUBLIC_KEY, relayThroughFor } = require('../protocol/relay')
 const hostList = require('../worklet/hosts')
+const { poolActions, POOL_WATCHDOG_MS, POOL_PING_TIMEOUT_MS } = require('../worklet/pool-health')
+const { createRebuildGate } = require('../worklet/rebuild-gate')
 const merge = require('../worklet/merge')
 const catalog = require('../worklet/catalog')
 const { coalesce, clientCall } = require('../worklet/outbox')
@@ -689,7 +691,13 @@ const pool = new Map()
 // route streaming (slice 4) to a copy that's actually reachable.
 let mergedIndex = null
 let mergedConnected = new Set()
-let rebuildingIndex = null // single-flight: a burst of browse calls entering merged mode shares ONE build
+// Which libraries contributed to the last LIVE build. Deliberately NOT the same thing as
+// `mergedConnected`, which loadCachedIndex seeds from the PREVIOUS RUN's cache so the blend can
+// render before anything connects. The attach handlers below need "did this host's catalog make
+// it into the index we are actually serving THIS run", and answering that with the cached set
+// said yes for a host that had not been reached yet - so the one rebuild that would have pulled
+// it in was never requested. Starts empty on every launch, by design.
+let mergedFresh = new Set()
 // Routing lookups derived from the index (step 2, slice 4): map a bare trackId/coverId back to its
 // owning host, so a play/art request in merged mode (whose URL may carry no libraryId, e.g. the UI's
 // own artBase covers) still reaches the right server. trackByAnyId keys EVERY copy's id to the
@@ -815,7 +823,7 @@ function attachPool (host, conn) {
   log('pool:connected', { library: libId.slice(0, 8) })
   if (mergedMode()) {
     emit('merged:updated', mergedStatusData())
-    if (!mergedConnected.has(libId)) rebuildIndex().catch(() => {})
+    if (!mergedFresh.has(libId)) rebuildIndex().catch(() => {})
   }
   resolvePoolWaiters(libId)
 }
@@ -849,7 +857,7 @@ function demoteActiveToPool (host, oldClient, oldConn, libId) {
   log('pool:adopted', { library: libId.slice(0, 8) })
   if (mergedMode()) {
     emit('merged:updated', mergedStatusData())
-    if (!mergedConnected.has(libId)) rebuildIndex().catch(() => {})
+    if (!mergedFresh.has(libId)) rebuildIndex().catch(() => {})
   }
   resolvePoolWaiters(libId)
 }
@@ -913,10 +921,33 @@ async function promotePoolToActive (host) {
   // libraries mergedMode() is already off here, so this is a no-op for the common case.)
   if (mergedMode()) {
     emit('merged:updated', mergedStatusData())
-    if (!mergedConnected.has(libId)) rebuildIndex().catch(() => {})
+    if (!mergedFresh.has(libId)) rebuildIndex().catch(() => {})
   }
   flushOutbox().catch(() => {}) // drain anything queued while this host was a background pool member
   return true
+}
+
+// What Hyperswarm actually believes about ONE host, for the logs. Reaching into swarm.peers and
+// swarm._allConnections is private API, hence the try/catch: a diagnostic must never be the thing
+// that breaks a connection. It answers the question the old logs could not - when a host is dark,
+// is nothing being ATTEMPTED (no peer record, or attempts capped), or is every attempt failing?
+// `conns` is the one that matters most: Hyperswarm dedups one connection per peer, so a stale
+// entry there means rediscovery is a no-op no matter how hard we nudge.
+function swarmDiag (hostKeyZ) {
+  try {
+    if (!swarm || !hostKeyZ) return {}
+    const key = z32.decode(hostKeyZ)
+    const pi = swarm.peers.get(b4a.toString(key, 'hex'))
+    return {
+      peer: pi
+        ? `att:${pi.attempts},q:${pi.queued ? 1 : 0},w:${pi.waiting ? 1 : 0},ban:${pi.banned ? 1 : 0},prov:${pi.proven ? 1 : 0}`
+        : 'none',
+      conns: swarm._allConnections.has(key) ? 1 : 0,
+      live: swarm.connections.size
+    }
+  } catch {
+    return {}
+  }
 }
 
 // Per-host nudge loop (the pool twin of startActiveNudge): force a fresh discovery lookup every
@@ -935,6 +966,7 @@ function startPoolNudge (host) {
     if (!mergedMode()) return // outside merged mode the pool is not read
     if (!loadHostsFile().hosts.some((h) => h.libraryId === libId)) return // library removed
     if (poolClient(libId)) return // landed
+    log('nudge:pool', { lib: libId.slice(0, 8), ...swarmDiag(host.hostKey) })
     nudgePool(libId)
     e.nudgeTimer = setTimeout(tick, ACTIVE_NUDGE_MS)
     if (e.nudgeTimer.unref) e.nudgeTimer.unref()
@@ -945,6 +977,69 @@ function startPoolNudge (host) {
 function stopPoolNudge (libId) {
   const e = pool.get(libId)
   if (e && e.nudgeTimer) { clearTimeout(e.nudgeTimer); e.nudgeTimer = null }
+}
+
+// --- pool watchdog (2026-07-26) ---------------------------------------------
+//
+// The self-healing the pool did not have. See worklet/pool-health.js for WHY the pool could go
+// dark for 20+ minutes while the active host recovered in seconds; in short, the active host is
+// kicked by every RPC the app makes and a pool host is kicked by nothing but its own timer.
+//
+// Each tick: a dark host gets its topic re-joined and its nudge restarted (both idempotent, so a
+// healthy nudge loop is untouched), and a live host gets a ping - the traffic an idle pool
+// connection otherwise never sees, which is what lets a dead socket keep reading as connected.
+let poolWatchdogTimer = null
+
+function startPoolWatchdog () {
+  if (poolWatchdogTimer) return
+  poolWatchdogTimer = setInterval(() => { poolWatchdogTick().catch(() => {}) }, POOL_WATCHDOG_MS)
+  if (poolWatchdogTimer.unref) poolWatchdogTimer.unref()
+}
+
+async function poolWatchdogTick () {
+  const actions = poolActions({
+    merged: mergedMode(),
+    hosts: loadHostsFile().hosts,
+    activeLibraryId,
+    isLive: (libId) => !!poolClient(libId)
+  })
+  await Promise.allSettled(actions.map(async ({ host, libraryId: libId, action }) => {
+    if (action === 'redial') {
+      // Idempotent by design: joinPoolTopic re-uses an existing discovery session and
+      // startPoolNudge returns early when a loop is already running, so this only DOES
+      // anything when the pool has genuinely stopped reaching for this host.
+      const e = pool.get(libId)
+      const stalled = !e || !e.nudgeTimer
+      joinPoolTopic(host)
+      startPoolNudge(host)
+      if (stalled) {
+        // The interesting case, and the one worth a line in the log: nothing was retrying
+        // this host at all. If this fires repeatedly in the field, the nudge loop is dying
+        // somewhere we have not found yet - and the watchdog is what keeps that from being
+        // a 20-minute outage.
+        log('pool:watchdog', { lib: libId.slice(0, 8), state: 'stalled', ...swarmDiag(host.hostKey) })
+        nudgePool(libId)
+      }
+      return
+    }
+    // 'probe': prove the connection with real traffic. A ping that never answers means the
+    // socket is dead even though the object is not destroyed - destroy it so the close handler
+    // greys the library, restarts the nudge, and frees Hyperswarm to redial the peer.
+    const c = poolClient(libId)
+    if (!c) return
+    try {
+      await Promise.race([
+        c.ping(),
+        new Promise((_, reject) => {
+          const t = setTimeout(() => reject(new Error('ping timeout')), POOL_PING_TIMEOUT_MS)
+          if (t.unref) t.unref()
+        })
+      ])
+    } catch (err) {
+      log('pool:watchdog', { lib: libId.slice(0, 8), state: 'zombie', err: err && err.message, ...swarmDiag(host.hostKey) })
+      try { c.conn.destroy() } catch {}
+    }
+  }))
 }
 
 function resolvePoolWaiters (libId) {
@@ -1081,44 +1176,46 @@ function purgeMerged () {
 let lastIndexBuiltAt = 0
 const REBUILD_COOLDOWN_MS = 20000
 
-async function rebuildIndex () {
-  if (rebuildingIndex) return rebuildingIndex
-  rebuildingIndex = (async () => {
-    const libIds = await ensureAll() // connect all; offline hosts absent from this list
-    const hosts = loadHostsFile().hosts.filter((h) => libIds.includes(h.libraryId))
-    // Pull each connected host's catalog off its pool client. allSettled so one host dropping
-    // mid-fetch drops just that host from the blend, not the whole rebuild.
-    const settled = await Promise.allSettled(hosts.map((h) => {
-      const c = poolClient(h.libraryId)
-      if (!c) return Promise.reject(new Error('not connected'))
-      return catalog.fetchCatalog(c, h.libraryId)
+// Coalesced, with a follow-up run when a request lands mid-build - see worklet/rebuild-gate.js
+// for why a plain single-flight silently loses exactly the rebuild that mattered.
+const rebuildGate = createRebuildGate(buildMergedIndex)
+function rebuildIndex () { return rebuildGate.request() }
+
+async function buildMergedIndex () {
+  const libIds = await ensureAll() // connect all; offline hosts absent from this list
+  const hosts = loadHostsFile().hosts.filter((h) => libIds.includes(h.libraryId))
+  // Pull each connected host's catalog off its pool client. allSettled so one host dropping
+  // mid-fetch drops just that host from the blend, not the whole rebuild.
+  const settled = await Promise.allSettled(hosts.map((h) => {
+    const c = poolClient(h.libraryId)
+    if (!c) return Promise.reject(new Error('not connected'))
+    return catalog.fetchCatalog(c, h.libraryId)
+  }))
+  const catalogs = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)
+  mergedIndex = merge.buildIndex(catalogs)
+  mergedConnected = new Set(catalogs.map((c) => c.libraryId))
+  mergedFresh = new Set(mergedConnected) // what THIS run actually reached, for the attach guards
+  lastIndexBuiltAt = Date.now()
+  buildRouteMaps()
+  // Pick up library RENAMES for EVERY connected host, not just the active one (identity() covers
+  // the active host on its own). Done here so the chips + switcher relabel on the same rebuild.
+  await syncHostNames(hosts.filter((h) => mergedConnected.has(h.libraryId)))
+  try {
+    fs.mkdirSync(mergedDir(), { recursive: true })
+    fs.writeFileSync(mergedIndexFile(), JSON.stringify({
+      builtAt: Date.now(), connected: [...mergedConnected], index: mergedIndex
     }))
-    const catalogs = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)
-    mergedIndex = merge.buildIndex(catalogs)
-    mergedConnected = new Set(catalogs.map((c) => c.libraryId))
-    lastIndexBuiltAt = Date.now()
-    buildRouteMaps()
-    // Pick up library RENAMES for EVERY connected host, not just the active one (identity() covers
-    // the active host on its own). Done here so the chips + switcher relabel on the same rebuild.
-    await syncHostNames(hosts.filter((h) => mergedConnected.has(h.libraryId)))
-    try {
-      fs.mkdirSync(mergedDir(), { recursive: true })
-      fs.writeFileSync(mergedIndexFile(), JSON.stringify({
-        builtAt: Date.now(), connected: [...mergedConnected], index: mergedIndex
-      }))
-    } catch {}
-    log('merged:index', {
-      libraries: mergedConnected.size,
-      artists: mergedIndex.artists.length,
-      albums: mergedIndex.albums.length,
-      tracks: mergedIndex.tracks.length
-    })
-    // Tell the UI the blend changed (a background rebuild on launch/reconnect), so it refreshes the
-    // browse + the source-filter chips (greying a host that just dropped, un-greying one that joined).
-    if (mergedMode()) emit('merged:updated', mergedStatusData())
-    return mergedIndex
-  })().finally(() => { rebuildingIndex = null })
-  return rebuildingIndex
+  } catch {}
+  log('merged:index', {
+    libraries: mergedConnected.size,
+    artists: mergedIndex.artists.length,
+    albums: mergedIndex.albums.length,
+    tracks: mergedIndex.tracks.length
+  })
+  // Tell the UI the blend changed (a background rebuild on launch/reconnect), so it refreshes the
+  // browse + the source-filter chips (greying a host that just dropped, un-greying one that joined).
+  if (mergedMode()) emit('merged:updated', mergedStatusData())
+  return mergedIndex
 }
 
 // Pick up library RENAMES for the given connected pool hosts (extends the active-host live-rename to
@@ -1397,6 +1494,10 @@ function ensureSwarm () {
       })
     })
     swarm.on('connection', onSwarmConnection)
+    // One watchdog for the whole worklet, started with the swarm because every path that
+    // needs it (init, pair, add-library, switch-library) goes through here. It no-ops outside
+    // merged mode, so a single-library phone pays a comparison every 30s and nothing else.
+    startPoolWatchdog()
   }
   return swarm
 }
@@ -1500,6 +1601,17 @@ async function attachActive (host, conn) {
   // Drain anything queued while we were offline (favorites/resume/counts). Fire and forget.
   flushOutbox().catch(() => {})
 
+  // The blend has to hear about the ACTIVE host landing, exactly as attachPool announces a pool
+  // host. It never did: every merged refresh hung off a POOL connection, so an active host that
+  // was unreachable when the index was built stayed missing from All libraries after it
+  // reconnected - its chip read connected while its tracks were nowhere - until some unrelated
+  // rebuild happened to run. mergedFresh keeps this to the case that needs it: no rebuild when
+  // this host is already in the blend we are serving.
+  if (mergedMode()) {
+    emit('merged:updated', mergedStatusData())
+    if (!mergedFresh.has(host.libraryId)) rebuildIndex().catch(() => {})
+  }
+
   // NOTE: the active client does NOT pushIdentityTo here (the pool does, in attachPool). pair() sends
   // the claim explicitly, ONCE, over this now-live connection - reusing the pairing connection (see
   // pair()) is what makes that claim land. Pushing here too raced pair()'s claim into DUPLICATE
@@ -1538,7 +1650,9 @@ function startActiveNudge () {
   const tick = () => {
     activeNudgeTimer = null
     if (connected && client && client.conn && !client.conn.destroyed) return // landed - stop
-    if (!loadActiveHost()) return // unpaired - nothing to reach
+    const h = loadActiveHost()
+    if (!h) return // unpaired - nothing to reach
+    log('nudge:active', { host: h.hostKey.slice(0, 8), ...swarmDiag(h.hostKey) })
     nudgeSwarm()
     activeNudgeTimer = setTimeout(tick, ACTIVE_NUDGE_MS)
     if (activeNudgeTimer.unref) activeNudgeTimer.unref()
@@ -3278,6 +3392,7 @@ const methods = {
       leavePoolTopic(removed.libraryId)
       mergedIndex = null // a removed host must leave the blend; next merged browse rebuilds
       mergedConnected.delete(removed.libraryId)
+      mergedFresh.delete(removed.libraryId)
       buildRouteMaps() // clears the routing lookups until the rebuild
     }
 
@@ -3387,6 +3502,7 @@ const methods = {
     await closePool() // tear down every merged-mode pool connection too
     mergedIndex = null // drop the blended index and its cache-in-memory
     mergedConnected = new Set()
+    mergedFresh = new Set()
     buildRouteMaps() // clears the routing lookups
     // A full reset tears the shared transport down too (a later pair recreates it). The swarm
     // OWNS the shared dht node's teardown: Hyperswarm.destroy() destroys its dht even when the
