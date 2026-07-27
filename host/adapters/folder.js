@@ -571,7 +571,18 @@ class FolderAdapter {
 
     if (type === 'albums') {
       return page(this._order('albums', this._sortedAlbums, ALBUM_CMP, sort, order), a => ({
-        id: a.id, name: a.name, artist: a.artist, year: a.year, songCount: a.songCount, coverId: a.coverId
+        id: a.id,
+        name: a.name,
+        artist: a.artist,
+        year: a.year,
+        songCount: a.songCount,
+        // The newest file mtime in the album (see _album). It was missing from this projection
+        // until 2026-07-27, which meant a FOLDER library reached the phone with no date at all:
+        // the merged "recently added" shelf sorted every one of its albums as 0 and buried them
+        // under any Subsonic/Jellyfin host, and the shelf's own age test could not see them. The
+        // subsonic adapter's addedAt comment already promised this field would be here.
+        addedAt: a.addedAt ?? null,
+        coverId: a.coverId
       }))
     }
 

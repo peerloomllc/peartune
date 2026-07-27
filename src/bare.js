@@ -2052,10 +2052,13 @@ const methods = {
   // The merged "Recently added" shelf. Every adapter now tags albums with a real `addedAt` (folder
   // mtime, Subsonic `created`, Jellyfin DateCreated), and buildIndex keeps the NEWEST across copies -
   // so this is a TRUE global date-sort across the blend (newest first), not a per-host interleave.
-  async recentMerged ({ limit = 12 } = {}) {
+  // `libraryId` narrows the shelf to ONE library, the same way every other browse call does. It
+  // used to be missing, so picking a library from the header left the "Recently added" shelf
+  // showing the whole blend while the grid beneath it showed that one library (Tim, 2026-07-27).
+  async recentMerged ({ limit = 12, libraryId } = {}) {
     if (!mergedMode()) return { items: [] }
     const ix = await ensureIndex()
-    const page = catalog.serveList(ix.albums, { sort: 'added', order: 'desc', cursor: 0, limit })
+    const page = catalog.serveList(ix.albums, { libraryId, sort: 'added', order: 'desc', cursor: 0, limit })
     return { items: page.items.map(withArt) }
   },
 
