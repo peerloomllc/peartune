@@ -176,15 +176,28 @@ const ACTIVE_CONNECT_WAIT_MS = 20000
 // backoff. The timer is unref'd and only runs while foreground (a suspended worklet
 // freezes it, which is correct - no point punching while backgrounded).
 const ACTIVE_NUDGE_MS = 10000
-let client = null
-// Is the DEFAULT library connected right now? DERIVED, never stored (P3): the old `connected`
-// boolean was one more thing to keep in step with the link map, and a flag that disagrees with
-// the socket is how a caller ends up writing into a dead connection.
-function defaultConnected () { return !!(defaultLibraryId && clientFor(defaultLibraryId)) }
+// The DEFAULT library's client, and whether it is up. DERIVED, never stored (P3/P4): `client`,
+// `currentHost` and `connected` used to be globals that attach/connect/drop had to keep in step
+// with the link map, and a global that disagrees with the socket is how a caller ends up writing
+// into a dead connection. There is one source of truth now - `links` - and these read it.
+//
+// defaultClient() answers null when there is nothing live; mustClient() is for the ~30 call sites
+// that have just awaited ensureConnected() and would otherwise dereference null, and it fails with
+// the same EUNREACHABLE shape those callers already handle.
+function defaultClient () { return defaultLibraryId ? clientFor(defaultLibraryId) : null }
+function defaultConnected () { return !!defaultClient() }
+function mustClient () {
+  const c = defaultClient()
+  if (!c) {
+    const e = new Error('could not reach the host')
+    e.code = 'EUNREACHABLE'
+    throw e
+  }
+  return c
+}
 let shim = null
 let shimPort = null
 let identity = null
-let currentHost = null
 
 // --- cross-device session handoff (proposal 2026-07-17) ---------------------
 // This device holds the host's session "active player" token while it is the one playing.
@@ -462,12 +475,13 @@ function enqueue (method, params) {
 // idempotent on the host (LWW for fav/resume, a monotonic bump for counts), so a partial
 // flush is safe.
 async function flushOutbox () {
-  if (flushing || !outbox.length || !client) return
+  const c = defaultClient()
+  if (flushing || !outbox.length || !c) return
   flushing = true
   try {
     while (outbox.length) {
       const entry = outbox[0]
-      const call = clientCall(client, entry)
+      const call = clientCall(c, entry)
       if (!call) { outbox = outbox.slice(1); saveOutbox(); continue } // unknown method: drop it
       try {
         await call()
@@ -831,8 +845,6 @@ async function attach (host, conn) {
   log('link:connected', { lib: libId.slice(0, 8), role: isDefault ? 'default' : 'other', library: host.libraryName })
 
   if (isDefault) {
-    client = c
-    currentHost = host
     // Point the (already-listening) shim at this client. Playback still flows THROUGH the live
     // connection for anything not cached, which is what makes a revoke stop the music.
     await ensureShim()
@@ -1008,7 +1020,6 @@ function dropLink (libId) {
   if (swarm && e.host) { try { swarm.leave(hostTopic(z32.decode(e.host.hostKey))) } catch {} }
   if (e.client) { try { e.client.close() } catch {} }
   links.delete(libId)
-  if (libId === defaultLibraryId) { client = null; currentHost = null }
 }
 
 async function closeAllLinks () {
@@ -1284,12 +1295,12 @@ function sessionHomeLib () {
 // sessionSupportedFor(lib).
 function sessionTarget () {
   if (mergedMode()) { const lib = sessionHomeLib(); return { c: lib ? clientFor(lib) : null, merged: true, lib } }
-  return { c: client, merged: false, lib: currentHost?.libraryId || null }
+  return { c: defaultClient(), merged: false, lib: defaultLibraryId || null }
 }
 async function sessionReady () {
   if (mergedMode()) { await ensureAll().catch(() => {}); return sessionTarget() }
   await ensureConnected()
-  return { c: client, merged: false, lib: currentHost?.libraryId || null }
+  return { c: defaultClient(), merged: false, lib: defaultLibraryId || null }
 }
 
 // Tag a session queue item with its owning host, so the receiver routes each track to the host
@@ -1496,8 +1507,8 @@ async function connectTo (host) {
   // rather than waiting for a 'connection' event that will never come - Hyperswarm dedups one
   // connection per peer. This is the case demoteActiveToPool/promotePoolToActive used to hand-roll.
   if (e && clientFor(host.libraryId)) {
-    client = e.client
-    currentHost = host
+    // Nothing to assign: making this the default library IS useLibrary(), above. The link map
+    // already holds the connection, so defaultClient() answers with it from here on.
     await ensureShim()
     log('link:default', { lib: host.libraryId.slice(0, 8), library: host.libraryName })
     emit('host:connected', {
@@ -1590,25 +1601,17 @@ async function pairViaSwarm (link, { label = 'phone', platform = 'android', time
 }
 
 
-// Ensure the DEFAULT library is connected, and refresh the globals that name it. Kept under its
-// old name because ~39 call sites read `client` straight after awaiting it; P3 retires both.
+// Ensure the DEFAULT library is connected, and RETURN its client. Kept under its old name because
+// the call sites are everywhere; what changed is that there is no longer a `client` global to read
+// afterwards - the value comes back from here, or from mustClient() at the point of use.
 async function ensureConnected () {
   const host = loadDefaultHost()
   if (!host) throw new Error('Not paired with a library.')
 
   const live = clientFor(host.libraryId)
-  if (live) {
-    client = live
-    currentHost = host
-    return
-  }
+  if (live) return live
   await connectTo(host)
-  const c = clientFor(host.libraryId)
-  if (!c) {
-    const e = new Error('could not reach the host')
-    e.code = 'EUNREACHABLE'
-    throw e
-  }
+  return mustClient()
 }
 
 // --- methods ----------------------------------------------------------------
@@ -1795,7 +1798,7 @@ const methods = {
     // already succeeded.
     if (claim) {
       try {
-        await client.setIdentity({ deviceName: name, userName: claim })
+        await mustClient().setIdentity({ deviceName: name, userName: claim })
       } catch (e) {
         log('pair:claim-failed', { err: e?.message })
       }
@@ -1821,7 +1824,7 @@ const methods = {
 
   async stats () {
     await ensureConnected()
-    return client.stats()
+    return mustClient().stats()
   },
 
   // The Songs view. Navidrome answers an empty-query search3 with everything,
@@ -1835,7 +1838,7 @@ const methods = {
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await client.list({ type: 'tracks', cursor, limit, sort, order })
+    const page = await mustClient().list({ type: 'tracks', cursor, limit, sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -1849,7 +1852,7 @@ const methods = {
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await client.list({ type: 'albums', cursor, limit, sort, order })
+    const page = await mustClient().list({ type: 'albums', cursor, limit, sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -1865,7 +1868,7 @@ const methods = {
       return withBigArt({ ...a, libraryId: lib, tracks: (a.tracks || []).map((t) => enrichCopies({ ...t, libraryId: lib })) })
     }
     await ensureConnected()
-    const a = await client.get({ id, type: 'album' })
+    const a = await mustClient().get({ id, type: 'album' })
     return a ? withBigArt(a) : null
   },
 
@@ -1878,7 +1881,7 @@ const methods = {
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await client.list({ type: 'artists', sort, order })
+    const page = await mustClient().list({ type: 'artists', sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -1916,7 +1919,7 @@ const methods = {
       }
     }
     await ensureConnected()
-    const a = await client.get({ id, type: 'artist' })
+    const a = await mustClient().get({ id, type: 'artist' })
     if (!a) return null
     // `tracks` is only ever populated for an artist with NO albums - Navidrome's
     // composite-tag artists ("Artist/Remixer"). See the host adapter.
@@ -1940,7 +1943,7 @@ const methods = {
     const lib = libForEntity(id, libraryId)
     let c
     if (mergedMode() && lib) c = await ensureHostById(lib)
-    else { await ensureConnected(); c = client }
+    else { c = await ensureConnected() }
     const tag = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId: lib }) : t)
 
     const a = await c.get({ id, type: 'artist' })
@@ -1972,7 +1975,7 @@ const methods = {
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await client.list({ type: 'genres', sort, order })
+    const page = await mustClient().list({ type: 'genres', sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -1983,7 +1986,7 @@ const methods = {
     const lib = libForEntity(id, libraryId)
     let c
     if (mergedMode() && lib) c = await ensureHostById(lib)
-    else { await ensureConnected(); c = client }
+    else { c = await ensureConnected() }
     const g = await c.get({ id, type: 'genre' })
     if (!g) return null
     const tagAlbum = (al) => (mergedMode() ? { ...al, libraryId: lib } : al)
@@ -2001,7 +2004,7 @@ const methods = {
     const lib = libForEntity(id, libraryId)
     let c
     if (mergedMode() && lib) c = await ensureHostById(lib)
-    else { await ensureConnected(); c = client }
+    else { c = await ensureConnected() }
     const tag = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId: lib }) : t)
 
     const g = await c.get({ id, type: 'genre' })
@@ -2043,7 +2046,7 @@ const methods = {
       }
     }
     await ensureConnected()
-    const r = await client.search({ q })
+    const r = await mustClient().search({ q })
     return {
       ...r,
       albums: (r.albums || []).map(withArt),
@@ -2133,7 +2136,7 @@ const methods = {
     // have come from a POOL host (when the active host is down), whose name belongs to a DIFFERENT
     // record - renaming the active host to it would be wrong. A pool host's own name is synced by the
     // merged block just below.
-    if (c === client && remote?.libraryName) {
+    if (c === defaultClient() && remote?.libraryName) {
       const active = loadDefaultHost()
       if (active && active.libraryName !== remote.libraryName) {
         saveHostsFile(hostList.renameHost(loadHostsFile(), active.hostKey, remote.libraryName))
@@ -2177,7 +2180,7 @@ const methods = {
 
   async setIdentity ({ deviceName, userName }) {
     await ensureConnected()
-    const r = await client.setIdentity({ deviceName, userName })
+    const r = await mustClient().setIdentity({ deviceName, userName })
     saveSettings({
       deviceName: r?.deviceName || deviceName || '',
       userName: r?.user?.name || userName || ''
@@ -2199,7 +2202,7 @@ const methods = {
   async setAvatar ({ avatar }) {
     const a = avatar || ''
     saveSettings({ avatar: a })
-    try { await ensureConnected(); await client.setAvatar({ avatar: a }) } catch {}
+    try { await ensureConnected(); await mustClient().setAvatar({ avatar: a }) } catch {}
     // The pool hosts too. Note this sends an EMPTY avatar as well, unlike the reconnect
     // sync: clearing your photo is a deliberate act and must reach every host, whereas a
     // reconnect has no business deleting one.
@@ -2386,7 +2389,7 @@ const methods = {
     }
     try {
       await ensureConnected()
-      const g = await client.favList()
+      const g = await mustClient().favList()
       const grouped = { track: g.track || [], album: g.album || [], artist: g.artist || [] }
       saveFavCache(grouped)
       return { ...grouped, supported: true }
@@ -2414,7 +2417,7 @@ const methods = {
     // When connected, write straight through; when not, queue immediately rather than
     // block this frequent call on a doomed connect. The flush rides the next reconnect.
     if (defaultConnected()) {
-      try { await client.resumeSet({ trackId, positionMs, durationMs }) } catch { enqueue('resume.set', { trackId, positionMs, durationMs }) }
+      try { await mustClient().resumeSet({ trackId, positionMs, durationMs }) } catch { enqueue('resume.set', { trackId, positionMs, durationMs }) }
     } else {
       enqueue('resume.set', { trackId, positionMs, durationMs })
     }
@@ -2429,7 +2432,7 @@ const methods = {
     }
     try {
       await ensureConnected()
-      return await client.resumeGet({ trackId })
+      return await mustClient().resumeGet({ trackId })
     } catch {
       return { positionMs: 0 }
     }
@@ -2460,9 +2463,9 @@ const methods = {
     }
     try {
       await ensureConnected()
-      const r = await client.resumeLatest()
+      const r = await mustClient().resumeLatest()
       if (!r?.trackId) return null
-      const t = await client.get({ id: r.trackId, type: 'track' }).catch(() => null)
+      const t = await mustClient().get({ id: r.trackId, type: 'track' }).catch(() => null)
       if (!t) return null
       return { track: withArt(t), positionMs: r.positionMs, durationMs: r.durationMs }
     } catch {
@@ -2486,7 +2489,7 @@ const methods = {
       return { ok: true }
     }
     if (defaultConnected()) {
-      try { await client.countBump({ trackId }) } catch { enqueue('count.bump', { trackId }) }
+      try { await mustClient().countBump({ trackId }) } catch { enqueue('count.bump', { trackId }) }
     } else {
       // Offline: queue it (counts accumulate - each queued bump is a real play).
       enqueue('count.bump', { trackId })
@@ -2527,10 +2530,10 @@ const methods = {
     }
     try {
       await ensureConnected()
-      const { items } = await client.countTop({ limit })
+      const { items } = await mustClient().countTop({ limit })
       const out = []
       for (const it of items) {
-        const t = await client.get({ id: it.trackId, type: 'track' }).catch(() => null)
+        const t = await mustClient().get({ id: it.trackId, type: 'track' }).catch(() => null)
         if (t) out.push({ ...withArt(t), playCount: it.count })
       }
       return { items: out }
@@ -2577,7 +2580,7 @@ const methods = {
     apply(want)
     if (defaultConnected()) {
       try {
-        const r = await client.favSet({ kind, id, on: want })
+        const r = await mustClient().favSet({ kind, id, on: want })
         return { kind: r.kind, id: r.id, on: r.on }
       } catch (e) {
         if (e?.code === 'ENOMETHOD') { apply(!want); throw e }
@@ -2621,13 +2624,13 @@ const methods = {
       }
     }
     await ensureConnected()
-    const g = await client.favList()
+    const g = await mustClient().favList()
     const grouped = { track: g.track || [], album: g.album || [], artist: g.artist || [] }
     saveFavCache(grouped)
     const resolve = async (ids, type) => {
       const out = []
       for (const id of ids) {
-        const it = await client.get({ id, type }).catch(() => null)
+        const it = await mustClient().get({ id, type }).catch(() => null)
         if (it) out.push(withArt(it))
       }
       return out
@@ -2647,7 +2650,7 @@ const methods = {
   async playlists () {
     try {
       await ensureConnected()
-      const { items } = await client.playlistList()
+      const { items } = await mustClient().playlistList()
       savePlaylistCache(items)
       return { items, supported: true }
     } catch (e) {
@@ -2684,7 +2687,7 @@ const methods = {
     }
     try {
       await ensureConnected()
-      const r = await client.requestAdd(params)
+      const r = await mustClient().requestAdd(params)
       return { ...r, supported: true }
     } catch (e) {
       if (e?.code === 'ENOMETHOD') return { ok: false, supported: false }
@@ -2715,7 +2718,7 @@ const methods = {
     }
     try {
       await ensureConnected()
-      const { requests } = await client.requestList()
+      const { requests } = await mustClient().requestList()
       // Give single-host rows a `refs` too, so the app's REMOVE path is uniform with the
       // merged one (delete every (libraryId,id) the ask lives on).
       const refs = (r) => [{ libraryId: defaultLibraryId, id: r.id }]
@@ -2849,11 +2852,11 @@ const methods = {
   // so an edit never silently drops a track that merely failed to resolve this time.
   async playlistDetail ({ id }) {
     await ensureConnected()
-    const pl = await client.playlistGet({ id })
+    const pl = await mustClient().playlistGet({ id })
     const ids = pl.trackIds || []
     const tracks = []
     for (let i = 0; i < ids.length; i++) {
-      const t = await client.get({ id: ids[i], type: 'track' }).catch(() => null)
+      const t = await mustClient().get({ id: ids[i], type: 'track' }).catch(() => null)
       // `_i` is the raw slot (reassigned when the app reorders); `_k` is a STABLE
       // per-row identity for React keys, so a drag animates a move rather than
       // remounting rows (a track id can repeat within a playlist, so it cannot key).
@@ -2864,17 +2867,17 @@ const methods = {
 
   async createPlaylist ({ name }) {
     await ensureConnected()
-    return await client.playlistCreate({ name })
+    return await mustClient().playlistCreate({ name })
   },
 
   async renamePlaylist ({ id, name }) {
     await ensureConnected()
-    return await client.playlistRename({ id, name })
+    return await mustClient().playlistRename({ id, name })
   },
 
   async deletePlaylist ({ id }) {
     await ensureConnected()
-    await client.playlistDelete({ id })
+    await mustClient().playlistDelete({ id })
     return { ok: true }
   },
 
@@ -2882,13 +2885,13 @@ const methods = {
   // tracksFor it uses for Play/Queue), so this just forwards the ids.
   async addToPlaylist ({ id, trackIds }) {
     await ensureConnected()
-    return await client.playlistAdd({ id, trackIds })
+    return await mustClient().playlistAdd({ id, trackIds })
   },
 
   // Replace the whole order - the app's single write path for both remove and reorder.
   async setPlaylistTracks ({ id, trackIds }) {
     await ensureConnected()
-    return await client.playlistSetTracks({ id, trackIds })
+    return await mustClient().playlistSetTracks({ id, trackIds })
   },
 
   // The SERVER's own playlists (v2), read-only. These come from Navidrome/Jellyfin via
@@ -2898,7 +2901,7 @@ const methods = {
   async serverPlaylists () {
     try {
       await ensureConnected()
-      const { items } = await client.list({ type: 'playlists' })
+      const { items } = await mustClient().list({ type: 'playlists' })
       return { items: items || [] }
     } catch {
       return { items: [] }
@@ -2907,7 +2910,7 @@ const methods = {
 
   async serverPlaylistDetail ({ id }) {
     await ensureConnected()
-    const pl = await client.get({ id, type: 'playlist' })
+    const pl = await mustClient().get({ id, type: 'playlist' })
     if (!pl) return null
     return { id: pl.id, name: pl.name, tracks: (pl.tracks || []).map(withArt) }
   },
@@ -2985,7 +2988,7 @@ const methods = {
       throw new Error('Downloads are off on cellular. Turn on "Download over cellular" in Settings, or join Wi-Fi.')
     }
     await ensureConnected()
-    const album = await client.get({ id: albumId, type: 'album' })
+    const album = await mustClient().get({ id: albumId, type: 'album' })
     if (!album) throw new Error('That album is not available.')
     const tracks = album.tracks || []
     // Store the track METADATA, not just ids - so a downloaded album renders and plays
@@ -3013,8 +3016,8 @@ const methods = {
           const mime = mimeFor(t.suffix ? 'a.' + t.suffix : (t.path || t.title || ''))
           // Tagged with the library, same as the shim's write-through: it is what lets
           // removing ONE library reclaim its bytes while the others stay downloaded.
-          const sink = audioCache.createSink(t.id, { mime, size: t.size, library: client.libraryId || currentHost?.libraryId || null })
-          await client.streamTo({ trackId: t.id }, (chunk) => sink.write(chunk))
+          const sink = audioCache.createSink(t.id, { mime, size: t.size, library: defaultLibraryId || null })
+          await mustClient().streamTo({ trackId: t.id }, (chunk) => sink.write(chunk))
           if (!await sink.commit()) throw new Error('incomplete download')
         }
         audioCache.setPinned(t.id, true)
@@ -3038,7 +3041,7 @@ const methods = {
       try {
         // Store at the size the shim serves from disk (DEFAULT_ART_SIZE) so the two stay
         // in lockstep - that is the size the Downloads views request.
-        const buf = await client.art({ coverId, size: DEFAULT_ART_SIZE })
+        const buf = await mustClient().art({ coverId, size: DEFAULT_ART_SIZE })
         artStore.put(coverId, buf)
       } catch (e) { log('pin:art-failed', { err: e?.message }) }
     }
@@ -3275,8 +3278,6 @@ const methods = {
     shimPort = null
 
     await closeAllLinks() // every library's link, closed and left - this is the full reset
-    client = null
-    currentHost = null
     mergedIndex = null // drop the blended index and its cache-in-memory
     mergedConnected = new Set()
     mergedFresh = new Set()
@@ -3288,7 +3289,6 @@ const methods = {
     // fall back to destroying the dht directly.
     if (swarm) { try { await swarm.destroy() } catch {} ; swarm = null; dht = null }
     else if (dht) { try { await dht.destroy() } catch {} ; dht = null }
-    currentHost = null
 
     log('host:forgotten')
     return { ok: true }
