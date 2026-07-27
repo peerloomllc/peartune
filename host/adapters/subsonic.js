@@ -199,6 +199,11 @@ class SubsonicAdapter {
       year: song.year ?? null,
       durationMs: song.duration ? song.duration * 1000 : null,
       size: song.size ?? 0,
+      // Same `created` the album projection reads (see the addedAt comment there), so the merged
+      // blend can date-sort SONGS across hosts too, not just albums. Subsonic itself has no
+      // all-songs sort - SUBSONIC_SORTS.tracks stays empty - but the phone's in-memory index does,
+      // and it can only sort by a field it is actually sent.
+      addedAt: song.created ? (Date.parse(song.created) || null) : null,
       coverId: song.coverArt || song.albumId || null,
       suffix: song.suffix || null
     }

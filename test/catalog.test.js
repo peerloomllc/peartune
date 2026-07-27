@@ -156,3 +156,36 @@ test('searchIndex caps each list at the limit', () => {
   const many = { artists: Array.from({ length: 100 }, (_, i) => ({ id: 'a' + i, name: 'Band ' + i })), albums: [], tracks: [] }
   assert.equal(C.searchIndex(many, 'band', { limit: 10 }).artists.length, 10)
 })
+
+// --- what the BLEND says it can sort by (2026-07-27) --------------------------
+
+test('MERGED_SORTS only advertises keys the merged sort can actually order', () => {
+  // A key here that sortItems does not understand is a menu entry that silently does nothing, so
+  // prove each one CHANGES the order of a list built to be wrong for it.
+  const probes = {
+    title: [{ title: 'b' }, { title: 'a' }],
+    name: [{ name: 'b' }, { name: 'a' }],
+    artist: [{ artist: 'b' }, { artist: 'a' }],
+    album: [{ album: 'b' }, { album: 'a' }],
+    year: [{ name: 'x', year: 2 }, { name: 'y', year: 1 }],
+    duration: [{ name: 'x', durationMs: 2 }, { name: 'y', durationMs: 1 }],
+    added: [{ name: 'x', addedAt: 2 }, { name: 'y', addedAt: 1 }]
+  }
+  for (const [view, cap] of Object.entries(C.MERGED_SORTS)) {
+    assert.ok(cap.reversible, `${view} claims reversible`)
+    for (const key of cap.keys) {
+      const rows = probes[key]
+      assert.ok(rows, `${view}: no probe for key "${key}" - is it a real sort key?`)
+      const asc = M.sortItems(rows, key, 'asc')
+      const desc = M.sortItems(rows, key, 'desc')
+      assert.notDeepEqual(asc, desc, `${view}: sorting by "${key}" does nothing`)
+    }
+  }
+})
+
+test('the blend offers a track order that a Subsonic host cannot', () => {
+  // The point of the whole change: Subsonic advertises NO track sort (it has no all-songs order),
+  // and the blend must not inherit that limit just because it is the default library.
+  assert.ok(C.MERGED_SORTS.tracks.keys.includes('added'))
+  assert.ok(C.MERGED_SORTS.tracks.keys.includes('title'))
+})

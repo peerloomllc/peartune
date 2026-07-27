@@ -489,4 +489,13 @@ test('an album carries its addedAt to the CLIENT, not just to the local sort', a
   const track = (await a.list({ type: 'tracks' })).items.find(t => t.path === rel)
   const bumpedAlbum = albums.find(al => al.id === track.albumId)
   assert.equal(bumpedAlbum.addedAt, recent.getTime(), 'the album is dated by its newest file')
+
+  // TRACKS carry their own date too. The scan read the mtime into the row and the album kept it,
+  // but the track record dropped it - so a folder library arrived with dated albums and dateless
+  // songs, and the merged Songs view had nothing to order by.
+  const tracks = (await a.list({ type: 'tracks' })).items
+  for (const t of tracks) assert.equal(typeof t.addedAt, 'number', `${t.title} carries addedAt`)
+  assert.equal(track.addedAt, recent.getTime(), 'a track is dated by its own file, not its album')
+  const others = tracks.filter(t => t.path !== rel)
+  assert.ok(others.length && others.every(t => t.addedAt === old.getTime()), 'the untouched files keep their own date')
 })

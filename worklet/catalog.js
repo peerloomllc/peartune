@@ -96,4 +96,23 @@ function searchIndex (index, q, { limit = 50 } = {}) {
   }
 }
 
-module.exports = { fetchAllPages, fetchCatalog, paginate, serveList, searchIndex }
+// What the BLEND can sort by, which is not what any one host can sort by.
+//
+// A single host advertises its server's own capability (Subsonic cannot order all songs at all, so
+// it offers no track keys). The merged view holds the whole catalog in memory and sorts it here, so
+// it can order ANY view by ANY of these fields, both directions - and it should say so rather than
+// proxying whichever library happens to be the default, which is what it did until 2026-07-27 (the
+// menu then changed meaning when you changed default library, and hid orderings the blend could
+// perfectly well do).
+//
+// 'added' is in tracks as well as albums: every adapter now sends a per-track addedAt (folder from
+// the file mtime, Subsonic from `created`, Jellyfin from DateCreated). Keep this list honest - a key
+// here that merge.sortItems cannot actually order is a menu entry that silently does nothing.
+const MERGED_SORTS = {
+  tracks: { keys: ['title', 'artist', 'album', 'year', 'duration', 'added'], reversible: true },
+  albums: { keys: ['name', 'artist', 'year', 'added'], reversible: true },
+  artists: { keys: ['name'], reversible: true },
+  genres: { keys: ['name'], reversible: true }
+}
+
+module.exports = { fetchAllPages, fetchCatalog, paginate, serveList, searchIndex, MERGED_SORTS }

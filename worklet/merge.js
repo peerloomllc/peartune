@@ -119,6 +119,10 @@ function mergeTracks (tracks) {
       track: Number(p.track) || 0,
       year: Number(p.year) || 0,
       durationMs: Number(p.durationMs) || 0,
+      // The NEWEST "date added" across copies, exactly as mergeAlbums does - a track sorts by when
+      // it most recently landed on any host. Carried since 2026-07-27, when the Songs view gained
+      // a date order; before that this was dropped here and every merged track sorted as 0.
+      addedAt: Math.max(0, ...g.copies.map((c) => Number(c.addedAt) || 0)) || null,
       coverId: p.coverId,
       copies: orderedCopies(g, trackCopy)
     })
