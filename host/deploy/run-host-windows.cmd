@@ -16,7 +16,20 @@ REM Edit MUSIC/DATA below, or set them in the environment before calling this.
 set ELECTRON_RUN_AS_NODE=1
 set PEARTUNE_APP=%LOCALAPPDATA%\Programs\PearTune
 if "%MUSIC%"=="" set MUSIC=%USERPROFILE%\Music
-if "%DATA%"=="" set DATA=%USERPROFILE%\.peartune
+
+REM THE DATA DIR IS THE LIBRARY'S IDENTITY - the host key every paired phone dials. Default to the
+REM TRAY APP's own data dir when it exists, so running headless CONTINUES that library instead of
+REM minting a second one. Get this wrong and every phone silently stops finding the library: the
+REM host is up, the dashboard answers, and the key it announces is one nobody paired with.
+REM (The installer auto-launches the tray app after a silent /S install, so on a machine where you
+REM have ever run the installer, that dir is the one that already holds your grants.)
+if "%DATA%"=="" (
+  if exist "%APPDATA%\peartune-desktop\data" (
+    set DATA=%APPDATA%\peartune-desktop\data
+  ) else (
+    set DATA=%USERPROFILE%\.peartune
+  )
+)
 
 if not exist "%PEARTUNE_APP%\PearTune.exe" (
   echo PearTune is not installed at "%PEARTUNE_APP%".

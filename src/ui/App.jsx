@@ -483,6 +483,10 @@ export default function App () {
     else if (v === 'artists') { setArtists(null); loadArtists() }
     else if (v === 'genres') { setGenres(null); loadGenres() }
     else if (v === 'songs') { setSongs(null); setSongCursor(0); loadSongs(0) }
+    // The shelf sits INSIDE the albums view and is scoped to the same library, so it has to move
+    // with the filter too. Leaving it out is what let a one-library grid sit under a whole-blend
+    // shelf; it is cheap (one call, 12 rows) so it reloads on any view change, not just albums.
+    loadRecent()
   }
 
   // Pick a source-filter chip: '_all' (the blend) or one library's id. Any chip RE-ENTERS merged
@@ -832,12 +836,13 @@ export default function App () {
   // shelf is gated on that capability at render; a failure just leaves it hidden.
   async function loadRecent () {
     // In merged mode the shelf mixes each host's own recently-added (round-robin, deduped); in
-    // single-host it's the one host's 'added' sort.
+    // single-host it's the one host's 'added' sort. Either way it follows the library you picked -
+    // the shelf used to ignore the filter and show the whole blend under a one-library grid.
     try {
       const page = mergedRef.current?.merged
-        ? await call('recentMerged', { limit: 12 })
+        ? await call('recentMerged', { limit: 12, libraryId: filterRef.current })
         : await call('albums', { sort: 'added', order: 'desc', limit: 12 })
-      setRecent(page.items || [])
+      setRecent(recentEnough(page.items || []))
     } catch { setRecent([]) }
   }
 
@@ -2665,11 +2670,11 @@ function Library ({
             : genreFilter
               ? `${(shownGenres || []).length} of ${genres ? genres.length : 0} genres`
               : count(browse, { albums, artists, genres, songs })}
-          {/* In the blended view the source kind belongs to the active host, not the blend, so show
-              the library COUNT instead ("2 libraries"); a single-host filter shows its source. */}
-          {mergedAll
-            ? <> · {merged.libraries.length} libraries</>
-            : (sourceText(state) && <> · {sourceText(state)}</>)}
+          {/* The blend says how many libraries it is blending - that is what you are looking at, and
+              nothing else on this screen tells you. The SOURCE KIND ("Folder", "Subsonic") used to
+              sit here for a single library and was dropped (Tim, 2026-07-27): it is the operator's
+              vocabulary, chosen on the dashboard, and it says nothing to the person listening. */}
+          {mergedAll && <> · {merged.libraries.length} libraries</>}
         </p>
       </header>
 
@@ -3476,6 +3481,22 @@ function pairError (msg = '') {
     return 'That pairing code has expired. Show a fresh one on the dashboard and try again.'
   }
   return 'Pairing failed. Show a fresh code on the dashboard and try again.'
+}
+
+// "Recently added" means recently, not "the newest twelve whenever they landed" (Tim, 2026-07-27).
+// Without a cutoff the shelf is permanent: a library nobody has added to in a year still carries a
+// dozen albums under that heading, which is a lie the first time you read it and furniture every
+// time after. Thirty days is long enough that a weekend's ripping is still on the shelf on a
+// Monday three weeks later, short enough that a settled library eventually shows nothing.
+//
+// A missing addedAt counts as NOT recent: the shelf can only make its claim about albums whose age
+// we actually know, and no shelf is better than a wrong one. (The shelf is already gated on the
+// host supporting the 'added' sort at all - see recentSupported.)
+const RECENT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+
+function recentEnough (albums) {
+  const cutoff = Date.now() - RECENT_MAX_AGE_MS
+  return (albums || []).filter(a => Number(a.addedAt) > cutoff)
 }
 
 function count (browse, { albums, artists, genres, songs }) {

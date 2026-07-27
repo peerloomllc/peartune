@@ -459,3 +459,34 @@ test('albums advertise an "added" sort, and it floats the newest file to the top
   const all = (await a.list({ type: 'albums' })).items
   assert.equal(desc.length, all.length)
 })
+
+test('an album carries its addedAt to the CLIENT, not just to the local sort', async () => {
+  // The sort test above passes on order alone, which is how a folder library shipped for months
+  // with no date at all in the payload the phone receives: `list` projected id/name/artist/year/
+  // songCount/coverId and dropped addedAt. Server-side ordering hid it - a single host asked for
+  // sort:'added' and got the right ORDER - but the merged blend sorts client-side from this field,
+  // so every folder album ranked as 0 behind any Subsonic/Jellyfin host, and the phone's
+  // "recently added" shelf could not tell how old any of them were. Assert the field, not the order.
+  const files = fs.readdirSync(MUSIC, { recursive: true })
+    .filter(f => /\.(flac|mp3|m4a|ogg|opus|wav)$/i.test(f))
+    .map(f => path.join(MUSIC, f))
+  const old = new Date('2020-01-01T00:00:00Z')
+  for (const f of files) fs.utimesSync(f, old, old)
+  const bumped = files[0]
+  const recent = new Date('2024-06-01T00:00:00Z')
+  fs.utimesSync(bumped, recent, recent)
+
+  const a = await scanned()
+  const albums = (await a.list({ type: 'albums' })).items
+  assert.ok(albums.length, 'there are albums to check')
+  for (const al of albums) {
+    assert.equal(typeof al.addedAt, 'number', `${al.name} carries a numeric addedAt`)
+    assert.ok(al.addedAt > 0, `${al.name} addedAt is a real timestamp`)
+  }
+
+  // And it is the NEWEST file in the album, so a bumped track re-dates its album.
+  const rel = path.relative(MUSIC, bumped)
+  const track = (await a.list({ type: 'tracks' })).items.find(t => t.path === rel)
+  const bumpedAlbum = albums.find(al => al.id === track.albumId)
+  assert.equal(bumpedAlbum.addedAt, recent.getTime(), 'the album is dated by its newest file')
+})
