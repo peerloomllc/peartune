@@ -68,3 +68,19 @@ cost is bandwidth. On a 20 TB/mo box that is a lot of headroom, but watch `relay
 - if `streams.active` or throughput climbs unexpectedly, that is the signal to add a
 per-key allow-list (the named next step in the proposal's RCA-readiness). Nothing on
 the relay is ever readable: it only ever holds ciphertext in transit.
+
+## Updating a relay that is already running
+
+The identity lives in `RELAY_DATA_DIR` (`/var/lib/peartune-relay/relay.seed`), NOT in the code, so a
+code update never changes the public key baked into the app. Sync the source and restart:
+
+```
+scp relay/*.js relay/package.json root@<droplet>:/opt/peartune-relay/ && ssh root@<droplet> "systemctl restart peartune-relay && sleep 3 && systemctl is-active peartune-relay"
+```
+
+Live sessions drop on restart, and the phones re-escalate through the relay on their next attempt,
+so pick a quiet moment. Watch it come back with:
+
+```
+ssh root@<droplet> "journalctl -u peartune-relay -f"
+```

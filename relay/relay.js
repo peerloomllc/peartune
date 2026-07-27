@@ -21,6 +21,14 @@ const HyperDHT = require('hyperdht')
 const relay = require('blind-relay')
 const z32 = require('z32')
 
+// How much of a public key goes in a log line. Eight z32 characters identify a device to someone
+// who already holds the full key, and identify nobody to someone who does not.
+const KEY_PREFIX_LEN = 8
+
+function keyPrefix (key) {
+  try { return key ? z32.encode(key).slice(0, KEY_PREFIX_LEN) : '?' } catch { return '?' }
+}
+
 class RelayNode {
   // opts:
   //   keyPair   - the relay's stable identity. Its publicKey is the constant the
@@ -44,6 +52,27 @@ class RelayNode {
     this.server = null
     this._sessions = new Set()
     this._closing = null
+
+    // Byte accounting. `_live` holds the raw streams currently being relayed; `_closed` is the
+    // running total from streams that have gone. Cumulative bytes = closed + a walk of live, so a
+    // stats line is always the truth up to that instant rather than only counting what has ended.
+    //
+    // WE COUNT WHAT ARRIVES (bytesReceived), on both ends of a pair. The same bytes go straight
+    // back out of the other end, so "in" and "out" are the same payload seen twice - summing rx
+    // across both links is total unique traffic in both directions, and egress is ~equal to it.
+    this._live = new Set()
+    this._closed = { bytes: 0, streams: 0 }
+    // tokenHex -> the first end of a pairing that has arrived, waiting for its partner. Entries
+    // are removed when the pair completes or when the lone stream closes, so it stays small.
+    this._pending = new Map()
+  }
+
+  // How much has actually been relayed, in bytes. Cheap: `_live` is one entry per active stream
+  // (34 on the production node today), and udx exposes the counters as plain getters.
+  get relayedBytes () {
+    let n = this._closed.bytes
+    for (const s of this._live) n += s.bytesReceived || 0
+    return n
   }
 
   get publicKey () { return this.keyPair.publicKey }
@@ -56,7 +85,13 @@ class RelayNode {
     return {
       sessions: { active: s.sessions.active, accepted: s.sessions.accepted },
       pairings: { active: s.pairings.active, pending: s.pairings.pending, matched: s.pairings.matched },
-      streams: { active: s.streams.active, opened: s.streams.opened, errors: s.streams.errors }
+      streams: { active: s.streams.active, opened: s.streams.opened, errors: s.streams.errors },
+      // Cumulative relayed payload. Until 2026-07-27 the node counted sessions and streams but
+      // never BYTES, so "how much does one listener cost us" had to be inferred from the droplet's
+      // NIC counters - which also carry the DHT's own chatter and every other process. The minute
+      // over minute delta of this number is the relay's real traffic, and the only honest input to
+      // a capacity estimate.
+      bytes: { relayed: this.relayedBytes }
     }
   }
 
@@ -87,6 +122,44 @@ class RelayNode {
     this._sessions.add(session)
     session.on('error', () => {})
     session.on('close', () => this._sessions.delete(session))
+
+    // WHO IS TALKING TO WHOM, AND HOW MUCH - the two facts the README already tells users this
+    // relay can see ("it can see that your device is talking to your host and how much data moves,
+    // but never the contents"). Logging them does not widen what the relay knows; it writes down
+    // what it necessarily handles, so an operator can answer "whose are these sessions" and "what
+    // does a listener cost" instead of guessing from a NIC counter.
+    //
+    // PREFIXES ONLY, never a whole key. Eight z32 characters are enough to recognise a device you
+    // already own (Settings > Device key shows the full string, and a host key is printed at boot)
+    // and are not a directory of everyone who has ever used the relay. Nothing is written to disk
+    // by us - this goes to stdout, so retention is journald's, not ours.
+    // NB the `id` blind-relay hands us in the pair event is the UDX STREAM id, a number - not a
+    // public key. The only thing tying the two ends of a pairing together here is the shared TOKEN,
+    // so we correlate on it in memory and name both peers once the second end arrives. The token
+    // itself is a pairing secret and is NEVER logged; it is a Map key and nothing else.
+    const self = keyPrefix(conn.remotePublicKey)
+    session.on('pair', (isInitiator, token, stream) => {
+      const key = token.toString('hex')
+      const openedAt = Date.now()
+      const waiting = this._pending.get(key)
+      if (waiting) {
+        this._pending.delete(key)
+        this.log('relay:pair', { a: waiting.peer, b: self })
+      } else {
+        this._pending.set(key, { peer: self, at: openedAt })
+      }
+
+      this._live.add(stream)
+      stream.on('close', () => {
+        const bytes = stream.bytesReceived || 0
+        this._live.delete(stream)
+        this._closed.bytes += bytes
+        this._closed.streams++
+        // A half-open pairing whose partner never showed must not sit in the map forever.
+        if (this._pending.get(key)?.peer === self) this._pending.delete(key)
+        this.log('relay:unpair', { self, ms: Date.now() - openedAt, bytes })
+      })
+    })
   }
 
   async close () {
