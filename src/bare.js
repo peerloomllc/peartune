@@ -963,7 +963,10 @@ function startPoolNudge (host) {
   if (!e || e.nudgeTimer) return
   const tick = () => {
     e.nudgeTimer = null
-    if (!mergedMode()) return // outside merged mode the pool is not read
+    // NB no merged-mode guard (P1, 2026-07-26). It used to stop here outside the blend, which
+    // left a library dark until something else restarted the loop - and "the pool is not read"
+    // was never quite true: a single-library FILTER is a view, the other libraries are still
+    // paired, still expected, and still where a queued write or a track's other copy lives.
     if (!loadHostsFile().hosts.some((h) => h.libraryId === libId)) return // library removed
     if (poolClient(libId)) return // landed
     log('nudge:pool', { lib: libId.slice(0, 8), ...swarmDiag(host.hostKey) })
@@ -979,15 +982,17 @@ function stopPoolNudge (libId) {
   if (e && e.nudgeTimer) { clearTimeout(e.nudgeTimer); e.nudgeTimer = null }
 }
 
-// --- pool watchdog (2026-07-26) ---------------------------------------------
+// --- connection watchdog (2026-07-26) ---------------------------------------
 //
-// The self-healing the pool did not have. See worklet/pool-health.js for WHY the pool could go
-// dark for 20+ minutes while the active host recovered in seconds; in short, the active host is
-// kicked by every RPC the app makes and a pool host is kicked by nothing but its own timer.
+// The self-healing no connection used to have, now covering EVERY paired library including the
+// active one (P1 of proposals/2026-07-26-one-connection-per-library.md). See worklet/pool-health.js
+// for why: the active connection is repaired by ordinary use and nothing else was, which the A/B
+// proved was the whole difference between "back in 2 seconds" and "gone for 20 minutes".
 //
-// Each tick: a dark host gets its topic re-joined and its nudge restarted (both idempotent, so a
-// healthy nudge loop is untouched), and a live host gets a ping - the traffic an idle pool
-// connection otherwise never sees, which is what lets a dead socket keep reading as connected.
+// Each tick, per library: a dark one gets its topic re-joined and its nudge restarted (both
+// idempotent, so a healthy loop is untouched), and a live one that traffic has not recently proved
+// gets a ping. The active and pool roles still have different plumbing underneath - that is P2's
+// job - but they no longer get different POLICY.
 let poolWatchdogTimer = null
 
 function startPoolWatchdog () {
@@ -996,36 +1001,50 @@ function startPoolWatchdog () {
   if (poolWatchdogTimer.unref) poolWatchdogTimer.unref()
 }
 
+// The client for a library whatever its role - poolClient already answers for both, but spell it
+// out here so the watchdog reads as role-agnostic.
+function anyClientFor (libId) { return poolClient(libId) }
+
 async function poolWatchdogTick () {
   const actions = poolActions({
-    merged: mergedMode(),
     hosts: loadHostsFile().hosts,
     activeLibraryId,
-    isLive: (libId) => !!poolClient(libId)
+    isLive: (libId) => !!anyClientFor(libId),
+    provenAt: (libId) => { const c = anyClientFor(libId); return c ? c.lastActivityAt : 0 },
+    now: Date.now()
   })
-  await Promise.allSettled(actions.map(async ({ host, libraryId: libId, action }) => {
+  await Promise.allSettled(actions.map(async ({ host, libraryId: libId, active, action }) => {
     if (action === 'redial') {
-      // Idempotent by design: joinPoolTopic re-uses an existing discovery session and
-      // startPoolNudge returns early when a loop is already running, so this only DOES
-      // anything when the pool has genuinely stopped reaching for this host.
+      if (active) {
+        // The active library has its own machinery (one topic membership, one nudge loop), so
+        // drive THAT rather than opening a second, pool-shaped path to the same peer - Hyperswarm
+        // dedups one connection per peer and the bookkeeping would be a lie either way.
+        const stalled = !activeNudgeTimer
+        joinActiveTopic(host)
+        startActiveNudge()
+        if (stalled) {
+          log('link:watchdog', { lib: libId.slice(0, 8), role: 'active', state: 'stalled', ...swarmDiag(host.hostKey) })
+          nudgeSwarm()
+        }
+        return
+      }
       const e = pool.get(libId)
       const stalled = !e || !e.nudgeTimer
       joinPoolTopic(host)
       startPoolNudge(host)
       if (stalled) {
-        // The interesting case, and the one worth a line in the log: nothing was retrying
-        // this host at all. If this fires repeatedly in the field, the nudge loop is dying
-        // somewhere we have not found yet - and the watchdog is what keeps that from being
-        // a 20-minute outage.
-        log('pool:watchdog', { lib: libId.slice(0, 8), state: 'stalled', ...swarmDiag(host.hostKey) })
+        // The interesting case, and the one worth a line in the log: nothing was retrying this
+        // library at all. If this fires repeatedly in the field, a nudge loop is dying somewhere
+        // we have not found yet - and the watchdog is what keeps that from being an outage.
+        log('link:watchdog', { lib: libId.slice(0, 8), role: 'pool', state: 'stalled', ...swarmDiag(host.hostKey) })
         nudgePool(libId)
       }
       return
     }
-    // 'probe': prove the connection with real traffic. A ping that never answers means the
-    // socket is dead even though the object is not destroyed - destroy it so the close handler
-    // greys the library, restarts the nudge, and frees Hyperswarm to redial the peer.
-    const c = poolClient(libId)
+    // 'probe': prove a connection that traffic has not proved lately. A ping that never answers
+    // means the socket is dead even though the object is not destroyed - destroy it so the close
+    // handler greys the library, restarts its nudge, and frees Hyperswarm to redial the peer.
+    const c = anyClientFor(libId)
     if (!c) return
     try {
       await Promise.race([
@@ -1036,7 +1055,10 @@ async function poolWatchdogTick () {
         })
       ])
     } catch (err) {
-      log('pool:watchdog', { lib: libId.slice(0, 8), state: 'zombie', err: err && err.message, ...swarmDiag(host.hostKey) })
+      log('link:watchdog', {
+        lib: libId.slice(0, 8), role: active ? 'active' : 'pool', state: 'zombie',
+        err: err && err.message, ...swarmDiag(host.hostKey)
+      })
       try { c.conn.destroy() } catch {}
     }
   }))
@@ -2282,9 +2304,13 @@ const methods = {
   // merged index stays cached; re-entering is instant. switchHost does this too.
   exitMerged () {
     _mergedMode = false
-    // Nobody is reading the blend now, so leave every pool host's topic (stops the swarm trying +
-    // stops its nudge + closes it). Re-entering merged mode rejoins on demand via ensureAll.
-    closePool()
+    // The pool STAYS CONNECTED (P1, 2026-07-26). It used to be torn down here on the grounds that
+    // nobody reads the blend outside merged mode - but focusing one library is a VIEW, not an
+    // unpairing: the other libraries still hold queued writes for their own outboxes, still hold
+    // other copies of tracks in the queue, and are one tap from being read again. Dropping them
+    // meant that tap paid for a fresh hole-punch, and it is also what let a library stay dark
+    // (the nudge loop stopped with it). The connection watchdog would re-dial them within 30s
+    // anyway, so tearing down here would now be churn that contradicts the policy.
     return { merged: false }
   },
 
@@ -3345,7 +3371,8 @@ const methods = {
     saveHostsFile(f)
     const host = hostList.activeHost(f)
     _mergedMode = false // focusing one library leaves the blended view (the '_all' chip re-enters it)
-    closePool() // same reason as exitMerged: no blend, leave every pool host's topic
+    // NB the other libraries stay connected - see exitMerged for why (P1, 2026-07-26). Only the
+    // OUTGOING ACTIVE connection is dropped below, because this host is taking its place.
     // Drop the old host's live connection explicitly (we are switching away from it), then
     // repoint the swarm's active topic below. client=null so attachActive builds a fresh one.
     if (client) { try { await client.close() } catch {} ; client = null }
@@ -3356,10 +3383,18 @@ const methods = {
     // and the swarm membership persists, so a first connection that does not land in the wait
     // just arrives a moment later and fires host:connected then. Either way we emit host:switched
     // so the UI swaps and the new library's queue is offered.
-    try {
-      await connectTo(host)
-    } catch (e) {
-      log('switch:connect-deferred', { err: e.message })
+    // If the incoming library is ALREADY connected as a pool member - which it now usually is,
+    // since the pool is no longer torn down on a view change - ADOPT that live connection rather
+    // than dialing. Hyperswarm dedups one connection per peer, so a fresh dial would never get a
+    // 'connection' event and the switch would stall at "not connected" with the library actually
+    // reachable the whole time (the 2026-07-24 strand bug). Returns false when there is nothing
+    // live to adopt, and then we dial as before.
+    if (!(await promotePoolToActive(host))) {
+      try {
+        await connectTo(host)
+      } catch (e) {
+        log('switch:connect-deferred', { err: e.message })
+      }
     }
     emit('host:switched', { hostKey: host.hostKey, libraryId: host.libraryId, libraryName: host.libraryName, shimPort })
     return { ...host, shimPort }
@@ -3499,7 +3534,7 @@ const methods = {
 
     if (client) await client.close()
     client = null
-    await closePool() // tear down every merged-mode pool connection too
+    await closePool() // tear down every other library's connection too - this is the full reset
     mergedIndex = null // drop the blended index and its cache-in-memory
     mergedConnected = new Set()
     mergedFresh = new Set()
