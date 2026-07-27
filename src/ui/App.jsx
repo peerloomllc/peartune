@@ -345,10 +345,14 @@ export default function App () {
       // The operator renamed the library on the dashboard; the worklet caught it on connect and
       // persisted it. Reflect it live in the header, the Settings switcher, and the merged chips.
       on('host:renamed', (d) => {
+        // `libraryName` is the LABEL (your alias when you set one, suffixed on a clash);
+        // `hostName` is what the server itself now calls the library, which Settings shows
+        // under an aliased row - so a rename you cannot see in the label is still visible.
+        const patch = { libraryName: d.libraryName, ...(d.hostName ? { hostName: d.hostName } : {}), ...(d.alias !== undefined ? { alias: d.alias } : {}) }
         setState(s => ({
           ...s,
-          host: s.host?.hostKey === d.hostKey ? { ...s.host, libraryName: d.libraryName } : s.host,
-          hosts: (s.hosts || []).map(h => h.hostKey === d.hostKey ? { ...h, libraryName: d.libraryName } : h)
+          host: s.host?.hostKey === d.hostKey ? { ...s.host, ...patch } : s.host,
+          hosts: (s.hosts || []).map(h => h.hostKey === d.hostKey ? { ...h, ...patch } : h)
         }))
         if (mergedRef.current?.merged) call('mergedStatus').then(st => { if (st?.libraries) setMerged(st) }).catch(() => {})
       }),
@@ -1410,6 +1414,24 @@ export default function App () {
     } catch (e) { setError(e.message) }
   }
 
+  // YOUR OWN name for a library (proposal 2026-07-27-local-library-alias). A library is named by
+  // the machine it lives on, so a friend's default "My Library" was un-relabellable until now.
+  // Blank clears it and the row goes back to whatever the server currently calls it. Local to
+  // this phone: the alias is never sent to a host.
+  async function saveLibraryAlias (hostKey, alias) {
+    haptic('light')
+    try {
+      const r = await call('setLibraryAlias', { hostKey, alias })
+      setState(s => ({
+        ...s,
+        hosts: r.hosts,
+        // The active library's own header/label lives on state.host, which listHosts does not
+        // replace - so re-point it or the header keeps the pre-alias name until the next switch.
+        host: s.host ? { ...s.host, ...(r.hosts.find(h => h.hostKey === s.host.hostKey) || {}) } : s.host
+      }))
+    } catch (e) { setError(e.message) }
+  }
+
   function removeLibrary (host) {
     setConfirming({
       title: `Remove ${host.libraryName || 'this library'}?`,
@@ -1818,6 +1840,7 @@ export default function App () {
         ident={ident} onRefreshIdentity={loadIdentity} onSaveIdentity={saveIdentity} onSaveAvatar={saveAvatar} onQuality={changeQuality}
         skin={skin} onSkin={setSkinValue}
         onSwitchHost={switchLibrary} onRemoveHost={removeLibrary} onAddLibrary={openAddLibrary}
+        onSetAlias={saveLibraryAlias}
       />
     )
   } else if (tab === 'about') {
@@ -4991,7 +5014,7 @@ function OwnerPairSheet ({ link, toast, onClose }) {
   )
 }
 
-function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary }) {
+function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [copied, setCopied] = useState(false)
   const [dev, setDev] = useState(null)
@@ -5064,6 +5087,14 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
 
   const [open, setOpen] = useState(null)
   const toggle = (id) => { haptic('light'); setOpen(o => (o === id ? null : id)) }
+
+  // Which library row is being renamed, and the draft. null = none (the common case).
+  const [aliasEdit, setAliasEdit] = useState(null)
+  const saveAlias = async () => {
+    const { hostKey, value } = aliasEdit
+    setAliasEdit(null) // close optimistically: the write is local to this phone, nothing to await on a host
+    await onSetAlias(hostKey, value.trim())
+  }
 
   // The avatar shown in the profile header: the last-picked one (optimistic) else what
   // the worklet persisted. `avatar` is base64 JPEG (no data: prefix).
@@ -5233,6 +5264,34 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
                   ? (state.connected ? 'Active — connected' : 'Active — connecting…')
                   : 'Tap to switch to this library')
             const tappable = !ml && !h.active // only switch libraries in single-host mode
+
+            // Editing YOUR OWN name for this library. The row becomes the editor in place rather
+            // than opening a sheet - it is one short field, and the name you are replacing is
+            // right there to read while you type.
+            if (aliasEdit?.hostKey === h.hostKey) {
+              return (
+                <div className='row' key={h.hostKey}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <input
+                      className='profile-dev' style={{ width: '100%' }} autoFocus
+                      value={aliasEdit.value} onChange={e => setAliasEdit({ ...aliasEdit, value: e.target.value })}
+                      onKeyDown={e => { if (e.key === 'Enter') saveAlias() }}
+                      placeholder={h.hostName || h.libraryName || 'Library'}
+                      maxLength={40} aria-label='Your name for this library'
+                    />
+                    <div className='desc'>
+                      Only on this phone - your server is not told. Leave it empty to use the name
+                      the server gives it{h.hostName ? ` (“${h.hostName}”)` : ''}.
+                    </div>
+                    <div className='btnrow'>
+                      <button onClick={() => setAliasEdit(null)}>Cancel</button>
+                      <button onClick={saveAlias}>Save</button>
+                    </div>
+                  </div>
+                </div>
+              )
+            }
+
             return (
               <div
                 className='row'
@@ -5240,7 +5299,7 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
                 onClick={() => { if (tappable) onSwitchHost(h.hostKey) }}
                 style={{ cursor: tappable ? 'pointer' : 'default' }}
               >
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div className='label'>
                     {h.libraryName || 'Library'}
                     {showDot && (
@@ -5250,10 +5309,25 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
                     )}
                   </div>
                   <div className='desc'>{desc}</div>
+                  {/* An alias WINS over the server's name, so the server's name has to stay visible
+                      somewhere - otherwise the operator renaming their library is invisible to you
+                      and clearing the alias looks like it produced a name from nowhere. */}
+                  {h.alias && h.hostName && h.hostName !== h.alias && (
+                    <div className='desc'>Your server calls it “{h.hostName}”</div>
+                  )}
                 </div>
-                <button className='rowremove' aria-label={'Remove ' + (h.libraryName || 'library')} onClick={(e) => { e.stopPropagation(); onRemoveHost(h) }}>
-                  <Trash size={19} weight='regular' />
-                </button>
+                <div className='rowacts'>
+                  <button
+                    className='rowremove' aria-label={'Rename ' + (h.libraryName || 'library') + ' on this phone'}
+                    title='Your own name for this library'
+                    onClick={(e) => { e.stopPropagation(); haptic('light'); setAliasEdit({ hostKey: h.hostKey, value: h.alias || '' }) }}
+                  >
+                    <PencilSimple size={19} weight='regular' />
+                  </button>
+                  <button className='rowremove' aria-label={'Remove ' + (h.libraryName || 'library')} onClick={(e) => { e.stopPropagation(); onRemoveHost(h) }}>
+                    <Trash size={19} weight='regular' />
+                  </button>
+                </div>
               </div>
             )
           })}

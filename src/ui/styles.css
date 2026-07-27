@@ -987,6 +987,10 @@ button.danger { color: var(--color-error); border-color: var(--color-border); }
   color: var(--color-text-muted); display: inline-flex; align-items: center;
 }
 .rowremove:active { color: var(--color-error); }
+/* Both per-library actions (rename, remove) pinned TOGETHER at the right edge. The row is
+   space-between, so with three children the pencil otherwise drifted with the label's width and
+   sat in a different place on every row (Tim, 2026-07-27). */
+.rowacts { display: flex; align-items: center; gap: .15rem; flex: none; margin-left: auto; }
 button.wide { width: 100%; }
 .btnrow { display: flex; gap: .5rem; margin-top: .25rem; }
 .btnrow button { flex: 1; font-size: .875rem; }
