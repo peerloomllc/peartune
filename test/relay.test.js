@@ -159,3 +159,75 @@ test('relay identity is deterministic and 0600-persisted', async (t) => {
 test('RelayNode requires a keyPair', () => {
   assert.throws(() => new RelayNode({}), /keyPair/)
 })
+
+// --- what the relay records about a pairing (2026-07-27) ---------------------
+//
+// The node counted sessions and streams but never BYTES, so "what does one relayed listener cost"
+// could only be inferred from the droplet's NIC - which also carries DHT chatter and every other
+// process. And it logged nothing per pairing, so "whose are these 17 idle sessions" was
+// unanswerable from the box. Both are metadata the README already tells users the relay sees.
+
+test('a pairing is logged with KEY PREFIXES, never whole keys, and its bytes are counted', async (t) => {
+  const lines = []
+  const testnet = await createTestnet(3)
+  const keyPair = HyperDHT.keyPair(hcrypto.randomBytes(32))
+  const node = new RelayNode({
+    keyPair,
+    bootstrap: testnet.bootstrap,
+    log: (event, fields) => lines.push({ event, ...fields })
+  })
+  await node.ready()
+
+  const a = new HyperDHT({ bootstrap: testnet.bootstrap })
+  const b = new HyperDHT({ bootstrap: testnet.bootstrap })
+  t.after(async () => { await a.destroy(); await b.destroy(); await node.close(); await testnet.destroy() })
+
+  const token = relay.token()
+  const [ea, eb] = await Promise.all([
+    pairThroughRelay(a, node.publicKey, token, true),
+    pairThroughRelay(b, node.publicKey, token, false)
+  ])
+
+  assert.equal(node.relayedBytes, 0, 'nothing relayed before anyone writes')
+
+  // BOTH ends must send - see the forwarding test above: a relay stream only learns a peer's
+  // address from a packet that peer sends, so a one-way write deadlocks. And a 4 KB write arrives
+  // in MTU-sized chunks (~1.1 KB), so count up to the full length rather than expecting one packet.
+  const payload = Buffer.alloc(4096, 7)
+  const drain = (stream, n) => new Promise((resolve) => {
+    let got = 0
+    stream.on('data', (d) => { got += d.length; if (got >= n) resolve(got) })
+  })
+  const gotB = drain(eb.raw, payload.length)
+  const gotA = drain(ea.raw, payload.length)
+  ea.raw.write(payload)
+  eb.raw.write(payload)
+  assert.ok((await gotB) >= payload.length, 'the bytes arrived at the responder')
+  assert.ok((await gotA) >= payload.length, 'and at the initiator')
+
+  // The counter reads LIVE streams, so it moves without waiting for a close.
+  assert.ok(node.relayedBytes >= payload.length * 2, `relayedBytes counted both directions (${node.relayedBytes})`)
+  assert.equal(node.stats.bytes.relayed, node.relayedBytes, 'stats carries the same number')
+
+  // ONE line per completed pairing, naming BOTH ends - that is what makes "whose sessions are
+  // these" answerable at all.
+  const pairs = lines.filter((l) => l.event === 'relay:pair')
+  assert.equal(pairs.length, 1, 'one line per pairing, not one per end')
+  const { a: endA, b: endB } = pairs[0]
+  assert.equal(endA.length, 8, 'one end is a prefix')
+  assert.equal(endB.length, 8, 'the other end is a prefix')
+  assert.notEqual(endA, endB, 'the two ends are distinct peers')
+  // A z32-encoded 32-byte key is 52 chars; nothing that long may reach the log. The pairing TOKEN
+  // is a shared secret and must never appear either - it is 64 hex chars.
+  for (const v of Object.values(pairs[0])) assert.ok(String(v).length < 52, 'no key or token in the line')
+
+  // Closing a stream banks its bytes and reports the pairing's lifetime.
+  const before = node.relayedBytes
+  ea.raw.destroy(); eb.raw.destroy()
+  ea.socket.destroy(); eb.socket.destroy()
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  const unpairs = lines.filter((l) => l.event === 'relay:unpair')
+  assert.ok(unpairs.length >= 1, 'a closed stream logs its bytes')
+  assert.ok(unpairs.every((u) => typeof u.bytes === 'number' && typeof u.ms === 'number'), 'with bytes + duration')
+  assert.ok(node.relayedBytes >= before, 'the total never goes backwards when a stream closes')
+})
