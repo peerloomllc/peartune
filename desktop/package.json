@@ -6,6 +6,7 @@
   "private": true,
   "main": "src/main/index.js",
   "author": "PeerLoom LLC <peerloomllc@proton.me>",
+  "homepage": "https://peerloomllc.com/peartune/",
   "scripts": {
     "prepack:vendor": "node scripts/prepack.js",
     "postinstall": "node scripts/prepack.js",
