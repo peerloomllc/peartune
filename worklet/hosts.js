@@ -137,4 +137,39 @@ function electHome (raw, live) {
   return cand[0].libraryId
 }
 
-module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost, electHome }
+// Two libraries with the SAME NAME (Tim, 2026-07-27). A library is named by its HOST, and the
+// desktop host ships with `--name "My Library"` - so two friends running defaults give you two
+// identical rows in the switcher, the chips, Settings, the request list and the Manage picker,
+// with nothing to tell them apart. You cannot even rename someone else's library: every rename
+// path here is driven by the name the host pushes.
+//
+// Same rule the HOST already uses for two people called Sam (host/grants.js personLabels): a lone
+// name is left completely alone, and only a genuine clash earns a suffix. The discriminator is the
+// libraryId prefix - stable across renames and reconnects, and the same string that appears in the
+// logs and on the dashboard, so a confused user and a debugging developer are looking at the same
+// four characters.
+//
+// This lives on the PHONE, unlike personLabels: libraries span hosts, and only the phone holds the
+// whole list. Computed at the boundary, never persisted - the stored libraryName stays exactly what
+// the host said, so a later rename (or an alias) has something honest to compare against.
+const SUFFIX_LEN = 4
+
+function libraryLabels (hosts) {
+  const byName = new Map()
+  for (const h of hosts || []) {
+    if (!h || !h.libraryId) continue
+    const k = String(h.libraryName || '').trim().toLowerCase()
+    byName.set(k, (byName.get(k) || 0) + 1)
+  }
+  const out = new Map()
+  for (const h of hosts || []) {
+    if (!h || !h.libraryId) continue
+    const name = String(h.libraryName || '').trim() || 'Library'
+    const k = String(h.libraryName || '').trim().toLowerCase()
+    const clashes = (byName.get(k) || 0) > 1
+    out.set(h.libraryId, clashes ? `${name} #${String(h.libraryId).slice(0, SUFFIX_LEN)}` : name)
+  }
+  return out
+}
+
+module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost, electHome, libraryLabels }
