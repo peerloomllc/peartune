@@ -32,8 +32,9 @@ const { isPairLink, parseLink } = require('../protocol/link')
 const { hostTopic, libraryId: deriveLibraryId } = require('../protocol/ids')
 const { RELAY_PUBLIC_KEY, relayThroughFor } = require('../protocol/relay')
 const hostList = require('../worklet/hosts')
-const { poolActions, POOL_WATCHDOG_MS, POOL_PING_TIMEOUT_MS } = require('../worklet/pool-health')
+const { linkActions, WATCHDOG_MS, PING_TIMEOUT_MS } = require('../worklet/link-health')
 const { createRebuildGate } = require('../worklet/rebuild-gate')
+const { pickAltCopy } = require('../worklet/failover')
 const merge = require('../worklet/merge')
 const catalog = require('../worklet/catalog')
 const { coalesce, clientCall } = require('../worklet/outbox')
@@ -58,20 +59,24 @@ const LEAVES_FILE = path.join(DATA_DIR, 'pending-leaves.json')
 // and - crucially - a track that is mid-play when you switch keeps streaming from the same
 // cache. A switch swaps the queue but never stops the music.
 const LIB_ROOT = path.join(DATA_DIR, 'lib')
-let activeLibraryId = null
+// The DEFAULT library (P3, proposal 2026-07-26). Not a connection tier - every paired library is
+// connected the same way (see `links`). This answers "which library did the caller mean when it
+// named none", and it is the one single-host mode shows. Persisted as hosts.json activeHostKey,
+// whose name is kept so no migration is needed.
+let defaultLibraryId = null
 function libDir () {
-  if (!activeLibraryId) throw new Error('No active library.')
-  return path.join(LIB_ROOT, activeLibraryId)
+  if (!defaultLibraryId) throw new Error('No default library.')
+  return path.join(LIB_ROOT, defaultLibraryId)
 }
 
 // The MERGED view (multi-host step 2, proposal 2026-07-19): when on, browse/search/streaming serve
 // from the in-memory merged INDEX (every connected host's catalog, deduped) instead of a single
-// host's client. It is a MODE FLAG, deliberately DECOUPLED from activeLibraryId: activeLibraryId
-// still names the single client's host (so the single-client-dependent "You" features - favorites,
-// resume, counts, session - keep working against the active host in merged mode, the proposal's
-// "per-filter for now"), while mergedMode governs the blended browse. Tying merged mode to
-// activeLibraryId would break the moment any ensureConnected() -> connectTo() -> useLibrary(realHost)
-// fired (a favorites/resume call), silently dropping us out of merged mode mid-session. The reserved
+// host's client. It is a MODE FLAG, deliberately DECOUPLED from defaultLibraryId: that pointer
+// still names the library a caller means when it names none (so the "You" features - favorites,
+// resume, counts, session - have a home in merged mode, the proposal's "per-filter for now"),
+// while mergedMode governs the blended browse. Tying merged mode to defaultLibraryId would break
+// the moment any ensureConnected() -> connectTo() -> useLibrary(realHost) fired (a favorites or
+// resume call), silently dropping us out of merged mode mid-session. The reserved
 // '_merged' dir still holds merged-only state: the cached index and the mixed-host queue.
 const MERGED_ID = '_merged'
 let _mergedMode = false
@@ -141,43 +146,58 @@ let networkType = 'wifi'
 // close() leaves the node alone (_ownDht=false); we only destroy it on a full account reset.
 let dht = null
 // ONE Hyperswarm for the whole worklet (proposal 2026-07-22 phase 2), riding the shared
-// warm dht node above. The active host's connection now comes from a PERSISTENT topic
-// membership - Hyperswarm's ConnectionManager retries the hole-punch forever and holds
-// the link open with keepalive, which is what makes off-LAN reliable (PearCircle's model).
-// We no longer dht.connect the active host or run our own backoff loop for it; the swarm
-// owns retry + reconnect. Pairing and the merged pool still dht.connect for now (phase 3
-// moves the pool). Created lazily in ensureSwarm().
+// warm dht node above. EVERY library's connection comes from a PERSISTENT topic membership -
+// Hyperswarm's ConnectionManager retries the hole-punch forever and holds the link open with
+// keepalive, which is what makes off-LAN reliable (PearCircle's model). Nothing dht.connects a
+// library any more; the swarm owns retry + reconnect for all of them (P2 finished what the
+// 2026-07-22 transport proposal started). Created lazily in ensureSwarm().
 let swarm = null
-let activeTopicKey = null // the active host's hostKey (z32) whose topic we currently join
-let activeDiscovery = null // the PeerDiscoverySession from swarm.join, so nudges can force a lookup
-let activeWaiters = [] // resolvers for callers awaiting the NEXT live active connection
+// The library currently being paired, if any. attach() skips the identity push for it - pair()
+// sends that claim itself over the same connection, and racing the two minted duplicate persons
+// (hardware, 2026-07-22).
+let pairingLibId = null
 // While a swarm-pair is mid-flight: { hostKeyZ, onConn }. The host being paired is not yet in
 // hosts.json, so onSwarmConnection routes ITS connection to the pair handshake (phase 4) instead
 // of attach*. Null the rest of the time.
 let pairingTarget = null
 // How long a caller (an RPC via ensureConnected, a cold-launch connect) waits for the FIRST
 // live connection before giving up THIS wait. It bounds the wait only - the swarm membership
-// persists past it and a connection that lands later still wires up (attachActive). So this is
+// persists past it and a connection that lands later still wires up (attach). So this is
 // a UX bound, not a give-up: unlike the old per-dial budget, missing it does not stop retrying.
 const ACTIVE_CONNECT_WAIT_MS = 20000
-// How often to force a fresh swarm discovery while the active host is DISCONNECTED. Hyperswarm's
+// How often to force a fresh swarm discovery while a library is DISCONNECTED. Hyperswarm's
 // own reconnect backs off hard - after ~4 attempts a topic-discovered peer's retry timer returns
 // null (stops) and even an explicit peer only gets a 10-MINUTE timer (lib/retry-timer.js). At the
 // ~12% carrier hole-punch rate that is far too slow to land in the "1-2 min" the proposal wants.
 // Each nudge (swarm.flush -> discovery refresh) clears the discovered set and re-emits the host,
 // which resets its attempts and re-enqueues it (lib/peer-discovery.js clears _discovered every
 // refresh; lib/index.js _handlePeer calls peerInfo._reset()), i.e. a fresh burst of attempts. So a
-// ~10s nudge turns Hyperswarm's minutes-long lulls into a steady retry, matching the pool's own
-// aggressive backoff. The timer is unref'd and only runs while foreground (a suspended worklet
+// ~10s nudge turns Hyperswarm's minutes-long lulls into a steady retry, faster than its own
+// backoff. The timer is unref'd and only runs while foreground (a suspended worklet
 // freezes it, which is correct - no point punching while backgrounded).
 const ACTIVE_NUDGE_MS = 10000
-let client = null
+// The DEFAULT library's client, and whether it is up. DERIVED, never stored (P3/P4): `client`,
+// `currentHost` and `connected` used to be globals that attach/connect/drop had to keep in step
+// with the link map, and a global that disagrees with the socket is how a caller ends up writing
+// into a dead connection. There is one source of truth now - `links` - and these read it.
+//
+// defaultClient() answers null when there is nothing live; mustClient() is for the ~30 call sites
+// that have just awaited ensureConnected() and would otherwise dereference null, and it fails with
+// the same EUNREACHABLE shape those callers already handle.
+function defaultClient () { return defaultLibraryId ? clientFor(defaultLibraryId) : null }
+function defaultConnected () { return !!defaultClient() }
+function mustClient () {
+  const c = defaultClient()
+  if (!c) {
+    const e = new Error('could not reach the host')
+    e.code = 'EUNREACHABLE'
+    throw e
+  }
+  return c
+}
 let shim = null
 let shimPort = null
 let identity = null
-let currentHost = null
-let connected = false
-let reconnecting = null // the in-flight reconnect, so N callers share ONE attempt
 
 // --- cross-device session handoff (proposal 2026-07-17) ---------------------
 // This device holds the host's session "active player" token while it is the one playing.
@@ -252,17 +272,17 @@ function saveHostsFile (f) {
 
 // The currently-active host object, or null. Everything that used to call loadHost() (one
 // host) now asks for the active one.
-function loadActiveHost () {
+function loadDefaultHost () {
   return hostList.activeHost(loadHostsFile())
 }
 
-// Adopt a library as the active one: point activeLibraryId at it, ensure its per-host dir
+// Adopt a library as the DEFAULT one: point defaultLibraryId at it, ensure its per-host dir
 // exists, migrate any pre-multi-host flat files into it, and (re)load its outbox. Cheap and
 // idempotent - a no-op when the library is already active - so connect/init/switch can all
 // call it freely. Called BEFORE any per-host state read/write.
 function useLibrary (libraryId) {
-  if (activeLibraryId === libraryId) return
-  activeLibraryId = libraryId
+  if (defaultLibraryId === libraryId) return
+  defaultLibraryId = libraryId
   fs.mkdirSync(libDir(), { recursive: true })
   // The legacy flat-file migration only makes sense for a REAL host (the pre-multi-host layout held
   // one host's state); never fold root files into the _merged context.
@@ -455,12 +475,13 @@ function enqueue (method, params) {
 // idempotent on the host (LWW for fav/resume, a monotonic bump for counts), so a partial
 // flush is safe.
 async function flushOutbox () {
-  if (flushing || !outbox.length || !client) return
+  const c = defaultClient()
+  if (flushing || !outbox.length || !c) return
   flushing = true
   try {
     while (outbox.length) {
       const entry = outbox[0]
-      const call = clientCall(client, entry)
+      const call = clientCall(c, entry)
       if (!call) { outbox = outbox.slice(1); saveOutbox(); continue } // unknown method: drop it
       try {
         await call()
@@ -528,7 +549,7 @@ function stampAuthFor (libraryId) {
     fs.writeFileSync(path.join(dir, 'lease.json'), JSON.stringify({ lastAuth: Date.now() }))
   } catch {}
 }
-function stampAuth () { stampAuthFor(activeLibraryId) }
+function stampAuth () { stampAuthFor(defaultLibraryId) }
 // Cached audio plays only while the last successful authorization is inside the grace
 // window. This is what makes a revoked device eventually lose its downloads without ever
 // deleting a legitimate user's on a server hiccup.
@@ -566,9 +587,8 @@ function purgeAllLibraries (libraryIds) {
 
 // --- connection -------------------------------------------------------------
 
-// Build ONE PearTuneClient off the shared warm DHT node. Every connection - the single active
-// one and every merged-mode pool connection - is made here so they all share the DHT and the
-// session-superseded push wiring.
+// Build ONE PearTuneClient off the shared warm DHT node. Every library's connection is made here,
+// so they all share the DHT and the session-superseded push wiring.
 function makeClient () {
   if (!dht) dht = new HyperDHT()
   const c = new PearTuneClient({ keyPair: identity, dht, log })
@@ -587,7 +607,7 @@ function makeClient () {
     } else if (m?.kind === 'library-renamed') {
       // The operator renamed the library on this host's dashboard; the host pushed it to every live
       // connection (host/presence.js notifyAll). Self-describing via libraryId, so this updates the
-      // RIGHT stored host record - active OR a non-active pool host - the instant it happens, not on
+      // RIGHT stored host record, whichever library it is, the instant it happens - not on
       // the next reconnect/rebuild. Same effect as syncHostNames, just push-driven. The UI relabels
       // the header/switcher/merged chips off host:renamed for any hostKey.
       const lib = m.data?.libraryId
@@ -608,7 +628,7 @@ function makeClient () {
     } else if (m?.kind === 'request:new') {
       // Tier A notification (P3): the host only pushes request:new to OWNER devices, so if this
       // arrives we are an owner - hand it straight to the UI for a banner + badge. Rides whatever
-      // channel it came in on (active or a pool host), which is why it lives here in the shared
+      // channel it came in on, whichever library that is, which is why it lives here in the shared
       // client rather than on one connection.
       log('request:new', { kind: m.data?.kind ?? null })
       emit('request:new', m.data || {})
@@ -633,7 +653,7 @@ function makeClient () {
 //   1. setIdentity/setAvatar fan out to every host CONNECTED right now.
 //   2. ensureHost pushes to a host the first time it connects in this run, so one that was
 //      off catches up by itself.
-// `identitySynced` is what stops (2) re-pushing on every pool read; a dropped connection
+// `identitySynced` is what stops (2) re-pushing on every read; a dropped connection
 // clears its entry, so a reconnect re-syncs.
 const identitySynced = new Set()
 
@@ -649,40 +669,28 @@ async function pushIdentityTo (c, libId) {
   if (libId) identitySynced.add(libId)
 }
 
-// Best-effort, in parallel, to every host with a live connection - including the single
-// active client, which is not in the pool. Never throws: a host that refuses or drops mid
-// push just stays stale until it reconnects, and renaming must not fail because of it.
+// Best-effort, in parallel, to every library with a live connection. Never throws: a host that
+// refuses or drops mid push just stays stale until it reconnects, and renaming must not fail
+// because of it.
 async function fanOutIdentity () {
-  const targets = new Map()
-  if (client && client.conn && !client.conn.destroyed) targets.set(currentHost?.libraryId || '_active', client)
-  for (const libId of pool.keys()) {
-    const c = poolClient(libId)
-    if (c) targets.set(libId, c)
+  const targets = []
+  for (const libId of links.keys()) {
+    const c = clientFor(libId)
+    if (c) targets.push([libId, c])
   }
-  await Promise.allSettled([...targets].map(([libId, c]) =>
-    pushIdentityTo(c, libId === '_active' ? null : libId)
+  await Promise.allSettled(targets.map(([libId, c]) =>
+    pushIdentityTo(c, libId)
       .catch((e) => log('identity:push-failed', { lib: String(libId).slice(0, 8), err: e?.message }))
   ))
 }
 
-async function ensureClient () {
-  if (client) return client
-  client = makeClient()
-  return client
-}
-
-// --- multi-host connection pool (step 2, merged mode) -----------------------
+// --- one link per library (P2, proposal 2026-07-26) -------------------------
 //
-// Merged mode reads from ALL paired hosts at once - to build the merged catalog index and to
-// route streaming per track. As of phase 3 (proposal 2026-07-22) each pool entry is a persistent
-// Hyperswarm TOPIC membership to one non-active host, wired exactly like the active connection:
-// join the host's topic, attach the media channel on the swarm 'connection', and nudge the
-// discovery every ~10s while disconnected until a punch lands. The ACTIVE host is NOT in the pool
-// - Hyperswarm dedups one connection per peer, so its single swarm connection (`client`) serves
-// both the single-client "You" features AND its slot in the blend; poolClient(activeLib) resolves
-// to `client`. An offline host is simply an entry with no live client (absent from ensureAll).
-// libraryId -> { host, client, discovery, nudgeTimer, waiters }.
-const pool = new Map()
+// Every paired library - the default one included - has exactly one entry here, and every entry is
+// reached the same way: a persistent Hyperswarm topic membership, a nudge loop while it is down, a
+// watchdog probe while it is up. libraryId -> { host, client, discovery, nudgeTimer, waiters }.
+// An offline library is simply an entry with no live client.
+const links = new Map()
 
 // The merged, deduped library INDEX (proposal 2026-07-19, §2): every connected host's full catalog,
 // merged in memory, that merged mode serves browse/search/sort from. Null until first built.
@@ -707,38 +715,31 @@ let trackLib = new Map() // any copy's trackId -> libraryId
 let trackByAnyId = new Map() // any copy's trackId -> the merged track (for best-copy failover)
 let entityLib = new Map() // any album/artist/genre id (primary or a copy) -> its owning libraryId
 
-function poolClient (libraryId) {
-  // The active host is served by the active `client` (one swarm connection per peer), so its
-  // "pool" client IS the active client - never a second connection.
-  if (libraryId && libraryId === activeLibraryId && connected && client && client.conn && !client.conn.destroyed) {
-    return client
-  }
-  const e = pool.get(libraryId)
+// The live client for ONE library, whatever role it plays. Null when that library has no usable
+// connection right now. Every caller in the worklet goes through here - there is no privileged
+// "active client" any more, only a default library (see defaultLibraryId).
+function clientFor (libraryId) {
+  const e = links.get(libraryId)
   return e && e.client && e.client.conn && !e.client.conn.destroyed ? e.client : null
 }
 
-// Ensure ONE host is connected; returns its client. The active host rides the active connection
-// (ensureConnected); every other host rides its own persistent swarm topic membership - join it,
-// nudge it, and wait for the 'connection' (attachPool wires the client when it lands). Single-
-// flight per host via its waiter list; the nudge loop keeps punching in the background.
-async function ensureHost (host) {
+// Ensure ONE library is connected; returns its client. Identical for every library - join its
+// topic, force a discovery lookup, keep nudging, and wait for the connection to land. Single-
+// flight per library via its waiter list, so a burst of callers shares one attempt.
+async function ensureLink (host) {
   const libId = host.libraryId
-  // The active host: its swarm connection is `client`. Don't open a second one.
-  if (libId === activeLibraryId) { await ensureConnected(); return client }
-
-  const live = poolClient(libId)
+  const live = clientFor(libId)
   if (live) return live
-
-  joinPoolTopic(host)
-  nudgePool(libId)      // force discovery now
-  startPoolNudge(host)  // keep punching until it lands
-  await waitForPoolConn(host)
-  return poolClient(libId)
+  joinTopic(host)
+  nudge(libId)      // force discovery now
+  startNudge(host)  // keep punching until it lands
+  await waitForLink(host)
+  return clientFor(libId)
 }
 
-// The client for a SPECIFIC owned library - what lets Manage target any library you own, not
-// just the active one (Tim: owning several, Manage only showed the last). No libraryId (or the
-// active one) is the active client, exactly as before; another library rides its pool connection.
+// The client for a SPECIFIC owned library - what lets Manage target any library you own, not just
+// the default one (Tim: owning several, Manage only showed the last). No libraryId means the
+// default library; every library resolves through the same ensureLink.
 // The libraries this device OWNS and can currently reach, each with a live client. Backs both the
 // Manage picker (ownedLibraries) and the aggregated owner request queue, so the two can never
 // disagree about which libraries are in play. A library you own but are offline to cannot be
@@ -746,26 +747,24 @@ async function ensureHost (host) {
 async function ownedLibraryList () {
   const out = []
   for (const h of loadHostsFile().hosts) {
-    // The ACTIVE host rides the active client (poolClient only returns it while the `connected`
-    // flag is up, which it may not be the instant Manage opens - that was leaving ownedLibraries
-    // empty and manageLib null). Non-active hosts use their pool client if it is live.
-    let c = null
-    if (h.libraryId === activeLibraryId) { try { await ensureConnected(); c = client } catch {} }
-    else c = poolClient(h.libraryId)
+    // One lookup for every library since P2 - the default one is no longer a special case. It
+    // used to need an ensureConnected() here, which left ownedLibraries empty (and manageLib
+    // null) whenever Manage opened before the `connected` flag caught up.
+    const c = clientFor(h.libraryId)
     if (!c) continue
     try {
       const id = await c.getIdentity()
-      if (id?.owner) out.push({ libraryId: h.libraryId, libraryName: id.libraryName || h.libraryName, active: h.libraryId === activeLibraryId, client: c })
+      if (id?.owner) out.push({ libraryId: h.libraryId, libraryName: labelFor(h.libraryId, id.libraryName || h.libraryName), active: h.libraryId === defaultLibraryId, client: c })
     } catch {}
   }
   return out
 }
 
 async function ownerClient (libraryId) {
-  if (!libraryId || libraryId === activeLibraryId) { await ensureConnected(); return client }
-  const host = loadHostsFile().hosts.find((h) => h.libraryId === libraryId)
+  const lib = libraryId || defaultLibraryId
+  const host = loadHostsFile().hosts.find((h) => h.libraryId === lib)
   if (!host) throw new Error('unknown library')
-  return await ensureHost(host)
+  return await ensureLink(host)
 }
 
 // Connect EVERY paired host in parallel for a merged read. An offline host resolves to a
@@ -773,166 +772,103 @@ async function ownerClient (libraryId) {
 // Returns the libraryIds that connected.
 async function ensureAll () {
   const hosts = loadHostsFile().hosts
-  const settled = await Promise.allSettled(hosts.map((h) => ensureHost(h).then(() => h.libraryId)))
+  const settled = await Promise.allSettled(hosts.map((h) => ensureLink(h).then(() => h.libraryId)))
   return settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)
 }
 
-// --- pool connections over the swarm (phase 3) ------------------------------
-// Each non-active host gets a persistent topic membership, mirroring the active machinery. The
-// pool entry holds its discovery session (so the nudge can force a lookup), its live client, its
-// per-host nudge timer, and callers waiting for the next connection.
+// --- links: one connection per library --------------------------------------
+//
+// P2 of proposals/2026-07-26-one-connection-per-library.md. There used to be TWO tiers here: the
+// "active" library, whose connection lived in the `client` global and was repaired by every RPC
+// the app made, and the "pool", whose connections lived in a map and were repaired by a timer
+// nobody kicked. The A/B (2026-07-26) proved that was the entire difference between a library
+// coming back in 2 seconds and one going missing for 20 minutes.
+//
+// Now there is one map and one code path. `defaultLibraryId` still names a DEFAULT library - which
+// one a caller means when it names none, and which one single-host mode shows - but it buys no
+// connection privileges. The globals `client` / `currentHost` / `connected` survive as a VIEW of
+// the default library's link, because ~39 call sites and the UI's host:connected events are
+// written against them; P3 retires them.
+//
+// What this deletes, and why that is the point: demoteActiveToPool and promotePoolToActive existed
+// only to MOVE a connection between the two tiers, and both were written to fix a bug that move
+// caused (the 2026-07-23 orphan and the 2026-07-24 strand). With one tier there is nothing to move.
 
-function joinPoolTopic (host) {
+function joinTopic (host) {
   const libId = host.libraryId
   const s = ensureSwarm()
-  let e = pool.get(libId)
-  if (!e) { e = { host, client: null, discovery: null, nudgeTimer: null, waiters: [] }; pool.set(libId, e) }
+  let e = links.get(libId)
+  if (!e) { e = { host, client: null, discovery: null, nudgeTimer: null, waiters: [] }; links.set(libId, e) }
   e.host = host
+  // server:false - the phone never announces, it only looks the host up and dials it, so this
+  // adds no discoverability. s.join is idempotent per topic.
   if (!e.discovery) e.discovery = s.join(hostTopic(z32.decode(host.hostKey)), { server: false, client: true })
   return e
 }
 
-// Wire a pool client onto a swarm-provided connection to a non-active host - the pool twin of
-// attachActive. Refreshes the blend (merged:updated + a rebuild if this host is new to it).
-function attachPool (host, conn) {
+// Wire a client onto a swarm-provided connection. ONE attach for every library: the only thing the
+// default library gets extra is the globals + the shim pointer + the host:connected event the UI
+// listens for, and those are presentation, not transport.
+async function attach (host, conn) {
   const libId = host.libraryId
-  let e = pool.get(libId)
-  if (!e) { e = { host, client: null, discovery: null, nudgeTimer: null, waiters: [] }; pool.set(libId, e) }
-  e.host = host
+  const e = joinTopic(host)
+  const isDefault = libId === defaultLibraryId
 
   const c = makeClient()
   c.attach(conn, { libraryId: libId })
   if (e.client && e.client !== c) { try { e.client.close() } catch {} }
   e.client = c
-  stopPoolNudge(libId)
-  stampAuthFor(libId) // a live connection is a fresh authorization for THIS host's lease
+  stopNudge(libId)
+  stampAuthFor(libId) // a live connection is a fresh authorization for THIS library's lease
   flushOutboxFor(libId, c).catch(() => {})
-  if (!identitySynced.has(libId)) pushIdentityTo(c, libId).catch(() => {})
+
+  // NOT while this library is mid-pair: pair() sends the claim itself, over this same connection,
+  // and pushing here raced it into DUPLICATE PERSONS (both sides saw "nobody holds this name" and
+  // each minted one) - seen on hardware 2026-07-22.
+  if (libId !== pairingLibId && !identitySynced.has(libId)) pushIdentityTo(c, libId).catch(() => {})
 
   conn.once('close', () => {
     if (e.client !== c) return // a newer attach already replaced it
     e.client = null
     identitySynced.delete(libId) // so a reconnect re-syncs rather than trusting a dead run
-    // A pool connection dropping (a revoke of THIS host, or it going offline) has no other channel
-    // to the UI - host:disconnected only fires for the active client. Push fresh status so the chip
-    // + Settings row grey promptly, then keep punching (the swarm's own backoff is too slow).
+    if (libId === defaultLibraryId) {
+      // Revoked, the host went away, or (most often) Android suspended this app in the background
+      // and the link timed out. Indistinguishable from here, so do NOT guess.
+      log('host:disconnected')
+      emit('host:disconnected', { hostKey: host.hostKey })
+    }
+    // Every library's drop refreshes the blend - host:disconnected only speaks for the default one.
     if (mergedMode()) emit('merged:updated', mergedStatusData())
-    startPoolNudge(host)
+    startNudge(host) // the swarm redials on its own, but its backoff is far too slow off-LAN
   })
 
-  log('pool:connected', { library: libId.slice(0, 8) })
+  log('link:connected', { lib: libId.slice(0, 8), role: isDefault ? 'default' : 'other', library: host.libraryName })
+
+  if (isDefault) {
+    // Point the (already-listening) shim at this client. Playback still flows THROUGH the live
+    // connection for anything not cached, which is what makes a revoke stop the music.
+    await ensureShim()
+    if (clientFor(libId) === c) {
+      emit('host:connected', {
+        libraryName: labelFor(host.libraryId, host.libraryName), libraryId: host.libraryId, shimPort, artBase: shim.artBase()
+      })
+    }
+    flushOutbox().catch(() => {}) // drain favorites/resume/counts queued while offline
+  }
+
   if (mergedMode()) {
     emit('merged:updated', mergedStatusData())
     if (!mergedFresh.has(libId)) rebuildIndex().catch(() => {})
   }
-  resolvePoolWaiters(libId)
-}
-
-// When a new host takes the ACTIVE slot (add-library or switch-library) while the PREVIOUS active
-// host's connection is still alive, that old connection would otherwise be ORPHANED: attachActive
-// overwrites `client`, and Hyperswarm dedups one connection per peer - so re-joining the old host's
-// topic later NEVER re-emits its existing connection, and the host is stuck showing offline in the
-// merged view even though its dashboard still shows us connected (the exact 2026-07-23 bug). So we
-// ADOPT the live connection into the pool: reuse the SAME client (no reconnect, and no second
-// Protomux channel from a re-attach) and wire pool-style close + status. Mirrors attachPool minus
-// the makeClient()+attach - we keep the working one.
-function demoteActiveToPool (host, oldClient, oldConn, libId) {
-  joinPoolTopic(host)                 // keep a topic membership so a future drop can redial
-  const e = pool.get(libId)           // joinPoolTopic ensured the entry
-  if (e.client && e.client !== oldClient) { try { e.client.close() } catch {} }
-  e.host = host
-  e.client = oldClient
-  stopPoolNudge(libId)                // it has a live client now
-  stampAuthFor(libId)                 // a live connection is a fresh authorization for this host's lease
-  identitySynced.add(libId)           // was active => identity already sent; don't race a re-push into dup persons
-  // Pool-style close. The old attachActive close handler on this conn is now inert (it early-returns
-  // because global `client` has moved on), so this is the one that greys the row + restarts nudging.
-  oldConn.once('close', () => {
-    if (e.client !== oldClient) return
-    e.client = null
-    identitySynced.delete(libId)
-    if (mergedMode()) emit('merged:updated', mergedStatusData())
-    startPoolNudge(host)
-  })
-  log('pool:adopted', { library: libId.slice(0, 8) })
-  if (mergedMode()) {
-    emit('merged:updated', mergedStatusData())
-    if (!mergedFresh.has(libId)) rebuildIndex().catch(() => {})
-  }
-  resolvePoolWaiters(libId)
-}
-
-// The mirror of demoteActiveToPool. When the ACTIVE host is removed (remove-library) and the host
-// promoted into its place is ALREADY connected in the pool, ADOPT that live pool connection into the
-// active slot instead of redialing it. connectTo() would join the topic and wait for a fresh
-// 'connection' event - but Hyperswarm dedups one connection per peer, so an already-pool-connected
-// host NEVER re-emits, and the promotion stalls forever at "Not connected" (the 2026-07-24
-// remove-active-strands-the-survivor bug, the mirror of the 2026-07-23 add-library one). So we reuse
-// the pool's SAME client + conn (no reconnect, no second Protomux channel), take its topic membership
-// over as the active one, and rewire an active-style close handler. Returns true if it adopted a live
-// pool connection, false if the pool had none (the caller then dials cold, which is safe - no live
-// connection means no dedup).
-async function promotePoolToActive (host) {
-  const libId = host.libraryId
-  const e = pool.get(libId)
-  const poolC = e && e.client
-  const conn = poolC && poolC.conn
-  if (!poolC || !conn || conn.destroyed) return false
-
-  // Detach the entry from the pool but KEEP the connection: nulling e.client makes attachPool's close
-  // handler inert (it early-returns when e.client !== its captured client), and we drop the map entry
-  // WITHOUT swarm.leave - joinActiveTopic below re-grabs the SAME live topic membership as the active
-  // one (s.join is idempotent per topic), so the connection is never torn down.
-  e.client = null
-  stopPoolNudge(libId)
-  pool.delete(libId)
-
-  useLibrary(libId)
-  joinActiveTopic(host)   // leaves the outgoing (removed) host's topic, adopts this one's live session
-  client = poolC
-  currentHost = host
-  connected = true
-  stopActiveNudge()       // we already hold a live connection
-  stampAuth()             // a live connection is a fresh authorization for the offline lease
-  log('active:adopted', { host: host.hostKey.slice(0, 8), library: host.libraryName })
-
-  // Active-style close (mirrors attachActive): on drop, grey the header and drive the redial nudge.
-  conn.once('close', () => {
-    if (client !== poolC || poolC.conn !== conn) return
-    connected = false
-    log('host:disconnected')
-    emit('host:disconnected', { hostKey: host.hostKey })
-    startActiveNudge()
-  })
-
-  // Point the shim at the adopted client, guarding against being superseded during the await.
-  await ensureShim()
-  if (client !== poolC || poolC.conn !== conn || conn.destroyed) return true
-  shim.setClient(poolC)
-  emit('host:connected', {
-    libraryName: host.libraryName,
-    libraryId: host.libraryId,
-    shimPort,
-    artBase: shim.artBase()
-  })
-  // With 3+ libraries the view STAYS merged after removing the active one (it only drops to single-host
-  // at <2). Refresh the merged status so the promoted host reads Active/connected in the blend right away
-  // rather than lagging on stale pool state - the same refresh demoteActiveToPool/attachPool do. (At 2
-  // libraries mergedMode() is already off here, so this is a no-op for the common case.)
-  if (mergedMode()) {
-    emit('merged:updated', mergedStatusData())
-    if (!mergedFresh.has(libId)) rebuildIndex().catch(() => {})
-  }
-  flushOutbox().catch(() => {}) // drain anything queued while this host was a background pool member
-  return true
+  resolveWaiters(libId)
 }
 
 // What Hyperswarm actually believes about ONE host, for the logs. Reaching into swarm.peers and
 // swarm._allConnections is private API, hence the try/catch: a diagnostic must never be the thing
-// that breaks a connection. It answers the question the old logs could not - when a host is dark,
-// is nothing being ATTEMPTED (no peer record, or attempts capped), or is every attempt failing?
-// `conns` is the one that matters most: Hyperswarm dedups one connection per peer, so a stale
-// entry there means rediscovery is a no-op no matter how hard we nudge.
+// that breaks a connection. It answers the question the old logs could not - when a library is
+// dark, is nothing being ATTEMPTED (no peer record, or attempts capped), or is every attempt
+// failing? `conns` is the one that matters most: Hyperswarm dedups one connection per peer, so a
+// stale entry there means rediscovery is a no-op no matter how hard we nudge.
 function swarmDiag (hostKeyZ) {
   try {
     if (!swarm || !hostKeyZ) return {}
@@ -950,130 +886,115 @@ function swarmDiag (hostKeyZ) {
   }
 }
 
-// Per-host nudge loop (the pool twin of startActiveNudge): force a fresh discovery lookup every
-// ~10s while this host is disconnected, so the hole-punch is retried steadily instead of stalling
-// in Hyperswarm's 10-min backoff. Only runs in merged mode (outside it nobody reads the pool).
-function nudgePool (libId) {
-  const e = pool.get(libId)
+// Force a FRESH discovery lookup for one library. This is the load-bearing nudge: refresh() re-runs
+// the DHT lookup, which clears the discovered set and re-emits the host, resetting its attempts and
+// re-enqueuing it for a fresh connection burst. (swarm.flush() only WAITS for the current refresh -
+// it does not start one when discovery is idle between its 10-min cycles - so it is the wrong tool.)
+function nudge (libId) {
+  const e = links.get(libId)
   if (e && e.discovery) { try { e.discovery.refresh({ client: true, server: false }).catch(() => {}) } catch {} }
 }
-function startPoolNudge (host) {
+
+// Keep nudging every ACTIVE_NUDGE_MS while a library is disconnected, so the hole-punch is retried
+// steadily instead of stalling in Hyperswarm's 10-min backoff (see the constant). Self-cancels the
+// moment a connection lands or the library is removed. Idempotent.
+function startNudge (host) {
   const libId = host.libraryId
-  const e = pool.get(libId)
+  const e = links.get(libId)
   if (!e || e.nudgeTimer) return
   const tick = () => {
     e.nudgeTimer = null
-    // NB no merged-mode guard (P1, 2026-07-26). It used to stop here outside the blend, which
-    // left a library dark until something else restarted the loop - and "the pool is not read"
-    // was never quite true: a single-library FILTER is a view, the other libraries are still
-    // paired, still expected, and still where a queued write or a track's other copy lives.
     if (!loadHostsFile().hosts.some((h) => h.libraryId === libId)) return // library removed
-    if (poolClient(libId)) return // landed
-    log('nudge:pool', { lib: libId.slice(0, 8), ...swarmDiag(host.hostKey) })
-    nudgePool(libId)
+    if (clientFor(libId)) return // landed
+    log('nudge:link', { lib: libId.slice(0, 8), ...swarmDiag(host.hostKey) })
+    nudge(libId)
     e.nudgeTimer = setTimeout(tick, ACTIVE_NUDGE_MS)
     if (e.nudgeTimer.unref) e.nudgeTimer.unref()
   }
   e.nudgeTimer = setTimeout(tick, ACTIVE_NUDGE_MS)
   if (e.nudgeTimer.unref) e.nudgeTimer.unref()
 }
-function stopPoolNudge (libId) {
-  const e = pool.get(libId)
+
+function stopNudge (libId) {
+  const e = links.get(libId)
   if (e && e.nudgeTimer) { clearTimeout(e.nudgeTimer); e.nudgeTimer = null }
 }
 
 // --- connection watchdog (2026-07-26) ---------------------------------------
 //
-// The self-healing no connection used to have, now covering EVERY paired library including the
-// active one (P1 of proposals/2026-07-26-one-connection-per-library.md). See worklet/pool-health.js
-// for why: the active connection is repaired by ordinary use and nothing else was, which the A/B
-// proved was the whole difference between "back in 2 seconds" and "gone for 20 minutes".
-//
-// Each tick, per library: a dark one gets its topic re-joined and its nudge restarted (both
-// idempotent, so a healthy loop is untouched), and a live one that traffic has not recently proved
-// gets a ping. The active and pool roles still have different plumbing underneath - that is P2's
-// job - but they no longer get different POLICY.
-let poolWatchdogTimer = null
+// Self-healing for every library. See worklet/link-health.js for why: a connection nothing is
+// using is never proved by traffic, so a socket that died while the worklet was suspended still
+// reads as connected - the nudge stops (it thinks it landed), the blend claims the library is
+// there, and Hyperswarm will not redial because it dedups one connection per peer.
+let watchdogTimer = null
 
-function startPoolWatchdog () {
-  if (poolWatchdogTimer) return
-  poolWatchdogTimer = setInterval(() => { poolWatchdogTick().catch(() => {}) }, POOL_WATCHDOG_MS)
-  if (poolWatchdogTimer.unref) poolWatchdogTimer.unref()
+function startWatchdog () {
+  if (watchdogTimer) return
+  watchdogTimer = setInterval(() => { watchdogTick().catch(() => {}) }, WATCHDOG_MS)
+  if (watchdogTimer.unref) watchdogTimer.unref()
 }
 
-// The client for a library whatever its role - poolClient already answers for both, but spell it
-// out here so the watchdog reads as role-agnostic.
-function anyClientFor (libId) { return poolClient(libId) }
-
-async function poolWatchdogTick () {
-  const actions = poolActions({
+async function watchdogTick () {
+  const actions = linkActions({
     hosts: loadHostsFile().hosts,
-    activeLibraryId,
-    isLive: (libId) => !!anyClientFor(libId),
-    provenAt: (libId) => { const c = anyClientFor(libId); return c ? c.lastActivityAt : 0 },
+    defaultLibraryId,
+    isLive: (libId) => !!clientFor(libId),
+    provenAt: (libId) => { const c = clientFor(libId); return c ? c.lastActivityAt : 0 },
     now: Date.now()
   })
   await Promise.allSettled(actions.map(async ({ host, libraryId: libId, active, action }) => {
+    const role = active ? 'default' : 'other'
     if (action === 'redial') {
-      if (active) {
-        // The active library has its own machinery (one topic membership, one nudge loop), so
-        // drive THAT rather than opening a second, pool-shaped path to the same peer - Hyperswarm
-        // dedups one connection per peer and the bookkeeping would be a lie either way.
-        const stalled = !activeNudgeTimer
-        joinActiveTopic(host)
-        startActiveNudge()
-        if (stalled) {
-          log('link:watchdog', { lib: libId.slice(0, 8), role: 'active', state: 'stalled', ...swarmDiag(host.hostKey) })
-          nudgeSwarm()
-        }
-        return
-      }
-      const e = pool.get(libId)
+      // Idempotent by design: joinTopic re-uses an existing discovery session and startNudge
+      // returns early when a loop is already running, so this only DOES anything when nothing was
+      // reaching for this library at all.
+      const e = links.get(libId)
       const stalled = !e || !e.nudgeTimer
-      joinPoolTopic(host)
-      startPoolNudge(host)
+      joinTopic(host)
+      startNudge(host)
       if (stalled) {
-        // The interesting case, and the one worth a line in the log: nothing was retrying this
-        // library at all. If this fires repeatedly in the field, a nudge loop is dying somewhere
-        // we have not found yet - and the watchdog is what keeps that from being an outage.
-        log('link:watchdog', { lib: libId.slice(0, 8), role: 'pool', state: 'stalled', ...swarmDiag(host.hostKey) })
-        nudgePool(libId)
+        // The interesting case, and the one worth a line in the log. If this fires repeatedly in
+        // the field, a nudge loop is dying somewhere we have not found yet - and the watchdog is
+        // what keeps that from being an outage.
+        log('link:watchdog', { lib: libId.slice(0, 8), role, state: 'stalled', ...swarmDiag(host.hostKey) })
+        nudge(libId)
       }
       return
     }
     // 'probe': prove a connection that traffic has not proved lately. A ping that never answers
     // means the socket is dead even though the object is not destroyed - destroy it so the close
     // handler greys the library, restarts its nudge, and frees Hyperswarm to redial the peer.
-    const c = anyClientFor(libId)
+    const c = clientFor(libId)
     if (!c) return
     try {
       await Promise.race([
         c.ping(),
         new Promise((_, reject) => {
-          const t = setTimeout(() => reject(new Error('ping timeout')), POOL_PING_TIMEOUT_MS)
+          const t = setTimeout(() => reject(new Error('ping timeout')), PING_TIMEOUT_MS)
           if (t.unref) t.unref()
         })
       ])
     } catch (err) {
-      log('link:watchdog', {
-        lib: libId.slice(0, 8), role: active ? 'active' : 'pool', state: 'zombie',
-        err: err && err.message, ...swarmDiag(host.hostKey)
-      })
+      log('link:watchdog', { lib: libId.slice(0, 8), role, state: 'zombie', err: err && err.message, ...swarmDiag(host.hostKey) })
       try { c.conn.destroy() } catch {}
     }
   }))
 }
 
-function resolvePoolWaiters (libId) {
-  const e = pool.get(libId)
+function resolveWaiters (libId) {
+  const e = links.get(libId)
   if (!e || !e.waiters) return
   const w = e.waiters; e.waiters = []
   for (const r of w) r.resolve()
 }
-function waitForPoolConn (host, timeout = ACTIVE_CONNECT_WAIT_MS) {
+
+// Await a live connection to one library, with a UX timeout so a caller does not hang forever when
+// the host is unreachable. The timeout bounds only THIS wait - the swarm membership persists, so a
+// connection that lands later still wires up via attach().
+function waitForLink (host, timeout = ACTIVE_CONNECT_WAIT_MS) {
   const libId = host.libraryId
-  if (poolClient(libId)) return Promise.resolve()
-  const e = pool.get(libId) || joinPoolTopic(host)
+  if (clientFor(libId)) return Promise.resolve()
+  const e = links.get(libId) || joinTopic(host)
   return new Promise((resolve, reject) => {
     const entry = {}
     const timer = setTimeout(() => {
@@ -1089,19 +1010,20 @@ function waitForPoolConn (host, timeout = ACTIVE_CONNECT_WAIT_MS) {
   })
 }
 
-// Leave a host's topic and tear its pool entry down (remove-library / exit-merged / forget). Stops
-// the swarm trying to reach it, stops its nudge, and closes its client. Idempotent.
-function leavePoolTopic (libId) {
-  const e = pool.get(libId)
+// Leave a library's topic and tear its link down (remove-library / forget). Stops the swarm trying
+// to reach it, stops its nudge, closes its client. Idempotent. NB this is for libraries we are
+// DONE with - a mere view change must not call it, or the next tap pays for a fresh hole-punch.
+function dropLink (libId) {
+  const e = links.get(libId)
   if (!e) return
-  stopPoolNudge(libId)
+  stopNudge(libId)
   if (swarm && e.host) { try { swarm.leave(hostTopic(z32.decode(e.host.hostKey))) } catch {} }
   if (e.client) { try { e.client.close() } catch {} }
-  pool.delete(libId)
+  links.delete(libId)
 }
 
-async function closePool () {
-  for (const libId of [...pool.keys()]) leavePoolTopic(libId)
+async function closeAllLinks () {
+  for (const libId of [...links.keys()]) dropLink(libId)
 }
 
 // Best-effort self-leave (proposal 2026-07-20): tell a host we're removing that this device is
@@ -1113,7 +1035,7 @@ async function closePool () {
 // undelivered leave is queued and retried later (worklet/leaves.js) instead of being lost,
 // which is what stops an offline removal leaving a live grant on someone's dashboard.
 async function leaveHostBestEffort (libraryId) {
-  const c = poolClient(libraryId) || (currentHost?.libraryId === libraryId ? client : null)
+  const c = clientFor(libraryId)
   if (!c || !c.conn || c.conn.destroyed) return false
   try {
     // The timeout branch resolves `false`: a half-dead connection must never block the
@@ -1144,7 +1066,7 @@ function saveLeaves (list) {
 
 // Retry the leaves we could not deliver at removal time. Fire-and-forget from init: each
 // one dials its host on a THROWAWAY client (that library is gone from hosts.json, so it
-// must not touch the active connection or the merged pool), says device.leave, and drops
+// must not touch any live link), says device.leave, and drops
 // out of the queue. A host that is still unreachable just stays queued until it answers or
 // the entry ages out.
 async function flushPendingLeaves () {
@@ -1173,7 +1095,7 @@ async function flushPendingLeaves () {
 // --- the merged index (step 2, proposal 2026-07-19 §2) ----------------------
 //
 // Rebuilt on entering merged mode and on a host reconnect/rescan: connect every paired host
-// (ensureAll - offline ones absent), pull each one's FULL catalog off its pool client, and
+// (ensureAll - offline ones absent), pull each one's FULL catalog off its client, and
 // merge.buildIndex dedups them into one blended library served from memory. Cached to
 // lib/_merged/index.json so a cold launch renders instantly then refreshes in the background.
 const mergedDir = () => path.join(LIB_ROOT, MERGED_ID)
@@ -1206,10 +1128,10 @@ function rebuildIndex () { return rebuildGate.request() }
 async function buildMergedIndex () {
   const libIds = await ensureAll() // connect all; offline hosts absent from this list
   const hosts = loadHostsFile().hosts.filter((h) => libIds.includes(h.libraryId))
-  // Pull each connected host's catalog off its pool client. allSettled so one host dropping
+  // Pull each connected host's catalog off its client. allSettled so one host dropping
   // mid-fetch drops just that host from the blend, not the whole rebuild.
   const settled = await Promise.allSettled(hosts.map((h) => {
-    const c = poolClient(h.libraryId)
+    const c = clientFor(h.libraryId)
     if (!c) return Promise.reject(new Error('not connected'))
     return catalog.fetchCatalog(c, h.libraryId)
   }))
@@ -1240,12 +1162,12 @@ async function buildMergedIndex () {
   return mergedIndex
 }
 
-// Pick up library RENAMES for the given connected pool hosts (extends the active-host live-rename to
-// every host in the blend). Each host's identity.get carries its current name; if it differs from our
+// Pick up library RENAMES for the given connected hosts (the live-rename push covers one library;
+// this covers every host in the blend on a rebuild). Each host's identity.get carries its current name; if it differs from our
 // stored record, persist it and tell the UI (chips + switcher relabel). Best-effort per host.
 async function syncHostNames (hosts) {
   await Promise.allSettled((hosts || []).map(async (h) => {
-    const c = poolClient(h.libraryId)
+    const c = clientFor(h.libraryId)
     if (!c) return
     const remote = await c.getIdentity().catch(() => null)
     const name = remote && remote.libraryName
@@ -1257,26 +1179,40 @@ async function syncHostNames (hosts) {
   }))
 }
 
+// The display name for ONE library, disambiguated when another paired library shares its name
+// (worklet/hosts.js libraryLabels - "My Library" twice becomes "My Library #jud4" / "#rxtj", a
+// lone name is untouched). Every user-facing payload below goes through this; the STORED name
+// stays exactly what the host said.
+function labelFor (libraryId, fallback) {
+  return hostList.libraryLabels(loadHostsFile().hosts).get(libraryId) || fallback || 'Library'
+}
+
 // The paired libraries with the active one flagged (Settings' switcher). A module function so
 // methods can call it without `this` - the IPC dispatch invokes methods unbound, so `this` is
 // undefined inside them.
 function listHostsData () {
   const f = loadHostsFile()
+  const labels = hostList.libraryLabels(f.hosts)
   return {
-    hosts: f.hosts.map((h) => ({ ...h, active: h.hostKey === f.activeHostKey })),
+    hosts: f.hosts.map((h) => ({
+      ...h,
+      libraryName: labels.get(h.libraryId) || h.libraryName,
+      active: h.hostKey === f.activeHostKey
+    })),
     activeHostKey: f.activeHostKey
   }
 }
 
 // The per-library status the UI renders the source-filter chips + greying from (see the mergedStatus
 // method). A module function so a background rebuildIndex can push it without the methods object.
-// `connected` is LIVE pool connectivity (connectedLibs), not the build-time mergedConnected, so a
-// revoke - which destroys the pool connection instantly - greys the host the moment the UI re-queries
+// `connected` is LIVE link connectivity (connectedLibs), not the build-time mergedConnected, so a
+// revoke - which destroys that library's connection instantly - greys it the moment the UI re-queries
 // (on host:disconnected), without waiting for a full index rebuild. `trackCount` stays index-based:
 // how many of the host's tracks are in the CURRENT blend (a host can be greyed/unreachable yet still
 // have its last-built tracks browsable).
 function mergedStatusData () {
   const hosts = loadHostsFile().hosts
+  const labels = hostList.libraryLabels(hosts)
   const live = connectedLibs()
   const perLib = {}
   if (mergedIndex) {
@@ -1288,7 +1224,7 @@ function mergedStatusData () {
     merged: mergedMode(),
     libraries: hosts.map((h) => ({
       libraryId: h.libraryId,
-      libraryName: h.libraryName,
+      libraryName: labels.get(h.libraryId) || h.libraryName,
       connected: live.has(h.libraryId),
       trackCount: perLib[h.libraryId] || 0
     })),
@@ -1340,21 +1276,19 @@ async function ensureIndex () {
   return mergedIndex
 }
 
-// The connected pool client for one host, ensured (self-heals a dropped connection). Used both by a
+// The connected client for one library, ensured (self-heals a dropped connection). Used both by a
 // DETAIL read (an album's track list the browse index doesn't hold) and by streaming routing.
 async function ensureHostById (libraryId) {
   const host = loadHostsFile().hosts.find((h) => h.libraryId === libraryId)
   if (!host) throw new Error('Unknown library.')
-  return await ensureHost(host)
+  return await ensureLink(host)
 }
 
-// The libraryIds with a LIVE pool connection right now (not merely in the last index build) - the
+// The libraryIds with a LIVE connection right now (not merely in the last index build) - the
 // connected-set bestCopy() checks so streaming routes to a copy that's actually reachable.
 function connectedLibs () {
   const s = new Set()
-  // The active host is not in the pool (its connection is `client`), so add it explicitly.
-  if (activeLibraryId && connected && client && client.conn && !client.conn.destroyed) s.add(activeLibraryId)
-  for (const libId of pool.keys()) if (poolClient(libId)) s.add(libId)
+  for (const libId of links.keys()) if (clientFor(libId)) s.add(libId)
   return s
 }
 
@@ -1367,19 +1301,20 @@ function sessionHomeLib () {
 }
 
 // Where a session RPC goes, and under which scope. Merged mode -> the elected home host with
-// `merged: true`; single mode -> the active client. sessionTarget() is SYNC (reads current pool
-// state, used by the ~4s heartbeat so it never dials); sessionReady() ensures the connection first
-// (used by activate/takeover/info, which the user just triggered). Either yields c: null offline.
-// `lib` is the target host's libraryId - the key handoff support is scoped to (the elected home in
-// merged mode, the active host in single mode). Callers gate on sessionSupportedFor(lib).
+// `merged: true`; single mode -> the default library's client. sessionTarget() is SYNC (reads
+// current link state, used by the ~4s heartbeat so it never dials); sessionReady() ensures the
+// connection first (used by activate/takeover/info, which the user just triggered). Either yields
+// c: null offline. `lib` is the target host's libraryId - the key handoff support is scoped to
+// (the elected home in merged mode, the default library in single mode). Callers gate on
+// sessionSupportedFor(lib).
 function sessionTarget () {
-  if (mergedMode()) { const lib = sessionHomeLib(); return { c: lib ? poolClient(lib) : null, merged: true, lib } }
-  return { c: client, merged: false, lib: currentHost?.libraryId || null }
+  if (mergedMode()) { const lib = sessionHomeLib(); return { c: lib ? clientFor(lib) : null, merged: true, lib } }
+  return { c: defaultClient(), merged: false, lib: defaultLibraryId || null }
 }
 async function sessionReady () {
   if (mergedMode()) { await ensureAll().catch(() => {}); return sessionTarget() }
   await ensureConnected()
-  return { c: client, merged: false, lib: currentHost?.libraryId || null }
+  return { c: defaultClient(), merged: false, lib: defaultLibraryId || null }
 }
 
 // Tag a session queue item with its owning host, so the receiver routes each track to the host
@@ -1396,7 +1331,7 @@ function tagSessionItem (base, trackId, merged) {
 async function unionFavs () {
   const libs = [...connectedLibs()]
   const settled = await Promise.allSettled(libs.map((lib) => {
-    const c = poolClient(lib)
+    const c = clientFor(lib)
     return c ? c.favList().then((v) => ({ lib, v })) : Promise.reject(new Error('offline'))
   }))
   const u = { track: new Set(), album: new Set(), artist: new Set() }
@@ -1419,11 +1354,11 @@ function favHost (kind, id) {
   return entityLib.get(id) || null
 }
 
-// The connected pool client for the host that owns a track (merged mode), or null - so per-track
+// The connected client for the library that owns a track (merged mode), or null - so per-track
 // state writes (resume/count) and reads route to the same host that holds the track.
 function trackClient (trackId) {
   const lib = favHost('track', trackId)
-  return lib ? poolClient(lib) : null
+  return lib ? clientFor(lib) : null
 }
 
 // Resolvers the shim consults for a URL that carries no libraryId (the UI's own artBase covers, or a
@@ -1450,6 +1385,16 @@ function routeTrack ({ trackId, libraryId, copies }) {
   return null
 }
 
+// MID-SONG FAILOVER (proposal 2026-07-27). The copy to continue from when a stream dies mid-track:
+// another library that holds the same song and is reachable RIGHT NOW. `identical` says whether its
+// bytes line up, which is what lets the shim splice into the same HTTP response instead of stopping
+// the music. Null when nothing else has this track - then the old behaviour stands.
+function altCopyFor (trackId, failedLibraryId) {
+  const track = trackByAnyId.get(trackId)
+  if (!track) return null
+  return pickAltCopy({ track, failedLibraryId, connected: connectedLibs(), currentId: trackId })
+}
+
 // Attach a track's merged COPIES (every host that has it, primary first) by dedup-key lookup in the
 // index. A track fetched from one host only knows its own copy; the index knows the rest, which is
 // what lets streaming (slice 4) fail over to another host. Falls back to the track's own single copy
@@ -1472,9 +1417,13 @@ function enrichCopies (t) {
 async function ensureShim () {
   if (shim) return shimPort
   shim = createAudioShim({
-    client: null,
     log,
-    ensure: ensureConnected,
+    // The DEFAULT library's client, resolved per request and revived if it is down. Replaces the
+    // held client + setClient() pair (P3): nothing to keep in step, so nothing to get stale.
+    defaultClient: async () => {
+      await ensureConnected()
+      return defaultLibraryId ? clientFor(defaultLibraryId) : null
+    },
     // Read fresh each request so a Settings change (or a wifi->cellular flip) applies
     // to the next track without rebuilding the shim.
     quality: () => streamParams(loadSettings(), networkType),
@@ -1483,13 +1432,29 @@ async function ensureShim () {
     // The lease gate: a cached track is only served from disk while authorization is
     // fresh. Expired (a revoked or long-offline device) falls through to the live path.
     leaseOk: leaseValid,
-    // Merged-mode streaming routing (step 2, slice 4). hostClient returns the connected pool client
+    // Merged-mode streaming routing (step 2, slice 4). hostClient returns the connected client
     // for a URL that names its owning host; libForTrack/libForCover resolve a bare id to its host
     // for a URL that doesn't (the UI's own artBase covers). All three are inert in single-host mode
     // (no libraryId in the URL, resolvers return null), so that path is unchanged.
     hostClient: ensureHostById,
     libForTrack,
-    libForCover
+    libForCover,
+    // Mid-song failover: which copy to continue from, and - when the copies are not byte-identical
+    // and a splice is impossible - a nudge to the shell to re-open the track on the other library
+    // at the same TIMESTAMP. The shim cannot restart a player; only the shell can.
+    altCopy: altCopyFor,
+    onRehost: ({ trackId, from, to, bytesServed, size }) => {
+      log('play:rehost', { track: String(trackId).slice(0, 8), to: String(to.libraryId).slice(0, 8) })
+      emit('play:rehost', {
+        trackId,
+        fromLibraryId: from || null,
+        libraryId: to.libraryId,
+        id: to.id,
+        // How far the old copy had been served, so the shell can seek proportionally when the new
+        // copy is a different encode (different byte length, same music).
+        fraction: size ? Math.max(0, Math.min(1, bytesServed / size)) : null
+      })
+    }
   })
   shimPort = await shim.listen()
   return shimPort
@@ -1519,15 +1484,14 @@ function ensureSwarm () {
     // One watchdog for the whole worklet, started with the swarm because every path that
     // needs it (init, pair, add-library, switch-library) goes through here. It no-ops outside
     // merged mode, so a single-library phone pays a comparison every 30s and nothing else.
-    startPoolWatchdog()
+    startWatchdog()
   }
   return swarm
 }
 
-// Every connection the swarm lands arrives here. In phase 2 we only ever join the ACTIVE
-// host's topic, so a connection should be from it; map by the Noise-authenticated remote
-// key and wire the active client onto it. Anything else is unexpected (a stale topic peer)
-// and dropped. Phase 3 will route pool hosts from here too.
+// Every connection the swarm lands arrives here. Map it by the Noise-authenticated remote key to
+// the library it belongs to and wire a client onto it. One route for every library (P2); anything
+// we are not paired with is unexpected and dropped.
 function onSwarmConnection (conn, info) {
   conn.on('error', () => {}) // a peer vanishing is normal, not an event
   const remoteHex = z32.encode(info.publicKey)
@@ -1537,208 +1501,37 @@ function onSwarmConnection (conn, info) {
     log('swarm:pair-connection', { host: remoteHex.slice(0, 8) })
     return pairingTarget.onConn(conn)
   }
-  const f = loadHostsFile()
-  const host = f.hosts.find((h) => h.hostKey === remoteHex)
+  const host = loadHostsFile().hosts.find((h) => h.hostKey === remoteHex)
   if (!host) {
     log('swarm:unexpected-peer', { peer: remoteHex.slice(0, 8) })
     try { conn.destroy() } catch {}
     return
   }
-  if (host.hostKey === f.activeHostKey) {
-    log('swarm:connection', { host: remoteHex.slice(0, 8) })
-    return attachActive(host, conn)
-  }
-  // A non-active paired host: a pool member of the blend (phase 3).
-  log('swarm:pool-connection', { host: remoteHex.slice(0, 8) })
-  attachPool(host, conn)
+  log('swarm:connection', { host: remoteHex.slice(0, 8) })
+  attach(host, conn).catch((e) => log('attach:failed', { host: remoteHex.slice(0, 8), err: e && e.message }))
 }
 
-// Wire the active client onto a swarm-provided connection - the socket-independent half of
-// what connectTo used to do after a dht.connect. Same shim wiring, same lease stamp, same
-// host:connected. The one deliberate deletion: the close handler no longer scheduleReconnect()s,
-// because the swarm redials by itself and re-fires 'connection', which lands us right back here.
-async function attachActive (host, conn) {
-  // Capture the OUTGOING active host BEFORE `client`/currentHost overwrite it, so we can hand its
-  // still-live connection to the pool rather than orphaning it (see demoteActiveToPool). NB read the
-  // outgoing host from `currentHost`, NOT activeLibraryId: the pair/switch flows call useLibrary(new)
-  // BEFORE attachActive, so activeLibraryId is already the incoming host here - but currentHost is
-  // only ever updated inside attachActive, so it still points at the host we are replacing.
-  const prevHost = currentHost
-  const prevClient = client
-  const prevConn = client ? client.conn : null
-  const prevLib = prevHost ? prevHost.libraryId : null
-
-  // A genuine host SWITCH (add-library / switch-library), not the first pair or a reconnect of the
-  // SAME host: the outgoing host has a live connection we want to keep. Use a FRESH client for the
-  // incoming host so the outgoing client stays attached to its OWN connection and can be moved into
-  // the pool. Reusing the singleton `client` (ensureClient) would re-point that one client at the new
-  // conn and orphan the old one - stranding the previous host as permanently "offline" in the merge.
-  const switching = !!(prevLib && prevLib !== host.libraryId && prevClient &&
-    prevConn && !prevConn.destroyed &&
-    loadHostsFile().hosts.some((h) => h.libraryId === prevLib))
-
-  useLibrary(host.libraryId)
-  const c = switching ? makeClient() : await ensureClient()
-  c.attach(conn, { libraryId: host.libraryId })
-  client = c
-  currentHost = host
-  connected = true
-  stopActiveNudge() // landed - stop the retry nudges
-  log('active:connected', { host: host.hostKey.slice(0, 8), library: host.libraryName })
-  // A live connection IS a fresh authorization - renew the offline lease.
-  stampAuth()
-
-  // Move the previous active host into the pool so it does not go dark when the new host takes the
-  // active slot. Its client is still attached to its live connection (we used a fresh client above).
-  if (switching && prevHost) demoteActiveToPool(prevHost, prevClient, prevConn, prevLib)
-
-  // Point the (already-listening) shim at the fresh client. Playback still flows THROUGH
-  // the live connection for anything not cached, which is what makes a revoke stop the music.
-  await ensureShim()
-  if (client !== c || c.conn !== conn || conn.destroyed) return // superseded/torn down during ensureShim
-
-  shim.setClient(c)
-
-  // The connection is gone: revoked, the host went away, or (most often) Android suspended
-  // this app in the background and the link timed out. Indistinguishable from here, so do
-  // NOT guess - say what happened and let the swarm bring it back. Only report for the conn
-  // that is still current: a stale close (a newer attach already replaced it) is not ours.
-  conn.once('close', () => {
-    if (client !== c || c.conn !== conn) return
-    connected = false
-    log('host:disconnected')
-    emit('host:disconnected', { hostKey: host.hostKey })
-    // The swarm keeps the topic membership and redials on its own, but its backoff is slow at a
-    // carrier punch rate - so drive it with our own nudge loop until it lands again.
-    startActiveNudge()
-  })
-
-  emit('host:connected', {
-    libraryName: host.libraryName,
-    libraryId: host.libraryId,
-    shimPort,
-    artBase: shim.artBase()
-  })
-
-  // Drain anything queued while we were offline (favorites/resume/counts). Fire and forget.
-  flushOutbox().catch(() => {})
-
-  // The blend has to hear about the ACTIVE host landing, exactly as attachPool announces a pool
-  // host. It never did: every merged refresh hung off a POOL connection, so an active host that
-  // was unreachable when the index was built stayed missing from All libraries after it
-  // reconnected - its chip read connected while its tracks were nowhere - until some unrelated
-  // rebuild happened to run. mergedFresh keeps this to the case that needs it: no rebuild when
-  // this host is already in the blend we are serving.
-  if (mergedMode()) {
-    emit('merged:updated', mergedStatusData())
-    if (!mergedFresh.has(host.libraryId)) rebuildIndex().catch(() => {})
-  }
-
-  // NOTE: the active client does NOT pushIdentityTo here (the pool does, in attachPool). pair() sends
-  // the claim explicitly, ONCE, over this now-live connection - reusing the pairing connection (see
-  // pair()) is what makes that claim land. Pushing here too raced pair()'s claim into DUPLICATE
-  // persons (both saw "nobody holds this name" and each minted one), seen on hardware 2026-07-22.
-
-  resolveActiveWaiters()
-}
-
-// Join (or switch to) the active host's discovery topic. Idempotent: re-joining the same
-// topic is a no-op; pointing at a NEW active host leaves the old topic first so we stop
-// trying to reach a host we are no longer focused on. server:false - the phone never
-// announces, it only looks the host up and dials it, so this adds no discoverability.
-function joinActiveTopic (host) {
-  const s = ensureSwarm()
-  if (activeTopicKey === host.hostKey) return
-  leaveActiveTopic()
-  activeTopicKey = host.hostKey
-  activeDiscovery = s.join(hostTopic(z32.decode(host.hostKey)), { server: false, client: true })
-}
-
-// Force a FRESH discovery lookup now. This is the load-bearing nudge: session.refresh() re-runs
-// the DHT lookup, which clears the discovered set and re-emits the host, resetting its attempts
-// and re-enqueuing it for a fresh connection burst. (swarm.flush() only WAITS for the current
-// refresh - it does not start one when discovery is idle between its 10-min cycles - so it is the
-// wrong tool here.) Fire-and-forget; a no-op with no active discovery.
-function nudgeSwarm () {
-  if (activeDiscovery) { try { activeDiscovery.refresh({ client: true, server: false }).catch(() => {}) } catch {} }
-}
-
-// Keep nudging the swarm every ACTIVE_NUDGE_MS while the active host is disconnected, so the
-// hole-punch is retried steadily instead of stalling in Hyperswarm's 10-min backoff (see the
-// constant). Self-cancels the moment a connection lands or the last host is removed. Idempotent.
-let activeNudgeTimer = null
-function startActiveNudge () {
-  if (activeNudgeTimer) return
-  const tick = () => {
-    activeNudgeTimer = null
-    if (connected && client && client.conn && !client.conn.destroyed) return // landed - stop
-    const h = loadActiveHost()
-    if (!h) return // unpaired - nothing to reach
-    log('nudge:active', { host: h.hostKey.slice(0, 8), ...swarmDiag(h.hostKey) })
-    nudgeSwarm()
-    activeNudgeTimer = setTimeout(tick, ACTIVE_NUDGE_MS)
-    if (activeNudgeTimer.unref) activeNudgeTimer.unref()
-  }
-  activeNudgeTimer = setTimeout(tick, ACTIVE_NUDGE_MS)
-  if (activeNudgeTimer.unref) activeNudgeTimer.unref()
-}
-function stopActiveNudge () {
-  if (activeNudgeTimer) { clearTimeout(activeNudgeTimer); activeNudgeTimer = null }
-}
-
-function leaveActiveTopic () {
-  if (swarm && activeTopicKey) {
-    try { swarm.leave(hostTopic(z32.decode(activeTopicKey))) } catch {}
-  }
-  activeTopicKey = null
-  activeDiscovery = null
-  stopActiveNudge() // no active topic to reach - stop punching
-}
-
-// Resolve everyone awaiting the next live active connection (they were parked in
-// waitForActiveConn until attachActive fired).
-function resolveActiveWaiters () {
-  const waiters = activeWaiters
-  activeWaiters = []
-  for (const w of waiters) w.resolve()
-}
-
-// Await a live active connection, with a UX timeout so a caller does not hang forever when
-// the host is unreachable. The timeout only bounds THIS wait - the swarm membership persists,
-// so a connection that lands later still wires up via attachActive. EUNREACHABLE keeps the
-// same shape callers already handle.
-function waitForActiveConn (host, timeout = ACTIVE_CONNECT_WAIT_MS) {
-  if (connected && client && client.conn && !client.conn.destroyed && currentHost && currentHost.hostKey === host.hostKey) {
-    return Promise.resolve()
-  }
-  return new Promise((resolve, reject) => {
-    const entry = {}
-    const timer = setTimeout(() => {
-      const i = activeWaiters.indexOf(entry)
-      if (i >= 0) activeWaiters.splice(i, 1)
-      const e = new Error('could not reach the host')
-      e.code = 'EUNREACHABLE'
-      reject(e)
-    }, timeout)
-    if (timer.unref) timer.unref()
-    entry.resolve = () => { clearTimeout(timer); resolve() }
-    activeWaiters.push(entry)
-  })
-}
-
-// connectTo(host): make `host` the active connection. Joins its topic (persistent membership)
-// and awaits the first live connection; attachActive does the rest when it lands.
+// Make `host` the DEFAULT library and make sure it is connected. Since P2 this neither tears down
+// the previous default's connection nor dials anything special: every library is connected the same
+// way, so "switching" is a pointer move plus the ordinary ensureLink.
 async function connectTo (host) {
   useLibrary(host.libraryId)
-  joinActiveTopic(host)
-  // If we are not already connected, prompt discovery now AND keep nudging until it lands, so a
-  // cold connect / reconnect punches steadily instead of stalling in Hyperswarm's slow backoff.
-  // When a live connection already exists, waitForActiveConn returns immediately - no nudging.
-  if (!(connected && client && client.conn && !client.conn.destroyed && currentHost && currentHost.hostKey === host.hostKey)) {
-    nudgeSwarm()
-    startActiveNudge()
+  const e = links.get(host.libraryId)
+  // Already connected (it was just another library a moment ago): adopt it into the default slot
+  // rather than waiting for a 'connection' event that will never come - Hyperswarm dedups one
+  // connection per peer. This is the case demoteActiveToPool/promotePoolToActive used to hand-roll.
+  if (e && clientFor(host.libraryId)) {
+    // Nothing to assign: making this the default library IS useLibrary(), above. The link map
+    // already holds the connection, so defaultClient() answers with it from here on.
+    await ensureShim()
+    log('link:default', { lib: host.libraryId.slice(0, 8), library: host.libraryName })
+    emit('host:connected', {
+      libraryName: labelFor(host.libraryId, host.libraryName), libraryId: host.libraryId, shimPort, artBase: shim.artBase()
+    })
+    flushOutbox().catch(() => {})
+    return { ...host, shimPort }
   }
-  await waitForActiveConn(host)
+  await ensureLink(host)
   return { ...host, shimPort }
 }
 
@@ -1759,12 +1552,12 @@ async function pairViaSwarm (link, { label = 'phone', platform = 'android', time
   // whole timeout. (The common re-pair - a host you REMOVED then re-add - is disconnected, so it
   // takes the real path below.)
   const libId = deriveLibraryId(parsed.hostKey)
-  if (poolClient(libId)) {
+  if (clientFor(libId)) {
     const rec = loadHostsFile().hosts.find((h) => h.libraryId === libId)
     return { paired: { hostKey: parsed.hostKey, libraryId: libId, libraryName: rec ? rec.libraryName : parsed.name }, conn: null }
   }
 
-  const c = await ensureClient()
+  const c = makeClient() // just for the pair handshake; attach() builds the media client
   const s = ensureSwarm()
   const topic = hostTopic(parsed.hostKey)
   const discovery = s.join(topic, { server: false, client: true })
@@ -1822,31 +1615,17 @@ async function pairViaSwarm (link, { label = 'phone', platform = 'android', time
 }
 
 
-// BOTH reconnect loops are gone. The active client's (old scheduleReconnect/retryTimer) went in
-// phase 2; the pool's (old poolRetry/schedulePoolReconnect + the 5-60s ladder) went in phase 3.
-// Every host - active and pool - now rides a persistent swarm topic membership with a per-host
-// nudge loop (startActiveNudge / startPoolNudge): the swarm redials on a drop, the nudge keeps the
-// hole-punch retried steadily at a carrier rate, and attach* re-wires + refreshes the blend when a
-// connection lands. worklet/retry.js is no longer used by this module.
-
+// Ensure the DEFAULT library is connected, and RETURN its client. Kept under its old name because
+// the call sites are everywhere; what changed is that there is no longer a `client` global to read
+// afterwards - the value comes back from here, or from mustClient() at the point of use.
 async function ensureConnected () {
-  if (connected && client && client.conn && !client.conn.destroyed) return
-
-  const host = loadActiveHost()
+  const host = loadDefaultHost()
   if (!host) throw new Error('Not paired with a library.')
 
-  if (!reconnecting) {
-    reconnecting = (async () => {
-      // No client teardown here anymore: the swarm keeps ONE persistent client and
-      // re-attaches it to each fresh connection (attachActive), so there is no dead
-      // client to close. Joining the topic is idempotent; the wait resolves when the
-      // membership lands a live connection (or times out, while the membership persists
-      // and a later connection still wires up).
-      await connectTo(host)
-    })().finally(() => { reconnecting = null })
-  }
-
-  await reconnecting
+  const live = clientFor(host.libraryId)
+  if (live) return live
+  await connectTo(host)
+  return mustClient()
 }
 
 // --- methods ----------------------------------------------------------------
@@ -1914,7 +1693,7 @@ const methods = {
       connectTo(host).catch((e) => {
         // The first connection did not land inside the wait; the swarm membership persists
         // and keeps trying in the background (the host may just be booting, or the wifi not
-        // up yet), so nothing to schedule - attachActive fires host:connected when it lands.
+        // up yet), so nothing to schedule - attach fires host:connected when it lands.
         log('init:connect-failed', { err: e.message })
         emit('host:disconnected', { hostKey: host.hostKey })
       })
@@ -1937,7 +1716,6 @@ const methods = {
 
   async pair ({ link, label, userName }) {
     if (!isPairLink(link)) throw new Error('That is not a PearTune pairing code.')
-    await ensureClient()
 
     // OWNER PROMOTION over a live connection (proposal 2026-07-24, P2). If this link is for a
     // host we are ALREADY connected to, a fresh pair handshake is preempted by the live media
@@ -1949,7 +1727,7 @@ const methods = {
       const parsed = parseLink(link)
       const libId = deriveLibraryId(parsed.hostKey)
       const known = loadHostsFile().hosts.find((h) => h.libraryId === libId)
-      const c = known && poolClient(libId)
+      const c = known && clientFor(libId)
       if (c) {
         // Only attempt promotion when the code SAYS it is an owner code (the host still decides).
         // A normal re-scan of a host we are already on is just a no-op re-activation.
@@ -2012,12 +1790,16 @@ const methods = {
     // unsent (device shown unassigned). The host serves both PAIR and MEDIA on one connection, so we
     // just wire media onto this same conn. Fall back to a fresh connect only when there is no conn to
     // reuse (the already-connected short-circuit) or it died in the gap.
-    if (pairConn && !pairConn.destroyed) {
-      useLibrary(host.libraryId)
-      joinActiveTopic(host)
-      await attachActive(host, pairConn)
-    } else {
-      await connectTo(host)
+    pairingLibId = host.libraryId // attach() must not push identity under pair()'s claim
+    try {
+      if (pairConn && !pairConn.destroyed) {
+        useLibrary(host.libraryId)
+        await attach(host, pairConn)
+      } else {
+        await connectTo(host)
+      }
+    } finally {
+      pairingLibId = null
     }
 
     // TELL THE HOST WHO WE SAY WE ARE. The pair handshake carries the device LABEL (hello.label)
@@ -2030,7 +1812,7 @@ const methods = {
     // already succeeded.
     if (claim) {
       try {
-        await client.setIdentity({ deviceName: name, userName: claim })
+        await mustClient().setIdentity({ deviceName: name, userName: claim })
       } catch (e) {
         log('pair:claim-failed', { err: e?.message })
       }
@@ -2043,7 +1825,7 @@ const methods = {
     // Merged mode reads from the POOL and the in-memory index, NOT the single active client -
     // so reconnecting only `client` (ensureConnected) left the blended view exactly as empty as
     // it found it. That is the "ran the Connection check, it reached both, went back to Library
-    // and nothing loaded" case: the check dials the pool, reconnect() dialled the wrong socket.
+    // and nothing loaded" case: the check dialled every library, reconnect() dialled one socket.
     // Force a rebuild, which reconnects every host and refreshes the blend (and emits
     // merged:updated for the chips). Fall back to the single client for single-host mode.
     if (mergedMode()) {
@@ -2051,12 +1833,12 @@ const methods = {
       return { ok: true, connected: mergedConnected.size > 0, merged: true, shimPort }
     }
     await ensureConnected()
-    return { ok: true, connected, shimPort }
+    return { ok: true, connected: defaultConnected(), shimPort }
   },
 
   async stats () {
     await ensureConnected()
-    return client.stats()
+    return mustClient().stats()
   },
 
   // The Songs view. Navidrome answers an empty-query search3 with everything,
@@ -2070,7 +1852,7 @@ const methods = {
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await client.list({ type: 'tracks', cursor, limit, sort, order })
+    const page = await mustClient().list({ type: 'tracks', cursor, limit, sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -2084,12 +1866,12 @@ const methods = {
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await client.list({ type: 'albums', cursor, limit, sort, order })
+    const page = await mustClient().list({ type: 'albums', cursor, limit, sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 
   // An album's track LIST isn't in the browse index, so in merged mode a detail read routes to the
-  // album's owning host (authoritative order) via the pool, then tags the album + enriches each
+  // album's owning host (authoritative order) via its link, then tags the album + enriches each
   // track's copies so streaming can fail over. The UI passes the served album's libraryId back here.
   async album ({ id, libraryId }) {
     const lib = libForEntity(id, libraryId)
@@ -2100,7 +1882,7 @@ const methods = {
       return withBigArt({ ...a, libraryId: lib, tracks: (a.tracks || []).map((t) => enrichCopies({ ...t, libraryId: lib })) })
     }
     await ensureConnected()
-    const a = await client.get({ id, type: 'album' })
+    const a = await mustClient().get({ id, type: 'album' })
     return a ? withBigArt(a) : null
   },
 
@@ -2113,7 +1895,7 @@ const methods = {
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await client.list({ type: 'artists', sort, order })
+    const page = await mustClient().list({ type: 'artists', sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -2151,7 +1933,7 @@ const methods = {
       }
     }
     await ensureConnected()
-    const a = await client.get({ id, type: 'artist' })
+    const a = await mustClient().get({ id, type: 'artist' })
     if (!a) return null
     // `tracks` is only ever populated for an artist with NO albums - Navidrome's
     // composite-tag artists ("Artist/Remixer"). See the host adapter.
@@ -2175,7 +1957,7 @@ const methods = {
     const lib = libForEntity(id, libraryId)
     let c
     if (mergedMode() && lib) c = await ensureHostById(lib)
-    else { await ensureConnected(); c = client }
+    else { c = await ensureConnected() }
     const tag = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId: lib }) : t)
 
     const a = await c.get({ id, type: 'artist' })
@@ -2207,7 +1989,7 @@ const methods = {
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await client.list({ type: 'genres', sort, order })
+    const page = await mustClient().list({ type: 'genres', sort, order })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -2218,7 +2000,7 @@ const methods = {
     const lib = libForEntity(id, libraryId)
     let c
     if (mergedMode() && lib) c = await ensureHostById(lib)
-    else { await ensureConnected(); c = client }
+    else { c = await ensureConnected() }
     const g = await c.get({ id, type: 'genre' })
     if (!g) return null
     const tagAlbum = (al) => (mergedMode() ? { ...al, libraryId: lib } : al)
@@ -2236,7 +2018,7 @@ const methods = {
     const lib = libForEntity(id, libraryId)
     let c
     if (mergedMode() && lib) c = await ensureHostById(lib)
-    else { await ensureConnected(); c = client }
+    else { c = await ensureConnected() }
     const tag = (t) => (mergedMode() ? enrichCopies({ ...t, libraryId: lib }) : t)
 
     const g = await c.get({ id, type: 'genre' })
@@ -2278,7 +2060,7 @@ const methods = {
       }
     }
     await ensureConnected()
-    const r = await client.search({ q })
+    const r = await mustClient().search({ q })
     return {
       ...r,
       albums: (r.albums || []).map(withArt),
@@ -2348,10 +2130,10 @@ const methods = {
     // Source: the active client when it's up, else (merged mode) any connected pool host - the device
     // identity is one keypair shared across every host, so a down active host must not starve the
     // fields when another host IS connected (fix (b) in the report).
-    let c = (connected && client && client.conn && !client.conn.destroyed) ? client : null
+    let c = defaultConnected() ? clientFor(defaultLibraryId) : null
     if (!c && mergedMode()) {
       const lib = [...connectedLibs()][0]
-      if (lib) c = poolClient(lib)
+      if (lib) c = clientFor(lib)
     }
     let remote = null
     if (c) {
@@ -2368,8 +2150,8 @@ const methods = {
     // have come from a POOL host (when the active host is down), whose name belongs to a DIFFERENT
     // record - renaming the active host to it would be wrong. A pool host's own name is synced by the
     // merged block just below.
-    if (c === client && remote?.libraryName) {
-      const active = loadActiveHost()
+    if (c === defaultClient() && remote?.libraryName) {
+      const active = loadDefaultHost()
       if (active && active.libraryName !== remote.libraryName) {
         saveHostsFile(hostList.renameHost(loadHostsFile(), active.hostKey, remote.libraryName))
         emit('host:renamed', { hostKey: active.hostKey, libraryName: remote.libraryName })
@@ -2381,8 +2163,8 @@ const methods = {
     // stale in the chip. Sync the connected pool hosts here too, on the same trigger the active host
     // uses. Fire-and-forget so identity() stays fast; syncHostNames emits host:renamed per change.
     if (mergedMode()) {
-      const activeKey = loadActiveHost()?.hostKey
-      const others = loadHostsFile().hosts.filter((h) => h.hostKey !== activeKey && poolClient(h.libraryId))
+      const activeKey = loadDefaultHost()?.hostKey
+      const others = loadHostsFile().hosts.filter((h) => h.hostKey !== activeKey && clientFor(h.libraryId))
       if (others.length) syncHostNames(others).catch(() => {})
     }
     // Persist the confirmation state we just learned, so it survives OFFLINE the same way the names do:
@@ -2412,7 +2194,7 @@ const methods = {
 
   async setIdentity ({ deviceName, userName }) {
     await ensureConnected()
-    const r = await client.setIdentity({ deviceName, userName })
+    const r = await mustClient().setIdentity({ deviceName, userName })
     saveSettings({
       deviceName: r?.deviceName || deviceName || '',
       userName: r?.user?.name || userName || ''
@@ -2434,12 +2216,12 @@ const methods = {
   async setAvatar ({ avatar }) {
     const a = avatar || ''
     saveSettings({ avatar: a })
-    try { await ensureConnected(); await client.setAvatar({ avatar: a }) } catch {}
+    try { await ensureConnected(); await mustClient().setAvatar({ avatar: a }) } catch {}
     // The pool hosts too. Note this sends an EMPTY avatar as well, unlike the reconnect
     // sync: clearing your photo is a deliberate act and must reach every host, whereas a
     // reconnect has no business deleting one.
-    await Promise.allSettled([...pool.keys()].map((libId) => {
-      const c = poolClient(libId)
+    await Promise.allSettled([...links.keys()].map((libId) => {
+      const c = clientFor(libId)
       return c ? c.setAvatar({ avatar: a }) : null
     }))
     return { ok: true, avatar: a }
@@ -2585,7 +2367,7 @@ const methods = {
           // merged mode the fallback resume lives on the track's OWNING host, not the home host.
           let positionMs = Number(r.session.positionMs) || 0
           if (!positionMs && cur) {
-            const rc = merged ? (poolClient(trackLib.get(cur.id)) || c) : c
+            const rc = merged ? (clientFor(trackLib.get(cur.id)) || c) : c
             try { const rp = await rc.resumeGet({ trackId: cur.id }); positionMs = rp?.positionMs || 0 } catch {}
           }
           return { ok: true, items, index: r.session.index || 0, shuffle: !!r.session.shuffle, repeat: r.session.repeat || 0, positionMs }
@@ -2621,7 +2403,7 @@ const methods = {
     }
     try {
       await ensureConnected()
-      const g = await client.favList()
+      const g = await mustClient().favList()
       const grouped = { track: g.track || [], album: g.album || [], artist: g.artist || [] }
       saveFavCache(grouped)
       return { ...grouped, supported: true }
@@ -2641,15 +2423,15 @@ const methods = {
       // Route the resume to the track's OWNING host; queue to that host's outbox if it's unreachable,
       // so it syncs when the host reconnects (coalesce keeps only the latest position per track).
       const lib = favHost('track', trackId)
-      const c = lib && poolClient(lib)
+      const c = lib && clientFor(lib)
       if (c) { try { await c.resumeSet({ trackId, positionMs, durationMs }) } catch { enqueueFor(lib, 'resume.set', { trackId, positionMs, durationMs }) } }
       else if (lib) enqueueFor(lib, 'resume.set', { trackId, positionMs, durationMs })
       return { ok: true }
     }
     // When connected, write straight through; when not, queue immediately rather than
     // block this frequent call on a doomed connect. The flush rides the next reconnect.
-    if (connected && client) {
-      try { await client.resumeSet({ trackId, positionMs, durationMs }) } catch { enqueue('resume.set', { trackId, positionMs, durationMs }) }
+    if (defaultConnected()) {
+      try { await mustClient().resumeSet({ trackId, positionMs, durationMs }) } catch { enqueue('resume.set', { trackId, positionMs, durationMs }) }
     } else {
       enqueue('resume.set', { trackId, positionMs, durationMs })
     }
@@ -2664,7 +2446,7 @@ const methods = {
     }
     try {
       await ensureConnected()
-      return await client.resumeGet({ trackId })
+      return await mustClient().resumeGet({ trackId })
     } catch {
       return { positionMs: 0 }
     }
@@ -2679,7 +2461,7 @@ const methods = {
       // updatedAt, and resolve the track from that host.
       const libs = [...connectedLibs()]
       const settled = await Promise.allSettled(libs.map(async (lib) => {
-        const c = poolClient(lib)
+        const c = clientFor(lib)
         if (!c) return null
         const r = await c.resumeLatest()
         return r && r.trackId ? { ...r, lib } : null
@@ -2688,16 +2470,16 @@ const methods = {
       if (!cands.length) return null
       cands.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
       const best = cands[0]
-      const c = poolClient(best.lib)
+      const c = clientFor(best.lib)
       const t = c && await c.get({ id: best.trackId, type: 'track' }).catch(() => null)
       if (!t) return null
       return { track: withArt({ ...t, libraryId: best.lib }), positionMs: best.positionMs, durationMs: best.durationMs }
     }
     try {
       await ensureConnected()
-      const r = await client.resumeLatest()
+      const r = await mustClient().resumeLatest()
       if (!r?.trackId) return null
-      const t = await client.get({ id: r.trackId, type: 'track' }).catch(() => null)
+      const t = await mustClient().get({ id: r.trackId, type: 'track' }).catch(() => null)
       if (!t) return null
       return { track: withArt(t), positionMs: r.positionMs, durationMs: r.durationMs }
     } catch {
@@ -2715,13 +2497,13 @@ const methods = {
       // Count the play on the track's OWNING host; queue to that host's outbox if unreachable, so the
       // play isn't lost (each queued bump is a real play - counts accumulate).
       const lib = favHost('track', trackId)
-      const c = lib && poolClient(lib)
+      const c = lib && clientFor(lib)
       if (c) { try { await c.countBump({ trackId }) } catch { enqueueFor(lib, 'count.bump', { trackId }) } }
       else if (lib) enqueueFor(lib, 'count.bump', { trackId })
       return { ok: true }
     }
-    if (connected && client) {
-      try { await client.countBump({ trackId }) } catch { enqueue('count.bump', { trackId }) }
+    if (defaultConnected()) {
+      try { await mustClient().countBump({ trackId }) } catch { enqueue('count.bump', { trackId }) }
     } else {
       // Offline: queue it (counts accumulate - each queued bump is a real play).
       enqueue('count.bump', { trackId })
@@ -2736,7 +2518,7 @@ const methods = {
       // top N from a host that has them.
       const libs = [...connectedLibs()]
       const settled = await Promise.allSettled(libs.map(async (lib) => {
-        const c = poolClient(lib)
+        const c = clientFor(lib)
         if (!c) return []
         const r = await c.countTop({ limit: limit * 2 })
         return (r.items || []).map((it) => ({ ...it, lib }))
@@ -2753,7 +2535,7 @@ const methods = {
       const top = [...byKey.values()].sort((a, b) => b.count - a.count).slice(0, limit)
       const out = []
       for (const it of top) {
-        const c = poolClient(it.lib)
+        const c = clientFor(it.lib)
         if (!c) continue
         const t = await c.get({ id: it.trackId, type: 'track' }).catch(() => null)
         if (t) out.push({ ...withArt({ ...t, libraryId: it.lib }), playCount: it.count })
@@ -2762,10 +2544,10 @@ const methods = {
     }
     try {
       await ensureConnected()
-      const { items } = await client.countTop({ limit })
+      const { items } = await mustClient().countTop({ limit })
       const out = []
       for (const it of items) {
-        const t = await client.get({ id: it.trackId, type: 'track' }).catch(() => null)
+        const t = await mustClient().get({ id: it.trackId, type: 'track' }).catch(() => null)
         if (t) out.push({ ...withArt(t), playCount: it.count })
       }
       return { items: out }
@@ -2788,7 +2570,7 @@ const methods = {
       // on reconnect (LWW - coalesce keeps only the latest on/off per item).
       applyMergedFav(kind, id, want)
       const lib = favHost(kind, id)
-      const c = lib && poolClient(lib)
+      const c = lib && clientFor(lib)
       if (c) {
         try {
           const r = await c.favSet({ kind, id, on: want })
@@ -2810,9 +2592,9 @@ const methods = {
       saveFavCache(cache)
     }
     apply(want)
-    if (connected && client) {
+    if (defaultConnected()) {
       try {
-        const r = await client.favSet({ kind, id, on: want })
+        const r = await mustClient().favSet({ kind, id, on: want })
         return { kind: r.kind, id: r.id, on: r.on }
       } catch (e) {
         if (e?.code === 'ENOMETHOD') { apply(!want); throw e }
@@ -2842,7 +2624,7 @@ const methods = {
         const out = []
         for (const id of ids) {
           const lib = src.get(id)
-          const c = lib && poolClient(lib)
+          const c = lib && clientFor(lib)
           if (!c) continue
           const it = await c.get({ id, type }).catch(() => null)
           if (it) out.push(withArt({ ...it, libraryId: lib }))
@@ -2856,13 +2638,13 @@ const methods = {
       }
     }
     await ensureConnected()
-    const g = await client.favList()
+    const g = await mustClient().favList()
     const grouped = { track: g.track || [], album: g.album || [], artist: g.artist || [] }
     saveFavCache(grouped)
     const resolve = async (ids, type) => {
       const out = []
       for (const id of ids) {
-        const it = await client.get({ id, type }).catch(() => null)
+        const it = await mustClient().get({ id, type }).catch(() => null)
         if (it) out.push(withArt(it))
       }
       return out
@@ -2882,7 +2664,7 @@ const methods = {
   async playlists () {
     try {
       await ensureConnected()
-      const { items } = await client.playlistList()
+      const { items } = await mustClient().playlistList()
       savePlaylistCache(items)
       return { items, supported: true }
     } catch (e) {
@@ -2903,7 +2685,7 @@ const methods = {
       const libs = [...connectedLibs()]
       if (!libs.length) return { ok: false, error: 'not connected to any library' }
       const settled = await Promise.allSettled(libs.map((lib) => {
-        const c = poolClient(lib)
+        const c = clientFor(lib)
         return c ? c.requestAdd(params) : Promise.reject(new Error('offline'))
       }))
       let ok = 0
@@ -2919,7 +2701,7 @@ const methods = {
     }
     try {
       await ensureConnected()
-      const r = await client.requestAdd(params)
+      const r = await mustClient().requestAdd(params)
       return { ...r, supported: true }
     } catch (e) {
       if (e?.code === 'ENOMETHOD') return { ok: false, supported: false }
@@ -2934,9 +2716,9 @@ const methods = {
   async requestList () {
     if (mergedMode()) {
       const libs = [...connectedLibs()]
-      const names = new Map(loadHostsFile().hosts.map((h) => [h.libraryId, h.libraryName]))
+      const names = hostList.libraryLabels(loadHostsFile().hosts)
       const settled = await Promise.allSettled(libs.map((lib) => {
-        const c = poolClient(lib)
+        const c = clientFor(lib)
         return c ? c.requestList().then((v) => ({ lib, requests: v.requests || [] })) : Promise.reject(new Error('offline'))
       }))
       const tagged = []
@@ -2950,10 +2732,10 @@ const methods = {
     }
     try {
       await ensureConnected()
-      const { requests } = await client.requestList()
+      const { requests } = await mustClient().requestList()
       // Give single-host rows a `refs` too, so the app's REMOVE path is uniform with the
       // merged one (delete every (libraryId,id) the ask lives on).
-      const refs = (r) => [{ libraryId: activeLibraryId, id: r.id }]
+      const refs = (r) => [{ libraryId: defaultLibraryId, id: r.id }]
       return { requests: (requests || []).map((r) => ({ ...r, refs: refs(r) })), supported: true }
     } catch (e) {
       if (e?.code === 'ENOMETHOD') return { requests: [], supported: false }
@@ -3036,7 +2818,7 @@ const methods = {
     for (const r of settled) {
       if (r.status !== 'fulfilled') continue
       anySupported = true
-      for (const req of r.value.requests) tagged.push({ ...req, libraryId: r.value.l.libraryId, libraryName: r.value.l.libraryName })
+      for (const req of r.value.requests) tagged.push({ ...req, libraryId: r.value.l.libraryId, libraryName: labelFor(r.value.l.libraryId, r.value.l.libraryName) })
     }
     if (!anySupported) return { requests: [], supported: false }
     return { requests: merge.collapseRequests(tagged, { pendingWins: true }), supported: true, libraries: libs.length }
@@ -3049,7 +2831,7 @@ const methods = {
   // reason. Best-effort - a library that is offline or fails keeps its copy pending, which is
   // exactly what the next queue read shows (the row stays up carrying only what is left).
   async ownerResolveRequest ({ libraryId, id, status, refs }) {
-    const list = merge.resolveTargets({ refs, id, libraryId }, activeLibraryId)
+    const list = merge.resolveTargets({ refs, id, libraryId }, defaultLibraryId)
     if (!list.length) return { ok: false, error: 'nothing to resolve' }
     const settled = await Promise.allSettled(list.map((ref) => (async () => {
       const c = await ownerClient(ref.libraryId)
@@ -3070,7 +2852,7 @@ const methods = {
     const list = Array.isArray(refs) ? refs.filter((x) => x && x.libraryId && x.id) : []
     if (!list.length) return { ok: false }
     const settled = await Promise.allSettled(list.map(({ libraryId, id }) => {
-      const c = poolClient(libraryId)
+      const c = clientFor(libraryId)
       return c ? c.requestDelete({ id }) : Promise.reject(new Error('offline'))
     }))
     const ok = settled.some((r) => r.status === 'fulfilled' && r.value?.ok)
@@ -3084,11 +2866,11 @@ const methods = {
   // so an edit never silently drops a track that merely failed to resolve this time.
   async playlistDetail ({ id }) {
     await ensureConnected()
-    const pl = await client.playlistGet({ id })
+    const pl = await mustClient().playlistGet({ id })
     const ids = pl.trackIds || []
     const tracks = []
     for (let i = 0; i < ids.length; i++) {
-      const t = await client.get({ id: ids[i], type: 'track' }).catch(() => null)
+      const t = await mustClient().get({ id: ids[i], type: 'track' }).catch(() => null)
       // `_i` is the raw slot (reassigned when the app reorders); `_k` is a STABLE
       // per-row identity for React keys, so a drag animates a move rather than
       // remounting rows (a track id can repeat within a playlist, so it cannot key).
@@ -3099,17 +2881,17 @@ const methods = {
 
   async createPlaylist ({ name }) {
     await ensureConnected()
-    return await client.playlistCreate({ name })
+    return await mustClient().playlistCreate({ name })
   },
 
   async renamePlaylist ({ id, name }) {
     await ensureConnected()
-    return await client.playlistRename({ id, name })
+    return await mustClient().playlistRename({ id, name })
   },
 
   async deletePlaylist ({ id }) {
     await ensureConnected()
-    await client.playlistDelete({ id })
+    await mustClient().playlistDelete({ id })
     return { ok: true }
   },
 
@@ -3117,13 +2899,13 @@ const methods = {
   // tracksFor it uses for Play/Queue), so this just forwards the ids.
   async addToPlaylist ({ id, trackIds }) {
     await ensureConnected()
-    return await client.playlistAdd({ id, trackIds })
+    return await mustClient().playlistAdd({ id, trackIds })
   },
 
   // Replace the whole order - the app's single write path for both remove and reorder.
   async setPlaylistTracks ({ id, trackIds }) {
     await ensureConnected()
-    return await client.playlistSetTracks({ id, trackIds })
+    return await mustClient().playlistSetTracks({ id, trackIds })
   },
 
   // The SERVER's own playlists (v2), read-only. These come from Navidrome/Jellyfin via
@@ -3133,7 +2915,7 @@ const methods = {
   async serverPlaylists () {
     try {
       await ensureConnected()
-      const { items } = await client.list({ type: 'playlists' })
+      const { items } = await mustClient().list({ type: 'playlists' })
       return { items: items || [] }
     } catch {
       return { items: [] }
@@ -3142,7 +2924,7 @@ const methods = {
 
   async serverPlaylistDetail ({ id }) {
     await ensureConnected()
-    const pl = await client.get({ id, type: 'playlist' })
+    const pl = await mustClient().get({ id, type: 'playlist' })
     if (!pl) return null
     return { id: pl.id, name: pl.name, tracks: (pl.tracks || []).map(withArt) }
   },
@@ -3160,7 +2942,7 @@ const methods = {
       // lookup is on the old network too. Force a fresh discovery so the active host is redialed
       // on the new network promptly, rather than waiting out Hyperswarm's own refresh cadence
       // (PearCircle does the same flush on network:changed). No-op with no swarm / when off.
-      if (t !== 'none') nudgeSwarm()
+      if (t !== 'none') { const h = loadDefaultHost(); if (h) nudge(h.libraryId) }
     }
     return { networkType }
   },
@@ -3220,7 +3002,7 @@ const methods = {
       throw new Error('Downloads are off on cellular. Turn on "Download over cellular" in Settings, or join Wi-Fi.')
     }
     await ensureConnected()
-    const album = await client.get({ id: albumId, type: 'album' })
+    const album = await mustClient().get({ id: albumId, type: 'album' })
     if (!album) throw new Error('That album is not available.')
     const tracks = album.tracks || []
     // Store the track METADATA, not just ids - so a downloaded album renders and plays
@@ -3248,8 +3030,8 @@ const methods = {
           const mime = mimeFor(t.suffix ? 'a.' + t.suffix : (t.path || t.title || ''))
           // Tagged with the library, same as the shim's write-through: it is what lets
           // removing ONE library reclaim its bytes while the others stay downloaded.
-          const sink = audioCache.createSink(t.id, { mime, size: t.size, library: client.libraryId || currentHost?.libraryId || null })
-          await client.streamTo({ trackId: t.id }, (chunk) => sink.write(chunk))
+          const sink = audioCache.createSink(t.id, { mime, size: t.size, library: defaultLibraryId || null })
+          await mustClient().streamTo({ trackId: t.id }, (chunk) => sink.write(chunk))
           if (!await sink.commit()) throw new Error('incomplete download')
         }
         audioCache.setPinned(t.id, true)
@@ -3273,7 +3055,7 @@ const methods = {
       try {
         // Store at the size the shim serves from disk (DEFAULT_ART_SIZE) so the two stay
         // in lockstep - that is the size the Downloads views request.
-        const buf = await client.art({ coverId, size: DEFAULT_ART_SIZE })
+        const buf = await mustClient().art({ coverId, size: DEFAULT_ART_SIZE })
         artStore.put(coverId, buf)
       } catch (e) { log('pin:art-failed', { err: e?.message }) }
     }
@@ -3371,32 +3153,21 @@ const methods = {
     saveHostsFile(f)
     const host = hostList.activeHost(f)
     _mergedMode = false // focusing one library leaves the blended view (the '_all' chip re-enters it)
-    // NB the other libraries stay connected - see exitMerged for why (P1, 2026-07-26). Only the
-    // OUTGOING ACTIVE connection is dropped below, because this host is taking its place.
-    // Drop the old host's live connection explicitly (we are switching away from it), then
-    // repoint the swarm's active topic below. client=null so attachActive builds a fresh one.
-    if (client) { try { await client.close() } catch {} ; client = null }
-    connected = false
-    useLibrary(host.libraryId)
-    // Join the new host's topic and wait for its first connection, but do NOT let a transient
-    // failure abort the switch: the active library is ALREADY switched (activeHostKey persisted)
-    // and the swarm membership persists, so a first connection that does not land in the wait
-    // just arrives a moment later and fires host:connected then. Either way we emit host:switched
-    // so the UI swaps and the new library's queue is offered.
-    // If the incoming library is ALREADY connected as a pool member - which it now usually is,
-    // since the pool is no longer torn down on a view change - ADOPT that live connection rather
-    // than dialing. Hyperswarm dedups one connection per peer, so a fresh dial would never get a
-    // 'connection' event and the switch would stall at "not connected" with the library actually
-    // reachable the whole time (the 2026-07-24 strand bug). Returns false when there is nothing
-    // live to adopt, and then we dial as before.
-    if (!(await promotePoolToActive(host))) {
-      try {
-        await connectTo(host)
-      } catch (e) {
-        log('switch:connect-deferred', { err: e.message })
-      }
+    // Since P2 a switch is a POINTER MOVE, not a reconnect: every library is already connected the
+    // same way, so the outgoing one keeps its link (a view change is not an unpairing) and the
+    // incoming one is adopted if it is up. That is what demoteActiveToPool/promotePoolToActive
+    // used to hand-roll, and both of the bugs they were written for (the 2026-07-23 orphan, the
+    // 2026-07-24 strand) came from the move itself.
+    //
+    // A transient failure must not abort the switch: activeHostKey is already persisted and the
+    // swarm membership persists, so a connection that misses the wait wires up a moment later and
+    // fires host:connected then. Either way we emit host:switched so the UI swaps.
+    try {
+      await connectTo(host)
+    } catch (e) {
+      log('switch:connect-deferred', { err: e.message })
     }
-    emit('host:switched', { hostKey: host.hostKey, libraryId: host.libraryId, libraryName: host.libraryName, shimPort })
+    emit('host:switched', { hostKey: host.hostKey, libraryId: host.libraryId, libraryName: labelFor(host.libraryId, host.libraryName), shimPort })
     return { ...host, shimPort }
   },
 
@@ -3424,7 +3195,7 @@ const methods = {
       purgeLibrary(removed.libraryId)
       // Leave its topic (stops the swarm trying it + its nudge) and drop its pool connection - the
       // proposal's retry-storm mitigation: remove-library must stop reaching for that host.
-      leavePoolTopic(removed.libraryId)
+      dropLink(removed.libraryId)
       mergedIndex = null // a removed host must leave the blend; next merged browse rebuilds
       mergedConnected.delete(removed.libraryId)
       mergedFresh.delete(removed.libraryId)
@@ -3456,36 +3227,25 @@ const methods = {
     }
 
     if (wasActive) {
-      if (client) { try { await client.close() } catch {} ; client = null }
-      connected = false
+      // NB the removed library's own link was already dropped above (dropLink), which is what
+      // clears `client`/`connected` when it was the default one.
       const next = hostList.activeHost(file)
       if (next) {
-        // If the promoted host is ALREADY connected in the pool (the common case when removing the
-        // active host from a live merged view), ADOPT that connection - redialing it would dedup
-        // against the existing one and stall at "Not connected" (2026-07-24). Only when the pool has
-        // no live connection do we dial cold, which is safe (no existing conn = no dedup).
-        let adopted = false
-        try { adopted = await promotePoolToActive(next) } catch (e) { log('remove:promote-failed', { err: e.message }) }
-        if (!adopted) {
-          useLibrary(next.libraryId)
-          // Reconnect in the background so the RPC returns promptly; the shell swaps to the new
-          // library on host:switched and reloads its queue.
-          // connectTo(next) joins next's topic, which leaves the removed host's topic first
-          // (joinActiveTopic), so the swarm stops trying the host we just dropped.
-          connectTo(next).catch((e) => {
-            // Membership persists; a first connection that misses the wait wires up later.
-            log('remove:reconnect-failed', { err: e.message })
-            emit('host:disconnected', { hostKey: next.hostKey })
-          })
-        }
-        emit('host:switched', { hostKey: next.hostKey, libraryId: next.libraryId, libraryName: next.libraryName, shimPort })
+        // connectTo ADOPTS next's existing link when it has one (the common case: it was another
+        // library a moment ago and is already connected), and dials only when it does not. Before
+        // P2 this needed promotePoolToActive, because a redial would dedup against the live
+        // connection and stall at "Not connected" (2026-07-24).
+        connectTo(next).catch((e) => {
+          // Membership persists; a connection that misses the wait wires up later.
+          log('remove:reconnect-failed', { err: e.message })
+          emit('host:disconnected', { hostKey: next.hostKey })
+        })
+        emit('host:switched', { hostKey: next.hostKey, libraryId: next.libraryId, libraryName: labelFor(next.libraryId, next.libraryName), shimPort })
       } else {
-        // No libraries left: back to un-paired. Leave the removed host's topic so the swarm
-        // stops trying to reach it (the proposal's retry-storm mitigation - remove-library
-        // leaves the topic). The shim keeps listening (its port is stable and harmless); the
-        // shell shows the pairing wall.
-        activeLibraryId = null
-        leaveActiveTopic()
+        // No libraries left: back to un-paired. The removed library's topic is already left (the
+        // proposal's retry-storm mitigation - remove-library leaves the topic). The shim keeps
+        // listening (its port is stable and harmless); the shell shows the pairing wall.
+        defaultLibraryId = null
         emit('host:disconnected', { hostKey })
       }
     }
@@ -3518,8 +3278,7 @@ const methods = {
     // Unpair is a deliberate goodbye: wipe every local copy (downloads, cached state,
     // the lease) across all libraries. The reliable purge point a reconnect failure never is.
     purgeAllLibraries(all.map((h) => h.libraryId))
-    activeLibraryId = null
-    leaveActiveTopic()
+    defaultLibraryId = null
 
     // Close the shim's HTTP server, not just the reference. Dropping the
     // reference alone would leave the loopback port bound for the life of the
@@ -3532,9 +3291,7 @@ const methods = {
     shim = null
     shimPort = null
 
-    if (client) await client.close()
-    client = null
-    await closePool() // tear down every other library's connection too - this is the full reset
+    await closeAllLinks() // every library's link, closed and left - this is the full reset
     mergedIndex = null // drop the blended index and its cache-in-memory
     mergedConnected = new Set()
     mergedFresh = new Set()
@@ -3544,9 +3301,8 @@ const methods = {
     // node was passed in, so destroy the swarm and let it take the dht with it - destroying the
     // dht separately after would double-destroy. If there is no swarm (never connected this run),
     // fall back to destroying the dht directly.
-    if (swarm) { try { await swarm.destroy() } catch {} ; swarm = null; dht = null; activeTopicKey = null }
+    if (swarm) { try { await swarm.destroy() } catch {} ; swarm = null; dht = null }
     else if (dht) { try { await dht.destroy() } catch {} ; dht = null }
-    currentHost = null
 
     log('host:forgotten')
     return { ok: true }

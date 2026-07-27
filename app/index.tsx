@@ -844,6 +844,29 @@ export default function App () {
     return { swapped: false }
   }
 
+  // Re-open the CURRENT track from whichever library can still serve it, at the position we had
+  // reached. Used only when a splice was impossible (see play:rehost above) - so it is the rare,
+  // audible path, not the common one. Position first, because rebuilding the sources resets it.
+  async function rehostCurrent () {
+    const q = queueRef.current
+    const index = indexRef.current
+    if (!Array.isArray(q) || !q.length) return
+    const p = px()
+    const positionMs = Math.max(0, Math.round((p?.currentTime ?? 0) * 1000))
+    const wasPlaying = !!p?.playing
+    try {
+      const urls: string[] = []
+      for (const t of q) { const r: any = await call('urlFor', { trackId: t.id }); urls.push(r.url) }
+      const np = await ensurePlayer(urls, index)
+      if (positionMs) np.seekTo(positionMs / 1000)
+      if (wasPlaying) np.play()
+      toWeb('play:rehosted', { positionMs })
+    } catch (e: any) {
+      // Nothing else can serve it either - fall back to the old behaviour and let the buffer end.
+      toWeb('play:error', { error: e?.message ?? String(e) })
+    }
+  }
+
   // "Play here" (session handoff): adopt a session handed over from another device. Same rebuild
   // as restoreQueue - re-resolve URLs from IDs, port-rewrite the art (it carried the OTHER
   // device's shim port) - but it PLAYS, REPLACES any current playback, and seeks to the handed
@@ -950,6 +973,16 @@ export default function App () {
             // playing and let the reconnect decide (proposal 2026-07-14).
             if (msg.event === 'host:disconnected') onHostDropped()
             else if (msg.event === 'host:connected') dropped.current = false
+            else if (msg.event === 'play:rehost') {
+              // MID-SONG FAILOVER, the half the shim cannot do (proposal 2026-07-27). The library
+              // serving this track went away and another one HAS the track, but the two copies are
+              // different encodes - so the shim could not splice into the same response, and the
+              // byte offsets of the new copy mean nothing to a player mid-track. Re-open the queue
+              // (urlFor now routes to the copy we can actually reach) and seek back to where we
+              // were. A gap, not a stop.
+              rehostCurrent().catch(() => {})
+              continue
+            }
             else if (msg.event === 'session:superseded') {
               // Instant presence: another of this person's devices claimed the play token, so
               // stop NOW. Same handler as the lazy path (a rejected heartbeat) - onHandedOff is

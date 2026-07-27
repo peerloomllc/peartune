@@ -137,3 +137,63 @@ test('electHome() is device-agnostic: every device computes the same home from t
   assert.equal(H.electHome(f1, live), H.electHome(f2, live))
   assert.equal(H.electHome(f1, live), 'libA')
 })
+
+// --- same-named libraries (Tim, 2026-07-27) ---------------------------------
+//
+// A library is named by its HOST, and the desktop host ships with `--name "My Library"` - so two
+// friends running defaults give you two identical rows, and you cannot rename someone else's
+// library. Same rule the host already uses for two people called Sam: only a genuine clash earns
+// a suffix, and a lone name is left completely alone.
+
+test('two libraries with the same name are suffixed with their id', () => {
+  const labels = H.libraryLabels([
+    { libraryId: 'jud4pgi4zzz', libraryName: 'My Library' },
+    { libraryId: 'rxtjffsraaa', libraryName: 'My Library' }
+  ])
+  assert.equal(labels.get('jud4pgi4zzz'), 'My Library #jud4')
+  assert.equal(labels.get('rxtjffsraaa'), 'My Library #rxtj')
+})
+
+test('a lone library keeps its name exactly', () => {
+  // The whole point of "only on a clash": one library must never grow a hash for no reason.
+  const labels = H.libraryLabels([
+    { libraryId: 'jud4pgi4zzz', libraryName: "Tim's Umbrel" },
+    { libraryId: 'rxtjffsraaa', libraryName: "Tim's Mac Mini" }
+  ])
+  assert.equal(labels.get('jud4pgi4zzz'), "Tim's Umbrel")
+  assert.equal(labels.get('rxtjffsraaa'), "Tim's Mac Mini")
+})
+
+test('the clash test ignores case and surrounding space', () => {
+  // "my library" and "My Library " are the same name to a human reading a list.
+  const labels = H.libraryLabels([
+    { libraryId: 'aaaa1111', libraryName: 'my library' },
+    { libraryId: 'bbbb2222', libraryName: 'My Library ' }
+  ])
+  assert.equal(labels.get('aaaa1111'), 'my library #aaaa')
+  assert.equal(labels.get('bbbb2222'), 'My Library #bbbb')
+})
+
+test('a nameless library reads as Library, and two of them are still told apart', () => {
+  const labels = H.libraryLabels([
+    { libraryId: 'aaaa1111', libraryName: '' },
+    { libraryId: 'bbbb2222', libraryName: null }
+  ])
+  assert.equal(labels.get('aaaa1111'), 'Library #aaaa')
+  assert.equal(labels.get('bbbb2222'), 'Library #bbbb')
+})
+
+test('three of a name all get suffixed', () => {
+  const labels = H.libraryLabels([
+    { libraryId: 'aaaa1111', libraryName: 'Music' },
+    { libraryId: 'bbbb2222', libraryName: 'Music' },
+    { libraryId: 'cccc3333', libraryName: 'Music' }
+  ])
+  assert.deepEqual([...labels.values()], ['Music #aaaa', 'Music #bbbb', 'Music #cccc'])
+})
+
+test('junk records are skipped rather than thrown on', () => {
+  const labels = H.libraryLabels([null, {}, { libraryId: 'aaaa1111', libraryName: 'Music' }])
+  assert.equal(labels.size, 1)
+  assert.equal(labels.get('aaaa1111'), 'Music')
+})
