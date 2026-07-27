@@ -107,33 +107,32 @@ function parseRange (header, size) {
 // to transcode. The worklet owns the policy (a Settings choice, and later the network
 // type); the shim just asks it at the moment a track is requested, so a change takes
 // effect on the next track without rebuilding anything.
-function createAudioShim ({ client, log = () => {}, ensure = async () => {}, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostClient = null, libForTrack = null, libForCover = null }) {
+function createAudioShim ({ log = () => {}, defaultClient = async () => null, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostClient = null, libForTrack = null, libForCover = null }) {
   if (!http) http = require('bare-http1') // on-device only; see the note at the top of this file
   const meta = new Map() // trackId -> { size, mime }
 
-  // The client is REPLACEABLE, and the indirection is the point. On a reconnect
-  // the PearTuneClient is a new object, but this server must keep its port: the
-  // player was handed http://127.0.0.1:<port>/track/<id> URLs for the whole queue,
-  // and they are only still valid if the port is. Tear the shim down with the
-  // client and a paused queue silently plays into a dead socket on resume.
-  let current = client
-
   // Which client serves THIS request (multi-host step 2, proposal 2026-07-19 §5). A merged URL
-  // names its owning host (libraryId, from the URL); a single-host URL names none, and a resolver
-  // (libForTrack/libForCover) is the fallback that maps a bare id to its host in merged mode. When
-  // a host is named we route to its pool client (hostClient, which revives it); otherwise the
-  // single active client - reviving it via ensure() - exactly as before, so single-host is
-  // unchanged. A cache HIT never gets here: it's served by id alone, host-agnostic.
+  // names its owning library (libraryId, from the URL); a URL that names none falls back to a
+  // resolver (libForTrack/libForCover) and finally to the DEFAULT library. Both resolvers revive
+  // the connection if it is down. A cache HIT never gets here: it is served by id alone,
+  // host-agnostic.
+  //
+  // Resolved PER REQUEST, never held (P3, 2026-07-26). The shim used to be handed a client and
+  // re-pointed at a new one via setClient() on every reconnect - one more thing that had to be
+  // kept in step, and it silently served a dead client if it was not. What the shim must keep
+  // across a reconnect is its PORT, not its client: the player was handed
+  // http://127.0.0.1:<port>/track/<id> URLs for the whole queue and they are only valid while the
+  // port is.
   async function connFor (libraryId, id, resolver) {
     const lib = libraryId || (resolver ? resolver(id) : null)
     if (lib && hostClient) return await hostClient(lib)
-    await ensure()
-    return current
+    return await defaultClient()
   }
 
   async function metaFor (trackId, conn) {
     if (meta.has(trackId)) return meta.get(trackId)
-    const t = await (conn || current).get({ id: trackId })
+    if (!conn) return null // no library to ask - offline, and not in the cache either
+    const t = await conn.get({ id: trackId })
     if (!t) return null
     const m = { size: t.size, mime: mimeFor(t.path || t.title) }
     meta.set(trackId, m)
@@ -358,12 +357,6 @@ function createAudioShim ({ client, log = () => {}, ensure = async () => {}, qua
 
   return {
     server,
-
-    // Point the shim at a fresh client after a reconnect, keeping the port (and
-    // therefore every URL already handed to the player) valid.
-    setClient (c) {
-      current = c
-    },
 
     // The UI composes its own art URLs when the SIZE depends on something only it
     // knows - the grid density. 3-up wants a 350px cover where 2-up wants 500, and
