@@ -86,6 +86,24 @@ nssm start PearTune
 (Task Scheduler with an "At log on" trigger works too; NSSM gives you crash-restart
 and a real service.)
 
+### Without installing Node at all
+
+If you install the **desktop app** (`PearTune Setup x.y.z.exe`) you already have a
+Node runtime on the machine - Electron's - and the host is plain Node, so you can
+run the daemon with the app's own binary and skip the clone and the `npm ci`
+entirely. `ELECTRON_RUN_AS_NODE=1` is what turns the app into `node`:
+
+```powershell
+& $env:LOCALAPPDATA\Programs\PearTune\PearTune.exe $env:LOCALAPPDATA\Programs\PearTune\resources\app.asar\vendor\host\index.js --music "$env:USERPROFILE\Music" --data "$env:USERPROFILE\.peartune"
+```
+
+[`host/deploy/run-host-windows.cmd`](../host/deploy/run-host-windows.cmd) wraps
+that, including the incantation to start it detached. This is the headless daemon,
+NOT the tray app - use it on a spare machine or a VM where nobody is going to be
+looking at a menubar. Note that launching the tray app itself over SSH does not
+work: a GUI process started from an SSH session never reaches the interactive
+desktop, so it exits. This path has no such problem.
+
 ---
 
 ## Docker Desktop (macOS or Windows)
