@@ -10,7 +10,8 @@
 // list bookkeeping, kept here so it is unit-tested without a disk.
 //
 // bare.js owns the file I/O (read hosts.json -> normalize -> mutate -> write); this module
-// never touches fs. A host record is { hostKey, libraryId, libraryName, addedAt }.
+// never touches fs. A host record is { hostKey, libraryId, libraryName, addedAt } plus an
+// optional `alias` (proposal 2026-07-27-local-library-alias) - see setAlias below.
 
 // The empty, canonical v2 shape. A fresh install has no hosts and no active one.
 function empty () {
@@ -55,13 +56,30 @@ function normalize (raw) {
 }
 
 // One clean host record, dropping any stray fields a caller (or an old file) tacked on.
+//
+// `alias` is present ONLY when there is one, so an un-aliased record round-trips exactly as it
+// did before the field existed - that is what makes this a no-migration change. (An older build
+// reading a newer file drops the alias here and shows host names: lossy on a downgrade, never
+// broken.)
 function record (h) {
-  return {
+  const r = {
     hostKey: h.hostKey,
     libraryId: h.libraryId,
     libraryName: h.libraryName,
     addedAt: Number(h.addedAt) || 0
   }
+  const alias = cleanAlias(h.alias)
+  if (alias) r.alias = alias
+  return r
+}
+
+// An alias as we are willing to store it: trimmed, capped, and '' for anything blank or
+// non-string. One place, so normalize() sanitises a hand-edited file the same way setAlias()
+// sanitises a typed one.
+const ALIAS_MAX = 40
+
+function cleanAlias (a) {
+  return typeof a === 'string' ? a.trim().slice(0, ALIAS_MAX) : ''
 }
 
 // The active host object, or null. Total: a missing/renamed active pointer already fell
@@ -122,6 +140,28 @@ function renameHost (raw, hostKey, libraryName) {
   return f
 }
 
+// Set (or clear) YOUR OWN name for a library - proposal 2026-07-27-local-library-alias.
+//
+// A library is named by its HOST: every path above takes the name the server pushed, so you
+// cannot relabel a friend's "My Library" at all, and #212's `#jud4` suffix tells a debugger
+// where to look while telling a human nothing. An alias is the local answer, and it is LOCAL in
+// the strong sense - it is never sent to a host. Storing it host-side would put the private name
+// you gave someone else's library on their server.
+//
+// Blank clears it, so the row falls back to whatever the host is called RIGHT NOW: libraryName
+// keeps tracking the server underneath an alias (renameHost/addHost above still run), which is
+// what stops clearing an alias from revealing a stale name. A missing host is a no-op, matching
+// renameHost - a rename racing a removeHost is not a caller bug.
+function setAlias (raw, hostKey, alias) {
+  const f = normalize(raw)
+  const h = f.hosts.find((x) => x.hostKey === hostKey)
+  if (!h) return f
+  const clean = cleanAlias(alias)
+  if (clean) h.alias = clean
+  else delete h.alias
+  return f
+}
+
 // The elected "session home" for the merged play session (multi-host phase 3, proposal
 // 2026-07-20): the CONNECTED host with the lexicographically-smallest hostKey. Pure so every
 // device - and this test - computes the SAME home from the same host list, which is what gives
@@ -152,24 +192,33 @@ function electHome (raw, live) {
 // This lives on the PHONE, unlike personLabels: libraries span hosts, and only the phone holds the
 // whole list. Computed at the boundary, never persisted - the stored libraryName stays exactly what
 // the host said, so a later rename (or an alias) has something honest to compare against.
+//
+// YOUR alias wins over the host's name (setAlias above), and the clash test runs on the name that
+// RESULTS. That ordering is the whole subtlety: an alias can collide with a name a host pushes
+// ("My Library" aliased next to a host actually called "My Library"), and that pair still has to
+// be tellable apart. Checking for a clash first and then applying the alias would silently produce
+// two identical rows again.
 const SUFFIX_LEN = 4
+
+function effectiveName (h) {
+  return String(cleanAlias(h.alias) || h.libraryName || '').trim() || 'Library'
+}
 
 function libraryLabels (hosts) {
   const byName = new Map()
   for (const h of hosts || []) {
     if (!h || !h.libraryId) continue
-    const k = String(h.libraryName || '').trim().toLowerCase()
+    const k = effectiveName(h).toLowerCase()
     byName.set(k, (byName.get(k) || 0) + 1)
   }
   const out = new Map()
   for (const h of hosts || []) {
     if (!h || !h.libraryId) continue
-    const name = String(h.libraryName || '').trim() || 'Library'
-    const k = String(h.libraryName || '').trim().toLowerCase()
-    const clashes = (byName.get(k) || 0) > 1
+    const name = effectiveName(h)
+    const clashes = (byName.get(name.toLowerCase()) || 0) > 1
     out.set(h.libraryId, clashes ? `${name} #${String(h.libraryId).slice(0, SUFFIX_LEN)}` : name)
   }
   return out
 }
 
-module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost, electHome, libraryLabels }
+module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost, setAlias, electHome, libraryLabels, ALIAS_MAX }

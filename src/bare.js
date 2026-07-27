@@ -616,7 +616,10 @@ function makeClient () {
       if (rec && name && rec.libraryName !== name) {
         saveHostsFile(hostList.renameHost(loadHostsFile(), rec.hostKey, name))
         log('host:renamed-push', { hostKey: rec.hostKey })
-        emit('host:renamed', { hostKey: rec.hostKey, libraryName: name })
+        // labelFor, not `name`: we stored what the server said, but what the UI SHOWS is your
+        // alias when you set one. Emitting the raw name here would flash the operator's name
+        // over your alias until the next reload.
+        emit('host:renamed', { hostKey: rec.hostKey, libraryName: labelFor(lib, name), hostName: name })
       }
     } else if (m?.kind === 'devices:changed') {
       // An owned host's device roster changed (a pair/revoke/delete/promote on its dashboard). Hand
@@ -1174,15 +1177,17 @@ async function syncHostNames (hosts) {
     const rec = loadHostsFile().hosts.find((x) => x.libraryId === h.libraryId)
     if (name && rec && rec.libraryName !== name) {
       saveHostsFile(hostList.renameHost(loadHostsFile(), rec.hostKey, name))
-      emit('host:renamed', { hostKey: rec.hostKey, libraryName: name })
+      emit('host:renamed', { hostKey: rec.hostKey, libraryName: labelFor(h.libraryId, name), hostName: name })
     }
   }))
 }
 
-// The display name for ONE library, disambiguated when another paired library shares its name
-// (worklet/hosts.js libraryLabels - "My Library" twice becomes "My Library #jud4" / "#rxtj", a
-// lone name is untouched). Every user-facing payload below goes through this; the STORED name
-// stays exactly what the host said.
+// The display name for ONE library: YOUR alias if you set one, else the host's own name, then
+// disambiguated when another paired library shares it (worklet/hosts.js libraryLabels - "My
+// Library" twice becomes "My Library #jud4" / "#rxtj", a lone name is untouched). Every
+// user-facing payload below goes through this, INCLUDING the host:renamed emits - an operator
+// renaming their library must not flash their name over your alias. The STORED libraryName stays
+// exactly what the host said, so clearing an alias reveals the server's current name.
 function labelFor (libraryId, fallback) {
   return hostList.libraryLabels(loadHostsFile().hosts).get(libraryId) || fallback || 'Library'
 }
@@ -1197,6 +1202,10 @@ function listHostsData () {
     hosts: f.hosts.map((h) => ({
       ...h,
       libraryName: labels.get(h.libraryId) || h.libraryName,
+      // The host's OWN name, unaliased and unsuffixed. Settings shows it under a row you have
+      // aliased ("Your server calls it X") so the mapping is discoverable and a server-side
+      // rename is never invisible; `alias` rides along in the spread above for the editor.
+      hostName: h.libraryName,
       active: h.hostKey === f.activeHostKey
     })),
     activeHostKey: f.activeHostKey
@@ -1662,10 +1671,14 @@ const methods = {
       // are keyed by z32). Settings shows this so an operator deciding which row
       // to revoke can match the phone in their hand to a line on the screen.
       deviceKeyZ32: z32.encode(identity.publicKey),
-      host: host || null,
+      // labelFor, not the raw record: a COLD LAUNCH is the one path that used to hand the UI
+      // unlabelled names, so the switcher showed "My Library" twice until something else
+      // refreshed it (and, since 2026-07-27, showed the host's name rather than your alias).
+      host: host ? { ...host, libraryName: labelFor(host.libraryId, host.libraryName) } : null,
       // The full paired-library list (active flagged), so Settings can render the switcher
-      // on launch without a second round-trip.
-      hosts: f.hosts.map((h) => ({ ...h, active: h.hostKey === f.activeHostKey })),
+      // on launch without a second round-trip. Same source as listHosts, so the labels,
+      // the aliases and the #suffixes are the ones every other screen uses.
+      hosts: listHostsData().hosts,
       settings,
       connected: false
     }
@@ -2154,7 +2167,7 @@ const methods = {
       const active = loadDefaultHost()
       if (active && active.libraryName !== remote.libraryName) {
         saveHostsFile(hostList.renameHost(loadHostsFile(), active.hostKey, remote.libraryName))
-        emit('host:renamed', { hostKey: active.hostKey, libraryName: remote.libraryName })
+        emit('host:renamed', { hostKey: active.hostKey, libraryName: labelFor(active.libraryId, remote.libraryName), hostName: remote.libraryName })
       }
     }
     // Extend that live rename to the OTHER hosts in a blend. This method rides loadIdentity(), which
@@ -3169,6 +3182,23 @@ const methods = {
     }
     emit('host:switched', { hostKey: host.hostKey, libraryId: host.libraryId, libraryName: labelFor(host.libraryId, host.libraryName), shimPort })
     return { ...host, shimPort }
+  },
+
+  // YOUR OWN name for a library (proposal 2026-07-27-local-library-alias). A library is named by
+  // its HOST, so without this you cannot relabel a friend's "My Library" at all. Blank clears it
+  // and the row falls back to the host's CURRENT name (libraryName keeps tracking the server
+  // underneath). Purely local: nothing here is ever sent to a host.
+  setLibraryAlias ({ hostKey, alias }) {
+    const f = hostList.setAlias(loadHostsFile(), hostKey, alias)
+    saveHostsFile(f)
+    const rec = f.hosts.find((h) => h.hostKey === hostKey)
+    // Same event the operator-rename path fires, so the header, the switcher and the merged
+    // chips all relabel off one listener rather than growing an alias-shaped second one.
+    if (rec) emit('host:renamed', { hostKey, libraryName: labelFor(rec.libraryId, rec.libraryName), hostName: rec.libraryName, alias: rec.alias || '' })
+    // A CLEARED alias can re-create a clash (two libraries both back to "My Library"), and a NEW
+    // one can resolve someone else's - so the chips must re-read every label, not just this row's.
+    if (mergedMode()) emit('merged:updated', mergedStatusData())
+    return listHostsData()
   },
 
   // Remove ONE library (per-host unpair). Purges just that library's local state and its

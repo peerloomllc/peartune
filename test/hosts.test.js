@@ -197,3 +197,94 @@ test('junk records are skipped rather than thrown on', () => {
   assert.equal(labels.size, 1)
   assert.equal(labels.get('aaaa1111'), 'Music')
 })
+
+// --- a LOCAL alias for a library (proposal 2026-07-27-local-library-alias) ----
+//
+// The #jud4 suffix above tells two same-named libraries apart and tells a human nothing. A library
+// is named by its HOST, so a friend's default "My Library" was un-relabellable: every rename path
+// takes the name the server pushed. An alias is yours, local to this phone, and never sent anywhere.
+
+test('setAlias() sets your own name for a library, leaving the host name intact', () => {
+  let f = H.addHost(H.empty(), A, 1)
+  f = H.setAlias(f, 'aaa', "Sam's music")
+  const h = f.hosts[0]
+  assert.equal(h.alias, "Sam's music")
+  assert.equal(h.libraryName, "Tim's Umbrel") // what the SERVER says still tracked underneath
+})
+
+test('setAlias() with a blank value CLEARS the alias (back to the host name)', () => {
+  let f = H.setAlias(H.addHost(H.empty(), A, 1), 'aaa', 'Attic box')
+  for (const blank of ['', '   ', null, undefined, 42]) {
+    f = H.setAlias(f, 'aaa', blank)
+    assert.equal('alias' in f.hosts[0], false, `blank ${JSON.stringify(blank)} should clear`)
+    f = H.setAlias(f, 'aaa', 'Attic box') // re-set for the next case
+  }
+})
+
+test('setAlias() trims and caps at 40 characters', () => {
+  let f = H.addHost(H.empty(), A, 1)
+  f = H.setAlias(f, 'aaa', '  spaced  ')
+  assert.equal(f.hosts[0].alias, 'spaced')
+  f = H.setAlias(f, 'aaa', 'x'.repeat(200))
+  assert.equal(f.hosts[0].alias.length, H.ALIAS_MAX)
+})
+
+test('setAlias() on a missing host is a no-op (a rename can race a remove)', () => {
+  const f = H.setAlias(H.addHost(H.empty(), A, 1), 'zzz', 'Nope')
+  assert.equal(f.hosts.length, 1)
+  assert.equal('alias' in f.hosts[0], false)
+})
+
+test('an alias survives a host rename AND a re-pair', () => {
+  // Both paths overwrite libraryName from the server. Neither may touch YOUR name for it.
+  let f = H.setAlias(H.addHost(H.empty(), A, 1), 'aaa', "Sam's music")
+  f = H.renameHost(f, 'aaa', 'Renamed On The Dashboard')
+  assert.equal(f.hosts[0].alias, "Sam's music")
+  f = H.addHost(f, { ...A, libraryName: 'Renamed Again' }, 2)
+  assert.equal(f.hosts[0].alias, "Sam's music")
+  assert.equal(f.hosts[0].libraryName, 'Renamed Again')
+})
+
+test('record() omits `alias` entirely when there is not one', () => {
+  // The no-migration property: an un-aliased record is byte-identical to a pre-alias one, and an
+  // older build reading a newer file just drops the field.
+  assert.deepEqual(H.record(A), { hostKey: 'aaa', libraryId: 'libA', libraryName: "Tim's Umbrel", addedAt: 0 })
+  assert.deepEqual(H.record({ ...A, alias: '  ' }), { hostKey: 'aaa', libraryId: 'libA', libraryName: "Tim's Umbrel", addedAt: 0 })
+  assert.equal(H.record({ ...A, alias: ' Mine ' }).alias, 'Mine')
+})
+
+test('normalize() keeps an alias through a round-trip and sanitises a hand-edited one', () => {
+  const raw = { version: 2, hosts: [{ ...A, alias: '  My name for it  ' }], activeHostKey: 'aaa' }
+  assert.equal(H.normalize(raw).hosts[0].alias, 'My name for it')
+  assert.equal(H.normalize(H.normalize(raw)).hosts[0].alias, 'My name for it')
+})
+
+test('libraryLabels() prefers YOUR alias over the host name, and a lone alias gets no suffix', () => {
+  const labels = H.libraryLabels([
+    { libraryId: 'jud4pgi4zzz', libraryName: 'My Library', alias: "Sam's music" },
+    { libraryId: 'rxtjffsraaa', libraryName: 'My Library' }
+  ])
+  // The clash is GONE now that one of them is named something else - so neither keeps a suffix.
+  assert.equal(labels.get('jud4pgi4zzz'), "Sam's music")
+  assert.equal(labels.get('rxtjffsraaa'), 'My Library')
+})
+
+test('two identical ALIASES clash and are suffixed, same as two identical host names', () => {
+  const labels = H.libraryLabels([
+    { libraryId: 'jud4pgi4zzz', libraryName: "Tim's Umbrel", alias: 'Music' },
+    { libraryId: 'rxtjffsraaa', libraryName: "Tim's Mac", alias: 'music ' }
+  ])
+  assert.equal(labels.get('jud4pgi4zzz'), 'Music #jud4')
+  assert.equal(labels.get('rxtjffsraaa'), 'music #rxtj')
+})
+
+test('an alias that COLLIDES with a host-pushed name suffixes BOTH', () => {
+  // Why the clash test has to run on the effective name rather than in front of the alias: this is
+  // the case where applying the alias first and checking second would produce two identical rows.
+  const labels = H.libraryLabels([
+    { libraryId: 'jud4pgi4zzz', libraryName: "Sam's box", alias: 'My Library' },
+    { libraryId: 'rxtjffsraaa', libraryName: 'My Library' }
+  ])
+  assert.equal(labels.get('jud4pgi4zzz'), 'My Library #jud4')
+  assert.equal(labels.get('rxtjffsraaa'), 'My Library #rxtj')
+})
