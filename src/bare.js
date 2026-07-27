@@ -754,7 +754,7 @@ async function ownedLibraryList () {
     if (!c) continue
     try {
       const id = await c.getIdentity()
-      if (id?.owner) out.push({ libraryId: h.libraryId, libraryName: id.libraryName || h.libraryName, active: h.libraryId === defaultLibraryId, client: c })
+      if (id?.owner) out.push({ libraryId: h.libraryId, libraryName: labelFor(h.libraryId, id.libraryName || h.libraryName), active: h.libraryId === defaultLibraryId, client: c })
     } catch {}
   }
   return out
@@ -850,7 +850,7 @@ async function attach (host, conn) {
     await ensureShim()
     if (clientFor(libId) === c) {
       emit('host:connected', {
-        libraryName: host.libraryName, libraryId: host.libraryId, shimPort, artBase: shim.artBase()
+        libraryName: labelFor(host.libraryId, host.libraryName), libraryId: host.libraryId, shimPort, artBase: shim.artBase()
       })
     }
     flushOutbox().catch(() => {}) // drain favorites/resume/counts queued while offline
@@ -1179,13 +1179,26 @@ async function syncHostNames (hosts) {
   }))
 }
 
+// The display name for ONE library, disambiguated when another paired library shares its name
+// (worklet/hosts.js libraryLabels - "My Library" twice becomes "My Library #jud4" / "#rxtj", a
+// lone name is untouched). Every user-facing payload below goes through this; the STORED name
+// stays exactly what the host said.
+function labelFor (libraryId, fallback) {
+  return hostList.libraryLabels(loadHostsFile().hosts).get(libraryId) || fallback || 'Library'
+}
+
 // The paired libraries with the active one flagged (Settings' switcher). A module function so
 // methods can call it without `this` - the IPC dispatch invokes methods unbound, so `this` is
 // undefined inside them.
 function listHostsData () {
   const f = loadHostsFile()
+  const labels = hostList.libraryLabels(f.hosts)
   return {
-    hosts: f.hosts.map((h) => ({ ...h, active: h.hostKey === f.activeHostKey })),
+    hosts: f.hosts.map((h) => ({
+      ...h,
+      libraryName: labels.get(h.libraryId) || h.libraryName,
+      active: h.hostKey === f.activeHostKey
+    })),
     activeHostKey: f.activeHostKey
   }
 }
@@ -1199,6 +1212,7 @@ function listHostsData () {
 // have its last-built tracks browsable).
 function mergedStatusData () {
   const hosts = loadHostsFile().hosts
+  const labels = hostList.libraryLabels(hosts)
   const live = connectedLibs()
   const perLib = {}
   if (mergedIndex) {
@@ -1210,7 +1224,7 @@ function mergedStatusData () {
     merged: mergedMode(),
     libraries: hosts.map((h) => ({
       libraryId: h.libraryId,
-      libraryName: h.libraryName,
+      libraryName: labels.get(h.libraryId) || h.libraryName,
       connected: live.has(h.libraryId),
       trackCount: perLib[h.libraryId] || 0
     })),
@@ -1512,7 +1526,7 @@ async function connectTo (host) {
     await ensureShim()
     log('link:default', { lib: host.libraryId.slice(0, 8), library: host.libraryName })
     emit('host:connected', {
-      libraryName: host.libraryName, libraryId: host.libraryId, shimPort, artBase: shim.artBase()
+      libraryName: labelFor(host.libraryId, host.libraryName), libraryId: host.libraryId, shimPort, artBase: shim.artBase()
     })
     flushOutbox().catch(() => {})
     return { ...host, shimPort }
@@ -2702,7 +2716,7 @@ const methods = {
   async requestList () {
     if (mergedMode()) {
       const libs = [...connectedLibs()]
-      const names = new Map(loadHostsFile().hosts.map((h) => [h.libraryId, h.libraryName]))
+      const names = hostList.libraryLabels(loadHostsFile().hosts)
       const settled = await Promise.allSettled(libs.map((lib) => {
         const c = clientFor(lib)
         return c ? c.requestList().then((v) => ({ lib, requests: v.requests || [] })) : Promise.reject(new Error('offline'))
@@ -2804,7 +2818,7 @@ const methods = {
     for (const r of settled) {
       if (r.status !== 'fulfilled') continue
       anySupported = true
-      for (const req of r.value.requests) tagged.push({ ...req, libraryId: r.value.l.libraryId, libraryName: r.value.l.libraryName })
+      for (const req of r.value.requests) tagged.push({ ...req, libraryId: r.value.l.libraryId, libraryName: labelFor(r.value.l.libraryId, r.value.l.libraryName) })
     }
     if (!anySupported) return { requests: [], supported: false }
     return { requests: merge.collapseRequests(tagged, { pendingWins: true }), supported: true, libraries: libs.length }
@@ -3153,7 +3167,7 @@ const methods = {
     } catch (e) {
       log('switch:connect-deferred', { err: e.message })
     }
-    emit('host:switched', { hostKey: host.hostKey, libraryId: host.libraryId, libraryName: host.libraryName, shimPort })
+    emit('host:switched', { hostKey: host.hostKey, libraryId: host.libraryId, libraryName: labelFor(host.libraryId, host.libraryName), shimPort })
     return { ...host, shimPort }
   },
 
@@ -3226,7 +3240,7 @@ const methods = {
           log('remove:reconnect-failed', { err: e.message })
           emit('host:disconnected', { hostKey: next.hostKey })
         })
-        emit('host:switched', { hostKey: next.hostKey, libraryId: next.libraryId, libraryName: next.libraryName, shimPort })
+        emit('host:switched', { hostKey: next.hostKey, libraryId: next.libraryId, libraryName: labelFor(next.libraryId, next.libraryName), shimPort })
       } else {
         // No libraries left: back to un-paired. The removed library's topic is already left (the
         // proposal's retry-storm mitigation - remove-library leaves the topic). The shim keeps
