@@ -3486,13 +3486,13 @@ function pairError (msg = '') {
 // "Recently added" means recently, not "the newest twelve whenever they landed" (Tim, 2026-07-27).
 // Without a cutoff the shelf is permanent: a library nobody has added to in a year still carries a
 // dozen albums under that heading, which is a lie the first time you read it and furniture every
-// time after. Thirty days is long enough that a weekend's ripping is still on the shelf on a
-// Monday three weeks later, short enough that a settled library eventually shows nothing.
+// time after. SEVEN DAYS (Tim, asked between 7/30/90): the shelf reads as news - this week's new
+// music - and is gone again a week later, rather than lingering as decoration.
 //
 // A missing addedAt counts as NOT recent: the shelf can only make its claim about albums whose age
 // we actually know, and no shelf is better than a wrong one. (The shelf is already gated on the
 // host supporting the 'added' sort at all - see recentSupported.)
-const RECENT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+const RECENT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 function recentEnough (albums) {
   const cutoff = Date.now() - RECENT_MAX_AGE_MS
