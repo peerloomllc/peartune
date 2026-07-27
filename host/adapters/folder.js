@@ -469,6 +469,11 @@ class FolderAdapter {
           size: r.size,
           coverId: album.coverId,
           suffix: r.suffix,
+          // The scan reads the file's mtime into r.addedAt (see the base row) and the ALBUM has
+          // always kept it - the track record dropped it here, so a folder library reached the
+          // phone with dated albums and dateless songs, and the blend could not order Songs by
+          // date at all. Carried since 2026-07-27.
+          addedAt: r.addedAt ?? null,
           path: r.relPath,
           absPath: r.absPath
         }

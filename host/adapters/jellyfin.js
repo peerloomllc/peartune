@@ -35,7 +35,7 @@ const TICKS_PER_MS = 10000
 // The fields Jellyfin will not send unless asked. `MediaSources` is the load-bearing
 // one: it carries the file SIZE, and the phone's loopback shim needs a content-length
 // before it will let ExoPlayer seek. Without it the player can only play forward.
-const TRACK_FIELDS = 'MediaSources,ParentId,ProductionYear,Path'
+const TRACK_FIELDS = 'MediaSources,ParentId,ProductionYear,Path,DateCreated'
 const ALBUM_FIELDS = 'ProductionYear,ChildCount,ParentId,DateCreated'
 
 // Canonical sort key -> Jellyfin SortBy. The default (no sort) track order stays what
@@ -199,6 +199,10 @@ class JellyfinAdapter {
       year: item.ProductionYear ?? null,
       durationMs: item.RunTimeTicks ? Math.round(item.RunTimeTicks / TICKS_PER_MS) : null,
       size: media.Size ?? 0,
+      // When this track was added to the library (DateCreated, requested in TRACK_FIELDS), so the
+      // merged blend can date-sort songs across hosts. The album projection has read the same
+      // field since the adapter was written; tracks did not.
+      addedAt: item.DateCreated ? (Date.parse(item.DateCreated) || null) : null,
       // The ALBUM carries the art, as it does everywhere else. A track with no album
       // (a stray single) falls back to its own image, which Jellyfin will happily
       // serve from the embedded tag.

@@ -259,3 +259,36 @@ test('collapseRequests refs carry each copy status, so a resolve touches only th
   assert.deepEqual(pendingRefs.map((x) => x.libraryId), ['libM'])
   assert.deepEqual(out[0].libraries.sort(), ['Mac', 'Umbrel'])
 })
+
+// --- a merged TRACK carries its date (2026-07-27) -----------------------------
+//
+// mergeAlbums has always kept addedAt; mergeTracks dropped it, so every merged track sorted as 0
+// and a Songs "Recently added" order was impossible. Same rule as albums: the NEWEST across copies.
+
+test('a merged track takes the NEWEST addedAt across its copies', () => {
+  const ix = M.buildIndex([
+    { libraryId: 'libA', artists: [], albums: [], genres: [], tracks: [{ id: 'a1', libraryId: 'libA', title: 'Weird Fishes', artist: 'Radiohead', album: 'In Rainbows', addedAt: 1000 }] },
+    { libraryId: 'libB', artists: [], albums: [], genres: [], tracks: [{ id: 'b1', libraryId: 'libB', title: 'weird fishes', artist: 'radiohead', album: 'in rainbows', addedAt: 5000 }] }
+  ])
+  assert.equal(ix.tracks.length, 1, 'the two copies deduped')
+  assert.equal(ix.tracks[0].addedAt, 5000, 'the newer copy dates the merged track')
+})
+
+test('a merged track with no dated copy reports null, not 0', () => {
+  // null is "we do not know"; 0 is a real 1970 timestamp. The shelf's age test treats both as
+  // not-recent, but only one of them is honest.
+  const ix = M.buildIndex([
+    { libraryId: 'libA', artists: [], albums: [], genres: [], tracks: [{ id: 'a1', libraryId: 'libA', title: 'X', artist: 'Y', album: 'Z' }] }
+  ])
+  assert.equal(ix.tracks[0].addedAt, null)
+})
+
+test('sortItems orders tracks by added, both directions', () => {
+  const rows = [
+    { title: 'old', addedAt: 100 },
+    { title: 'new', addedAt: 900 },
+    { title: 'mid', addedAt: 500 }
+  ]
+  assert.deepEqual(M.sortItems(rows, 'added', 'desc').map(r => r.title), ['new', 'mid', 'old'])
+  assert.deepEqual(M.sortItems(rows, 'added', 'asc').map(r => r.title), ['old', 'mid', 'new'])
+})

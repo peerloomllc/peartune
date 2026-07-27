@@ -1849,9 +1849,17 @@ const methods = {
     return { ok: true, connected: defaultConnected(), shimPort }
   },
 
+  // The blend answers for ITSELF where it can (Tim, 2026-07-27). `sorts` used to come straight off
+  // whichever library happened to be the default, so the Display menu described one host while the
+  // list it ordered was the blend: orderings the merged index can do (any field, either direction,
+  // Songs included) were hidden because that one server could not do them, and the menu changed
+  // meaning when the default library changed. Everything else - the source kind and the server's
+  // own name - still belongs to a HOST, not to a blend, so it keeps coming from the default one
+  // (the playlist screens label the server with it).
   async stats () {
     await ensureConnected()
-    return mustClient().stats()
+    const st = await mustClient().stats()
+    return mergedMode() ? { ...st, sorts: catalog.MERGED_SORTS } : st
   },
 
   // The Songs view. Navidrome answers an empty-query search3 with everything,
