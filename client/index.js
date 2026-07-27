@@ -76,6 +76,13 @@ class PearTuneClient {
     this._nextId = 1
     this._pending = new Map() // req id -> { resolve, reject, stream? }
 
+    // When we last heard ANYTHING from this host: a reply, a stream chunk, an error, a push.
+    // The worklet's connection watchdog reads it to decide whether a connection needs proving
+    // with a ping. Traffic already proves it - and a probe that queues behind a track's worth
+    // of audio on the same mux would time out on a perfectly healthy link and cut the music.
+    // 0 = nothing heard yet on this client.
+    this.lastActivityAt = 0
+
     // The host's unsolicited push (session handoff). The worklet sets this to react to a
     // 'session-superseded' event instantly instead of waiting for the next lazy heartbeat.
     this.onPush = null
@@ -344,6 +351,9 @@ class PearTuneClient {
   _wireMedia (conn, libraryId) {
     const mux = Protomux.from(conn)
 
+    // Any inbound frame is proof this connection is alive - see lastActivityAt.
+    const heard = () => { this.lastActivityAt = Date.now() }
+
     // Registration order is fixed in protocol/channels.js and MUST match the
     // host's. Do not hand-roll addMessage here - see the note in that file.
     const built = mediaChannel(mux, {
@@ -351,6 +361,7 @@ class PearTuneClient {
       onclose: () => this._failAll(new Error('channel closed')),
 
       onres: (m) => {
+        heard()
         const p = this._pending.get(m.id)
         if (!p) return
         this._pending.delete(m.id)
@@ -358,6 +369,7 @@ class PearTuneClient {
       },
 
       onchunk: (m) => {
+        heard()
         const p = this._pending.get(m.id)
         if (!p) return
         if (p.chunks) p.chunks.push(m.data)
@@ -365,6 +377,7 @@ class PearTuneClient {
       },
 
       onend: (m) => {
+        heard()
         const p = this._pending.get(m.id)
         if (!p) return
         this._pending.delete(m.id)
@@ -384,6 +397,7 @@ class PearTuneClient {
       },
 
       onerr: (m) => {
+        heard()
         const p = this._pending.get(m.id)
         if (!p) return
         this._pending.delete(m.id)
@@ -394,7 +408,7 @@ class PearTuneClient {
 
       // Unsolicited host event - no request id to correlate. Hand it straight to the
       // worklet; it decides what to do (today: 'session-superseded' -> stop and yield).
-      onpush: (m) => { try { this.onPush && this.onPush(m) } catch {} }
+      onpush: (m) => { heard(); try { this.onPush && this.onPush(m) } catch {} }
     })
     if (!built) throw new Error('could not open media channel')
 
