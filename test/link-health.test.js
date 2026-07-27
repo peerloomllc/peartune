@@ -12,8 +12,8 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 
 const {
-  poolActions, POOL_WATCHDOG_MS, POOL_PING_TIMEOUT_MS, PROVEN_WINDOW_MS
-} = require('../worklet/pool-health')
+  linkActions, WATCHDOG_MS, PING_TIMEOUT_MS, PROVEN_WINDOW_MS
+} = require('../worklet/link-health')
 
 const HOSTS = [
   { hostKey: 'aaa', libraryId: 'lib-active' },
@@ -22,7 +22,7 @@ const HOSTS = [
 ]
 const NOW = 1_000_000
 
-const run = (over = {}) => poolActions({
+const run = (over = {}) => linkActions({
   hosts: HOSTS,
   activeLibraryId: 'lib-active',
   isLive: () => false,
@@ -75,7 +75,7 @@ test('dark beats proven: a library with no client is redialed however recent its
 })
 
 test('a duplicated host record yields ONE action', () => {
-  const actions = poolActions({
+  const actions = linkActions({
     hosts: [...HOSTS, { hostKey: 'bbb', libraryId: 'lib-pool-1' }],
     activeLibraryId: 'lib-active',
     isLive: () => false,
@@ -85,7 +85,7 @@ test('a duplicated host record yields ONE action', () => {
 })
 
 test('junk host records are skipped rather than throwing', () => {
-  const actions = poolActions({
+  const actions = linkActions({
     hosts: [null, {}, { libraryId: 'lib-pool-1', hostKey: 'bbb' }],
     activeLibraryId: 'lib-active',
     isLive: () => false,
@@ -95,7 +95,7 @@ test('junk host records are skipped rather than throwing', () => {
 })
 
 test('no paired libraries means nothing to do', () => {
-  assert.deepEqual(poolActions({ hosts: [], activeLibraryId: null, isLive: () => false, now: NOW }), [])
+  assert.deepEqual(linkActions({ hosts: [], activeLibraryId: null, isLive: () => false, now: NOW }), [])
 })
 
 test('the action carries the host record, so the caller can re-join its topic', () => {
@@ -107,11 +107,11 @@ test('the action carries the host record, so the caller can re-join its topic', 
 test('the probe timeout is shorter than the watchdog interval', () => {
   // Otherwise a stuck ping is still outstanding when the next tick starts one, and the ticks
   // pile up on a connection already known to be bad.
-  assert.ok(POOL_PING_TIMEOUT_MS < POOL_WATCHDOG_MS)
+  assert.ok(PING_TIMEOUT_MS < WATCHDOG_MS)
 })
 
 test('the proven window is shorter than the watchdog interval', () => {
   // Otherwise every tick would find the previous tick's own probe inside the window and skip -
   // an idle connection would never be probed at all.
-  assert.ok(PROVEN_WINDOW_MS < POOL_WATCHDOG_MS)
+  assert.ok(PROVEN_WINDOW_MS < WATCHDOG_MS)
 })

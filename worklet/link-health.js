@@ -1,4 +1,5 @@
-// Which connections need attention this tick, and what kind.
+// Which links need attention this tick, and what kind. (Named for the ONE connection per
+// library that P2 leaves behind - there is no longer a "pool" tier to be healthy or not.)
 //
 // THE ASYMMETRY THIS EXISTS FOR (Tim, 2026-07-26): the phone reconnected to one host in
 // seconds while another stayed missing for 20+ minutes and then came back on its own. The
@@ -29,11 +30,11 @@
 // intends, rare enough that a probe is noise next to a music stream. The timer is unref'd in
 // bare.js, so it freezes with a suspended worklet - correct, there is nothing to heal while
 // the app is not running.
-const POOL_WATCHDOG_MS = 30000
+const WATCHDOG_MS = 30000
 
 // A ping that has not answered in 8s means the socket is not carrying traffic. Generous: the
 // hosts answer ping in single-digit ms on a LAN and well under a second off-LAN.
-const POOL_PING_TIMEOUT_MS = 8000
+const PING_TIMEOUT_MS = 8000
 
 // Traffic in the last 20s counts as proof of life, so a busy connection is never probed.
 // This is not just an optimisation, it is what makes probing the ACTIVE connection safe:
@@ -47,7 +48,7 @@ const PROVEN_WINDOW_MS = 20000
 // that library has a usable client. provenAt(libraryId) -> ms timestamp of the last inbound
 // frame on it (0/null if never). now: current time, injected so this stays pure.
 // Returns [{ host, libraryId, active, action }].
-function poolActions ({ hosts, activeLibraryId, isLive, provenAt = () => 0, now = 0 }) {
+function linkActions ({ hosts, activeLibraryId, isLive, provenAt = () => 0, now = 0 }) {
   const seen = new Set()
   const out = []
   for (const h of hosts || []) {
@@ -66,4 +67,4 @@ function poolActions ({ hosts, activeLibraryId, isLive, provenAt = () => 0, now 
   return out
 }
 
-module.exports = { poolActions, POOL_WATCHDOG_MS, POOL_PING_TIMEOUT_MS, PROVEN_WINDOW_MS }
+module.exports = { linkActions, WATCHDOG_MS, PING_TIMEOUT_MS, PROVEN_WINDOW_MS }
