@@ -136,6 +136,11 @@ export default function App () {
   const [expanded, setExpanded] = useState(false) // the player: mini vs full
   const [skin, setSkin] = useState('modern') // player skin: modern | classic (the retro Winamp-style face)
   const [albumsLoaded, setAlbumsLoaded] = useState(false)
+  // How many background refreshes are in flight. A COUNT, not a boolean: a cold launch fires one
+  // per library as each connects, and a boolean would clear on the first to finish while three
+  // were still running. Drives the quiet "Updating…" in the library header - the honest signal
+  // that replaced the flicker, since the content itself no longer disappears to say so.
+  const [updating, setUpdating] = useState(0)
   const [reconnecting, setReconnecting] = useState(false)
   // A cold launch has not FAILED - it has not tried yet. init() answers with
   // connected:false and kicks the connect off in the background (src/bare.js), so
@@ -474,15 +479,46 @@ export default function App () {
   const mergedRef = useRef(null); mergedRef.current = merged
   const filterRef = useRef('_all'); filterRef.current = filter
   const browseRef = useRef('albums'); browseRef.current = browse
+  // What each view is CURRENTLY showing, readable from the once-registered event listeners (whose
+  // closures captured the first render's empty state). reloadBrowse uses these to decide whether it
+  // has anything worth keeping on screen while it refetches - see the flicker note there.
+  const albumsRef = useRef([]); albumsRef.current = albums
+  const artistsRef = useRef(null); artistsRef.current = artists
+  const genresRef = useRef(null); genresRef.current = genres
+  const songsRef = useRef(null); songsRef.current = songs
 
   // Reload whichever browse view is showing, from the current source filter (used after a merged
-  // rebuild, and by a chip tap). Mirrors applySort's reset-then-load per view.
+  // rebuild, and by a chip tap).
+  //
+  // IT DOES NOT BLANK THE VIEW FIRST, and that is the point (Tim, 2026-07-27). This runs on every
+  // host:connected and every merged:updated, so a cold launch with four libraries ran it several
+  // times - and it used to clear the list and drop back to skeletons before each refetch. The grid
+  // flashed empty and refilled once per library, and the header count, which is just the array
+  // length, bounced 0 -> 60 -> 0 -> 60. The data was never wrong, only the way it arrived.
+  //
+  // So: keep what is on screen and swap it when the new page lands (loadAlbums(0) REPLACES the
+  // array rather than appending, so no clear is needed). Blank only when there is genuinely
+  // nothing to show yet, which is what the skeletons are for. Refs, not state, because the
+  // listeners that call this captured the first render.
   function reloadBrowse () {
     const v = browseRef.current
-    if (v === 'albums') { setAlbums([]); setCursor(0); setAlbumsLoaded(false); loadAlbums(0) }
-    else if (v === 'artists') { setArtists(null); loadArtists() }
-    else if (v === 'genres') { setGenres(null); loadGenres() }
-    else if (v === 'songs') { setSongs(null); setSongCursor(0); loadSongs(0) }
+    const track = (p) => {
+      setUpdating(n => n + 1)
+      Promise.resolve(p).finally(() => setUpdating(n => Math.max(0, n - 1)))
+    }
+    if (v === 'albums') {
+      if (!albumsRef.current.length) { setAlbums([]); setAlbumsLoaded(false) }
+      setCursor(0); track(loadAlbums(0))
+    } else if (v === 'artists') {
+      if (!artistsRef.current) setArtists(null)
+      track(loadArtists())
+    } else if (v === 'genres') {
+      if (!genresRef.current) setGenres(null)
+      track(loadGenres())
+    } else if (v === 'songs') {
+      if (!songsRef.current) setSongs(null)
+      setSongCursor(0); track(loadSongs(0))
+    }
     // The shelf sits INSIDE the albums view and is scoped to the same library, so it has to move
     // with the filter too. Leaving it out is what let a one-library grid sit under a whole-blend
     // shelf; it is cheap (one call, 12 rows) so it reloads on any view change, not just albums.
@@ -1858,7 +1894,7 @@ export default function App () {
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         onDismissError={() => setError(null)}
-        albumsLoaded={albumsLoaded} reconnecting={reconnecting} firstConnect={firstConnect}
+        albumsLoaded={albumsLoaded} reconnecting={reconnecting} firstConnect={firstConnect} updating={updating > 0}
         favs={favs} onFav={favSupported ? onFav : null}
         cont={now ? null : cont}
         onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
@@ -2428,7 +2464,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 }
 
 function Library ({
-  state, albums, artists, genres, songs, recent, merged, filter, onFilter, onAddLibrary, cursor, songCursor, density,
+  state, albums, artists, genres, songs, recent, merged, filter, onFilter, onAddLibrary, cursor, songCursor, density, updating,
   browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting, firstConnect,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
@@ -2675,6 +2711,11 @@ function Library ({
               sit here for a single library and was dropped (Tim, 2026-07-27): it is the operator's
               vocabulary, chosen on the dashboard, and it says nothing to the person listening. */}
           {mergedAll && <> · {merged.libraries.length} libraries</>}
+          {/* A background refresh is running (a library connecting on a cold launch, a pull to
+              refresh). The grid deliberately does NOT blank while this happens, so this line is
+              the only thing that says so - quiet on purpose, and gone the moment the last
+              in-flight load settles. */}
+          {updating && <> · Updating…</>}
         </p>
       </header>
 
