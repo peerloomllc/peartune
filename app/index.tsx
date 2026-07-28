@@ -272,6 +272,14 @@ export default function App () {
         // "active player" token. One place covers every path (play / resume / jump / next);
         // the worklet claim is idempotent, so re-firing is free.
         if (s.playing && !wasPlaying.current) activateSession()
+        // ...and whenever it transitions OUT of playing, flush that fact NOW. toggle() already
+        // does this for the in-app button, but a pause from the LOCK SCREEN, the notification, a
+        // headset button, a car or any other media-session route never passes through it - and the
+        // status poll goes silent the instant playback stops, so the throttled persist below never
+        // runs again. The last thing pushed stays "playing: true" (Tim, 2026-07-28: paused 25s,
+        // both hosts still said playing). Catching the edge here covers every route at once,
+        // because they all end up in this listener.
+        else if (!s.playing && wasPlaying.current) persistQueue(true)
         wasPlaying.current = !!s.playing
 
         posRef.current = posMs
