@@ -88,7 +88,13 @@ class AudioCache {
   // libraryId (protocol/ids.js), so once written there is no way back to the library it
   // belongs to. Null is allowed (and is what every entry written before this shipped has) -
   // removeLibrary simply cannot claim those, and the LRU cap ages them out as it always did.
-  createSink (id, { mime, size, library = null }) {
+  //
+  // `pinned` marks the row pinned AT COMMIT, before the eviction pass runs. Streaming never
+  // uses it (a played track is an LRU entry by definition), but the demo library's install
+  // does: committing unpinned and pinning afterwards leaves a window in which _evict() sees
+  // an ordinary LRU entry and can delete the file it just wrote - which is exactly what a
+  // small cache cap did to the demo tracks.
+  createSink (id, { mime, size, library = null, pinned = false }) {
     fs.mkdirSync(this.dir, { recursive: true })
     const tmp = this._file(id) + '.part'
     const ws = fs.createWriteStream(tmp)
@@ -104,7 +110,7 @@ class AudioCache {
           if (size && bytes < size) { try { fs.unlinkSync(tmp) } catch {}; return resolve(false) }
           try {
             fs.renameSync(tmp, this._file(id))
-            this.index[id] = { size: size || bytes, mime: mime || null, lastPlayed: Date.now(), pinned: false, library: library || null }
+            this.index[id] = { size: size || bytes, mime: mime || null, lastPlayed: Date.now(), pinned: !!pinned, library: library || null }
             this._save()
             this._evict()
             resolve(true)

@@ -34,6 +34,44 @@ const { reindexAfterMove, reindexAfterRemove } = require('./queue-index')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { decideStarve } = require('./starve')
 
+// THE DEMO LIBRARY (proposal 2026-07-28-app-review-demo). Five CC0 tracks that ship inside the
+// app so PearTune works with no server at all - see assets/demo-music/LICENSE.md for why they are
+// safe to redistribute in a binary.
+//
+// The requires are static because Metro's asset graph is static: the file names have to appear
+// literally in the source or the media does not make it into the build. `manifest.json` is a
+// SOURCE ext, so it arrives already parsed; the audio and the cover are ASSET exts, so they
+// arrive as module handles that Asset.fromModule resolves to real paths at runtime.
+//
+// Nothing here is resolved (and so nothing is copied out of the bundle) until the user actually
+// asks for the demo - see shell:enableDemo. A first launch that goes straight to pairing pays
+// none of it.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const DEMO_MANIFEST = require('../assets/demo-music/manifest.json')
+// NOT cover.jpg. See the note in metro.config.js: a recognised image extension becomes an
+// Android drawable RESOURCE, which expo-asset can only name, never resolve to a readable path.
+const DEMO_COVER = require('../assets/demo-music/cover.bin')
+const DEMO_AUDIO: Record<string, any> = {
+  '01 Drowning in your smile.mp3': require('../assets/demo-music/01 Drowning in your smile.mp3'),
+  '02 Dancing in the street.mp3': require('../assets/demo-music/02 Dancing in the street.mp3'),
+  '03 Aeroplane.mp3': require('../assets/demo-music/03 Aeroplane.mp3'),
+  '04 Im glad you are here with me.mp3': require('../assets/demo-music/04 Im glad you are here with me.mp3'),
+  '05 Sugar and coffee.mp3': require('../assets/demo-music/05 Sugar and coffee.mp3')
+}
+
+// Copy a bundled asset out to a real path the worklet can read. On a release build the file is
+// inside the APK/IPA, so downloadAsync is a genuine copy the first time and a no-op after -
+// which is why enabling the demo twice is cheap.
+async function resolveAsset (mod: any): Promise<string | null> {
+  try {
+    const a = Asset.fromModule(mod)
+    await a.downloadAsync()
+    return (a.localUri ?? a.uri ?? '').replace('file://', '') || null
+  } catch {
+    return null
+  }
+}
+
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void }
 
 // The shell paints the strip behind the status bar and under the WebView, so it
@@ -1284,6 +1322,23 @@ export default function App () {
         if (typeof text !== 'string' || !text) return reply({ error: 'text required' })
         await Clipboard.setStringAsync(text)
         return reply({ result: { ok: true } })
+      }
+      // "Try it without a server". Only the shell can do this half: the demo media are Expo
+      // assets, and resolving them to real paths is a native-side job. It hands those paths to
+      // the worklet, which installs them into the audio cache and switches into demo mode.
+      //
+      // A track whose asset will not resolve is simply left out of `files` - the worklet skips
+      // it and the demo library is one track shorter, which is a far better failure than a
+      // button that does nothing.
+      if (msg.method === 'shell:enableDemo') {
+        const files: Record<string, string> = {}
+        for (const [name, mod] of Object.entries(DEMO_AUDIO)) {
+          const p = await resolveAsset(mod)
+          if (p) files[name] = p
+        }
+        const cover = await resolveAsset(DEMO_COVER)
+        const result = await call('enableDemo', { manifest: DEMO_MANIFEST, files, cover })
+        return reply({ result })
       }
       if (msg.method === 'shell:haptic') {
         const k = msg.args?.kind

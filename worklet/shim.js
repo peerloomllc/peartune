@@ -107,7 +107,12 @@ function parseRange (header, size) {
 // to transcode. The worklet owns the policy (a Settings choice, and later the network
 // type); the shim just asks it at the moment a track is requested, so a change takes
 // effect on the next track without rebuilding anything.
-function createAudioShim ({ log = () => {}, defaultClient = async () => null, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostClient = null, libForTrack = null, libForCover = null, altCopy = null, onRehost = null }) {
+// `hostless(id)` answers whether an id belongs to a library with NO host behind it - today only
+// the demo library (proposal 2026-07-28-app-review-demo). Such an id can only ever be served from
+// local disk, so it skips the lease gate (nothing could have authorized it) and the art store's
+// one-size rule (there is no host to fetch a better size from). Defaults to false, which is
+// exactly the behaviour every real library has always had.
+function createAudioShim ({ log = () => {}, defaultClient = async () => null, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostless = () => false, hostClient = null, libForTrack = null, libForCover = null, altCopy = null, onRehost = null }) {
   if (!http) http = require('bare-http1') // on-device only; see the note at the top of this file
   const meta = new Map() // trackId -> { size, mime }
 
@@ -156,7 +161,11 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
       // authorization has gone stale (a revoked or long-offline device), we stop serving
       // from disk and fall through to the live path, which offline simply fails - so the
       // downloads go dark until the device authorizes again.
-      if (cache && cache.has(trackId) && leaseOk()) {
+      //
+      // HOSTLESS ids skip the lease. The demo library (proposal 2026-07-28-app-review-demo) is
+      // installed as pinned cache entries with no host behind them, so no lease of theirs could
+      // ever be fresh, and gating them on one would black out the bundled music after 14 days.
+      if (cache && cache.has(trackId) && (hostless(trackId) || leaseOk())) {
         return serveFromCache(trackId, req, res)
       }
 
@@ -319,7 +328,12 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
       // lease exactly like cached audio, so a revoked/long-offline device goes dark. Only
       // this one size hits disk, so the library grid (120/350/500) keeps its exact-size,
       // freshly-fetched art.
-      if (artStore && size === DEFAULT_ART_SIZE && leaseOk()) {
+      // A HOSTLESS cover ignores BOTH gates. The one-size rule exists so a stored thumbnail can't
+      // decide the resolution of a request a host could answer properly - but a demo cover has no
+      // host to ask, so disk is the only source there will ever be, at whatever size the grid's
+      // density asked for. Without this the demo library browses as a wall of placeholders.
+      const localOnly = hostless(coverId)
+      if (artStore && (localOnly || (size === DEFAULT_ART_SIZE && leaseOk()))) {
         const disk = artStore.get(coverId)
         if (disk && disk.length) {
           res.writeHead(200, {

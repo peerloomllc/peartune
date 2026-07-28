@@ -2,7 +2,8 @@
   "album": "LOFI AMBIENT SONGS !",
   "artist": "Loyalty Freak Music",
   "year": 2021,
-  "cover": "cover.jpg",
+  "genre": "Lo-Fi",
+  "cover": "cover.bin",
   "tracks": [
     {
       "file": "01 Drowning in your smile.mp3",
