@@ -141,6 +141,18 @@ export default function App () {
   // were still running. Drives the quiet "Updating…" in the library header - the honest signal
   // that replaced the flicker, since the content itself no longer disappears to say so.
   const [updating, setUpdating] = useState(0)
+  // The hint the header shows while a refresh runs, DEBOUNCED - `updating` itself is a raw counter
+  // that goes 1 -> 0 -> 1 -> 0 as each library's reload starts and finishes, so binding the text
+  // straight to it made the subtitle blink several times on a cold launch (Tim, 2026-07-28). The
+  // grid was already steady by then; this was the last thing moving. Rise immediately (a refresh
+  // that takes a while should say so at once) and fall only after a quiet dwell, which collapses a
+  // burst of four reloads into one steady hint that appears once and leaves once.
+  const [updatingSteady, setUpdatingSteady] = useState(false)
+  useEffect(() => {
+    if (updating > 0) { setUpdatingSteady(true); return }
+    const t = setTimeout(() => setUpdatingSteady(false), 900)
+    return () => clearTimeout(t)
+  }, [updating])
   const [reconnecting, setReconnecting] = useState(false)
   // A cold launch has not FAILED - it has not tried yet. init() answers with
   // connected:false and kicks the connect off in the background (src/bare.js), so
@@ -1894,7 +1906,7 @@ export default function App () {
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         onDismissError={() => setError(null)}
-        albumsLoaded={albumsLoaded} reconnecting={reconnecting} firstConnect={firstConnect} updating={updating > 0}
+        albumsLoaded={albumsLoaded} reconnecting={reconnecting} firstConnect={firstConnect} updating={updatingSteady}
         favs={favs} onFav={favSupported ? onFav : null}
         cont={now ? null : cont}
         onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
@@ -2710,7 +2722,11 @@ function Library ({
               nothing else on this screen tells you. The SOURCE KIND ("Folder", "Subsonic") used to
               sit here for a single library and was dropped (Tim, 2026-07-27): it is the operator's
               vocabulary, chosen on the dashboard, and it says nothing to the person listening. */}
-          {mergedAll && <> · {merged.libraries.length} libraries</>}
+          {/* The count of libraries you are PAIRED to, not how many have joined the blend so far -
+              the latter climbs 1, 2, 3, 4 as they connect on a cold launch, which reads as the
+              subtitle flickering (Tim, 2026-07-28). Per-library connected/offline state lives in
+              Settings and on the chips, where it can be seen properly. */}
+          {mergedAll && libsOf(state).length > 1 && <> · {libsOf(state).length} libraries</>}
           {/* A background refresh is running (a library connecting on a cold launch, a pull to
               refresh). The grid deliberately does NOT blank while this happens, so this line is
               the only thing that says so - quiet on purpose, and gone the moment the last
