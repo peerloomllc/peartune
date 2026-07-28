@@ -41,6 +41,17 @@ if [ "$WIPE" = "1" ]; then
   $SUDO mkdir -p "$DATA"
 fi
 
+# THE DASHBOARD PASSWORD IS NO LONGER BAKED IN (2026-07-28). It used to be
+# `-e PEARTUNE_PASSWORD=peartune`, a placeholder, and that had two consequences nobody
+# had connected: the host reported passwordSource 'explicit', so the dashboard's own
+# "change password" endpoint REFUSED with "set by PEARTUNE_PASSWORD; change it there" -
+# and every redeploy silently reset it anyway. The placeholder was not in the dashboard,
+# it was in this file.
+#
+# Unset, the host GENERATES a strong password on first run, prints it, and saves it to
+# <data>/dashboard-password (0600), stable across restarts - and the dashboard can then
+# change it. Export PEARTUNE_PASSWORD before running this to pin one deliberately, which
+# is what the Umbrel app store listing does with umbrelOS's ${APP_PASSWORD}.
 $SUDO docker run -d \
   --name peartune-host \
   --restart unless-stopped \
@@ -48,7 +59,7 @@ $SUDO docker run -d \
   --security-opt no-new-privileges:true \
   -e PEARTUNE_HTTP_HOST=0.0.0.0 \
   -e PEARTUNE_HTTP_PORT=8741 \
-  -e PEARTUNE_PASSWORD=peartune \
+  ${PEARTUNE_PASSWORD:+-e PEARTUNE_PASSWORD="$PEARTUNE_PASSWORD"} \
   -e PEARTUNE_DATA=/data \
   -e PEARTUNE_MUSIC=/library/music \
   -v "$DATA:/data" \
