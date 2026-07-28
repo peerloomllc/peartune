@@ -5915,11 +5915,14 @@ function Onboarding ({
                       wifi.
                     </p>}
               </div>
-              {/* The one link a new operator follows OUT of the app. It points at the product
-                  page for now; repoint it at the install/setup guide as soon as the site has one
-                  (Tim, 2026-07-24 - tracked in TODO). */}
+              {/* The one link a new operator follows OUT of the app, so it should land on the page
+                  that answers the question the button asks. It pointed at the PRODUCT page until
+                  now, which pitches PearTune to someone who has already installed it and says
+                  nothing about how to set a server up (Tim, 2026-07-24). The setup guide exists as
+                  of website PR #47: pick the machine, run the installer, expect the unsigned-build
+                  warning, open the dashboard, pair. */}
               {owner === 'mine' &&
-                <button onClick={() => { haptic('light'); openUrl('https://peerloomllc.com/peartune/') }}>How to set up a server ↗</button>}
+                <button onClick={() => { haptic('light'); openUrl('https://peerloomllc.com/peartune/docs/setting-up-a-server') }}>How to set up a server ↗</button>}
               <button className='primary' onClick={() => { haptic('light'); setPhase('names') }}>Continue</button>
               <button onClick={() => { haptic('light'); setOwner(null) }}>Back</button>
             </>
