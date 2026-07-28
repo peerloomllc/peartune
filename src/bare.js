@@ -215,6 +215,14 @@ const sessionUnsupported = new Set() // libraryIds whose host answered ENOMETHOD
 function sessionSupportedFor (lib) { return !lib || !sessionUnsupported.has(lib) }
 function markSessionUnsupported (lib) { if (lib) sessionUnsupported.add(lib) }
 
+// Forget what we learned about ONE host's age. Called on every fresh link - see the note there.
+// Kept next to the marks themselves so a future third "unsupported" set is added in both places.
+function clearUnsupportedFor (lib) {
+  if (!lib) return
+  sessionUnsupported.delete(lib)
+  nowPlayingUnsupported.delete(lib)
+}
+
 // --- IPC --------------------------------------------------------------------
 
 function send (msg) {
@@ -846,6 +854,14 @@ async function attach (host, conn) {
   })
 
   log('link:connected', { lib: libId.slice(0, 8), role: isDefault ? 'default' : 'other', library: host.libraryName })
+
+  // A FRESH LINK MEANS THE HOST MAY BE A DIFFERENT BUILD. Both "this host is too old for X" marks
+  // are sticky for the worklet's lifetime, which is right while a connection lasts and wrong the
+  // moment it is replaced: an operator who upgrades their box gets no benefit until every phone
+  // that ever asked is restarted. Hit for real on 2026-07-28 - Tim deployed a host with
+  // nowplaying.set, the dashboard stayed empty, and only force-stopping the app fixed it. Clearing
+  // here costs one ENOMETHOD round-trip against a host that really is old, once per reconnect.
+  clearUnsupportedFor(libId)
 
   if (isDefault) {
     // Point the (already-listening) shim at this client. Playback still flows THROUGH the live
