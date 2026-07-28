@@ -22,22 +22,47 @@ REMOTE_ENV='export PATH=/opt/homebrew/bin:$PATH LANG=en_US.UTF-8 LC_ALL=en_US.UT
 
 say () { printf '\n== %s ==\n' "$1"; }
 
-# THE ONE THAT WILL BITE YOU. codesign needs the login keychain's PRIVATE KEY, and an
-# ssh session cannot get at it even while Tim is logged in at the console - the cert
-# LISTS fine (find-identity is public info) and then signing dies deep in the build with
-# `errSecInternalComponent`, after ~10 minutes of compilation. Fail here instead, with
-# the fix, rather than there with a cryptic code.
-say "checking the Mac's keychain is usable from ssh"
-if ! ssh -o BatchMode=yes "$MAC" 'security show-keychain-info ~/Library/Keychains/login.keychain-db' >/dev/null 2>&1; then
+# THE ONE THAT WILL BITE YOU, and the part that is easy to get subtly wrong.
+#
+# codesign needs the login keychain's PRIVATE KEY. An ssh session cannot get at it even
+# while Tim is logged in at the console: the cert LISTS fine (find-identity is public
+# info) and then signing dies at the embed-frameworks phase with errSecInternalComponent,
+# ~10 minutes into the build.
+#
+# THE SUBTLETY (learned the hard way, 2026-07-28): `security unlock-keychain` only
+# unlocks for THE SESSION THAT RUNS IT. Running it by hand in a Terminal on the Mac, or
+# in your own separate ssh, does NOTHING for the session this script opens - it gets its
+# own security session and finds the keychain locked all over again. The unlock has to
+# happen INSIDE the same ssh invocation that runs xcodebuild, which is why it is welded
+# to the build command below rather than checked separately up here.
+#
+# (`set-key-partition-list` IS persistent - it edits the key's ACL in the keychain file -
+# so that half only ever needs doing once, and is not repeated here.)
+say "checking codesign can actually USE the signing key over ssh"
+UNLOCK=''
+if [ -n "${KEYCHAIN_PASSWORD:-}" ]; then
+  UNLOCK="security unlock-keychain -p '$KEYCHAIN_PASSWORD' ~/Library/Keychains/login.keychain-db &&"
+fi
+# The only honest test is to sign something. show-keychain-info reports "User interaction
+# is not allowed" over ssh whether or not the key is reachable, so it proves nothing.
+if ! ssh -o BatchMode=yes "$MAC" "$UNLOCK T=\$(mktemp -d); cp /bin/echo \"\$T/probe\"; codesign -f -s 'Apple Development: Timothy Hudgins' \"\$T/probe\" >/dev/null 2>&1; rc=\$?; rm -rf \"\$T\"; exit \$rc"; then
   cat >&2 <<'EOF'
-The login keychain on the Mac will not talk to a non-GUI session, so codesign will fail
-with errSecInternalComponent late in the build. Run this ON THE MAC (or over your own
-ssh), then re-run this script:
+codesign cannot use the signing key from an ssh session, so this build would fail at the
+embed-frameworks phase after all of arm64 has compiled. Two ways forward:
 
-  security unlock-keychain -p 'PASSWORD' ~/Library/Keychains/login.keychain-db && security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k 'PASSWORD' ~/Library/Keychains/login.keychain-db
+1. Set KEYCHAIN_PASSWORD and re-run this script, so the unlock happens in the same
+   session as the build:
 
-The second command is the one that matters: unlocking alone leaves an ACL that still
-demands a UI prompt. set-key-partition-list is what grants codesign non-interactive use.
+     KEYCHAIN_PASSWORD='...' bash scripts/ios-device-build.sh
+
+2. Or run the build ON THE MAC, in a session you unlock yourself, so no password goes
+   anywhere near this box. Everything up to the build is already staged there, so it is
+   the xcodebuild + devicectl pair joined with &&.
+
+If neither has been done before, the key's ACL also needs opening ONCE (persistent, so
+only once ever), from a session that can prompt:
+
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s ~/Library/Keychains/login.keychain-db
 EOF
   exit 1
 fi
@@ -63,8 +88,10 @@ ssh -o BatchMode=yes "$MAC" "$REMOTE_ENV cd ~/$DEST/ios && pod install"
 
 # Automatic signing + -allowProvisioningUpdates lets Xcode mint the App ID and profile
 # for com.peartune on demand, so there is no profile to check in or keep fresh.
+# NOTE the $UNLOCK prefix: it must run in THIS ssh invocation, not a previous one. See
+# the long comment above.
 say "xcodebuild ($CONFIG, device arm64) - this takes a while"
-ssh -o BatchMode=yes "$MAC" "$REMOTE_ENV cd ~/$DEST/ios && xcodebuild -workspace PearTune.xcworkspace -scheme PearTune -configuration $CONFIG -destination 'generic/platform=iOS' -derivedDataPath build/dd -allowProvisioningUpdates DEVELOPMENT_TEAM=$TEAM CODE_SIGN_STYLE=Automatic" \
+ssh -o BatchMode=yes "$MAC" "$REMOTE_ENV $UNLOCK cd ~/$DEST/ios && xcodebuild -workspace PearTune.xcworkspace -scheme PearTune -configuration $CONFIG -destination 'generic/platform=iOS' -derivedDataPath build/dd -allowProvisioningUpdates DEVELOPMENT_TEAM=$TEAM CODE_SIGN_STYLE=Automatic" \
   > /tmp/peartune-ios-build.log 2>&1 || {
     echo "BUILD FAILED. Errors:" >&2
     grep -oE "error: .{0,160}" /tmp/peartune-ios-build.log | sort -u | head -10 >&2
