@@ -272,6 +272,34 @@ test('setIdentity auto-creates + assigns a person for a NEW claim on an unassign
   assert.equal(person.name, 'Tim')
 })
 
+// `platform` used to be write-once at grant time, so a wrong value could only be corrected by
+// revoking and re-pairing - and a re-pair does not even do it, because a re-pair onto a live grant
+// takes the already-granted branch and writes nothing. That stranded every iPhone paired before the
+// client learned its own platform, showing "Android" on the dashboard at revoke time (2026-07-28).
+// The identity push happens on every reconnect, so this is what lets a stale row heal by itself.
+test('setIdentity refreshes platform, and an older client that omits it cannot blank it', async (t) => {
+  const g = await store(t)
+  const dev = await g.grant({ deviceKey: key(), label: 'phone', platform: 'android' })
+  assert.equal(dev.platform, 'android')
+
+  // The heal: an iPhone that was granted before the client knew better.
+  assert.equal((await g.setIdentity(dev.deviceKey, { platform: 'ios' })).platform, 'ios')
+
+  // An older client omits the field. A correct value must survive that, or every reconnect from
+  // an un-updated phone would wipe what a newer one had just fixed.
+  assert.equal((await g.setIdentity(dev.deviceKey, { deviceName: 'iPhone' })).platform, 'ios',
+    'absent -> untouched')
+  assert.equal((await g.setIdentity(dev.deviceKey, { platform: '' })).platform, 'ios',
+    'empty -> untouched, not blanked')
+  assert.equal((await g.setIdentity(dev.deviceKey, { platform: '   ' })).platform, 'ios',
+    'whitespace -> untouched')
+
+  // Normalised, since it reaches a dashboard badge.
+  assert.equal((await g.setIdentity(dev.deviceKey, { platform: '  IOS  ' })).platform, 'ios')
+  assert.equal((await g.setIdentity(dev.deviceKey, { platform: 'x'.repeat(200) })).platform.length, 32,
+    'a hostile value cannot grow without bound')
+})
+
 test('setIdentity leaves a claim PENDING when a person of that name already exists (join needs confirm)', async (t) => {
   const g = await store(t)
   const tim = await g.addPerson('Tim') // person already exists

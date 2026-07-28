@@ -192,7 +192,9 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         // A claim is cosmetic until confirmed on the dashboard.
         const row = await grants.setIdentity(grant.deviceKey, {
           deviceName: params?.deviceName,
-          userName: params?.userName
+          userName: params?.userName,
+          // Additive: an older phone omits it and its platform is left as the grant recorded it.
+          platform: params?.platform
         })
         if (!row) return safeErr(id, ERR.FORBIDDEN, 'no grant')
 

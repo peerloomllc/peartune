@@ -683,7 +683,11 @@ async function pushIdentityTo (c, libId) {
   // name it already knows, and an empty avatar means "remove the photo" - neither is what
   // an unrelated reconnect should do.
   if (st.deviceName || st.userName) {
-    await c.setIdentity({ deviceName: st.deviceName || undefined, userName: st.userName || undefined })
+    // PLATFORM rides the identity push, which happens on EVERY fresh connection - so a device
+    // whose grant was minted before the client knew its own platform (every iPhone before
+    // 2026-07-28) corrects itself on the next reconnect, with no re-pair and nothing for the
+    // operator to do. Harmless against an older host, which ignores the extra field.
+    await c.setIdentity({ deviceName: st.deviceName || undefined, userName: st.userName || undefined, platform: PLATFORM })
   }
   if (st.avatar) await c.setAvatar({ avatar: st.avatar })
   if (libId) identitySynced.add(libId)

@@ -316,7 +316,7 @@ class Grants {
   // harmless. The moment per-person scopes, playlists or history exist, a device
   // that can attach itself to any person by name is a privilege escalation.
   // Self-declared identity must not become authority.
-  async setIdentity (deviceKey, { deviceName, userName } = {}) {
+  async setIdentity (deviceKey, { deviceName, userName, platform } = {}) {
     const key = Grants.keyOf(deviceKey)
     const row = await this.get(key)
     if (!row || row.revokedAt) return null
@@ -324,6 +324,21 @@ class Grants {
     if (deviceName !== undefined) {
       const clean = cleanName(deviceName)
       if (clean) row.label = clean
+    }
+
+    // PLATFORM IS SET AT GRANT TIME AND WAS NEVER REFRESHED, which meant a field that could only
+    // ever be corrected by revoking and re-pairing (Tim, 2026-07-28). It bit for real: the client
+    // hardcoded 'android' until the first iOS build, so every iPhone already paired reads as an
+    // Android phone on the dashboard - at exactly the moment the operator is deciding what to
+    // revoke - and re-pairing alone does NOT fix it, because a re-pair onto a live grant takes the
+    // already-granted branch in pair.js and writes nothing. The phone pushes its identity on every
+    // reconnect, so accepting it here lets every stale row heal by itself.
+    //
+    // Only ever OVERWRITTEN with something non-empty: an older client omits the field entirely, and
+    // that must leave a correct value alone rather than blanking it.
+    if (platform !== undefined) {
+      const p = String(platform || '').trim().toLowerCase().slice(0, 32)
+      if (p) row.platform = p
     }
 
     if (userName !== undefined) {
