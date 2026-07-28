@@ -35,7 +35,7 @@ function ownerOf (grant) {
   return grant.personId ? 'p:' + grant.personId : 'd:' + grant.deviceKey
 }
 
-function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, log = () => {} }) {
+function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, onStream = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Set once the channel is open (below). Called on close to drop this connection's push
@@ -571,6 +571,12 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
         const stream = await getAdapter().stream(params)
         if (!stream) return safeErr(id, ERR.NOT_FOUND, 'no such track')
+        // THIS host is the one serving these bytes, which is the only thing it knows for certain
+        // about what a device is listening to (Tim, 2026-07-28: show now-playing where the music
+        // is actually coming from). Recorded per device by the caller; unlike the play session it
+        // needs no claim, so it works for a phone whose session lives on another library - or on
+        // no library at all.
+        if (onStream) onStream(params.trackId)
         return pipeStream(id, stream)
       }
 

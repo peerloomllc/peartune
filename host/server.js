@@ -49,6 +49,13 @@ const EXPIRY_SWEEP_MS = 30_000
 
 // How long a play session stays believable on the dashboard with no heartbeat (listDevices).
 const SESSION_STALE_MS = 15 * 60 * 1000
+
+// How long after the last byte we served a device we still call it "now playing" on THIS host.
+// The host cannot see playback - only requests - and a phone fetches a track in one go (or a few
+// Range requests) and then plays it for minutes without asking again. So the window has to cover a
+// long track: too short and the row blinks out mid-song, too long and it lingers after someone has
+// stopped. Six minutes covers all but the longest tracks and decays on its own.
+const STREAMING_STALE_MS = 6 * 60 * 1000
 const { serveMedia } = require('./media')
 const { PairSession, tokenEquals } = require('./pair')
 const { SCOPE } = require('../protocol/constants')
@@ -114,6 +121,10 @@ class PearTuneHost {
     this.userState = new UserState(this.stateBee)
 
     this.connections = new Connections()
+    // deviceKey -> { trackId, at }: the last track THIS host served that device. In memory on
+    // purpose - it describes right now, not history, and a restart should forget it. One entry per
+    // paired device at most, overwritten per request.
+    this._streaming = new Map()
 
     // The registry that lets a session.claim on one device's connection push "you lost the
     // token" to another device's connection (host/presence.js). Only ever holds channels the
@@ -470,6 +481,9 @@ class PearTuneHost {
         // (refreshed on every connect) hands the CURRENT name back so the phone updates live.
         libraryName: () => this.libraryName,
         grant: lookup.grant,
+        // Every served track, per device: what THIS host is actually streaming right now. See
+        // _noteStreaming.
+        onStream: (trackId) => this._noteStreaming(lookup.grant.deviceKey, trackId),
         // The host-as-hub user-state store. serveMedia derives the owner from THIS
         // connection's grant, so a device can only ever read/write its own state.
         state: this.userState,
@@ -709,6 +723,7 @@ class PearTuneHost {
     // is that a phone left paused for a long time eventually drops off the dashboard, which is
     // the right trade against announcing a track from three days ago as "now playing".
     const fresh = (s) => Date.now() - (s.updatedAt || 0) < SESSION_STALE_MS
+    const streamingFresh = (e) => e && Date.now() - e.at < STREAMING_STALE_MS
     const rows = await this.grants.list()
     // Who each device BELONGS TO, disambiguated where two people share a name (grants
     // personLabels). Carried on the row so the owner phone's device list names the same Sam the
@@ -741,6 +756,26 @@ class PearTuneHost {
       const online = this.connections.count(r.deviceKey) > 0
       let nowPlaying = null
       if (online && !r.revokedAt) {
+        // FIRST, what THIS host is streaming to this device (Tim, 2026-07-28). The play session
+        // lives on ONE elected host in a blend, so before this the only dashboard that could show
+        // now-playing was the session home - never the library the audio was actually coming from,
+        // which is the one an operator opens. This needs no session and no claim, so it also covers
+        // a device whose claim never landed.
+        const streamed = streamingFresh(this._streaming.get(r.deviceKey)) ? this._streaming.get(r.deviceKey) : null
+        if (streamed) {
+          const t = await this.adapter.get({ id: streamed.trackId, type: 'track' }).catch(() => null)
+          if (t) {
+            nowPlaying = {
+              title: t.title || null,
+              artist: t.artist || null,
+              // We saw bytes leave, not a speaker move. `streaming` says exactly that, and the
+              // session below upgrades it to a real play/pause state when this host holds one.
+              playing: true,
+              streaming: true,
+              coverId: await this._coverIdFor(streamed.trackId)
+            }
+          }
+        }
         const s = await sessionFor(r.personId ? 'p:' + r.personId : 'd:' + r.deviceKey)
         if (s && s.activeDeviceKey === r.deviceKey && Array.isArray(s.queue) && s.queue.length && fresh(s)) {
           const t = s.queue[s.index] || s.queue[0]
@@ -766,6 +801,14 @@ class PearTuneHost {
 
   // trackId -> coverId, cached: a track's cover is stable, so a network-backed source
   // (Subsonic/Jellyfin) is asked at most once per track rather than every 3s poll.
+  // Record that we just served `trackId` to `deviceKey` - the dashboard reads this to show
+  // now-playing on the library the audio is actually coming from (see _deviceRows). Cheap enough to
+  // call per stream request: one Map write, no I/O, no await.
+  _noteStreaming (deviceKey, trackId) {
+    if (!deviceKey || !trackId) return
+    this._streaming.set(deviceKey, { trackId, at: Date.now() })
+  }
+
   async _coverIdFor (trackId) {
     if (!trackId || !this.adapter) return null
     if (!this._coverIdCache) this._coverIdCache = new Map()
