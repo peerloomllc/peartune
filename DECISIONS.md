@@ -112,8 +112,17 @@ running `relay/deploy/bootstrap.sh` (installs Node, service user, systemd, start
 Public key: `qshao3eawtzecrt5p7buswr4meyyhw6q6b51qtxazd8wwfdp8uqy`. Private seed lives only on the box
 (`/var/lib/peartune-relay/relay.seed`, 0600) + backed up to Tim's laptop
 (`/home/tim/peerloomllc/peartune-relay-seed-BACKUP.txt`, 0600) + his password manager. Provider chosen
-after a detour: Hetzner's cheap CX/CAX lines are EU-only (bad latency for a US relay), so US DigitalOcean
-$6 droplet by card (Tim considered BitLaunch/Lightning, decided against the detour).
+after a detour: Hetzner's cheap CX/CAX lines are EU-only (bad latency for a US relay), so a US DigitalOcean
+droplet by card (Tim considered BitLaunch/Lightning, decided against the detour).
+
+CORRECTION 2026-07-28: this entry originally said "$6 droplet", which was wrong and would have doubled
+every capacity number computed from it. The box is DO's **$4 Basic tier, 500 GB/month** of transfer.
+Measured on the droplet: 458 MB RAM, a 10 GB disk (8.7 GB usable on /dev/vda1), 1 vCPU, nyc1. Only
+`s-1vcpu-512mb-10gb` carries that shape - the $6 plan is 1 GB RAM / 25 GB disk / 1 TB transfer - so the
+specs identify the plan on their own. NB the DO metadata service (`169.254.169.254/metadata/v1.json`)
+does NOT expose a size slug, so short of the billing page this is the strongest evidence obtainable from
+the box itself. Overage is $0.01/GiB. See the 2026-07-27 capacity entry in DONE.md, which already
+computed its figures against 500 GB and therefore still stands.
 
 ACTIVATED: `protocol/relay.js` RELAY_PUBLIC_KEY_Z set to the deployed key. `relayThroughFor` now returns a
 real key on the fail path, so the phone escalates through the relay when a direct punch aborts (the live
