@@ -1263,3 +1263,7 @@ label.flabel { display: block; margin-top: .6rem; }
 
 .spin { animation: peartune-spin 1s linear infinite; }
 @keyframes peartune-spin { to { transform: rotate(360deg); } }
+/* A spinner sitting INSIDE a run of text (the library subtitle's "· Updating…"). Icons default
+   to baseline alignment, which drops a 12px glyph a couple of pixels low and makes the whole
+   line look like it sagged; centring it on the text box keeps the row flat while it turns. */
+.inline-spin { vertical-align: -0.15em; }
