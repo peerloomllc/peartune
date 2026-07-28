@@ -35,7 +35,7 @@ function ownerOf (grant) {
   return grant.personId ? 'p:' + grant.personId : 'd:' + grant.deviceKey
 }
 
-function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, onStream = null, log = () => {} }) {
+function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, onStream = null, onNowPlaying = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Set once the channel is open (below). Called on close to drop this connection's push
@@ -565,6 +565,15 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         const stream = await getAdapter().art(params || {})
         if (!stream) return safeErr(id, ERR.NOT_FOUND, 'no artwork')
         return pipeStream(id, stream)
+      }
+
+      // What the device is playing FROM US right now. The phone is the only party that knows -
+      // a host sees requests, not playback, and it cannot tell when someone moved to a track
+      // another library serves (proposal 2026-07-28). Deliberately NOT persisted and NOT
+      // acknowledged with anything but ok: it describes this instant and expires on its own.
+      case 'nowplaying.set': {
+        if (onNowPlaying) onNowPlaying(params || null)
+        return send.res.send({ id, body: { ok: true } })
       }
 
       case 'media.stream': {

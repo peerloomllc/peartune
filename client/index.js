@@ -519,6 +519,11 @@ class PearTuneClient {
   sessionClaim (params) { return this._request('session.claim', params) }
   sessionSet (params) { return this._request('session.set', params) }
 
+  // Tell THIS host what this device is playing from it right now (proposal
+  // 2026-07-28-nowplaying-from-the-phone). Fire-and-forget, no claim, no stored state: the host
+  // keeps it in memory and lets it EXPIRE, so stopping simply means we stop saying it.
+  nowPlaying (params) { return this._request('nowplaying.set', params) }
+
   art (params) { return this._request('art.get', params, { stream: true }) }
 
   // Resolves to the whole buffer. `onchunk` lets a caller start work before the

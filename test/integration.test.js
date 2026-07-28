@@ -914,12 +914,12 @@ test('listDevices surfaces now-playing on the active device only, with a coverId
   assert.ok(me.nowPlaying.coverId, 'a coverId is resolved for the /api/art thumbnail')
 })
 
-test('now-playing also comes from what THIS host is STREAMING, with no session at all', async (t) => {
-  // The play session lives on ONE elected host in a blend, so before 2026-07-28 the only dashboard
-  // that could show now-playing was the session home - never the library the audio was coming
-  // from, which is the one an operator actually opens. Serving bytes is the thing a host knows for
-  // certain, and it needs no claim: this covers a device whose session lives elsewhere, or whose
-  // claim never landed at all (Tim's Pixel, same day).
+test('now-playing comes from the DEVICE, expires on its own, and clears on request', async (t) => {
+  // The session lives on ONE elected host in a blend, so the library actually serving the music
+  // could not say anyone was listening. Having each host report what it last SERVED was tried
+  // first and was worse - a phone fetches a track once and plays it for minutes, so hosts reported
+  // stale tracks and two dashboards claimed two different songs. Only the phone knows.
+  // Proposal 2026-07-28-nowplaying-from-the-phone.
   const { testnet, host } = await scaffold(t)
   const { client } = await pairAndConnect(testnet, host)
   t.after(() => client.close())
@@ -927,20 +927,30 @@ test('now-playing also comes from what THIS host is STREAMING, with no session a
   const deviceKey = z32.encode(client.keyPair.publicKey)
   const { items } = await client.list({ type: 'tracks' })
   const track = items[0]
+  const row = async () => (await host.listDevices()).find(d => d.deviceKey === deviceKey)
 
-  // No session, nothing streamed yet.
-  let me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
-  assert.equal(me.nowPlaying, null, 'idle device reports nothing')
+  assert.equal((await row()).nowPlaying, null, 'idle device reports nothing')
 
-  // Pull the actual audio, exactly as the phone's shim does. client.stream() resolves to the body.
-  const body = await client.stream({ trackId: track.id })
-  assert.ok(body && body.length, 'the audio actually came back')
-
-  me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
-  assert.ok(me.nowPlaying, 'the host that served the bytes reports now-playing')
-  assert.equal(me.nowPlaying.streaming, true, 'flagged as derived from streaming, not from a session')
-  assert.ok(me.nowPlaying.title, 'the track resolved to a title')
+  await client.nowPlaying({ trackId: track.id, title: 'Reported Song', artist: 'Reported Artist', playing: true })
+  let me = await row()
+  assert.ok(me.nowPlaying, 'the owning host shows it with no session and no claim')
+  assert.equal(me.nowPlaying.title, 'Reported Song')
+  assert.equal(me.nowPlaying.artist, 'Reported Artist')
+  assert.equal(me.nowPlaying.playing, true)
+  assert.equal(me.nowPlaying.reported, true, 'flagged as the device speaking, not a session')
   assert.ok(me.nowPlaying.coverId, 'a coverId is resolved for the thumbnail')
+
+  // An explicit clear (the phone moved to a track another library owns) drops it AT ONCE - no
+  // waiting for the timeout.
+  await client.nowPlaying({ trackId: null })
+  assert.equal((await row()).nowPlaying, null, 'a null report clears the row immediately')
+
+  // And EXPIRY is the stop signal: with the report backdated past the window, the row goes on its
+  // own, with no message from a phone that may have vanished.
+  await client.nowPlaying({ trackId: track.id, title: 'Stale Song', playing: true })
+  assert.ok((await row()).nowPlaying, 'reported again')
+  host._nowPlaying.get(deviceKey).at -= 60_000
+  assert.equal((await row()).nowPlaying, null, 'a report nobody refreshed expires by itself')
 })
 
 // --- scheduled auto-rescan (host setting + timer) ----------------------------

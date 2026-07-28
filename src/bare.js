@@ -1373,6 +1373,41 @@ function trackClient (trackId) {
 // Resolvers the shim consults for a URL that carries no libraryId (the UI's own artBase covers, or a
 // single-segment track URL) - null outside merged mode, so single-host behaviour is unchanged.
 function libForTrack (trackId) { return mergedMode() ? (trackLib.get(trackId) || null) : null }
+
+// Tell the library that OWNS the current track what we are playing, so its dashboard can answer
+// "is anyone listening to my music?" (proposal 2026-07-28-nowplaying-from-the-phone).
+//
+// Sent to exactly ONE host - the owner of the track in hand - because that is the only library the
+// statement is true of. When the next track belongs to a different library, the previous host stops
+// being told and its row expires by itself, which is why there is no stop message to lose. A host
+// too old to know the method says NO_METHOD once and is never asked again.
+const nowPlayingUnsupported = new Set()
+let lastNowPlayingLib = null
+
+async function reportNowPlaying (snapshot) {
+  const cur = snapshot && Array.isArray(snapshot.items) ? snapshot.items[snapshot.index || 0] : null
+  const lib = cur ? (libForTrack(cur.id) || defaultLibraryId) : null
+  // Moved to a track another library owns: tell the PREVIOUS one to forget us now rather than
+  // leaving its dashboard to time the row out.
+  if (lastNowPlayingLib && lastNowPlayingLib !== lib) {
+    const prev = clientFor(lastNowPlayingLib)
+    if (prev) prev.nowPlaying({ trackId: null }).catch(() => {})
+  }
+  lastNowPlayingLib = lib
+  if (!lib || nowPlayingUnsupported.has(lib)) return
+  const c = clientFor(lib)
+  if (!c) return
+  try {
+    await c.nowPlaying({
+      trackId: cur.id,
+      title: cur.title || null,
+      artist: cur.artist || null,
+      playing: !!snapshot.playing
+    })
+  } catch (e) {
+    if (e?.code === 'ENOMETHOD') nowPlayingUnsupported.add(lib)
+  }
+}
 function libForCover (coverId) { return mergedMode() ? (coverLib.get(coverId) || null) : null }
 // The owning host of a DETAIL entity (album/artist/genre) by its id, so a detail read routes even
 // when the UI didn't thread a libraryId (it just calls album({id})). An explicit libraryId wins.
@@ -2299,6 +2334,15 @@ const methods = {
         // offline / transient: keep the token, retry on the next snapshot
       }
     }
+
+    // TELL THE OWNING LIBRARY WHAT WE ARE PLAYING (proposal 2026-07-28-nowplaying-from-the-phone).
+    // Its dashboard is the one an operator opens - "is anyone listening to my music right now?" -
+    // and until now only the elected SESSION HOME could answer, which is a different host and often
+    // not the one serving a note. This rides the same ~4s heartbeat, needs no claim, and the host
+    // EXPIRES it, so stopping is simply us going quiet. Independent of the session block above:
+    // it fires whether or not we hold the token.
+    reportNowPlaying(snapshot).catch(() => {})
+
     return { ok: true, lostSession }
   },
   async loadQueueState () {

@@ -50,12 +50,18 @@ const EXPIRY_SWEEP_MS = 30_000
 // How long a play session stays believable on the dashboard with no heartbeat (listDevices).
 const SESSION_STALE_MS = 15 * 60 * 1000
 
-// How long after the last byte we served a device we still call it "now playing" on THIS host.
-// The host cannot see playback - only requests - and a phone fetches a track in one go (or a few
-// Range requests) and then plays it for minutes without asking again. So the window has to cover a
-// long track: too short and the row blinks out mid-song, too long and it lingers after someone has
-// stopped. Six minutes covers all but the longest tracks and decays on its own.
-const STREAMING_STALE_MS = 6 * 60 * 1000
+// How long a device's own now-playing report stands before we drop it. The phone refreshes it on
+// the same ~4s heartbeat that carries the queue, so this is a few missed beats - long enough to
+// survive a hiccup, short enough that the row clears on its own within seconds of the phone
+// stopping, pausing into silence, or moving to a track ANOTHER library serves. Expiry IS the
+// stop signal: there is no "stopped" message to lose.
+//
+// This replaced a six-minute window over what we last STREAMED (2026-07-28, same day). That guess
+// was wrong in the worst way: a phone fetches a track in one request and plays it for minutes
+// without asking again, so a host went on reporting the last thing it served - Tim saw two
+// dashboards claiming two different songs, both "now playing". A host sees requests, not
+// playback; only the phone knows.
+const NOWPLAYING_STALE_MS = 20 * 1000
 const { serveMedia } = require('./media')
 const { PairSession, tokenEquals } = require('./pair')
 const { SCOPE } = require('../protocol/constants')
@@ -125,6 +131,9 @@ class PearTuneHost {
     // purpose - it describes right now, not history, and a restart should forget it. One entry per
     // paired device at most, overwritten per request.
     this._streaming = new Map()
+    // deviceKey -> { trackId, title, artist, playing, at }: what the DEVICE says it is playing from
+    // us. In memory and short-lived on purpose - see NOWPLAYING_STALE_MS.
+    this._nowPlaying = new Map()
 
     // The registry that lets a session.claim on one device's connection push "you lost the
     // token" to another device's connection (host/presence.js). Only ever holds channels the
@@ -484,6 +493,10 @@ class PearTuneHost {
         // Every served track, per device: what THIS host is actually streaming right now. See
         // _noteStreaming.
         onStream: (trackId) => this._noteStreaming(lookup.grant.deviceKey, trackId),
+        // The phone's own statement of what it is playing from us (proposal 2026-07-28). The
+        // deviceKey comes from THIS connection's Noise-authenticated grant, so a device can only
+        // ever speak about itself.
+        onNowPlaying: (np) => this._noteNowPlaying(lookup.grant.deviceKey, np),
         // The host-as-hub user-state store. serveMedia derives the owner from THIS
         // connection's grant, so a device can only ever read/write its own state.
         state: this.userState,
@@ -723,7 +736,6 @@ class PearTuneHost {
     // is that a phone left paused for a long time eventually drops off the dashboard, which is
     // the right trade against announcing a track from three days ago as "now playing".
     const fresh = (s) => Date.now() - (s.updatedAt || 0) < SESSION_STALE_MS
-    const streamingFresh = (e) => e && Date.now() - e.at < STREAMING_STALE_MS
     const rows = await this.grants.list()
     // Who each device BELONGS TO, disambiguated where two people share a name (grants
     // personLabels). Carried on the row so the owner phone's device list names the same Sam the
@@ -761,19 +773,17 @@ class PearTuneHost {
         // now-playing was the session home - never the library the audio was actually coming from,
         // which is the one an operator opens. This needs no session and no claim, so it also covers
         // a device whose claim never landed.
-        const streamed = streamingFresh(this._streaming.get(r.deviceKey)) ? this._streaming.get(r.deviceKey) : null
-        if (streamed) {
-          const t = await this.adapter.get({ id: streamed.trackId, type: 'track' }).catch(() => null)
-          if (t) {
-            nowPlaying = {
-              title: t.title || null,
-              artist: t.artist || null,
-              // We saw bytes leave, not a speaker move. `streaming` says exactly that, and the
-              // session below upgrades it to a real play/pause state when this host holds one.
-              playing: true,
-              streaming: true,
-              coverId: await this._coverIdFor(streamed.trackId)
-            }
+        const said = this._nowPlaying.get(r.deviceKey)
+        if (said && Date.now() - said.at < NOWPLAYING_STALE_MS) {
+          nowPlaying = {
+            title: said.title,
+            artist: said.artist,
+            playing: said.playing,
+            // Straight from the device, so it is true of THIS library and only while the phone
+            // keeps saying so. The session row below still wins where a session exists - it is the
+            // same fact from the host that holds the queue.
+            reported: true,
+            coverId: await this._coverIdFor(said.trackId)
           }
         }
         const s = await sessionFor(r.personId ? 'p:' + r.personId : 'd:' + r.deviceKey)
@@ -801,9 +811,25 @@ class PearTuneHost {
 
   // trackId -> coverId, cached: a track's cover is stable, so a network-backed source
   // (Subsonic/Jellyfin) is asked at most once per track rather than every 3s poll.
-  // Record that we just served `trackId` to `deviceKey` - the dashboard reads this to show
-  // now-playing on the library the audio is actually coming from (see _deviceRows). Cheap enough to
-  // call per stream request: one Map write, no I/O, no await.
+  // The device's own report of what it is playing from us (proposal 2026-07-28). Overwrites per
+  // beat; a null/blank report clears it immediately, which is what a stop or a move to another
+  // library's track sends. One Map write, no I/O.
+  _noteNowPlaying (deviceKey, np) {
+    if (!deviceKey) return
+    const trackId = np && np.trackId
+    if (!trackId) { this._nowPlaying.delete(deviceKey); return }
+    this._nowPlaying.set(deviceKey, {
+      trackId: String(trackId),
+      title: np.title ? String(np.title).slice(0, 300) : null,
+      artist: np.artist ? String(np.artist).slice(0, 300) : null,
+      playing: !!np.playing,
+      at: Date.now()
+    })
+  }
+
+  // Record that we just served `trackId` to `deviceKey`. Kept because it costs one Map write and
+  // says something true (we served these bytes), but it is NOT what the dashboard shows - see the
+  // NOWPLAYING_STALE_MS note for why serving is not playing.
   _noteStreaming (deviceKey, trackId) {
     if (!deviceKey || !trackId) return
     this._streaming.set(deviceKey, { trackId, at: Date.now() })
