@@ -883,36 +883,7 @@ test('COMING BACK: a person REVOKED while the device was away is not walked back
   assert.equal(row.personId, null, 'a revoked person is not a home to come back to')
 })
 
-// --- dashboard now-playing (per-device, off the play session) ----------------
-
-test('listDevices surfaces now-playing on the active device only, with a coverId', async (t) => {
-  const { testnet, host } = await scaffold(t)
-  const { client } = await pairAndConnect(testnet, host)
-  t.after(() => client.close())
-
-  const deviceKey = z32.encode(client.keyPair.publicKey)
-  const ownerId = 'd:' + deviceKey // an unclaimed device is its own owner
-  const { items } = await client.list({ type: 'tracks' })
-  const track = items[0]
-
-  // No session yet -> nothing playing, even though the device is connected.
-  let me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
-  assert.equal(me.nowPlaying, null)
-
-  // Claim the session for THIS device and report a track.
-  await host.userState.claimSession(ownerId, deviceKey, 0)
-  await host.userState.setSession(ownerId, deviceKey, {
-    queue: [{ trackId: track.id, title: 'Test Song', artist: 'Test Artist', durationMs: 1000 }],
-    index: 0, shuffle: false, repeat: 0, positionMs: 0, playing: true
-  })
-
-  me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
-  assert.ok(me.nowPlaying, 'the active device carries now-playing')
-  assert.equal(me.nowPlaying.title, 'Test Song')
-  assert.equal(me.nowPlaying.artist, 'Test Artist')
-  assert.equal(me.nowPlaying.playing, true)
-  assert.ok(me.nowPlaying.coverId, 'a coverId is resolved for the /api/art thumbnail')
-})
+// --- dashboard now-playing (per-device, reported BY the device) --------------
 
 test('now-playing comes from the DEVICE, expires on its own, and clears on request', async (t) => {
   // The session lives on ONE elected host in a blend, so the library actually serving the music
@@ -930,6 +901,18 @@ test('now-playing comes from the DEVICE, expires on its own, and clears on reque
   const row = async () => (await host.listDevices()).find(d => d.deviceKey === deviceKey)
 
   assert.equal((await row()).nowPlaying, null, 'idle device reports nothing')
+
+  // A SESSION alone must not put a song on this dashboard any more: only the library the track
+  // came from shows it, which is the one the phone reported to. Holding a session and reporting
+  // nothing means this host has no business displaying a song (Tim, 2026-07-28 - before this,
+  // every track appeared on two dashboards at once, the session home and the owning library).
+  const ownerId = 'd:' + deviceKey
+  await host.userState.claimSession(ownerId, deviceKey, 0)
+  await host.userState.setSession(ownerId, deviceKey, {
+    queue: [{ trackId: track.id, title: 'Session Song', artist: 'Session Artist', durationMs: 1000 }],
+    index: 0, shuffle: false, repeat: 0, positionMs: 0, playing: true
+  })
+  assert.equal((await row()).nowPlaying, null, 'a session with no report shows nothing')
 
   await client.nowPlaying({ trackId: track.id, title: 'Reported Song', artist: 'Reported Artist', playing: true })
   let me = await row()
@@ -1079,12 +1062,17 @@ test('DELETING A PERSON purges their user state; a person still holding a device
   assert.equal(await host.userState.latestResume(owner), null)
 })
 
-// A phone in MERGED mode writes its session to `session:merged:{owner}` on the elected home
-// host and never touches the single-library row again. The dashboard read only the single
-// row, which meant the home host showed NOTHING while every other host showed its last
-// single-library session forever. Tim saw exactly that: the Mac blank, the Umbrel proudly
-// displaying a track from days earlier.
-test('DASHBOARD now-playing: the MERGED session is shown, and beats an older single-library row', async (t) => {
+// WHY THIS REPLACED TWO TESTS. The dashboard row used to be driven by the play SESSION, and both
+// of the bugs those tests pinned came from that: a merged-mode phone writes to
+// `session:merged:{owner}` on the ELECTED HOME and never touches the single-library row again, so
+// the home host showed nothing while every other host showed its last single-library session
+// forever (Tim: the Mac blank, the Umbrel displaying a track from days earlier); and a session left
+// behind by a phone that had stopped read as "now playing" for as long as it sat there.
+//
+// The session no longer feeds this row at all (2026-07-28) - only a fresh report from the device
+// does - so BOTH failures are now structurally impossible rather than guarded against. This test
+// keeps the history and pins the rule that makes it so.
+test('DASHBOARD now-playing: a session NEVER drives the row - not merged, not single, not stale', async (t) => {
   const { testnet, host } = await scaffold(t)
   const { client } = await pairAndConnect(testnet, host)
   t.after(() => client.close())
@@ -1092,53 +1080,28 @@ test('DASHBOARD now-playing: the MERGED session is shown, and beats an older sin
   const deviceKey = z32.encode(client.keyPair.publicKey)
   const ownerId = 'd:' + deviceKey
   const { items } = await client.list({ type: 'tracks' })
+  const row = async () => (await host.listDevices()).find(d => d.deviceKey === deviceKey)
 
-  // An older SINGLE-library session says one thing...
+  // A single-library session, freshly written.
   await host.userState.claimSession(ownerId, deviceKey, 0, false)
   await host.userState.setSession(ownerId, deviceKey, {
     queue: [{ trackId: items[0].id, title: 'Yesterday', artist: 'Old' }], index: 0, playing: false
   }, false)
+  assert.equal((await row()).nowPlaying, null, 'a single-library session shows nothing')
 
-  let me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
-  assert.equal(me.nowPlaying.title, 'Yesterday', 'with no merged session, the single one still shows')
-
-  // ...and the MERGED session, written later, says another. The dashboard must follow the
-  // fresher row, or a merged-mode phone reads as playing whatever it last played single.
+  // A merged session, written later - the one that used to win.
   await host.userState.claimSession(ownerId, deviceKey, 0, true)
   await host.userState.setSession(ownerId, deviceKey, {
     queue: [{ trackId: items[0].id, title: 'Right Now', artist: 'Live' }], index: 0, playing: true
   }, true)
+  assert.equal((await row()).nowPlaying, null, 'a merged session shows nothing either')
+  assert.equal((await row()).online, true, 'and the device is connected, so this is not the online check')
 
-  me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
-  assert.equal(me.nowPlaying.title, 'Right Now', 'the merged session wins')
-  assert.equal(me.nowPlaying.playing, true)
-})
-
-test('DASHBOARD now-playing: a STALE session is not presented as what the phone is doing now', async (t) => {
-  const { testnet, host } = await scaffold(t)
-  const { client } = await pairAndConnect(testnet, host)
-  t.after(() => client.close())
-
-  const deviceKey = z32.encode(client.keyPair.publicKey)
-  const ownerId = 'd:' + deviceKey
-  const { items } = await client.list({ type: 'tracks' })
-
-  await host.userState.claimSession(ownerId, deviceKey, 0)
-  await host.userState.setSession(ownerId, deviceKey, {
-    queue: [{ trackId: items[0].id, title: 'Three Days Ago', artist: 'Ghost' }], index: 0, playing: true
-  })
-  let me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
-  assert.ok(me.nowPlaying, 'fresh: shown')
-
-  // Backdate the heartbeat. The phone is still CONNECTED - which is why "online" was never
-  // enough of a check on its own.
-  const row = await host.userState.getSession(ownerId)
-  row.updatedAt = Date.now() - 60 * 60 * 1000
-  await host.stateBee.put('session:' + ownerId, row, { valueEncoding: 'json' })
-
-  me = (await host.listDevices()).find(d => d.deviceKey === deviceKey)
-  assert.equal(me.nowPlaying, null, 'an hour-old session is a leftover, not now-playing')
-  assert.equal(me.online, true, 'and the device is still connected, so this is not the online check')
+  // Only the device saying so puts a song on this dashboard.
+  await client.nowPlaying({ trackId: items[0].id, title: 'Actually Playing', artist: 'The Phone', playing: true })
+  const me = await row()
+  assert.equal(me.nowPlaying.title, 'Actually Playing', 'the report is the only source')
+  assert.equal(me.nowPlaying.reported, true)
 })
 
 // The dashboard renders a device photo as <img src="/api/device/avatar?id=KEY">. That src is

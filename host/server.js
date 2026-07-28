@@ -48,7 +48,6 @@ const { AvatarStore } = require('./avatars')
 const EXPIRY_SWEEP_MS = 30_000
 
 // How long a play session stays believable on the dashboard with no heartbeat (listDevices).
-const SESSION_STALE_MS = 15 * 60 * 1000
 
 // How long a device's own now-playing report stands before we drop it. The phone refreshes it on
 // the same ~4s heartbeat that carries the queue, so this is a few missed beats - long enough to
@@ -729,72 +728,37 @@ class PearTuneHost {
   }
 
   async listDevices () {
-    // A session the phone has not touched in this long is not what it is doing NOW. The
-    // heartbeat rides the play-status tick (a few seconds apart while playing) and is forced
-    // on every structural change, so a LIVE session is never this old - a row this stale is a
-    // leftover from a phone that moved its session to another host or simply stopped. The cost
-    // is that a phone left paused for a long time eventually drops off the dashboard, which is
-    // the right trade against announcing a track from three days ago as "now playing".
-    const fresh = (s) => Date.now() - (s.updatedAt || 0) < SESSION_STALE_MS
     const rows = await this.grants.list()
     // Who each device BELONGS TO, disambiguated where two people share a name (grants
     // personLabels). Carried on the row so the owner phone's device list names the same Sam the
     // dashboard's revoke button does - claimedUser is only what the device SAID, and stays raw.
     const personLabel = await this.grants.personLabels()
-    // The play session is per OWNER (a person, or an unclaimed device is its own
-    // owner) and names ONE activeDeviceKey - only that device is playing. Load each
-    // owner's session once, then attach now-playing to the device that holds it; every
-    // other device is idle. Best-effort: a session read failing just omits the track.
-    //
-    // Read BOTH session rows and take the fresher one. A phone in MERGED mode writes to
-    // `session:merged:{owner}` on the elected home host and never touches the single-library
-    // row again - so reading only the single row showed nothing at all on the home host, and
-    // showed the last single-library session FOREVER on every other host. Tim saw exactly
-    // that: the Mac (the merged home) had no now-playing on any row, while the Umbrel proudly
-    // displayed a track from days earlier.
-    const sessions = new Map()
-    const sessionFor = async (ownerId) => {
-      if (!sessions.has(ownerId)) {
-        const [single, merged] = await Promise.all([
-          this.userState.getSession(ownerId).catch(() => null),
-          this.userState.getSession(ownerId, true).catch(() => null)
-        ])
-        const fresher = (merged?.updatedAt || 0) >= (single?.updatedAt || 0) ? merged : single
-        sessions.set(ownerId, fresher)
-      }
-      return sessions.get(ownerId)
-    }
     return Promise.all(rows.map(async r => {
       const online = this.connections.count(r.deviceKey) > 0
       let nowPlaying = null
       if (online && !r.revokedAt) {
-        // FIRST, what THIS host is streaming to this device (Tim, 2026-07-28). The play session
-        // lives on ONE elected host in a blend, so before this the only dashboard that could show
-        // now-playing was the session home - never the library the audio was actually coming from,
-        // which is the one an operator opens. This needs no session and no claim, so it also covers
-        // a device whose claim never landed.
+        // ONE library shows now-playing: the one the track came from, which is the one that
+        // reported it. The play SESSION is deliberately NOT a source here (Tim, 2026-07-28).
+        //
+        // It was, for a few hours, and the result was every song appearing on two dashboards at
+        // once - the session home showing it because it holds the queue, and the owning library
+        // showing it because the audio came from there. On Tim's setup that is EVERY song, because
+        // his Mac's music is a subset of his Umbrel's, so the owner is always the Umbrel while the
+        // session home is always the Mac. Two true statements, but he asked for one place, and
+        // "where the music is coming from" is the useful one: an operator wants to know whether
+        // anyone is listening to THEIR library.
+        //
+        // The cost, stated: a phone too old to send nowplaying.set now shows nowhere rather than on
+        // its session home. The session still drives Play-here handoff and resume - it just no
+        // longer decides who displays a song.
         const said = this._nowPlaying.get(r.deviceKey)
         if (said && Date.now() - said.at < NOWPLAYING_STALE_MS) {
           nowPlaying = {
             title: said.title,
             artist: said.artist,
             playing: said.playing,
-            // Straight from the device, so it is true of THIS library and only while the phone
-            // keeps saying so. The session row below still wins where a session exists - it is the
-            // same fact from the host that holds the queue.
             reported: true,
             coverId: await this._coverIdFor(said.trackId)
-          }
-        }
-        const s = await sessionFor(r.personId ? 'p:' + r.personId : 'd:' + r.deviceKey)
-        if (s && s.activeDeviceKey === r.deviceKey && Array.isArray(s.queue) && s.queue.length && fresh(s)) {
-          const t = s.queue[s.index] || s.queue[0]
-          if (t) {
-            // The session carries the phone's own loopback art URL, useless here, but
-            // it has the trackId - resolve its coverId once (cached; covers are stable
-            // per id) so the dashboard can load a thumbnail off /api/art without a
-            // per-poll source lookup (matters for the network-backed adapters).
-            nowPlaying = { title: t.title || null, artist: t.artist || null, playing: !!s.playing, coverId: await this._coverIdFor(t.trackId) }
           }
         }
       }
