@@ -122,3 +122,73 @@ place Apple lets you explain yourself.
 Beyond `npm run verify`: install on a device with **no** pairings and confirm the
 demo path plays without any network at all — airplane mode is the honest test,
 because it proves no host is involved.
+
+---
+
+## Implementation plan (traced against the code, 2026-07-28)
+
+The music is sourced and in `assets/demo-music/` (five CC0 tracks + `cover.jpg` +
+`manifest.json` generated from the real tags). What follows is the design settled by
+reading the actual paths, so the build does not start with archaeology.
+
+### The shape to copy
+
+Every browse method in `src/bare.js` already has the same two-branch form:
+
+```js
+if (mergedMode()) { ...serve from the merged index... }
+await ensureConnected(); ...ask the host...
+```
+
+Demo mode is a THIRD branch, taken first, in `tracks`, `albums`, `album`, `artists`
+and `search`. That keeps it inside the existing structure instead of beside it.
+
+**Considered and rejected: a fake local "client".** Making demo mode a single-host
+mode backed by an in-process client would need no browse changes at all, which is
+tempting - but `client/index.js` exposes ~20 methods (favourites, resume, counts,
+playlists, identity, avatar, leave) and most are meaningless with no host. Twenty
+stubs is a wider surface than five branches, and every one is a thing that can lie.
+
+### Playback needs no new serving code
+
+`worklet/shim.js` already serves a complete local file straight from disk:
+
+```js
+if (cache && cache.has(trackId) && leaseOk()) return serveFromCache(trackId, req, res)
+```
+
+So installing the demo tracks as **pinned entries in the audio cache** makes playback
+work through the existing path - `has` / `get` / `readStream` / range requests /
+backpressure all come free, and `pinned` means the LRU never evicts them.
+
+Two small changes that this needs, and they are the only edits to `shim.js`:
+
+1. `leaseOk()` currently takes no argument and gates on host authorization. It must
+   become `leaseOk(trackId)` and return true for demo ids - a demo track has no host
+   and therefore no lease that could be fresh.
+2. Cover art: install `cover.jpg` into the art store under the demo album's coverId,
+   so `serveArt` finds it the same way.
+
+### Getting the files onto disk
+
+The bare bundle is already loaded from an asset this way in `app/index.tsx`
+(`Asset.fromModule` → `downloadAsync` → `localUri`). The five MP3s and the cover
+follow exactly that pattern, and the worklet copies them into the cache dir on demo
+activation. Cost: ~18 MB duplicated out of the bundle into app storage. Acceptable,
+and it buys the whole existing playback path.
+
+### Order to build it
+
+1. `worklet/demo.js` - manifest → catalog (albums/artists/tracks in the shapes the UI
+   already consumes) + the cache/art install. Pure and unit-testable with no device.
+2. `src/bare.js` - `demoMode()`, the five browse branches, `urlFor`, and
+   `enableDemo` / `disableDemo` IPC.
+3. `worklet/shim.js` - the two changes above.
+4. `app/index.tsx` - resolve the assets, hand the paths to the worklet.
+5. `src/ui/App.jsx` - "Try it without a server" on the intro card, the demo library
+   labelled unmistakably, and pairing a real library retires it.
+
+### The verify that actually proves it
+
+Airplane mode, on a device with no pairings. Anything less does not prove the demo is
+independent of a host.
