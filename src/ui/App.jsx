@@ -3289,6 +3289,9 @@ function DownloadsEmpty () {
 // showing the best status + which libraries.
 function RequestsView ({ requests, onNew, onRemove }) {
   if (!requests) return <SkeletonRows />
+  // EM DASH ON PURPOSE, exempt from the suite-wide no-em-dash rule (Tim, 2026-07-28). It is a
+  // SEPARATOR between two data fields, not prose, and " - " reads as a hyphenated title once an
+  // artist or album name contains one of its own. Do not "fix" this in a style sweep.
   const line = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
   const KIND = { artist: 'Artist', album: 'Album', track: 'Track' }
   if (!requests.length) {
@@ -4768,6 +4771,11 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
           </span>
         </div>
 
+        {/* EVERY EM DASH BELOW IS DELIBERATE and exempt from the suite-wide no-em-dash rule
+            (Tim, 2026-07-28). This is the CLASSIC skin: it is imitating a 90s amplifier's LCD
+            readout, where "3. Title — Artist" is what the thing being imitated actually showed.
+            The rule governs PROSE; this is a facsimile. A style sweep that hyphenates these has
+            changed the look of the skin, which is the whole feature. Leave them. */}
         <div className='rt-body'>
           <div className='rt-left'>
             <div className='rt-lcd rt-time'>{mm}<span className={playing ? 'rt-col' : 'rt-col off'}>:</span>{ss}</div>
@@ -5029,6 +5037,9 @@ const IDENT_POLL_MAX = 36 // 3 minutes of asking, then wait for the next time Se
 function ManageView ({ devices, libraryName, selfKey, onRevoke, ownedLibs = [], manageLib, onSwitchManageLib, requests, onResolve, onPair, onToast }) {
   const [confirm, setConfirm] = useState(null) // { device } pending a revoke
   const multi = (ownedLibs || []).length > 1
+  // EM DASH ON PURPOSE, exempt from the suite-wide no-em-dash rule (Tim, 2026-07-28). It is a
+  // SEPARATOR between two data fields, not prose, and " - " reads as a hyphenated title once an
+  // artist or album name contains one of its own. Do not "fix" this in a style sweep.
   const line = (r) => [r.name, r.artist].filter(Boolean).join(' — ')
   const KIND = { artist: 'Artist', album: 'Album', track: 'Track' }
   return (

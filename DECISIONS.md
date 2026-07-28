@@ -2,6 +2,28 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-28 - Em dashes: field SEPARATORS are exempt from the suite-wide ban
+Tier: T0 (copy/style, no behaviour). Recorded here because it is a standing exception to a rule in
+`/home/tim/peerloomllc/CLAUDE.md`, and an exception nobody wrote down gets "fixed" by the next sweep.
+
+THE RULE: no em dashes in any output, including user-facing strings. It is a good rule and the
+2026-07-28 Settings pass (PR #233) removed five real violations - a toast, a quality description, the
+identity-confirmation note, a tooltip and a status label. All prose, all correctly hyphenated now.
+
+THE EXCEPTION (Tim's call, offered three ways): eight remain, and every one is a SEPARATOR between two
+data fields rather than prose:
+  - `src/ui/App.jsx` retro "classic" player skin - the LCD marquee and playlist rows, `3. Title — Artist`
+  - the search / music-request line joins in RequestsView and the owner's requests panel, `Name — Artist`
+
+WHY THEY STAY. The classic skin is a facsimile of a 90s amplifier readout, and `Title — Artist` is what
+the thing being imitated actually displayed; hyphenating it changes the look of the feature, which is
+the entire point of the skin. The list joins have a second reason: a spaced hyphen reads as part of a
+hyphenated title the moment an artist or album name contains one of its own, which is common.
+
+HOW IT IS ENFORCED. Not by this entry, which nobody greps. Each of the three sites carries a comment
+saying the em dash is deliberate and must not be swept. A future `grep -n '—'` lands on the comment
+before it lands on the string.
+
 ## 2026-07-24 - Multi-host: removing the ACTIVE library stranded the survivor (fixed)
 Tier: T1 (app logic, no wire/grant/protocol change). Branch fix/multihost-remove-active-strands-survivor, PR #171.
 The MIRROR of the 2026-07-23 add-library bug (#166), in the remove direction.
