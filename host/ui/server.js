@@ -173,9 +173,9 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
             lastSeenAt: d.lastSeenAt,
             revokedAt: d.revokedAt,
             online: d.online,
-            // What this device is playing RIGHT NOW, or null. Only ever set on the one
-            // device that holds its owner's session (see listDevices) - { title, artist,
-            // playing, coverId }; coverId loads via /api/art.
+            // What this device is playing RIGHT NOW, or null - { title, artist, playing, coverId }
+            // and, when it came from what WE are streaming rather than from a play session,
+            // `streaming: true` (see listDevices). coverId loads via /api/art.
             nowPlaying: d.nowPlaying || null,
             // The user set a photo on this device; it loads via /api/device/avatar.
             hasAvatar: !!d.hasAvatar,
