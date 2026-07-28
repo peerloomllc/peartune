@@ -681,14 +681,19 @@ async function pushIdentityTo (c, libId) {
   const st = loadSettings()
   // Only send what we actually have. A blank name would otherwise ask the host to clear a
   // name it already knows, and an empty avatar means "remove the photo" - neither is what
-  // an unrelated reconnect should do.
-  if (st.deviceName || st.userName) {
-    // PLATFORM rides the identity push, which happens on EVERY fresh connection - so a device
-    // whose grant was minted before the client knew its own platform (every iPhone before
-    // 2026-07-28) corrects itself on the next reconnect, with no re-pair and nothing for the
-    // operator to do. Harmless against an older host, which ignores the extra field.
-    await c.setIdentity({ deviceName: st.deviceName || undefined, userName: st.userName || undefined, platform: PLATFORM })
-  }
+  // an unrelated reconnect should do. Hence `undefined` rather than '': the host's setIdentity
+  // tests `!== undefined` per field, so an omitted one is left exactly as it was.
+  //
+  // ALWAYS SENT, even with no names at all, because PLATFORM is the one thing here the device
+  // knows better than the host and can only correct this way. Gating the whole call on a name
+  // meant the devices most likely to be wrong were the ones that could never heal: a phone that
+  // never had a name typed into it keeps whatever platform its grant was minted with, forever.
+  // Caught on hardware (2026-07-28) - the iPhone reconnected to the Umbrel and stayed 'android'.
+  await c.setIdentity({
+    deviceName: st.deviceName || undefined,
+    userName: st.userName || undefined,
+    platform: PLATFORM
+  })
   if (st.avatar) await c.setAvatar({ avatar: st.avatar })
   if (libId) identitySynced.add(libId)
 }

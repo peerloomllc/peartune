@@ -294,6 +294,14 @@ test('setIdentity refreshes platform, and an older client that omits it cannot b
   assert.equal((await g.setIdentity(dev.deviceKey, { platform: '   ' })).platform, 'ios',
     'whitespace -> untouched')
 
+  // A push carrying ONLY the platform must not disturb the names. This is the shape the client
+  // sends for a device nobody has renamed, which is the default and the case that could never
+  // heal while the push was gated on having a name (hardware, 2026-07-28).
+  await g.setIdentity(dev.deviceKey, { deviceName: 'Tim iPhone' })
+  const onlyPlatform = await g.setIdentity(dev.deviceKey, { platform: 'ios' })
+  assert.equal(onlyPlatform.label, 'Tim iPhone', 'a platform-only push leaves the name alone')
+  assert.equal(onlyPlatform.platform, 'ios')
+
   // Normalised, since it reaches a dashboard badge.
   assert.equal((await g.setIdentity(dev.deviceKey, { platform: '  IOS  ' })).platform, 'ios')
   assert.equal((await g.setIdentity(dev.deviceKey, { platform: 'x'.repeat(200) })).platform.length, 32,
