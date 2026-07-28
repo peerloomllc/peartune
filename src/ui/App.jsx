@@ -295,7 +295,7 @@ export default function App () {
       // means the timer just stopped playback; the deadline drives the UI countdown.
       on('sleep:state', (d) => {
         setSleep(d.active ? d : null)
-        if (d.fired) toast('Sleep timer — playback paused.')
+        if (d.fired) toast('Sleep timer - playback paused.')
       }),
       on('play:error', (d) => setError(d.error)),
       // The buffer ran dry while we were disconnected and could not get back in - a
@@ -1970,7 +1970,7 @@ export default function App () {
       />
     )
   } else if (tab === 'about') {
-    screen = <About onDonate={() => setDonate(true)} />
+    screen = <About onDonate={() => setDonate(true)} deviceKey={state.deviceKeyZ32 || state.deviceKey} />
   } else {
     screen = (
       <Library
@@ -4944,7 +4944,7 @@ function fmtBytes (n) {
 
 const QUALITIES = [
   { value: 'auto', label: 'Auto', desc: 'Full quality on Wi-Fi, a smaller stream on cellular' },
-  { value: 'original', label: 'Original', desc: 'Always the original file — best quality, ~1 GB an album' },
+  { value: 'original', label: 'Original', desc: 'Always the original file - best quality, ~1 GB an album' },
   { value: '320', label: '320 kbps', desc: 'High quality, less data everywhere' },
   { value: '192', label: '192 kbps', desc: 'Good quality, saves more data' },
   { value: '128', label: '128 kbps', desc: 'Lowest quality, least data' }
@@ -5189,7 +5189,6 @@ function OwnerPairSheet ({ link, toast, onClose }) {
 
 function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias }) {
   const quality = state.settings?.streamQuality || 'auto'
-  const [copied, setCopied] = useState(false)
   const [dev, setDev] = useState(null)
   const [usr, setUsr] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -5249,13 +5248,6 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
     } finally {
       setSaving(false)
     }
-  }
-
-  const copyKey = () => {
-    copyText(state.deviceKeyZ32 || state.deviceKey)
-    haptic('success')
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
   }
 
   const [open, setOpen] = useState(null)
@@ -5334,7 +5326,7 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
             // two of them cannot check they mean the same person (Tim, 2026-07-26).
             ? `The server has confirmed this device belongs to ${ident.belongsTo || ident.userName}.`
             : ident.belongsTo
-              ? `The server still has this device down as ${ident.belongsTo}. It is waiting to confirm you are ${ident.userName} — only the person running it can move a device to someone else.`
+              ? `The server still has this device down as ${ident.belongsTo}. It is waiting to confirm you are ${ident.userName} - only the person running it can move a device to someone else.`
               : `Waiting for the server to confirm you are ${ident.userName}. Until then this is only a label.`}
         </div>
       )}
@@ -5346,67 +5338,6 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
       )}
 
       <div className='settings-acc'>
-        <Section id='appearance' title='Appearance' Icon={Palette} open={open === 'appearance'} onToggle={toggle}>
-          <div className='label'>Theme</div>
-          <div className='seg'>
-            {[['dark', 'Dark'], ['light', 'Light'], ['system', 'System']].map(([k, l]) => (
-              <button
-                key={k} className={themePref === k ? 'on' : ''}
-                aria-pressed={themePref === k}
-                onClick={() => { haptic('light'); onTheme(k) }}
-              >{l}</button>
-            ))}
-          </div>
-          {/* Player skin. Classic is a retro amplifier-style face on the full-screen player -
-              LCD readout, scrolling title, a live spectrum. The library stays as it is. */}
-          <div className='label' style={{ marginTop: '.7rem' }}>Player skin</div>
-          <div className='seg'>
-            {[['modern', 'Modern'], ['classic', 'Classic']].map(([k, l]) => (
-              <button
-                key={k} className={skin === k ? 'on' : ''}
-                aria-pressed={skin === k}
-                onClick={() => onSkin(k)}
-              >{l}</button>
-            ))}
-          </div>
-        </Section>
-
-        <Section id='quality' title='Streaming quality' Icon={SpeakerHigh} open={open === 'quality'} onToggle={toggle}>
-          <OptionList options={QUALITIES} value={quality} onChange={onQuality} />
-        </Section>
-
-        <Section id='storage' title='Offline storage' Icon={DownloadSimple} open={open === 'storage'} onToggle={toggle}>
-          <div className='desc'>
-            Tracks you play are kept on this phone so they play again with no connection;
-            the oldest clear out to stay under this size.
-          </div>
-          <div className='row'>
-            <div><div className='label'>Using</div></div>
-            <span className='val'>
-              {fmtBytes(cache?.bytes || 0)}{cap ? ` / ${fmtBytes(cap)}` : ''}
-              {cache?.count ? ` · ${cache.count} track${cache.count === 1 ? '' : 's'}` : ''}
-            </span>
-          </div>
-          <div className='label' style={{ marginTop: '.5rem' }}>Keep up to</div>
-          <OptionList options={CACHE_CAPS} value={cap} onChange={setCap} />
-          <button
-            className='wide'
-            style={{ marginTop: '.5rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '.4rem' }}
-            onClick={clearCache} disabled={!cache?.count}
-          >
-            <Trash size={16} weight='bold' /> Clear cache
-          </button>
-          <div className='row' style={{ marginTop: '.4rem' }}>
-            <div>
-              <div className='label'>Download over cellular</div>
-              <div className='desc'>Off by default — a downloaded album can be hundreds of MB.</div>
-            </div>
-            <button className={'toggle' + (cellular ? ' on' : '')} role='switch' aria-checked={cellular} onClick={toggleCellular}>
-              {cellular ? 'On' : 'Off'}
-            </button>
-          </div>
-        </Section>
-
         <Section id='library' title={libsOf(state).length > 1 ? 'Libraries' : 'Library'} Icon={MusicNotesSimple} open={open === 'library'} onToggle={toggle}>
           {/* Two actions up top: add another server (+), or become an owner of a server you run
               (the same people icon Manage uses). Both open the pairing scanner - a plain code adds a
@@ -5417,7 +5348,7 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
               <Plus size={22} weight='bold' />
               <span>Add server</span>
             </button>
-            <button className='libact' aria-label='Pair as owner' title='Pair as owner — manage a server you run' onClick={onAddLibrary}>
+            <button className='libact' aria-label='Pair as owner' title='Pair as owner - manage a server you run' onClick={onAddLibrary}>
               <UsersThree size={22} weight='bold' />
               <span>Pair as owner</span>
             </button>
@@ -5434,7 +5365,7 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
             const desc = ml
               ? (ml.connected ? 'Connected' : 'Offline')
               : (h.active
-                  ? (state.connected ? 'Active — connected' : 'Active — connecting…')
+                  ? (state.connected ? 'Active - connected' : 'Active - connecting…')
                   : 'Tap to switch to this library')
             const tappable = !ml && !h.active // only switch libraries in single-host mode
 
@@ -5506,12 +5437,46 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
           })}
         </Section>
 
-        {/* Why this is in the shipping app and not a debug build: the off-LAN failure can
-            only be reproduced on a phone that is off-LAN, and "Couldn't reach your library"
-            is the same sentence whether the DHT never started, the server was never found,
-            or a carrier NAT refused the hole-punch. Those need different fixes. This runs
-            the transport for real and reports where it stopped, in a form you can copy into
-            a bug report. */}
+        {/* SOUND AND DOWNLOADS. These were two rows, "Streaming quality" and "Offline storage",
+            and they answer the SAME question - how much data does this use and what does it leave
+            on my phone - so someone worried about their data allowance had to guess which one to
+            open (Tim, 2026-07-28). One row, quality first because it applies to every track and the
+            cache only to what you keep. */}
+        <Section id='sound' title='Sound and downloads' Icon={SpeakerHigh} open={open === 'sound'} onToggle={toggle}>
+          <div className='label'>Streaming quality</div>
+          <OptionList options={QUALITIES} value={quality} onChange={onQuality} />
+          <div className='label' style={{ marginTop: '.9rem' }}>Offline storage</div>
+          <div className='desc'>
+            Tracks you play are kept on this phone so they play again with no connection;
+            the oldest clear out to stay under this size.
+          </div>
+          <div className='row'>
+            <div><div className='label'>Using</div></div>
+            <span className='val'>
+              {fmtBytes(cache?.bytes || 0)}{cap ? ` / ${fmtBytes(cap)}` : ''}
+              {cache?.count ? ` · ${cache.count} track${cache.count === 1 ? '' : 's'}` : ''}
+            </span>
+          </div>
+          <div className='label' style={{ marginTop: '.5rem' }}>Keep up to</div>
+          <OptionList options={CACHE_CAPS} value={cap} onChange={setCap} />
+          <button
+            className='wide'
+            style={{ marginTop: '.5rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '.4rem' }}
+            onClick={clearCache} disabled={!cache?.count}
+          >
+            <Trash size={16} weight='bold' /> Clear cache
+          </button>
+          <div className='row' style={{ marginTop: '.4rem' }}>
+            <div>
+              <div className='label'>Download over cellular</div>
+              <div className='desc'>Off by default - a downloaded album can be hundreds of MB.</div>
+            </div>
+            <button className={'toggle' + (cellular ? ' on' : '')} role='switch' aria-checked={cellular} onClick={toggleCellular}>
+              {cellular ? 'On' : 'Off'}
+            </button>
+          </div>
+        </Section>
+
         <Section id='conn' title='Connection' Icon={PlugsConnected} open={open === 'conn'} onToggle={toggle}>
           {/* The relay backstop. On by default so a hard-NAT/cellular user can still reach
               home; off is pure peer-to-peer with nothing of PeerLoom's in the path, at the
@@ -5535,18 +5500,31 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
           </div>
         </Section>
 
-        <Section id='device' title='Device key' Icon={Key} open={open === 'device'} onToggle={toggle}>
-          <div className='desc'>
-            The key the server knows this phone by. It is the row to look for in the
-            PearTune dashboard when deciding what to revoke.
+        <Section id='appearance' title='Appearance' Icon={Palette} open={open === 'appearance'} onToggle={toggle}>
+          <div className='label'>Theme</div>
+          <div className='seg'>
+            {[['dark', 'Dark'], ['light', 'Light'], ['system', 'System']].map(([k, l]) => (
+              <button
+                key={k} className={themePref === k ? 'on' : ''}
+                aria-pressed={themePref === k}
+                onClick={() => { haptic('light'); onTheme(k) }}
+              >{l}</button>
+            ))}
           </div>
-          <div className='key'>{state.deviceKeyZ32 || state.deviceKey}</div>
-          <div className='btnrow'>
-            <button onClick={copyKey}>
-              <Copy size={15} /> {copied ? 'Copied' : 'Copy key'}
-            </button>
+          {/* Player skin. Classic is a retro amplifier-style face on the full-screen player -
+              LCD readout, scrolling title, a live spectrum. The library stays as it is. */}
+          <div className='label' style={{ marginTop: '.7rem' }}>Player skin</div>
+          <div className='seg'>
+            {[['modern', 'Modern'], ['classic', 'Classic']].map(([k, l]) => (
+              <button
+                key={k} className={skin === k ? 'on' : ''}
+                aria-pressed={skin === k}
+                onClick={() => onSkin(k)}
+              >{l}</button>
+            ))}
           </div>
         </Section>
+
       </div>
 
       <div className='version'>v{APP_VERSION}</div>
@@ -5556,9 +5534,16 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
 
 // --- about -------------------------------------------------------------------
 
-function About ({ onDonate }) {
+function About ({ onDonate, deviceKey }) {
   const [open, setOpen] = useState(null)
   const toggle = (id) => { haptic('light'); setOpen(o => (o === id ? null : id)) }
+  const [copied, setCopied] = useState(false)
+  const copyKey = () => {
+    copyText(deviceKey)
+    haptic('success')
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
 
   return (
     <div className='app'>
@@ -5594,6 +5579,24 @@ function About ({ onDonate }) {
         </p>
         <div className='btnrow'>
           <button onClick={() => openUrl('https://pears.com/')}>Learn about P2P ↗</button>
+        </div>
+      </Section>
+
+      {/* THIS DEVICE. It lived in Settings as "Device key" until 2026-07-28, and it was the odd one
+          out there: Settings is things you CHANGE, and this is a value you READ OUT - to whoever runs
+          a library, so they can tell which row in their dashboard is you. About is where the rest of
+          "what is this install" already lives, so it belongs here, next to How it works. */}
+      <Section id='device' title='This device' Icon={Key} open={open === 'device'} onToggle={toggle}>
+        <p>
+          The key a library knows this phone by. When someone running a server asks which
+          device is yours, or you are deciding what to remove on their dashboard, this is
+          the row to look for.
+        </p>
+        <div className='key'>{deviceKey}</div>
+        <div className='btnrow'>
+          <button onClick={copyKey}>
+            <Copy size={15} /> {copied ? 'Copied' : 'Copy key'}
+          </button>
         </div>
       </Section>
 
