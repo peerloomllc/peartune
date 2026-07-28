@@ -153,6 +153,29 @@ export default function App () {
     const t = setTimeout(() => setUpdatingSteady(false), 900)
     return () => clearTimeout(t)
   }, [updating])
+  // THE LAUNCH WINDOW, which `updating` alone does not cover (Tim, 2026-07-28). A cold launch
+  // paints the CACHED index first and only then dispatches a reload per library, so for about a
+  // second the screen is fully drawn, work is plainly happening, and nothing on it says so - and
+  // when the cached index is empty (a first run, a cleared cache) that second is spent asserting
+  // "Nothing here yet. This library is empty", which is a claim, not a wait. `booting` is true
+  // from mount and falls only once a reload has actually run AND settled, so the indicator is
+  // continuous from the first paint to the last arrival instead of blinking on halfway through.
+  const [booting, setBooting] = useState(true)
+  const sawReloadRef = useRef(false)
+  useEffect(() => { if (updating > 0) sawReloadRef.current = true }, [updating])
+  useEffect(() => {
+    if (booting && sawReloadRef.current && !updatingSteady) setBooting(false)
+  }, [booting, updatingSteady])
+  // A hard stop, because `booting` must never be able to stick. A library that is simply never
+  // going to answer (a host that is off) would otherwise leave a spinner running forever, which
+  // is a worse lie than the empty state this replaces.
+  useEffect(() => {
+    const t = setTimeout(() => setBooting(false), 20000)
+    return () => clearTimeout(t)
+  }, [])
+  // The ONE "something is happening" signal the library screen reads: it drives both the header
+  // hint and the empty state, so those two can never disagree about whether we are still working.
+  const busy = booting || updatingSteady
   const [reconnecting, setReconnecting] = useState(false)
   // A cold launch has not FAILED - it has not tried yet. init() answers with
   // connected:false and kicks the connect off in the background (src/bare.js), so
@@ -1906,7 +1929,7 @@ export default function App () {
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         onDismissError={() => setError(null)}
-        albumsLoaded={albumsLoaded} reconnecting={reconnecting} firstConnect={firstConnect} updating={updatingSteady}
+        albumsLoaded={albumsLoaded} reconnecting={reconnecting} firstConnect={firstConnect} updating={busy}
         favs={favs} onFav={favSupported ? onFav : null}
         cont={now ? null : cont}
         onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
@@ -2730,8 +2753,12 @@ function Library ({
           {/* A background refresh is running (a library connecting on a cold launch, a pull to
               refresh). The grid deliberately does NOT blank while this happens, so this line is
               the only thing that says so - quiet on purpose, and gone the moment the last
-              in-flight load settles. */}
-          {updating && <> · Updating…</>}
+              in-flight load settles. The SPINNER earns its place: the words alone sat still in a
+              subtitle full of other still words, and read as a label rather than as activity
+              (Tim, 2026-07-28). Motion is what says "working"; the text just names what kind. */}
+          {updating && (
+            <> · <ArrowsClockwise size={12} weight='bold' className='spin inline-spin' /> Updating…</>
+          )}
         </p>
       </header>
 
@@ -2837,7 +2864,7 @@ function Library ({
                         )}
                       </div>
                       )
-                    : <Empty reachable={reachable} onRetry={onReconnect} all={allScope} connecting={connecting} />)
+                    : <Empty reachable={reachable} onRetry={onReconnect} all={allScope} connecting={connecting} loading={updating} />)
               : <SkeletonRows />)
           : browse === 'genres'
             ? (genres
@@ -2860,7 +2887,7 @@ function Library ({
                       {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
                     </>
                     )
-                  : <Empty reachable={reachable} onRetry={onReconnect} all={allScope} connecting={connecting} />}
+                  : <Empty reachable={reachable} onRetry={onReconnect} all={allScope} connecting={connecting} loading={updating} />}
     </div>
   )
 }
@@ -2870,7 +2897,7 @@ function Library ({
 // access ended from the dashboard) served us nothing; that is not the same as a library
 // with no music in it, and "add music on the server and let it rescan" is actively
 // misleading advice to someone who was just revoked.
-function Empty ({ reachable = true, onRetry, all = false, connecting = false }) {
+function Empty ({ reachable = true, onRetry, all = false, connecting = false, loading = false }) {
   // Trying is not the same as failed, and the app used to show the failure the instant it
   // opened - before it had tried at all. On a phone off-LAN the first connect can legitimately
   // take tens of seconds (a hole-punch that aborts takes ~11s to abort), so silence there reads
@@ -2897,6 +2924,24 @@ function Empty ({ reachable = true, onRetry, all = false, connecting = false }) 
             : 'This device is offline, or the server ended its access. If it was removed there, pair again from the server’s dashboard.'}
         </p>
         {onRetry && <button className='more' onClick={onRetry}>Try again</button>}
+      </div>
+    )
+  }
+  // Reachable, nothing to show YET, and work still in flight. This is the third thing an empty
+  // grid can mean and the app used to skip it: it went straight to "This library is empty. Add
+  // music on the server" while libraries were still answering (Tim, 2026-07-28). That is advice
+  // to go fix a server that has nothing wrong with it. Emptiness is a CONCLUSION and it can only
+  // be drawn once the work has stopped.
+  if (loading) {
+    return (
+      <div className='blank'>
+        <ArrowsClockwise size={40} weight='thin' className='spin' />
+        <h2>Loading your music…</h2>
+        <p className='muted sm'>
+          {all
+            ? 'Your libraries are still answering. Music appears as each one arrives.'
+            : 'Still reading this library. Music appears as it arrives.'}
+        </p>
       </div>
     )
   }
