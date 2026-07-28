@@ -43,6 +43,15 @@ const { AudioCache } = require('../worklet/cache')
 const { ArtStore } = require('../worklet/art-cache')
 
 const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
+// What kind of device this is, handed down by the shell (argv[1]) because only the shell knows.
+// It rides the pairing claim so an operator's dashboard names the device type correctly - this was
+// hardcoded to 'android' until the first signed iOS build showed every iPhone arriving as an
+// Android phone (2026-07-28). Defaults to android for an old shell that passes nothing, which
+// keeps existing Android devices reading exactly as before.
+const PLATFORM = Bare.argv[1] || 'android'
+// The name a device goes by when the person did not choose one. "Android phone" on an iPhone is
+// the same lie in friendlier clothing, so it follows the platform too.
+const DEFAULT_DEVICE_NAME = PLATFORM === 'ios' ? 'iPhone' : 'Android phone'
 const IDENTITY_FILE = path.join(DATA_DIR, 'identity.json')
 const HOSTS_FILE = path.join(DATA_DIR, 'hosts.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
@@ -724,6 +733,12 @@ let mergedFresh = new Set()
 let coverLib = new Map() // coverId -> libraryId
 let trackLib = new Map() // any copy's trackId -> libraryId
 let trackByAnyId = new Map() // any copy's trackId -> the merged track (for best-copy failover)
+// The library the person has picked in the switcher, or null for "All libraries". The UI already
+// sends this per-call for BROWSING; streaming needed its own copy because urlFor is called by the
+// SHELL, which never sees the filter - which is precisely how "switch to this library, press play"
+// ended up streaming from a different one (Tim, 2026-07-28). Held rather than passed so the ~5
+// urlFor call sites, and the queue rebuild that re-resolves every item, cannot drift apart.
+let preferredLib = null
 let entityLib = new Map() // any album/artist/genre id (primary or a copy) -> its owning libraryId
 
 // The live client for ONE library, whatever role it plays. Null when that library has no usable
@@ -1402,7 +1417,14 @@ let lastNowPlayingLib = null
 
 async function reportNowPlaying (snapshot) {
   const cur = snapshot && Array.isArray(snapshot.items) ? snapshot.items[snapshot.index || 0] : null
-  const lib = cur ? (libForTrack(cur.id) || defaultLibraryId) : null
+  // WHICH COPY IS ACTUALLY PLAYING, not which one owns the merged id. `libForTrack` answers the
+  // latter: the merged track carries the PRIMARY copy's id, so a song held by two libraries was
+  // always reported to the primary even when the bytes came from the other one. That was invisible
+  // until the switcher became a source control - pick the non-primary library, play, and its
+  // dashboard stayed empty while the primary's lit up (Tim, 2026-07-28). routeTrack is the same
+  // resolution urlFor uses, so the row now names whoever really served the audio.
+  const route = cur ? routeTrack({ trackId: cur.id, copies: cur.copies }) : null
+  const lib = cur ? (route?.libraryId || libForTrack(cur.id) || defaultLibraryId) : null
   // Moved to a track another library owns: tell the PREVIOUS one to forget us now rather than
   // leaving its dashboard to time the row out.
   if (lastNowPlayingLib && lastNowPlayingLib !== lib) {
@@ -1436,11 +1458,11 @@ function libForEntity (id, libraryId) { return libraryId || (mergedMode() ? (ent
 function routeTrack ({ trackId, libraryId, copies }) {
   const connected = connectedLibs()
   if (Array.isArray(copies) && copies.length) {
-    const c = merge.bestCopy({ copies }, connected)
+    const c = merge.bestCopy({ copies }, connected, preferredLib)
     return c ? { libraryId: c.libraryId, id: c.id } : null
   }
   const m = trackByAnyId.get(trackId)
-  if (m) { const c = merge.bestCopy(m, connected); if (c) return { libraryId: c.libraryId, id: c.id } }
+  if (m) { const c = merge.bestCopy(m, connected, preferredLib); if (c) return { libraryId: c.libraryId, id: c.id } }
   if (libraryId) return { libraryId, id: trackId }
   return null
 }
@@ -1602,7 +1624,7 @@ async function connectTo (host) {
 // channel so an off-LAN pair does not pay for a second hole-punch (conn is null when we short-circuit
 // an already-connected host). The retry persistence + connection reuse are the win over the old
 // dht.connect pair (3 tries / 8s): pairing now has the same reliability as media, with no second punch.
-async function pairViaSwarm (link, { label = 'phone', platform = 'android', timeout = 60000 } = {}) {
+async function pairViaSwarm (link, { label = 'phone', platform = PLATFORM, timeout = 60000 } = {}) {
   const parsed = parseLink(link) // { rv, hostKey: buffer, name }
   const hostKeyZ = z32.encode(parsed.hostKey)
 
@@ -1812,14 +1834,14 @@ const methods = {
     // The name goes out in deviceHello's EXISTING label field, so this half needs
     // no wire change at all - we were simply hardcoding "Android phone" and giving
     // the operator two identical rows to choose between.
-    const name = (label || '').trim() || 'Android phone'
+    const name = (label || '').trim() || DEFAULT_DEVICE_NAME
 
     // Pair OVER THE SWARM (phase 4): the host's topic membership + nudge give pairing the same
     // persistent retry as the media path, so an off-LAN pair keeps punching instead of giving up.
     // `pairConn` is the LIVE connection the pair rode - reused for media below (no second punch).
     const { paired, conn: pairConn } = await pairViaSwarm(link, {
       label: name,
-      platform: 'android'
+      platform: PLATFORM
     })
 
     // A BLANK name must never wipe the one this device already goes by. The add-a-library
@@ -3029,6 +3051,14 @@ const methods = {
       if (t !== 'none') { const h = loadDefaultHost(); if (h) nudge(h.libraryId) }
     }
     return { networkType }
+  },
+
+  // Which library the person has picked in the switcher. '_all' (or nothing) means the blend, and
+  // routing goes back to preferring the primary copy. See `preferredLib`.
+  async setLibraryFilter ({ libraryId } = {}) {
+    preferredLib = libraryId && libraryId !== '_all' ? libraryId : null
+    log('filter:library', { lib: preferredLib ? String(preferredLib).slice(0, 8) : 'all' })
+    return { ok: true }
   },
 
   // The URL the RN player hands to ExoPlayer. The audio never touches RN: the

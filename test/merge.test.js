@@ -161,6 +161,30 @@ test('bestCopy prefers a connected host, falls back in order, and defaults to pr
   assert.equal(M.bestCopy(null), null)
 })
 
+// The switcher is a SOURCE control, not just a view filter (Tim, 2026-07-28). Filtering to a
+// library used to narrow the list while playback still came from the primary copy - so on a setup
+// where one library's music is a subset of another's, "switch to the Mac and play" streamed from
+// the Umbrel and the now-playing row correctly named a library the person had not picked.
+test('bestCopy honours a preferred library, but never at the cost of playability', () => {
+  const ix = M.buildIndex([umbrel, mac])
+  const airbag = ix.tracks.find((t) => t.title === 'Airbag') // copies: [libM(primary), libU]
+  const both = new Set(['libM', 'libU'])
+
+  // The whole point: the non-primary copy wins when the person asked for that library.
+  assert.equal(M.bestCopy(airbag, both, 'libU').libraryId, 'libU', 'preferred beats primary')
+  assert.equal(M.bestCopy(airbag, both, 'libM').libraryId, 'libM', 'preferring the primary is a no-op')
+
+  // A PREFERENCE, not a rule. Every one of these must still return something playable, or the
+  // filter would turn an offline host into silence instead of a fallback.
+  assert.equal(M.bestCopy(airbag, new Set(['libM']), 'libU').libraryId, 'libM',
+    'preferred host offline -> normal order, not null')
+  assert.equal(M.bestCopy(airbag, both, 'libNOPE').libraryId, 'libM',
+    'preferring a library that does not hold this track -> normal order')
+  assert.equal(M.bestCopy(airbag, both, null).libraryId, 'libM', 'no preference -> unchanged')
+  assert.equal(M.bestCopy(airbag, new Set(), 'libU').libraryId, 'libM',
+    'nothing online -> primary, preference cannot conjure a connection')
+})
+
 // --- collapseRequests (blended-library requests, P1) ------------------------
 // In a blend a request is filed with every connected host, so the requester's "Your
 // requests" would show the same ask N times. collapseRequests folds them to one row with

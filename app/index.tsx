@@ -978,7 +978,12 @@ export default function App () {
         encoding: FileSystem.EncodingType.Base64
       })
 
-      await worklet.start('/app.bundle', b4a.from(src, 'base64'), [dataDir])
+      // argv[1] is the PLATFORM. The worklet used to hardcode 'android' in its pairing claim, so
+      // every iPhone that ever paired showed up on the operator's dashboard as an Android phone -
+      // wrong information at exactly the moment it matters, when they are deciding what to revoke
+      // (found on the first signed iOS build, 2026-07-28). The shell is the only side that knows,
+      // and it knows at boot, so it says so at boot.
+      await worklet.start('/app.bundle', b4a.from(src, 'base64'), [dataDir, Platform.OS])
       if (cancelled) return
 
       workletRef.current = worklet

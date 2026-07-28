@@ -416,6 +416,8 @@ export default function App () {
         // A Settings switch focuses ONE library (the worklet left merged mode); drop the blended
         // view and its chips. The '_all' chip re-enters merged.
         setMerged(m => (m ? { ...m, merged: false } : m)); setFilter('_all')
+        // Leaving merged mode drops the filter, so the worklet's copy has to drop with it.
+        call('setLibraryFilter', { libraryId: '_all' }).catch(() => {})
         setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery(''); setError(null)
         if (liveRef.current?.connected) {
           loadAlbums(0); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadPlaylists(true)
@@ -613,6 +615,11 @@ export default function App () {
     haptic('light')
     filterRef.current = libraryId
     setFilter(libraryId)
+    // Tell the WORKLET too, not just the browse calls. Browsing passes the filter per-call, but
+    // streaming is resolved by urlFor from the SHELL, which never sees it - so without this,
+    // picking a library narrowed the list and left playback coming from somewhere else entirely
+    // (Tim, 2026-07-28). Fire-and-forget: the worst case is one track routed the old way.
+    call('setLibraryFilter', { libraryId }).catch(() => {})
     setStack([]); setResults(null); setQuery('')
     if (merged && !merged.merged) {
       call('enterMerged').then(st => { if (st?.libraries) { setMerged(st); reloadBrowse() } }).catch(() => {})
@@ -1472,6 +1479,7 @@ export default function App () {
       // pair must not wait on the rebuild cooldown). Otherwise it's single-host - load normally.
       if ((hosts || []).length >= 2) {
         filterRef.current = '_all'; setFilter('_all')
+        call('setLibraryFilter', { libraryId: '_all' }).catch(() => {})
         const st = mergedRef.current?.merged
           ? await call('refreshMerged', { force: true }).catch(() => null)
           : await call('enterMerged').catch(() => null)

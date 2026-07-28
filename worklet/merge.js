@@ -307,13 +307,24 @@ function resolveTargets ({ refs, id, libraryId } = {}, fallbackLibraryId = null)
 // The best copy to STREAM: the primary if its host is connected, else the first connected
 // fallback, else the primary anyway (caller will get a connect error / greyed track). `connected`
 // is a Set of libraryIds currently reachable; omit to just take the primary.
-function bestCopy (entity, connected) {
+//
+// `prefer` is the library the PERSON has picked in the switcher, and it outranks the primary
+// (Tim, 2026-07-28). Without it, filtering to a library scoped what you SAW and not where the
+// bytes came from: on a setup where one library's music is a subset of another's, every "play"
+// from the smaller one still streamed from the bigger one, and the now-playing row then correctly
+// named a library you had not chosen. Preference, not a rule - an unreachable preferred copy
+// falls through to the normal order, so failover is untouched.
+function bestCopy (entity, connected, prefer) {
   if (!entity) return null
   const copies = Array.isArray(entity.copies) && entity.copies.length
     ? entity.copies
     : (entity.libraryId ? [{ libraryId: entity.libraryId, id: entity.id, coverId: entity.coverId }] : [])
   if (!copies.length) return null
   if (!connected) return copies[0]
+  if (prefer) {
+    const p = copies.find((c) => c.libraryId === prefer && connected.has(c.libraryId))
+    if (p) return p
+  }
   return copies.find((c) => connected.has(c.libraryId)) || copies[0]
 }
 
