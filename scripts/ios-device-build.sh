@@ -22,47 +22,44 @@ REMOTE_ENV='export PATH=/opt/homebrew/bin:$PATH LANG=en_US.UTF-8 LC_ALL=en_US.UT
 
 say () { printf '\n== %s ==\n' "$1"; }
 
-# THE ONE THAT WILL BITE YOU, and the part that is easy to get subtly wrong.
+# THE ONE THAT COSTS AN AFTERNOON, so read this before changing anything below it.
 #
-# codesign needs the login keychain's PRIVATE KEY. An ssh session cannot get at it even
-# while Tim is logged in at the console: the cert LISTS fine (find-identity is public
-# info) and then signing dies at the embed-frameworks phase with errSecInternalComponent,
-# ~10 minutes into the build.
+# codesign over ssh dies with `errSecInternalComponent` at the embed-frameworks phase -
+# AFTER all of arm64 has compiled, ~10 minutes in - unless the keychain holding the
+# private key is unlocked AND that key's ACL grants codesign non-interactive use.
 #
-# THE SUBTLETY (learned the hard way, 2026-07-28): `security unlock-keychain` only
-# unlocks for THE SESSION THAT RUNS IT. Running it by hand in a Terminal on the Mac, or
-# in your own separate ssh, does NOTHING for the session this script opens - it gets its
-# own security session and finds the keychain locked all over again. The unlock has to
-# happen INSIDE the same ssh invocation that runs xcodebuild, which is why it is welded
-# to the build command below rather than checked separately up here.
+# THE PART THAT WASTED THREE ATTEMPTS (2026-07-28): it is NOT the login keychain. This
+# Mac has a dedicated `buildkey.keychain-db` that comes FIRST in the search list, and it
+# is the one codesign resolves the identity from. Unlocking login.keychain-db therefore
+# changes nothing and fails identically every time. The tell was in plain sight:
+# `find-identity -v` lists every identity TWICE, once per keychain.
 #
-# (`set-key-partition-list` IS persistent - it edits the key's ACL in the keychain file -
-# so that half only ever needs doing once, and is not repeated here.)
+# It has an EMPTY password by convention, shared with pearguard / pearcal / pearcircle /
+# SatScream, whose ios-dev-install.sh scripts do exactly this. No secret is needed, and
+# nothing here should ever ask Tim for one.
+#
+# AND the unlock must run in THE SAME ssh invocation as xcodebuild: unlocking is
+# session-scoped, so doing it by hand in another terminal does nothing for this script's
+# session. That is why $UNLOCK is welded onto the build command rather than run up here.
+KEYCHAIN="${KEYCHAIN:-~/Library/Keychains/buildkey.keychain-db}"
+UNLOCK="security unlock-keychain -p '' $KEYCHAIN; security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k '' $KEYCHAIN >/dev/null 2>&1 || true;"
+
 say "checking codesign can actually USE the signing key over ssh"
-UNLOCK=''
-if [ -n "${KEYCHAIN_PASSWORD:-}" ]; then
-  UNLOCK="security unlock-keychain -p '$KEYCHAIN_PASSWORD' ~/Library/Keychains/login.keychain-db &&"
-fi
-# The only honest test is to sign something. show-keychain-info reports "User interaction
-# is not allowed" over ssh whether or not the key is reachable, so it proves nothing.
+# The only honest test is to SIGN something. `security show-keychain-info` reports "User
+# interaction is not allowed" over ssh whether or not the key is reachable, and
+# `find-identity` lists certificates, which is public data - both say "fine" right up
+# until the build dies. So: sign a throwaway binary, in the same shape as the real thing.
 if ! ssh -o BatchMode=yes "$MAC" "$UNLOCK T=\$(mktemp -d); cp /bin/echo \"\$T/probe\"; codesign -f -s 'Apple Development: Timothy Hudgins' \"\$T/probe\" >/dev/null 2>&1; rc=\$?; rm -rf \"\$T\"; exit \$rc"; then
-  cat >&2 <<'EOF'
-codesign cannot use the signing key from an ssh session, so this build would fail at the
-embed-frameworks phase after all of arm64 has compiled. Two ways forward:
+  cat >&2 <<EOF
+codesign still cannot use the signing key, so this build would fail at the
+embed-frameworks phase after all of arm64 has compiled. Check, in this order:
 
-1. Set KEYCHAIN_PASSWORD and re-run this script, so the unlock happens in the same
-   session as the build:
-
-     KEYCHAIN_PASSWORD='...' bash scripts/ios-device-build.sh
-
-2. Or run the build ON THE MAC, in a session you unlock yourself, so no password goes
-   anywhere near this box. Everything up to the build is already staged there, so it is
-   the xcodebuild + devicectl pair joined with &&.
-
-If neither has been done before, the key's ACL also needs opening ONCE (persistent, so
-only once ever), from a session that can prompt:
-
-  security set-key-partition-list -S apple-tool:,apple:,codesign: -s ~/Library/Keychains/login.keychain-db
+  1. Does $KEYCHAIN exist, and is the identity in it?
+       security find-identity -v -p codesigning $KEYCHAIN
+  2. Is it still first in the search list? codesign uses the FIRST match.
+       security list-keychains
+  3. Has its password stopped being empty? If so, pass KEYCHAIN= or fix the convention
+     the sibling apps' scripts share.
 EOF
   exit 1
 fi
