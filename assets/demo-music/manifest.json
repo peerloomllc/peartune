@@ -1,0 +1,53 @@
+{
+  "album": "LOFI AMBIENT SONGS !",
+  "artist": "Loyalty Freak Music",
+  "year": 2021,
+  "cover": "cover.jpg",
+  "tracks": [
+    {
+      "file": "01 Drowning in your smile.mp3",
+      "title": "Lack of Color - Drowning in your smile",
+      "artist": "Loyalty Freak Music",
+      "album": "LOFI AMBIENT SONGS !",
+      "track": 1,
+      "year": 2021,
+      "durationMs": 205454
+    },
+    {
+      "file": "02 Dancing in the street.mp3",
+      "title": "Lack of Color - Dancing in the street",
+      "artist": "Loyalty Freak Music",
+      "album": "LOFI AMBIENT SONGS !",
+      "track": 2,
+      "year": 2021,
+      "durationMs": 158600
+    },
+    {
+      "file": "03 Aeroplane.mp3",
+      "title": "Lack of Color - Aeroplane",
+      "artist": "Loyalty Freak Music",
+      "album": "LOFI AMBIENT SONGS !",
+      "track": 3,
+      "year": 2021,
+      "durationMs": 134400
+    },
+    {
+      "file": "04 Im glad you are here with me.mp3",
+      "title": "Lack of Color - I'm glad you are here with me",
+      "artist": "Loyalty Freak Music",
+      "album": "LOFI AMBIENT SONGS !",
+      "track": 4,
+      "year": 2021,
+      "durationMs": 126857
+    },
+    {
+      "file": "05 Sugar and coffee.mp3",
+      "title": "Lack of Color - Sugar and coffee",
+      "artist": "Loyalty Freak Music",
+      "album": "LOFI AMBIENT SONGS !",
+      "track": 5,
+      "year": 2021,
+      "durationMs": 106817
+    }
+  ]
+}
