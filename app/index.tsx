@@ -150,6 +150,48 @@ export default function App () {
     )
   }
 
+  // --- deep links -----------------------------------------------------------
+  //
+  // `pear://peartune/pair?v=1&rv=...&host=...`, the link under the pairing QR. The
+  // intentFilter in app.json delivers the intent and the iOS scheme delivers the URL;
+  // what did NOT work was everything after that, because this app is ONE expo-router
+  // route (`app/index.tsx`) and the router had no match for host `peartune` + path
+  // `/pair`. So every pear:// link - warm OR cold-started - landed on expo-router's
+  // "Unmatched Route" screen with the URL printed on it (Tim, 2026-07-26).
+  //
+  // The router is not the right place to fix it: there is no screen to route TO. The
+  // whole app is a WebView, so the URL is DATA for the UI, not navigation. Read it
+  // here, park it, and let the UI take it. `app/+not-found.tsx` covers the other half
+  // by redirecting anything unmatched back to index, so a stray link can no longer
+  // strand the app on a debug screen.
+  const pendingLinkRef = useRef<string | null>(null)
+  // Only PearTune's own pairing links. Another app's pear:// URL (the suite shares the
+  // scheme) must not be shoved into the pairing flow, and the parser the UI uses is
+  // deliberately strict, so filter here rather than hand it a URL it will only reject.
+  const isPairLink = (u: any) => typeof u === 'string' && u.startsWith('pear://peartune/pair')
+  useEffect(() => {
+    let cancelled = false
+    // The COLD START case. getInitialURL resolves the URL the app was launched with;
+    // the UI asks for it on mount, which may be before or after this settles - either
+    // order works, because the UI also re-asks on the link:pending nudge below.
+    // One line per link TAKEN (never per launch), because "did the intent even arrive?" is the
+    // first question any report about this will raise, and it is the one thing not visible from
+    // the UI side. It is also how the three delivery modes were told apart while testing.
+    const take = (url: string, how: string) => {
+      console.warn('[link] pair link via ' + how)
+      pendingLinkRef.current = url
+      toWeb('link:pending', {})
+    }
+    Linking.getInitialURL()
+      .then((u) => { if (!cancelled && isPairLink(u)) take(u as string, 'launch') })
+      .catch(() => {})
+    // The WARM case: a link tapped while the app is already open.
+    const sub = Linking.addEventListener('url', ({ url }) => {
+      if (isPairLink(url)) take(url, 'event')
+    })
+    return () => { cancelled = true; sub.remove() }
+  }, [])
+
   // --- audio ---------------------------------------------------------------
 
   // --- the queue ------------------------------------------------------------
@@ -1212,6 +1254,16 @@ export default function App () {
       if (msg.method === 'shell:share') {
         const res = await Share.share({ message: msg.args?.text ?? '', title: msg.args?.title ?? '' })
         return reply({ result: { ok: res.action !== Share.dismissedAction } })
+      }
+      // The deep link the app was OPENED with, fetched-and-cleared in one call so it can
+      // never be handed out twice. Pull, not push: at a cold start the URL is known long
+      // before the WebView has mounted a listener, and a pushed event would land in the
+      // dark. The UI asks once on boot and again whenever link:pending says a new one
+      // arrived, and both paths go through this same atomic take.
+      if (msg.method === 'shell:pendingLink') {
+        const url = pendingLinkRef.current
+        pendingLinkRef.current = null
+        return reply({ result: { url: url ?? null } })
       }
       if (msg.method === 'shell:openUrl') {
         if (!msg.args?.url) return reply({ error: 'url required' })

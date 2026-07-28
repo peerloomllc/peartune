@@ -114,6 +114,9 @@ export default function App () {
   // Adding ANOTHER library from Settings (multi-host, 2026-07-19). Shows the same pairing
   // flow as onboarding, but over the running app instead of the pairing wall.
   const [addingLibrary, setAddingLibrary] = useState(false)
+  // A pear:// pairing link the app was opened with, waiting for a device name before it can
+  // be used. Only ever set on a device with NO library yet - a paired one pairs immediately.
+  const [pendingLink, setPendingLink] = useState(null)
   const [donate, setDonate] = useState(false)
   const [nudge, setNudge] = useState(false) // the after-two-weeks donation reminder
   const [reqComposer, setReqComposer] = useState(null) // music-request composer: { name } prefill, or null
@@ -338,7 +341,9 @@ export default function App () {
       }),
       on('host:connected', (d) => {
         setState(s => ({ ...s, connected: true, host: { ...s.host, ...d } }))
-        setError(null)
+        // ...unless a pairing screen owns the error (see pairUiRef): a rejected code
+        // connects to the host that rejected it, so this would erase its own explanation.
+        if (!pairUiRef.current) setError(null)
         setFirstConnect(false)
         // init connects in the BACKGROUND now, so this event - not init - is what kicks
         // off the first library load, and refreshes it on every reconnect.
@@ -455,10 +460,43 @@ export default function App () {
         const verb = d?.status === 'added' ? 'added' : 'declined'
         toast(d?.name ? `Your request for ${d.name} was ${verb}` : `A request was ${verb}`)
         loadRequests(true)
-      })
+      }),
+      // A pear:// pairing link was opened while the app was already running. The shell parks
+      // it and nudges; we take it below. See takePendingLink.
+      on('link:pending', () => { takePendingLink() })
     ]
+    // ...and the COLD START, where the link was known before this component existed. Same
+    // atomic take, so whichever of the two arrives first wins and the other finds nothing.
+    takePendingLink()
     return () => offs.forEach(f => f())
   }, [])
+
+  // A pear:// pairing link, opened from a message, a browser or a QR app. The shell holds it
+  // (only the shell can see the intent) and this fetches-and-clears it. It only STASHES:
+  // where the link should go depends on whether this device has a library yet, and at a cold
+  // start that is not known until init() answers. Deciding here would read `state.host` as
+  // null on every launch and push an already-paired phone back into onboarding.
+  async function takePendingLink () {
+    let url = null
+    try { url = (await call('shell:pendingLink'))?.url || null } catch {}
+    if (url) setPendingLink(url)
+  }
+
+  // ...and the decision, once init() has answered so `state.host` means something. Pairing
+  // needs a NAME, and an un-onboarded device has not given one:
+  //   - already paired -> straight into the add-a-library flow, names already known.
+  //   - not paired yet -> hold the link and jump onboarding to the naming card, whose
+  //     Continue button pairs with it instead of sending you to a scanner you do not need.
+  //     Intro and the whose-library explainer are skipped: someone who followed a pairing
+  //     link has already been told what this is, by whoever sent it.
+  useEffect(() => {
+    if (!pendingLink || state.loading) return
+    if (!state.host) { setObPhase('names'); return }
+    setError(null)
+    setPendingLink(null)
+    setAddingLibrary(true)
+    onPaired(pendingLink, pairNames)
+  }, [pendingLink, state.loading, state.host])
 
   // Becoming an owner used to just make a Manage icon quietly appear in the You picker,
   // with no hint it was there or what it did. So the first time this device is confirmed
@@ -483,6 +521,14 @@ export default function App () {
   // What the once-registered listeners above need to see, always current.
   const liveRef = useRef({})
   liveRef.current = { host: state.host, connected: state.connected, reconnecting }
+  // Is a PAIRING screen the thing on screen right now? host:connected clears the last error,
+  // which is right for the ordinary case - a reconnect really does fix most of them - and
+  // wrong here: a refused pairing code opens a connection to that very host, so the
+  // host:connected it triggers wiped the explanation before it could be read, leaving the
+  // pairing card silent about why nothing happened. Found chasing deep links (2026-07-28),
+  // but it was always reachable from the scanner; a link just walks into it every time.
+  const pairUiRef = useRef(false)
+  pairUiRef.current = !state.host || addingLibrary || pairing || scanning
   // The once-registered push handlers (request:new etc.) read owner status through this, since
   // they closed over the first render and `ident` changes later, on connect. (youViewRef, used by
   // the same handlers, is declared up by the youView state.)
@@ -1799,7 +1845,11 @@ export default function App () {
           // Clear any stale error when opening the scanner - a failure from a
           // PREVIOUS attempt must not greet you on the fresh one.
           onScan={() => { setError(null); setScanning(true) }}
-          onPaste={(link) => onPaired(link, pairNames)}
+          onPaste={(link) => { setPendingLink(null); onPaired(link, pairNames) }}
+          // A pear:// link this device was opened with. Turns the naming card's
+          // Continue into "Pair" and pre-fills the paste box, so following a link
+          // never asks you to go and find the link you just followed.
+          pendingLink={pendingLink}
           error={error}
         />
         )
@@ -5800,9 +5850,12 @@ function DonationSheet ({ onClose }) {
 // listener); this component is told which card to draw.
 function Onboarding ({
   phase, setPhase, owner, setOwner,
-  names, setNames, onScan, onPaste, onCancel, error, addHost = false
+  names, setNames, onScan, onPaste, onCancel, error, addHost = false, pendingLink = null
 }) {
-  const [link, setLink] = useState('')
+  // Pre-filled when the app was OPENED with a pear:// pairing link: the box exists so you can
+  // paste a link, and we already have it. Initial value only - once the card is up this is the
+  // person's field to edit or clear.
+  const [link, setLink] = useState(pendingLink || '')
 
   // Your name is REQUIRED at ONBOARDING: on the host it is the human a device is confirmed as
   // (per-person revoke needs a person), so an unnamed device is a worse dashboard for the operator.
@@ -5903,7 +5956,19 @@ function Onboarding ({
             They confirm your name before it means anything.
           </p>
         </div>
-        <button className='primary' onClick={() => { haptic('light'); setPhase('pair') }} disabled={!ready}>Continue</button>
+        {/* Following a pairing link lands HERE, not on the scanner card - the link IS the
+            thing the scanner would have produced, and the only thing still missing is a name.
+            So this button finishes the job rather than sending you off to find it again. */}
+        {pendingLink && (
+          <p className='muted sm'>You opened a pairing link. Name yourself and this phone, then tap Pair.</p>
+        )}
+        <button
+          className='primary'
+          onClick={() => { haptic('light'); if (pendingLink) onPaste(pendingLink); else setPhase('pair') }}
+          disabled={!ready}
+        >
+          {pendingLink ? 'Pair' : 'Continue'}
+        </button>
         <button onClick={() => { haptic('light'); setPhase('whose') }}>Back</button>
       </div>
     )
