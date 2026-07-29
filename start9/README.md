@@ -180,21 +180,41 @@ options, i.e. TCP and TLS. **`bindRange` is the only raw-UDP door in the SDK**, 
 requires `numberOfPorts >= 2` (the docs push single ports at `bindPort`), so a PearTune
 package would request a small range and use the first port.
 
-**Why that plausibly fixes it.** The caveat is that a same-LAN phone cannot reach the
-box: the container's UDP is NAT'd behind the bridge, the DHT advertises the router's
-external mapping, and home routers rarely hairpin. A `bindRange` forward gives a
-**stable, known UDP port on the host itself**, which is exactly what a phone on the same
-LAN can dial directly.
+**3. But `bindRange` ALONE WILL NOT FIX IT** - established by reading hyperdht on
+2026-07-29, BEFORE building anything. This corrects the optimistic reading written
+earlier the same day; do not re-derive that one either.
 
-**Why it is not free.** The host would have to bind a FIXED UDP port for the DHT and
-announce the box's LAN address. Today `host/server.js` constructs `new HyperDHT()` with
-no keypair and no fixed port, so the port is ephemeral per process and there is nothing
-stable to forward. So the work is: pin the DHT port, declare it via `bindRange`, and then
-prove a same-LAN phone connects.
+A forwarded UDP port is necessary but not sufficient, because the phone never learns an
+address to send it to. The chain, all of it in `node_modules/hyperdht`:
 
-**NOT YET PROVEN.** Everything above is the SDK contract plus the box's actual container
-config. Whether it genuinely fixes same-WiFi needs a built 0.4 package and a phone, and
-it should be proven on a throwaway package before the registry work is done.
+- A server announces its LAN addresses from `Holepuncher.localAddresses(socket)`
+  (`lib/server.js:214`), which enumerates **the socket's own interfaces**
+  (`lib/holepuncher.js:337`). Inside a StartOS container that set is exactly `10.0.3.x`.
+- The phone picks a usable one with `matchAddress` (`lib/holepuncher.js:356`), which
+  compares dotted octets and requires **the first octet to match**. The phone is
+  `192.168.50.x`, and `10` never matches `192`, so every announced address is discarded.
+- With no LAN path the phone falls back to punching the router's external mapping - the
+  hairpin that home routers do not do. That is the observed failure, exactly.
+- **Nothing lets you override what is announced.** `shareLocalAddress` is a boolean
+  (`lib/server.js:41`, `opts.shareLocalAddress !== false`) - it can turn the local path
+  off, never point it elsewhere. No local-address option exists in `hyperdht/index.js`.
+
+So the container would announce `10.0.3.x` however the port is forwarded, and the phone
+would ignore it. **Building the package first would have proven the diagnosis and nothing
+else.**
+
+One useful thing measured on the way: the DHT port IS cleanly pinnable.
+`new HyperDHT({ port: 49999 })` binds exactly 49999, whereas `new HyperDHT()` binds a
+random port per process (measured 36600, 42742, 59270 over three runs - the
+`opts.port || 49737` default at `hyperdht/index.js:27` is only a preference and does not
+survive). So half the ingredient list is cheap; the announcement is the hard half.
+
+**What a real fix takes**, one of:
+- **Patch hyperdht** to accept an announced-local-address override, so the container can
+  advertise `192.168.50.253:<pinned>` and let the `bindRange` nft forward deliver it. That
+  is a patch on a core dependency carried forever - the same class of cost as the
+  expo-audio patch, except this one is load-bearing for connectivity.
+- **Or host networking**, which 0.4 does not have.
 
 ## Open items
 
