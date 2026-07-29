@@ -100,7 +100,11 @@ echo "build ok"
 # devicectl, not ideviceinstaller: libimobiledevice is not installed on this Mac and
 # devicectl ships with Xcode. The device has to be paired and unlocked.
 say "installing to the iPhone"
-UDID=$(ssh -o BatchMode=yes "$MAC" "xcrun devicectl list devices 2>/dev/null | awk '/iPhone/ {print \$(NF-3); exit}'")
+# Match the UUID by SHAPE, not by column position. The table is space-aligned with no
+# delimiter, so a column index depends on how many words the device NAME and MODEL happen
+# to be - "Timothy's iPhone" / "iPhone SE (iPhone12,8)" made $(NF-3) resolve to "(paired)",
+# which is non-empty and therefore sails past the guard below and fails at install.
+UDID=$(ssh -o BatchMode=yes "$MAC" "xcrun devicectl list devices 2>/dev/null | grep -i iPhone | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' | head -1")
 [ -n "$UDID" ] || { echo "no iPhone found by devicectl - is it plugged in, unlocked and trusted?" >&2; exit 1; }
 ssh -o BatchMode=yes "$MAC" "$REMOTE_ENV xcrun devicectl device install app --device $UDID ~/$DEST/ios/build/dd/Build/Products/$CONFIG-iphoneos/PearTune.app"
 
