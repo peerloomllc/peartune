@@ -150,16 +150,55 @@ a link), which documents each of the following as something learned by driving a
 - Needs the 0.4-era `start-cli` (1.x); the 0.3.5 SDK's `start-cli` has no `s9pk`
   subcommand at all.
 
-**There is a second reason to want 0.4 here, beyond distribution.** The same-WiFi caveat
-above is a genuine blocker for a music player - home listening on the same network as the
-box is a core case, not an edge one - and the fix is host networking, which the 0.3.5.x
-manifest does not expose. Whether 0.4 exposes it is the first thing to establish, because
-it decides whether PearTune on Start9 is actually good or merely installable.
+## Does 0.4 fix the same-WiFi caveat? Investigated 2026-07-29
+
+The honest answer is **not by itself, but it finally provides the primitive that could**.
+The earlier framing in this file - "host networking would fix it, check whether 0.4
+exposes it" - was **wrong on both halves**, so do not re-derive it.
+
+Measured against `returned-feline.local`, which is now on **StartOS 0.4.0**
+(`/etc/os-release` VERSION="0.4.0", `startd` running, `start-cli 1.1.0`):
+
+**1. 0.4 does NOT expose host networking, and did not change the architecture.** Every
+package runs in an unprivileged **LXC** container on `lxcbr0`, `10.0.3.0/24`, with a
+startd-generated config of `lxc.net.0.type = veth` / `lxc.net.0.link = lxcbr0`. Checked
+inside all eight running containers: each has **only `eth0` on 10.0.3.x and no LAN
+interface**. The host's LAN is `wlp1s0` at `192.168.50.253`; no container can see it. So
+a service still cannot observe or announce a LAN address - the same trap as 0.3.5's
+podman bridge, in a new container runtime. There is no `hostNetwork`, `networkMode` or
+`macvlan` concept anywhere in `@start9labs/start-sdk` (2.0.9).
+
+**2. But 0.4 adds a raw UDP port forward, which 0.3.5 had no equivalent of.**
+`MultiHost.bindPortRange` / `Effects.bindRange` binds *"a contiguous range of **UDP+TCP**
+ports"*, documented for **coturn, RTP and SIP** - real NAT-traversal workloads - and
+`externalStartPort` may differ from `internalStartPort`, the forward mapping external
+onto internal by offset.
+
+That distinction matters, because the single-port API is no use to us: `bindPort` is
+protocol-typed over `http`/`https`/`ws`/`wss`/`ssh`/`dns` with `addSsl` / `secure`
+options, i.e. TCP and TLS. **`bindRange` is the only raw-UDP door in the SDK**, and it
+requires `numberOfPorts >= 2` (the docs push single ports at `bindPort`), so a PearTune
+package would request a small range and use the first port.
+
+**Why that plausibly fixes it.** The caveat is that a same-LAN phone cannot reach the
+box: the container's UDP is NAT'd behind the bridge, the DHT advertises the router's
+external mapping, and home routers rarely hairpin. A `bindRange` forward gives a
+**stable, known UDP port on the host itself**, which is exactly what a phone on the same
+LAN can dial directly.
+
+**Why it is not free.** The host would have to bind a FIXED UDP port for the DHT and
+announce the box's LAN address. Today `host/server.js` constructs `new HyperDHT()` with
+no keypair and no fixed port, so the port is ephemeral per process and there is nothing
+stable to forward. So the work is: pin the DHT port, declare it via `bindRange`, and then
+prove a same-LAN phone connects.
+
+**NOT YET PROVEN.** Everything above is the SDK contract plus the box's actual container
+config. Whether it genuinely fixes same-WiFi needs a built 0.4 package and a phone, and
+it should be proven on a throwaway package before the registry work is done.
 
 ## Open items
 
+- **Prove the `bindRange` theory** with a minimal 0.4 package that pins the DHT port.
+  Do this FIRST - it decides whether a Start9 release is good or merely installable.
 - **Retarget to 0.4 + publish to the community registry** (above). Engineering, not a
   docs change.
-- **Confirm whether 0.4 fixes the same-WiFi caveat.** Establish this before doing the
-  packaging work, since it is the thing that decides whether a Start9 release is worth
-  shipping.
