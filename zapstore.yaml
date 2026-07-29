@@ -1,0 +1,68 @@
+repository: https://github.com/peerloomllc/peartune
+
+name: PearTune
+summary: Your music collection, playable anywhere, without exposing your server to the internet
+description: |
+  PearTune plays the music library on a machine you own - an Umbrel, a NAS, an
+  old desktop, a laptop - from anywhere, over a direct encrypted connection
+  between your phone and that machine.
+
+  No port forwarding, no VPN, no dynamic DNS, no account, and no copy of your
+  library in anyone's cloud. The music never leaves your hardware: it streams
+  through the live connection while it plays.
+
+  It reads the library you already have. Point it at Navidrome, Jellyfin, Emby
+  or anything else that speaks the Subsonic API and it uses your tags, your
+  artwork and the server's transcoding. Or point it at a plain folder of files
+  and PearTune reads the tags itself - artist, album, track number, year and
+  embedded cover art - so a folder is a real library, not a list of filenames.
+
+  Features:
+  - Browse by artist, album or track, with artwork
+  - Gapless playback, shuffle and repeat, background audio
+  - Search across the whole library
+  - Favourites and resume points that follow you between your own devices
+  - Offline caching: pin an album for a flight, and recent listening is kept
+  - Pair a phone by scanning a QR code - there is no password to type
+
+  The library does not have to be yours. Someone can let a friend or a family
+  member in, each as their own person with their own devices, their own
+  favourites and their own resume points, and no login to pass around. The
+  owner sees every device on their dashboard and can revoke one, or everything
+  one person holds, in a second - mid-song, not "on next login". Nobody who is
+  let in ever receives a copy of a file.
+
+  Two things worth stating plainly. First, PearTune needs that machine running
+  the PearTune host - it is the source of the music, so this is not a player for
+  files on your phone. Second, some networks stop a phone and a host connecting
+  directly. When that happens PearTune can fall back to a relay PeerLoom runs,
+  which forwards encrypted data it cannot read and keeps no copy of it. Your
+  phone tries a direct connection first, and one switch in Settings turns the
+  relay off entirely.
+
+tags:
+  - music
+  - audio
+  - selfhosted
+  - privacy
+  - p2p
+  - nostr
+
+license: MIT
+website: https://peerloomllc.com/peartune/
+
+# NO images: block yet, deliberately.
+#
+# Store screenshots come from scripts/android-screenshots.sh, which drives the app
+# through numbered "scenes" with fixture data. PearTune has the capture harness but
+# not the scene support in the app yet (see TODO.md), so every frame it produces
+# today is the same cold-start screen. A listing with six identical screenshots is
+# worse than one with none, and pointing this file at paths that do not exist would
+# fail the publish outright.
+#
+# Once the scenes land, add the framed PNGs here, e.g.:
+#   images:
+#     - ./metadata/android/screenshots/Pixel_9_Framed/dark/scene-1.png
+
+metadata_sources:
+  - github
