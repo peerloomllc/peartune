@@ -9,6 +9,10 @@ anywhere with no port forwarding. It's plain Node, so it runs on macOS and Windo
 today. This page covers the two ways to do it. A polished menubar/tray app is a
 planned follow-on (see the end); until then this is the technical path.
 
+> **New to PearTune?** [`getting-started.md`](getting-started.md) walks the whole thing
+> end to end with screenshots - install, point it at your music, pair a phone, revoke a
+> device. This page is just the install half.
+
 ## Which path — and the one caveat that decides it
 
 - **Native (recommended).** Run the host directly with Node on your Mac/Windows.

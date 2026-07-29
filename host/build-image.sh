@@ -27,11 +27,26 @@ echo "$PINNED"
 
 # Pin it straight into the committed redeploy script (the on-box copy is scp'd from this).
 sed -i "s|^IMG=.*|IMG='${PINNED}'|" host/redeploy-umbrel.sh
+
+# ...and into every OTHER place that names the image. This used to pin redeploy-umbrel.sh
+# alone, so the compose files, the Start9 Dockerfile and the install docs sat at 0.2.6
+# while the Umbrel ran 0.2.36 - thirty versions of drift that nothing detected, because
+# nothing was looking. Anyone following the docs got a year-old host.
+REF='ghcr.io/peerloomllc/peartune-host'
+for f in host/deploy/docker-compose.yml umbrel/docker-compose.yml start9/Dockerfile; do
+  sed -i -E "s|${REF}:[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]+|${REF}:${VER}@${DIGEST}|g" "$f"
+done
+# The docs and the Start9 README name the TAG without a digest (a reader types it).
+for f in docs/host-linux.md start9/README.md; do
+  sed -i -E "s|${REF}:[0-9]+\.[0-9]+\.[0-9]+|${REF}:${VER}|g" "$f"
+done
+
 echo
-echo "== host/redeploy-umbrel.sh pinned to $VER =="
-grep -n '^IMG=' host/redeploy-umbrel.sh
+echo "== pinned to $VER =="
+grep -rn "${REF}:" host/redeploy-umbrel.sh host/deploy/docker-compose.yml umbrel/docker-compose.yml \
+  start9/Dockerfile docs/host-linux.md start9/README.md
 echo
 echo "Next:"
-echo "  git add host/redeploy-umbrel.sh && git commit -m 'chore(host): pin image $VER'"
+echo "  git add -u && git commit -m 'chore(host): pin image $VER'"
 echo "  scp host/redeploy-umbrel.sh umbrel@umbrel.local:~/peartune-redeploy-${VER//./}.sh   # then: sudo bash it on the box"
 echo "  bash host/redeploy-mac.sh                                                            # sync + restart the Mac node host"

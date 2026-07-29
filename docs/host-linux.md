@@ -9,6 +9,10 @@ and serves your library over HyperDHT. Your phone reaches it with no port forwar
 VPN, no account. This page covers three ways to run it on a plain Linux box, easiest first.
 
 > On **macOS or Windows**? See [`host-macos-windows.md`](host-macos-windows.md).
+>
+> **New to PearTune?** [`getting-started.md`](getting-started.md) walks the whole thing
+> end to end with screenshots - install, point it at your music, pair a phone, revoke a
+> device. This page is just the install half.
 
 ## The one thing that is not optional: outbound UDP
 
@@ -65,7 +69,7 @@ docker run -d --name peartune-host \
   -e PEARTUNE_NAME="My Library" \
   -v "$PWD/data:/data" \
   -v /srv/music:/music:ro \
-  ghcr.io/peerloomllc/peartune-host:0.2.6
+  ghcr.io/peerloomllc/peartune-host:0.2.36
 docker logs peartune-host   # generated password
 ```
 
