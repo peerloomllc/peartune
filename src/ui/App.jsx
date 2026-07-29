@@ -501,7 +501,21 @@ export default function App () {
     setError(null)
     setPendingLink(null)
     setAddingLibrary(true)
-    onPaired(pendingLink, pairNames)
+    // NAMES RESOLVED HERE, not read from `pairNames` alone. That state is seeded from
+    // state.settings by an effect above, and BOTH effects run off the same init() commit - so
+    // this one sees the pre-seed value and pairs with an empty claim. The device then lands on
+    // the operator's dashboard unassigned, with no person attached, even though the name has
+    // been sitting in settings.json since onboarding (measured 2026-07-28: paired from demo
+    // mode by link, belongsTo came back null while settings held "Alex").
+    //
+    // That is exactly what moving the naming card BEFORE the demo choice was meant to prevent,
+    // so the link path has to honour it too. pairNames wins when it has something (the person
+    // may have just typed it on the naming card and not saved yet); the stored identity is the
+    // fallback that makes a link pair non-anonymous.
+    onPaired(pendingLink, {
+      deviceName: pairNames.deviceName || ident?.deviceName || state.settings?.deviceName || '',
+      userName: pairNames.userName || ident?.userName || state.settings?.userName || ''
+    })
   }, [pendingLink, state.loading, state.host])
 
   // Becoming an owner used to just make a Manage icon quietly appear in the You picker,
