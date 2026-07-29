@@ -26,6 +26,11 @@ function parseArgs (argv) {
     music: process.env.PEARTUNE_MUSIC || '/music',
     data: process.env.PEARTUNE_DATA || '/data',
     name: process.env.PEARTUNE_NAME || 'My Library',
+    // Pin the DHT's UDP port. Unset = today's behaviour (a random port per process).
+    // Only needed where something outside the process forwards to it - a router
+    // port-forward, or StartOS 0.4's bindPortRange, which cannot forward a moving
+    // target. See proposals/2026-07-29-start9-bindportrange.md.
+    dhtPort: process.env.PEARTUNE_DHT_PORT || null,
     host: process.env.PEARTUNE_HTTP_HOST || '127.0.0.1',
     // The lock on the control plane. Umbrel passes ${APP_PASSWORD}; unset means no
     // gate, which is why the server refuses to bind anything but loopback without
@@ -131,6 +136,7 @@ async function main () {
     musicDir: path.resolve(args.music),
     libraryName: args.name,
     subsonic,
+    dhtPort: args.dhtPort,
     log
   })
 

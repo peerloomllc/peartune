@@ -4,3 +4,10 @@ docker-images/
 scripts/embassy.js
 *.s9pk.sha256
 demo-music/
+
+# StartOS packaging workspace - holds a SIGNING KEY, never commit it
+.startos/
+probe-04/node_modules/
+probe-04/stage/
+probe-04/javascript/
+probe-04/*.s9pk
