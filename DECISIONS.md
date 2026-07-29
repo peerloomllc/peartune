@@ -2,6 +2,69 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-28 - Demo mode: a bundled library, built as a third browse branch
+Tier: T2 (app-only). Proposal `proposals/2026-07-28-app-review-demo.md`. Branch feat/demo-mode.
+
+WHY AT ALL. PearTune has no account and no cloud. An App Store reviewer installs it, opens it, and is
+asked to scan a pairing code from a dashboard on a machine they do not own. From where they sit the
+app does nothing, which is Guideline 2.1 and a fair reading. The same wall meets anyone who installs
+the app before setting a server up, which is the honest reason it stays in the product afterwards
+rather than being stripped before release.
+
+WHAT WAS REJECTED, and stays rejected: a pairing link in the review notes. `PAIR_TTL_MS` is five
+minutes and `host/pair.js` closes the window on the first successful pair, so a link is short-lived
+AND single-use - useless to an unattended reviewer and broken for the second of two. The fix for THAT
+would be a standing invite, which is the exact negation of what `host/pair.js` calls the security
+boundary for a first pair, and it would ship to every host including the ones strangers run for their
+friends. Not worth making to solve a problem in Apple's review queue.
+
+THE SHAPE. Demo mode is a MODE FLAG consulted by browse, a THIRD branch beside `mergedMode()` in
+tracks/albums/album/artists/artist/genres/genre/search and the -Tracks variants. The alternative -
+a fake in-process "client" - needed no browse changes at all, but `client/index.js` exposes ~20
+methods (favourites, resume, counts, playlists, identity, avatar, leave) and most are meaningless
+with no host. Twenty stubs is a wider surface than a handful of branches, and every one is a thing
+that can lie.
+
+PLAYBACK NEEDED NO NEW SERVING CODE. `worklet/shim.js` already answers a request for a track it finds
+in the audio cache straight off disk - ranges, seeking, backpressure, offline. So a demo track is
+simply a cache entry that was never streamed, installed PINNED so the LRU cannot evict the one
+library the app can always play. Two consequences fell out of that:
+  * `pinned` had to become a `createSink` option rather than a `setPinned` call after `commit()`.
+    Commit runs the eviction pass, so a small cache cap deleted the file it had just written - caught
+    by the unit test, not by the phone.
+  * The shim gained ONE new predicate, `hostless(id)`. A demo id has no host, so no lease of its
+    could ever be fresh (the 14-day gate would black the bundled music out), and no host could ever
+    render its cover at another size (the art store's one-size rule would leave the grid on
+    placeholders). Both gates take the same exemption, so they take the same predicate.
+
+THE ONE THING HARDWARE TAUGHT. The cover shipped as `cover.jpg` and never arrived: React Native's
+Android asset packager routes recognised image types into `res/drawable-*`, where expo-asset can only
+hand back a RESOURCE NAME - `ENOENT: ... assets_demomusic_cover`. Anything it does not recognise goes
+to `res/raw` and copies out to a real file, which is why the five `.mp3`s worked first time. The file
+is now `cover.bin` (unmodified JPEG bytes, non-image extension) with `bin` added to metro's
+assetExts. Recorded in `assets/demo-music/LICENSE.md` and `metro.config.js` so it is not "tidied" back.
+
+NAMING MOVED BEFORE THE DEMO CHOICE (Tim, 2026-07-28, on first use). The first cut put "Try it
+without a server" on the INTRO card, so a demo user reached a working library having never been
+asked who they were - and Connect from the demo banner then had to rewind them through the naming
+cards to avoid pairing them nameless. The order is now intro -> name -> whose library -> pair, and
+the demo is the THIRD answer on the whose-library card ("I don't have one yet") rather than an
+escape hatch on the intro: "where is your music?" has three honest answers and "nowhere yet" is one
+of them. Consequences: Connect from demo mode is now a single card (the code), and startDemo
+persists the name to settings.json - on the pairing path it would have ridden into pair(), but the
+demo path has no pair() to carry it, so without that write it lived only in React state and a
+relaunch lost it.
+
+AND THE BACK GESTURE. Backing out of the add-a-library card closed the app: the 'back' listener
+only walked cards when `!state.host`, and adding a library over a RUNNING app never matched. Found
+via demo mode's Connect button, but it was equally true of Settings > Libraries > Add on a paired
+phone, and had been since multi-host shipped.
+
+NOT TOUCHED, deliberately: the grant store, the identity keypair, the pairing window, the wire
+protocol and every host. The demo library is not in `hosts.json` and never will be - it is supplied
+by `listHostsData()` when the flag is on - so switchHost, removeHost and every connection path stay
+blind to it. Pairing a real library retires the demo and gives the ~18 MB back.
+
 ## 2026-07-28 - Em dashes: field SEPARATORS are exempt from the suite-wide ban
 Tier: T0 (copy/style, no behaviour). Recorded here because it is a standing exception to a rule in
 `/home/tim/peerloomllc/CLAUDE.md`, and an exception nobody wrote down gets "fixed" by the next sweep.

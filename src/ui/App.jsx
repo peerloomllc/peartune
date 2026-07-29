@@ -114,6 +114,10 @@ export default function App () {
   // Adding ANOTHER library from Settings (multi-host, 2026-07-19). Shows the same pairing
   // flow as onboarding, but over the running app instead of the pairing wall.
   const [addingLibrary, setAddingLibrary] = useState(false)
+  // "Try it without a server" is in flight. The first tap copies ~18 MB of bundled audio out of
+  // the app package into the cache, which takes a beat on a slow phone - long enough that a
+  // button with no feedback reads as broken (proposal 2026-07-28-app-review-demo).
+  const [demoStarting, setDemoStarting] = useState(false)
   // A pear:// pairing link the app was opened with, waiting for a device name before it can
   // be used. Only ever set on a device with NO library yet - a paired one pairs immediately.
   const [pendingLink, setPendingLink] = useState(null)
@@ -559,6 +563,9 @@ export default function App () {
     if (s.host && !s.connected && !s.reconnecting) reconnect()
   }, [tab])
 
+  // The names typed on the onboarding card, readable from a callback that closed over an older
+  // render (startDemo runs across an await, and the second half must not save a stale name).
+  const pairNamesRef = useRef(pairNames); pairNamesRef.current = pairNames
   const mergedRef = useRef(null); mergedRef.current = merged
   const filterRef = useRef('_all'); filterRef.current = filter
   const browseRef = useRef('albums'); browseRef.current = browse
@@ -782,14 +789,19 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, nudge, ownerTour, reqComposer, ownerPair, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
+  navRef.current = { scanning, donate, nudge, ownerTour, reqComposer, ownerPair, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner, addingLibrary }
 
   const canBack = !!(
     scanning || donate || nudge || ownerTour || reqComposer || ownerPair || confirming || menu || viewing || expanded ||
     stack.length || tab !== 'library' ||
     // On the onboarding wall there is no stack, but there are cards to walk back
     // through. At the intro there is nothing behind us, so the OS closes the app.
-    (!state.host && obPhase !== 'intro')
+    (!state.host && obPhase !== 'intro') ||
+    // Adding a library over the running app is a CARD, not a wall: there is always an app
+    // behind it to go back to. It was missing here, so back fell through every layer and
+    // Android closed the app instead - reported from demo mode (the Connect button), but it
+    // was equally true of Settings > Libraries > Add on a paired phone.
+    addingLibrary
   )
   useEffect(() => { call('shell:navState', { canBack }).catch(() => {}) }, [canBack])
 
@@ -811,13 +823,16 @@ export default function App () {
     if (n.confirming) return setConfirming(null)
     if (n.scanning) return setScanning(false)
     if (n.expanded) return setExpanded(false)
+    // Adding a library over the running app: one card, and behind it the app. Cancel back
+    // into it rather than letting the press fall through to the OS.
+    if (n.addingLibrary) return cancelAddLibrary()
     // The onboarding wall walks its cards back. On "whose library" an answer is
     // undone first, so back returns you to the two choices rather than skipping
     // the whole card.
     if (!n.host) {
-      if (n.obPhase === 'pair') return setObPhase('names')
-      if (n.obPhase === 'names') return setObPhase('whose')
-      if (n.obPhase === 'whose') return n.obOwner ? setObOwner(null) : setObPhase('intro')
+      if (n.obPhase === 'pair') return setObPhase('whose')
+      if (n.obPhase === 'whose') return n.obOwner ? setObOwner(null) : setObPhase('names')
+      if (n.obPhase === 'names') return setObPhase('intro')
       return
     }
     if (n.stack.length) return setStack(s => s.slice(0, -1))
@@ -1453,7 +1468,10 @@ export default function App () {
       // (active). pair's own return has no list, so ask for it.
       let hosts = null
       try { hosts = (await call('listHosts')).hosts } catch {}
-      setState(s => ({ ...s, host, connected: true, hosts: hosts || s.hosts }))
+      // demo:false - a real library exists now, so the worklet has already retired the bundled
+      // one (see the retireDemo call in pair()). Leaving the flag set here would keep the "Demo
+      // music" banner over somebody's actual collection.
+      setState(s => ({ ...s, host, connected: true, hosts: hosts || s.hosts, demo: false }))
       // Adding a second library while one was active: clear the previous library's browse so
       // the new active one loads fresh (a no-op on a first pair).
       setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery('')
@@ -1509,16 +1527,96 @@ export default function App () {
 
   // Open the pairing flow to ADD another library, prefilling the name fields from what this
   // device already goes by so you never re-type your name to add a server.
+  // "Try it without a server" (proposal 2026-07-28-app-review-demo). Turns on the bundled demo
+  // library: five CC0 tracks that play with no host, no pairing and no network at all.
+  //
+  // The shell does the resolving (only it can reach the app's own assets) and the worklet does
+  // the installing; from here it looks like a library appearing. Everything after the await is
+  // the same wake-up the app does on a real connect, minus the parts that need a server.
+  async function startDemo () {
+    if (demoStarting) return
+    haptic('light')
+    setError(null)
+    setDemoStarting(true)
+    try {
+      // PERSIST THE NAME FIRST. It was typed on the card before this one and, on the pairing
+      // path, would ride straight into pair(). The demo path has no pair() to carry it, so
+      // without this it lives only in React state - and Connect (or a relaunch) would find a
+      // device that has been using the app for an hour and still cannot say who it belongs to.
+      const n = pairNamesRef.current
+      if (n.userName.trim() || n.deviceName.trim()) {
+        await call('setSettings', { userName: n.userName.trim(), deviceName: n.deviceName.trim() }).catch(() => {})
+      }
+      const r = await call('shell:enableDemo')
+      let hosts = null
+      try { hosts = (await call('listHosts')).hosts } catch {}
+      setState(s => ({
+        ...s,
+        demo: true,
+        host: r.host,
+        hosts: hosts || [r.host],
+        connected: true,
+        shimPort: r.shimPort,
+        artBase: r.artBase
+      }))
+      setTab('library')
+      loadAlbums(0)
+      loadSource()
+      loadFavs()
+      haptic('success')
+    } catch (e) {
+      setError(e.message)
+      haptic('warn')
+    } finally {
+      setDemoStarting(false)
+    }
+  }
+
+  // Leave demo mode by hand (Settings). Gives the ~18 MB back and puts the app on the pairing
+  // wall, which is where a device with no library belongs. Pairing a real server does this by
+  // itself - this is for someone who tried the demo, decided against it, and wants the space.
+  async function leaveDemo () {
+    haptic('light')
+    try {
+      // Stop FIRST. The files are about to be deleted out from under the player, and a player
+      // left pointing at a loopback URL whose bytes have gone just stalls.
+      await call('stop').catch(() => {})
+      await call('disableDemo')
+      setState(s => ({ ...s, demo: false, host: null, hosts: [], connected: false }))
+      setObPhase('intro')
+      setObOwner(null)
+      setStack([]); setAlbums([]); setArtists(null); setAlbumsLoaded(false); setResults(null); setQuery('')
+      setTab('library')
+      toast('Demo music removed')
+    } catch (e) {
+      setError(e.message)
+      haptic('warn')
+    }
+  }
+
   function openAddLibrary () {
     haptic('light')
     // `ident` is the live identity (what Settings shows and what the last Save wrote); the
     // settings mirror is the fallback for the offline case where ident never loaded. Reading
     // the mirror FIRST is what let a stale copy ride through a pair and clobber the real name.
-    setPairNames({
-      deviceName: ident?.deviceName || state.settings?.deviceName || '',
-      userName: ident?.userName || state.settings?.userName || ''
-    })
+    //
+    // ...and `p` last, because a DEMO user has neither: they named themselves on the onboarding
+    // card and no host has ever confirmed it, so `ident` is null and the settings mirror is only
+    // as good as the write that saved it. Falling back to what is already in hand means Connect
+    // from demo mode can never blank a name the person typed two cards ago.
+    setPairNames(p => ({
+      deviceName: ident?.deviceName || state.settings?.deviceName || p.deviceName || '',
+      userName: ident?.userName || state.settings?.userName || p.userName || ''
+    }))
     setError(null); setScanning(false); setAddingLibrary(true)
+  }
+
+  // Leave the add-a-library card without pairing, back into the running app. Android back
+  // calls this too - see the 'back' listener, where its absence is what closed the app.
+  function cancelAddLibrary () {
+    setError(null)
+    setScanning(false)
+    setAddingLibrary(false)
   }
 
   async function switchLibrary (hostKey) {
@@ -1813,9 +1911,15 @@ export default function App () {
         )
       : (
         <Onboarding
+          // The last card only: this device is already named and already claims a user, so
+          // there is nothing left to introduce or ask. That now holds for DEMO MODE too - the
+          // naming card comes before the demo choice, so a demo user reached the library having
+          // already given a name (Tim, 2026-07-28). Hence addHost unconditionally: it is what
+          // says "do not re-ask", and gating Scan QR on a name we already have would disable the
+          // button with nothing on screen explaining why.
           addHost
-          // Adding a library is the last card only: this device is already named and
-          // already claims a user, so there is nothing to introduce or ask.
+          // ...but a demo user's server is their FIRST, not an added one, so the copy differs.
+          firstServer={!!state.demo}
           phase='pair'
           setPhase={() => {}}
           owner={null}
@@ -1824,7 +1928,7 @@ export default function App () {
           setNames={setPairNames}
           onScan={() => { setError(null); setScanning(true) }}
           onPaste={(link) => onPaired(link, pairNames)}
-          onCancel={() => { setError(null); setScanning(false); setAddingLibrary(false) }}
+          onCancel={cancelAddLibrary}
           error={error}
         />
         )
@@ -1854,6 +1958,9 @@ export default function App () {
           // PREVIOUS attempt must not greet you on the fresh one.
           onScan={() => { setError(null); setScanning(true) }}
           onPaste={(link) => { setPendingLink(null); onPaired(link, pairNames) }}
+          // The way out of the pairing wall for someone with no server yet.
+          onDemo={startDemo}
+          demoStarting={demoStarting}
           // A pear:// link this device was opened with. Turns the naming card's
           // Continue into "Pair" and pre-fills the paste box, so following a link
           // never asks you to go and find the link you just followed.
@@ -1875,7 +1982,11 @@ export default function App () {
         onPlayAll={playAll} onQueue={enqueue} onViewArt={viewArt}
         favs={favs} onFav={favSupported ? onFav : null}
         pinned={pinned.has(top.id)} pinning={pinning[top.id]}
-        onPin={() => pinAlbum(top.id)} onUnpin={() => unpinAlbum(top.id)}
+        // No Download in demo mode (a null onPin hides the button). Downloading means "pull
+        // these bytes off the server and keep them", and the demo album is already on the
+        // phone with no server behind it - the control would offer to do something that is
+        // both impossible and already done.
+        onPin={state.demo ? null : () => pinAlbum(top.id)} onUnpin={() => unpinAlbum(top.id)}
       />
     )
   } else if (top?.type === 'download') {
@@ -1974,6 +2085,7 @@ export default function App () {
         ident={ident} onRefreshIdentity={loadIdentity} onSaveIdentity={saveIdentity} onSaveAvatar={saveAvatar} onQuality={changeQuality}
         skin={skin} onSkin={setSkinValue}
         onSwitchHost={switchLibrary} onRemoveHost={removeLibrary} onAddLibrary={openAddLibrary}
+        onDisableDemo={leaveDemo}
         onSetAlias={saveLibraryAlias}
       />
     )
@@ -2864,6 +2976,12 @@ function Library ({
           App. Calling it here compiled and rendered fine, and did nothing on tap. */}
       <Problem error={error} onDismiss={onDismissError} />
 
+      {/* DEMO MODE says so, every time, on the main screen. The proposal is explicit that the
+          demo library "must never look like a paired library" - so this is not dismissable and
+          not a one-off toast: it is the standing answer to "whose music is this?", and it carries
+          the one action that matters next. */}
+      {state.demo && !searching && <DemoBanner onAddLibrary={onAddLibrary} />}
+
       {/* Session handoff: another device is the active player. "Play here" adopts its queue.
           Shown on the home view when this device is NOT actively playing - a PAUSED local queue
           (e.g. a launch-restore) should still offer to switch, so gate on `playing`, not `now`. */}
@@ -3455,6 +3573,29 @@ function ContinueCard ({ cont, onPlay }) {
         </div>
       </div>
       <div className='contplay'><Play size={20} weight='fill' /></div>
+    </div>
+  )
+}
+
+// The standing "this is not your music" notice for demo mode (proposal 2026-07-28-app-review-demo).
+//
+// Deliberately not dismissable. The demo library is a real, browsable, playable library with a
+// real album and real artwork, and that is exactly why it needs saying out loud: someone who
+// forgot they tapped "Try it without a server" would otherwise have no way to tell this from a
+// paired one. It also carries the next step, because "how do I get MY music in here" is the only
+// question this screen leaves.
+function DemoBanner ({ onAddLibrary }) {
+  return (
+    <div className='demobanner'>
+      <div className='demo-ic'><MusicNotes size={18} weight='bold' /></div>
+      <div className='meta'>
+        <div className='demo-h'>Demo music</div>
+        <p className='muted sm'>
+          A few sample tracks that come with the app. Connect a PearTune server to play your own
+          music - or a friend’s.
+        </p>
+      </div>
+      <button className='primary sm' onClick={onAddLibrary}>Connect</button>
     </div>
   )
 }
@@ -5206,7 +5347,7 @@ function OwnerPairSheet ({ link, toast, onClose }) {
   )
 }
 
-function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias }) {
+function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias, onDisableDemo }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [dev, setDev] = useState(null)
   const [usr, setUsr] = useState(null)
@@ -5357,7 +5498,32 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
       )}
 
       <div className='settings-acc'>
-        <Section id='library' title={libsOf(state).length > 1 ? 'Libraries' : 'Library'} Icon={MusicNotesSimple} open={open === 'library'} onToggle={toggle}>
+        <Section id='library' title={state.demo ? 'Library' : (libsOf(state).length > 1 ? 'Libraries' : 'Library')} Icon={MusicNotesSimple} open={open === 'library'} onToggle={toggle}>
+          {/* DEMO MODE gets its own section body rather than a row in the normal list. The
+              generic row offers Rename and Remove, and neither means anything for a library
+              with no server behind it: there is no operator to disagree with the name, and
+              "remove" would try to send a goodbye to a host that does not exist. What a demo
+              user actually wants is one of two things - connect a real server, or take the
+              sample music back off the phone. */}
+          {state.demo
+            ? (
+              <>
+                <div className='row'>
+                  <div style={{ minWidth: 0 }}>
+                    <div className='label'>Demo music</div>
+                    <div className='desc'>
+                      Sample tracks bundled with the app. They play with no server and no network,
+                      and nothing about them is shared anywhere.
+                    </div>
+                  </div>
+                </div>
+                <div className='btnrow'>
+                  <button className='primary' onClick={onAddLibrary}>Connect a server</button>
+                  <button onClick={onDisableDemo}>Remove the demo music</button>
+                </div>
+              </>
+              )
+            : <>
           {/* Two actions up top: add another server (+), or become an owner of a server you run
               (the same people icon Manage uses). Both open the pairing scanner - a plain code adds a
               library, the host's "Pair my phone as owner" code promotes this device. The libraries
@@ -5454,6 +5620,7 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
               </div>
             )
           })}
+              </>}
         </Section>
 
         {/* SOUND AND DOWNLOADS. These were two rows, "Streaming quality" and "Offline storage",
@@ -5643,6 +5810,23 @@ function About ({ onDonate, deviceKey }) {
         <p>PearTune is open source under the MIT license. Read the code, file an issue, or contribute.</p>
         <div className='btnrow'>
           <button onClick={() => openUrl(GITHUB_URL)}>View on GitHub ↗</button>
+        </div>
+      </Section>
+
+      {/* THE DEMO MUSIC'S ARTIST. The tracks are CC0, which waives all rights and requires no
+          attribution at all - so this is a courtesy, not a licence term, and it costs nothing.
+          Shown to everyone, not only while demo mode is on: the music ships in every copy of the
+          app, and someone who tried the demo and then paired a server should still be able to find
+          out who made the songs they heard. See assets/demo-music/LICENSE.md. */}
+      <Section id='music' title='The sample music' Icon={MusicNotes} open={open === 'music'} onToggle={toggle}>
+        <p>
+          The few tracks PearTune plays before you connect a server are from the album
+          <b> LOFI AMBIENT SONGS !</b> by <b>Loyalty Freak Music</b>, released into the public
+          domain under CC0. No attribution is required - we are crediting them because they
+          deserve it.
+        </p>
+        <div className='btnrow'>
+          <button onClick={() => openUrl('https://loyaltyfreakmusic.com/')}>Loyalty Freak Music ↗</button>
         </div>
       </Section>
 
@@ -5855,24 +6039,33 @@ function DonationSheet ({ onClose }) {
 // A brand-new install is walked through four cards rather than dropped straight
 // onto a form:
 //
-//   intro -> whose library -> who are you -> pair
+//   intro -> who are you -> whose library -> pair
 //
-// The second one is PearTune's own problem, and the reason this is not just the
+// The third one is PearTune's own problem, and the reason this is not just the
 // siblings' intro-then-name flow. Every other PeerLoom app is phone-to-phone and
 // works the moment it is installed; PearTune needs a SERVER running somewhere,
 // and someone who installs the app first has nothing to scan and nothing telling
-// them why. That card says so, and splits the two ways people arrive: running
-// their own library, or being let into a friend's.
+// them why. That card says so, and splits the ways people arrive: running their
+// own library, being let into a friend's, or having no server at all yet - which
+// is the demo.
 //
-// ADDING a second library (Settings > Libraries > Add) skips to the last card:
-// the identity is already established, and re-asking would be a wall on the way
-// to scanning another server's code.
+// NAMING COMES BEFORE THE DEMO CHOICE (Tim, 2026-07-28). It used to sit after the
+// whose-library card, which put "Try it without a server" on the intro - so a demo
+// user reached a working library having never been asked who they were, and later
+// tapping Connect had to rewind them through the naming cards to avoid pairing
+// them nameless. Asking first costs one card up front and makes every path after it
+// a single step.
+//
+// ADDING a library over the running app (Settings > Libraries > Add, and Connect
+// from the demo banner) skips to the last card: the identity is already
+// established, and re-asking would be a wall on the way to scanning a code.
 //
 // The phase lives in App, not here, so Android back can walk it (see the 'back'
 // listener); this component is told which card to draw.
 function Onboarding ({
   phase, setPhase, owner, setOwner,
-  names, setNames, onScan, onPaste, onCancel, error, addHost = false, pendingLink = null
+  names, setNames, onScan, onPaste, onCancel, error, addHost = false, pendingLink = null,
+  onDemo = null, demoStarting = false, firstServer = false
 }) {
   // Pre-filled when the app was OPENED with a pear:// pairing link: the box exists so you can
   // paste a link, and we already have it. Initial value only - once the card is up this is the
@@ -5899,7 +6092,7 @@ function Onboarding ({
           <div><LockKey size={18} weight='bold' /><span>No account, no cloud copy of the files, and nothing on that machine exposed to the internet.</span></div>
           <div><DeviceMobile size={18} weight='bold' /><span>Scan a code once and this phone is allowed in. Whoever runs the library can cut it off any time.</span></div>
         </div>
-        <button className='primary' onClick={() => { haptic('light'); setPhase('whose') }}>Get started</button>
+        <button className='primary' onClick={() => { haptic('light'); setPhase('names') }}>Get started</button>
       </div>
     )
   }
@@ -5945,10 +6138,30 @@ function Onboarding ({
                   warning, open the dashboard, pair. */}
               {owner === 'mine' &&
                 <button onClick={() => { haptic('light'); openUrl('https://peerloomllc.com/peartune/docs/setting-up-a-server') }}>How to set up a server ↗</button>}
-              <button className='primary' onClick={() => { haptic('light'); setPhase('names') }}>Continue</button>
+              <button className='primary' onClick={() => { haptic('light'); setPhase('pair') }}>Continue</button>
               <button onClick={() => { haptic('light'); setOwner(null) }}>Back</button>
             </>
             )}
+        {/* THE THIRD ANSWER, and the way out of the wall (proposal 2026-07-28-app-review-demo).
+            The two above assume a server exists somewhere. If one does not - the App Store
+            reviewer's position, and equally the position of anyone who installs the app before
+            setting one up - PearTune has nothing to show and no button to press. So it belongs
+            HERE, next to the others, rather than as an escape hatch on the intro: "where is your
+            music?" has three honest answers, and "nowhere yet" is one of them.
+            Only on the un-answered card, so it never crowds an explainer someone is reading. */}
+        {onDemo && !owner && (
+          <>
+            <div className='obsep' />
+            <button onClick={onDemo} disabled={demoStarting}>
+              {demoStarting ? 'Setting up…' : 'I don’t have one yet'}
+            </button>
+            <p className='muted sm hint'>
+              Play a few sample tracks that come with the app, so you can look around before you
+              have a library to connect to.
+            </p>
+          </>
+        )}
+        {!owner && <button onClick={() => { haptic('light'); setPhase('names') }}>Back</button>}
       </div>
     )
   }
@@ -5989,12 +6202,12 @@ function Onboarding ({
         )}
         <button
           className='primary'
-          onClick={() => { haptic('light'); if (pendingLink) onPaste(pendingLink); else setPhase('pair') }}
+          onClick={() => { haptic('light'); if (pendingLink) onPaste(pendingLink); else setPhase('whose') }}
           disabled={!ready}
         >
           {pendingLink ? 'Pair' : 'Continue'}
         </button>
-        <button onClick={() => { haptic('light'); setPhase('whose') }}>Back</button>
+        <button onClick={() => { haptic('light'); setPhase('intro') }}>Back</button>
       </div>
     )
   }
@@ -6004,7 +6217,7 @@ function Onboarding ({
     <div className='center onboard'>
       <Wordmark />
       <p className='muted'>
-        {addHost
+        {addHost && !firstServer
           ? 'Open the PearTune dashboard on the server you want to add - yours or a friend’s - and show its pairing code.'
           : owner === 'friend'
             ? 'Scan the pairing code from their dashboard - or paste the link they sent you.'

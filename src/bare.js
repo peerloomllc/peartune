@@ -41,6 +41,7 @@ const { coalesce, clientCall } = require('../worklet/outbox')
 const leaves = require('../worklet/leaves')
 const { AudioCache } = require('../worklet/cache')
 const { ArtStore } = require('../worklet/art-cache')
+const demo = require('../worklet/demo')
 
 const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
 // What kind of device this is, handed down by the shell (argv[1]) because only the shell knows.
@@ -90,6 +91,24 @@ function libDir () {
 const MERGED_ID = '_merged'
 let _mergedMode = false
 function mergedMode () { return _mergedMode }
+
+// The DEMO library (proposal 2026-07-28-app-review-demo): five CC0 tracks shipped inside the app,
+// browsable and playable with NO host, no pairing, no network and no grant. It exists because an
+// App Store reviewer - and anyone who installs the app before setting a server up - otherwise opens
+// PearTune to a pairing wall and an app that appears to do nothing.
+//
+// Like mergedMode it is a MODE FLAG that browse consults, a THIRD branch beside the merged one. It
+// is NOT a library in hosts.json, NOT a client, and it touches NOTHING in the security boundary:
+// no grant store, no identity keypair, no pairing window. The catalog IS the flag - non-null means
+// demo mode is on - and it lives in worklet/demo.js so it is unit-testable off-device.
+//
+// The manifest is persisted here so a relaunch rebuilds the catalog with no assets to resolve and
+// no bytes to copy: the media is already in the audio cache (pinned) and the art store from the
+// first enable.
+const DEMO_FILE = path.join(DATA_DIR, 'demo.json')
+let demoCatalog = null
+let demoIds = new Set() // every demo track id + the cover id, for the lease gate
+function demoMode () { return !!demoCatalog }
 
 // The persisted PLAY QUEUE, so a force-stop or a relaunch does not lose it. Holds
 // track IDs + render metadata (the shell's toQueue shape) + index + position +
@@ -302,8 +321,9 @@ function useLibrary (libraryId) {
   defaultLibraryId = libraryId
   fs.mkdirSync(libDir(), { recursive: true })
   // The legacy flat-file migration only makes sense for a REAL host (the pre-multi-host layout held
-  // one host's state); never fold root files into the _merged context.
-  if (libraryId !== MERGED_ID) migrateLegacyState()
+  // one host's state); never fold root files into the _merged context - nor into the demo library,
+  // which is not a host either and would swallow a real one's un-migrated state.
+  if (libraryId !== MERGED_ID && libraryId !== demo.DEMO_LIBRARY_ID) migrateLegacyState()
   outbox = loadOutbox()
 }
 
@@ -600,6 +620,82 @@ function purgeAllLibraries (libraryIds) {
   for (const id of libraryIds) purgeLibrary(id)
   outbox = []
   log('local:purged')
+}
+
+// --- demo mode --------------------------------------------------------------
+//
+// See the DEMO_FILE note at the top. Everything here is bookkeeping around
+// worklet/demo.js, which owns the catalog build and the cache/art install.
+
+function loadDemoRecord () {
+  try {
+    const o = JSON.parse(fs.readFileSync(DEMO_FILE, 'utf8'))
+    return o && o.manifest ? o : null
+  } catch {
+    return null
+  }
+}
+
+function saveDemoRecord (rec) {
+  fs.mkdirSync(DATA_DIR, { recursive: true })
+  fs.writeFileSync(DEMO_FILE, JSON.stringify(rec))
+}
+
+// The synthetic library row the shell renders demo mode as. Deliberately NOT written to
+// hosts.json - there is no host, no hostKey and no grant - so listHosts, switchHost and every
+// connection path stay blind to it. init hands it straight to the UI as the active library so the
+// app shell (navbar, browse, the player) renders exactly as it does for a real one, and `demo: true`
+// is what lets the UI label it unmistakably rather than passing it off as a paired server.
+function demoHostRow () {
+  return {
+    hostKey: null,
+    libraryId: demo.DEMO_LIBRARY_ID,
+    libraryName: demo.DEMO_LIBRARY_NAME,
+    demo: true,
+    pairedAt: null
+  }
+}
+
+// Turn demo mode on for a built catalog: adopt it as the default library (so the queue, the
+// settings and every other per-library path have a home on disk) and leave the blend, which
+// nothing in demo mode can be part of.
+function activateDemo (built) {
+  demoCatalog = built
+  demoIds = new Set([...built.tracks.map((t) => t.id), built.album.coverId].filter(Boolean))
+  _mergedMode = false
+  useLibrary(demo.DEMO_LIBRARY_ID)
+}
+
+// Does this id belong to the demo library? The lease gate asks: a demo track has no host, so
+// there is no authorization that could ever be fresh, and gating it on one would mean the
+// bundled music went dark after 14 days. See ensureShim.
+function isDemoId (id) {
+  return !!id && demoIds.has(id)
+}
+
+// Leave demo mode and give the ~18 MB back. Called by disableDemo and - the important one - by a
+// successful pair: the moment a real library exists the demo has done its job, and leaving it in
+// the switcher beside a real server is exactly the "looks like a paired library" the proposal
+// forbids. Safe to call when demo mode is off.
+function retireDemo (why) {
+  // Rebuild from the saved record when demo mode is not currently ON. That is the case that
+  // matters: a demo record can outlive its mode (a pair retires the demo at the moment init
+  // decides not to activate it), and without this the media would be orphaned on disk with
+  // nothing left in the app that could ever reach it.
+  let cat = demoCatalog
+  if (!cat) {
+    const rec = loadDemoRecord()
+    if (rec) cat = demo.buildDemoCatalog(rec.manifest, { stats: rec.stats || {} })
+  }
+  if (!cat) return { ok: true, retired: false }
+  const r = demo.removeDemoMedia({ catalog: cat, cache: audioCache, artStore })
+  try { fs.unlinkSync(DEMO_FILE) } catch {}
+  purgeLibrary(demo.DEMO_LIBRARY_ID) // its queue and any other per-library state
+  demoCatalog = null
+  demoIds = new Set()
+  if (defaultLibraryId === demo.DEMO_LIBRARY_ID) defaultLibraryId = null
+  log('demo:retired', { why: why || null, removed: r.removed })
+  return { ok: true, retired: true, ...r }
 }
 
 // --- connection -------------------------------------------------------------
@@ -1236,6 +1332,11 @@ function labelFor (libraryId, fallback) {
 // methods can call it without `this` - the IPC dispatch invokes methods unbound, so `this` is
 // undefined inside them.
 function listHostsData () {
+  // In demo mode the ONE row is the demo library, flagged so the switcher can name it
+  // unmistakably. It is not in hosts.json and never will be (see demoHostRow), so it has to be
+  // supplied here rather than read - and the moment a real library is paired the demo retires,
+  // so the two can never appear side by side.
+  if (demoMode()) return { hosts: [{ ...demoHostRow(), hostName: demo.DEMO_LIBRARY_NAME, active: true }], activeHostKey: null }
   const f = loadHostsFile()
   const labels = hostList.libraryLabels(f.hosts)
   return {
@@ -1523,6 +1624,9 @@ async function ensureShim () {
     // The lease gate: a cached track is only served from disk while authorization is
     // fresh. Expired (a revoked or long-offline device) falls through to the live path.
     leaseOk: leaseValid,
+    // ...unless the id has no host to be authorized BY. Only the demo library is hostless, and a
+    // real library's ids are never in demoIds, so every existing path is untouched.
+    hostless: isDemoId,
     // Merged-mode streaming routing (step 2, slice 4). hostClient returns the connected client
     // for a URL that names its owning host; libForTrack/libForCover resolve a bare id to its host
     // for a URL that doesn't (the UI's own artBase covers). All three are inert in single-host mode
@@ -1806,6 +1910,32 @@ const methods = {
         rebuildIndex().catch((e) => log('init:merged-rebuild-failed', { err: e.message }))
       }
     }
+
+    // DEMO MODE, restored (proposal 2026-07-28-app-review-demo). Only when nothing real is
+    // paired: a demo library beside a genuine one is exactly the confusion the proposal rules
+    // out, and pairing retires it anyway - this is the belt to that braces, for a demo record
+    // that somehow outlived a pair.
+    //
+    // No assets to resolve and no bytes to copy: the manifest we saved on enable rebuilds the
+    // catalog, and the media is already in the audio cache and the art store. So this is a sync
+    // disk read plus a hash per track, and the app opens straight into the library.
+    const demoRec = loadDemoRecord()
+    if (demoRec && !host) {
+      activateDemo(demo.buildDemoCatalog(demoRec.manifest, { stats: demoRec.stats || {} }))
+      await ensureShim()
+      state.demo = true
+      state.host = demoHostRow()
+      state.hosts = listHostsData().hosts // the one demo row; state.hosts was read before demo mode was on
+      state.connected = true // there is nothing to connect TO, and the music plays - so, honestly, yes
+      state.shimPort = shimPort
+      state.artBase = shim.artBase()
+      log('demo:restored', { tracks: demoCatalog.tracks.length })
+    } else if (demoRec && host) {
+      // A real library exists, so the demo has served its purpose. Reclaim the space.
+      retireDemo('paired')
+      saveSettings({ demo: false })
+    }
+
     return state
   },
 
@@ -1871,6 +2001,16 @@ const methods = {
     // re-pair of a known host just refreshes + re-activates it, never duplicates the row).
     saveHostsFile(hostList.addHost(loadHostsFile(), host, Date.now()))
 
+    // A REAL LIBRARY EXISTS NOW, so the demo retires (proposal: "pairing a real library from
+    // inside demo mode should just work, and should retire the demo library from the blend at
+    // that point"). Done here, straight after the row is saved and before useLibrary below
+    // re-points the default library, so the ~18 MB of bundled music goes back and the switcher
+    // can never show a fake library beside a genuine one. A no-op if demo mode was never on.
+    if (demoMode() || loadDemoRecord()) {
+      retireDemo('paired')
+      saveSettings({ demo: false })
+    }
+
     // We are pairing this host, so CANCEL any leave still queued for it. Without this, a
     // removal that never reached an offline host would be retried after the user re-paired
     // and would revoke the grant they just created.
@@ -1917,6 +2057,9 @@ const methods = {
   },
 
   async reconnect () {
+    // There is nothing to reconnect TO. Answering "connected" is not a polite fiction here: the
+    // library is on the phone and it plays, which is the whole claim the caller is checking.
+    if (demoMode()) return { ok: true, connected: true, demo: true, shimPort }
     // Merged mode reads from the POOL and the in-memory index, NOT the single active client -
     // so reconnecting only `client` (ensureConnected) left the blended view exactly as empty as
     // it found it. That is the "ran the Connection check, it reached both, went back to Library
@@ -1939,6 +2082,7 @@ const methods = {
   // own name - still belongs to a HOST, not to a blend, so it keeps coming from the default one
   // (the playlist screens label the server with it).
   async stats () {
+    if (demoMode()) return demo.demoStats(demoCatalog)
     await ensureConnected()
     const st = await mustClient().stats()
     return mergedMode() ? { ...st, sorts: catalog.MERGED_SORTS } : st
@@ -1947,6 +2091,13 @@ const methods = {
   // The Songs view. Navidrome answers an empty-query search3 with everything,
   // paged, so this is a real list and not the 60-call album walk it used to be.
   async tracks ({ cursor = 0, limit = 100, sort, order, libraryId } = {}) {
+    // DEMO MODE, first: the bundled library is served straight out of memory by the very same
+    // in-memory helpers the blend uses (worklet/catalog.js), so browsing it needs no host, no
+    // connection and no second code path. Same shape in every browse method below.
+    if (demoMode()) {
+      const page = catalog.serveList(demoCatalog.tracks, { sort: sort || 'title', order, cursor, limit })
+      return { ...page, items: page.items.map(withArt) }
+    }
     if (mergedMode()) {
       const ix = await ensureIndex()
       // Default to A-Z by title: the merged index CAN sort all songs by title, which a single
@@ -1963,6 +2114,10 @@ const methods = {
   // music app, and Subsonic has no "all songs" call anyway - so the flat list
   // could only ever show the first page. Albums page properly.
   async albums ({ cursor = 0, limit = 60, sort, order, libraryId } = {}) {
+    if (demoMode()) {
+      const page = catalog.serveList(demoCatalog.albums, { sort: sort || 'name', order, cursor, limit })
+      return { ...page, items: page.items.map(withArt) }
+    }
     if (mergedMode()) {
       const ix = await ensureIndex()
       const page = catalog.serveList(ix.albums, { libraryId, sort: sort || 'name', order, cursor, limit })
@@ -1977,6 +2132,13 @@ const methods = {
   // album's owning host (authoritative order) via its link, then tags the album + enriches each
   // track's copies so streaming can fail over. The UI passes the served album's libraryId back here.
   async album ({ id, libraryId }) {
+    if (demoMode()) {
+      const a = demoCatalog.albums.find((x) => x.id === id)
+      if (!a) return null
+      // trackIds -> the track records, in the album order demo.js already sorted them into.
+      const tracks = a.trackIds.map((tid) => demoCatalog.tracks.find((t) => t.id === tid)).filter(Boolean)
+      return withBigArt({ ...a, tracks })
+    }
     const lib = libForEntity(id, libraryId)
     if (mergedMode() && lib) {
       const c = await ensureHostById(lib)
@@ -1992,6 +2154,10 @@ const methods = {
   // Artists are the second way in. The host has always been able to list them
   // (`library.list({type:'artists'})`); nothing was asking.
   async artists ({ sort, order, libraryId } = {}) {
+    if (demoMode()) {
+      const page = catalog.serveList(demoCatalog.artists, { sort: sort || 'name', order })
+      return { ...page, items: page.items.map(withArt) }
+    }
     if (mergedMode()) {
       const ix = await ensureIndex()
       const page = catalog.serveList(ix.artists, { libraryId, sort: sort || 'name', order })
@@ -2007,6 +2173,14 @@ const methods = {
   // tapping through routes correctly. (A blended cross-host artist page - one host's albums beside
   // another's for the same artist - is a later refinement; phase 1 shows the primary host's.)
   async artist ({ id, libraryId }) {
+    if (demoMode()) {
+      const a = demoCatalog.artists.find((x) => x.id === id)
+      if (!a) return null
+      const albums = a.albumIds.map((aid) => demoCatalog.albums.find((x) => x.id === aid)).filter(Boolean)
+      // `tracks` is only ever populated for an artist with NO albums, which cannot happen here -
+      // but the UI reads the field, so answer it rather than making it guess.
+      return { ...withBigArt(a), albums: albums.map(withArt), tracks: [] }
+    }
     const lib = libForEntity(id, libraryId)
     if (mergedMode() && lib) {
       // BLEND across hosts: the same artist can live on more than one host, so fetch each copy's
@@ -2054,6 +2228,11 @@ const methods = {
   // and it is the same call the album screen makes anyway. Tracks inherit their
   // album's artwork, so the queue and the lock screen have a picture.
   async artistTracks ({ id, libraryId }) {
+    if (demoMode()) {
+      const a = demoCatalog.artists.find((x) => x.id === id)
+      if (!a) return { items: [] }
+      return { items: a.trackIds.map((tid) => demoCatalog.tracks.find((t) => t.id === tid)).filter(Boolean).map(withBigArt) }
+    }
     // In merged mode read from the artist's owning host (its albums live there); otherwise the
     // single active client. Either way each track is tagged with its libraryId + copies so a
     // mixed-host queue (slice 4) routes every track to a host that has it.
@@ -2086,6 +2265,10 @@ const methods = {
   // albums. Same wire methods as artists (library.list / library.get with a new
   // `genres` / `genre` type); the host does the work, this just adds artwork.
   async genres ({ sort, order, libraryId } = {}) {
+    if (demoMode()) {
+      const page = catalog.serveList(demoCatalog.genres, { sort: sort || 'name', order })
+      return { ...page, items: page.items.map(withArt) }
+    }
     if (mergedMode()) {
       const ix = await ensureIndex()
       const page = catalog.serveList(ix.genres, { libraryId, sort: sort || 'name', order })
@@ -2100,6 +2283,12 @@ const methods = {
   // no album of its own - the same fallback artists use). In merged mode the detail routes to the
   // genre's owning host; its albums carry libraryId so tapping through routes correctly.
   async genre ({ id, libraryId }) {
+    if (demoMode()) {
+      const g = demoCatalog.genres.find((x) => x.id === id)
+      if (!g) return null
+      const albums = g.albumIds.map((aid) => demoCatalog.albums.find((x) => x.id === aid)).filter(Boolean)
+      return { ...withBigArt(g), albums: albums.map(withArt), tracks: [] }
+    }
     const lib = libForEntity(id, libraryId)
     let c
     if (mergedMode() && lib) c = await ensureHostById(lib)
@@ -2118,6 +2307,11 @@ const methods = {
   // Every track in a genre, in album order - what "Play" on a genre means. Mirrors
   // artistTracks: one round trip per album, plus the loose-track fallback.
   async genreTracks ({ id, libraryId }) {
+    if (demoMode()) {
+      const g = demoCatalog.genres.find((x) => x.id === id)
+      if (!g) return { items: [] }
+      return { items: g.trackIds.map((tid) => demoCatalog.tracks.find((t) => t.id === tid)).filter(Boolean).map(withBigArt) }
+    }
     const lib = libForEntity(id, libraryId)
     let c
     if (mergedMode() && lib) c = await ensureHostById(lib)
@@ -2153,6 +2347,14 @@ const methods = {
   },
 
   async search ({ q, libraryId } = {}) {
+    if (demoMode()) {
+      const r = catalog.searchIndex(demoCatalog, q)
+      return {
+        tracks: r.tracks.map(withArt),
+        albums: r.albums.map(withArt),
+        artists: r.artists.map(withArt)
+      }
+    }
     if (mergedMode()) {
       const ix = await ensureIndex()
       const r = catalog.searchIndex(ix, q)
@@ -2172,6 +2374,58 @@ const methods = {
       albums: (r.albums || []).map(withArt),
       artists: (r.artists || []).map(withArt)
     }
+  },
+
+  // --- demo mode (proposal 2026-07-28-app-review-demo) ------------------------
+  //
+  // Turn the bundled library on. The SHELL resolves the assets and passes their local paths,
+  // because only it can: the audio and the cover are Expo assets, copied out of the app bundle
+  // under hashed names that no path in the worklet could guess.
+  //
+  //   manifest - assets/demo-music/manifest.json, already parsed (Metro inlines JSON)
+  //   files    - { '01 ....mp3': '/local/path', ... }, one per manifest track
+  //   cover    - the local path of manifest.cover
+  //
+  // Idempotent: enabling twice rebuilds the catalog and re-checks the install, which is a
+  // handful of `cache.has` calls once the media is down. Nothing here touches hosts.json, the
+  // identity keypair, the grant store or a pairing window - a demo library is not a pairing.
+  async enableDemo ({ manifest, files = {}, cover = null } = {}) {
+    if (!manifest || !Array.isArray(manifest.tracks) || !manifest.tracks.length) {
+      throw new Error('The demo library is missing from this build.')
+    }
+    const stats = demo.statDemoFiles(files)
+    const built = demo.buildDemoCatalog(manifest, { stats })
+    activateDemo(built)
+
+    // The shim FIRST, exactly as init does for a real library: it owns the loopback port every
+    // play URL carries, and the install below is pointless without something to serve it.
+    await ensureShim()
+    const r = await demo.installDemoMedia({ catalog: built, files, cover, cache: audioCache, artStore, log })
+    // Persist the manifest (with the sizes we just measured) so a relaunch rebuilds the catalog
+    // with no assets to resolve and no bytes to copy.
+    saveDemoRecord({ manifest, stats })
+    saveSettings({ demo: true })
+    log('demo:enabled', { tracks: built.tracks.length, installed: r.installed, skipped: r.skipped, failed: r.failed, art: r.art })
+
+    return {
+      ok: true,
+      demo: true,
+      host: demoHostRow(),
+      connected: true,
+      shimPort,
+      artBase: shim.artBase(),
+      tracks: built.tracks.length,
+      installed: r.installed,
+      failed: r.failed
+    }
+  },
+
+  // Leave demo mode by hand (Settings). Pairing a real library retires it automatically - see
+  // the retireDemo call in pair() - so this is for someone who simply wants the space back.
+  async disableDemo () {
+    const r = retireDemo('disabled')
+    saveSettings({ demo: false })
+    return r
   },
 
   // --- merged library (step 2, proposal 2026-07-19) ---------------------------
@@ -2506,6 +2760,10 @@ const methods = {
   // hides the hearts); on any other failure we fall back to the cache so hearts still
   // render offline.
   async favorites () {
+    // The demo library syncs nothing anywhere, by design (proposal: "no revoke, no requests, no
+    // favourites syncing anywhere"). supported:false is the same answer a too-old host gives, and
+    // the UI already knows to hide the hearts on it rather than offer a control that cannot work.
+    if (demoMode()) return { track: [], album: [], artist: [], supported: false }
     if (mergedMode()) {
       // The blended hearts: the UNION of every connected host's favorites, cached at lib/_merged.
       try {
@@ -2534,6 +2792,9 @@ const methods = {
   // is fine, the position is not precious. resumeGet answers 0 offline / on an old
   // host, so the caller simply starts the track from the top.
   async resumeSave ({ trackId, positionMs, durationMs }) {
+    // Nowhere to write it: the demo library has no host, and queuing it to an outbox would
+    // leave a write on disk aimed at a library that will never exist.
+    if (demoMode()) return { ok: true }
     if (mergedMode()) {
       // Route the resume to the track's OWNING host; queue to that host's outbox if it's unreachable,
       // so it syncs when the host reconnects (coalesce keeps only the latest position per track).
@@ -2554,6 +2815,7 @@ const methods = {
   },
 
   async resumeGet ({ trackId }) {
+    if (demoMode()) return { positionMs: 0 }
     if (mergedMode()) {
       const c = trackClient(trackId)
       if (c) { try { return await c.resumeGet({ trackId }) } catch {} }
@@ -2571,6 +2833,7 @@ const methods = {
   // renderable track (title, artist, art) so the launch card can show it. Null when
   // there is nothing to continue, offline, or on an old host.
   async resumeLatest () {
+    if (demoMode()) return null // nothing is stored, so there is no 'continue listening'
     if (mergedMode()) {
       // The globally-most-recent resume across hosts: each host's latest, then pick the newest by
       // updatedAt, and resolve the track from that host.
@@ -2608,6 +2871,7 @@ const methods = {
   // to past a threshold. topPlayed resolves the most-played ids to renderable tracks
   // for the "Most played" view.
   async countBump ({ trackId }) {
+    if (demoMode()) return { ok: true } // see resumeSave
     if (mergedMode()) {
       // Count the play on the track's OWNING host; queue to that host's outbox if unreachable, so the
       // play isn't lost (each queued bump is a real play - counts accumulate).
@@ -2678,6 +2942,7 @@ const methods = {
   // can say "favorites need a host update" instead of silently keeping a heart the host
   // will never know about.
   async toggleFav ({ kind = 'track', id, on }) {
+    if (demoMode()) return { ok: false, supported: false } // see favorites
     const want = on !== false
     if (mergedMode()) {
       // Route to the host that OWNS this item; flip the blended cache optimistically so the heart
@@ -2730,6 +2995,7 @@ const methods = {
   // One get() per favorite - bounded by how many a person favorites. Anything that no
   // longer resolves (source changed, item gone) is skipped, not shown as a dead row.
   async favoriteItems () {
+    if (demoMode()) return { tracks: [], albums: [], artists: [] }
     if (mergedMode()) {
       // Union across hosts, then resolve each favorite from the SAME host that has it (src map), so a
       // track favorited on the Mac resolves off the Mac. Skips anything unresolvable, like single-host.
@@ -2777,6 +3043,10 @@ const methods = {
   // renders offline (like favorites); an old host answers ENOMETHOD and we report
   // supported:false so the app can hide the feature rather than show a dead control.
   async playlists () {
+    // Playlists live on the host (host-as-hub), so a demo library cannot have any - and
+    // supported:false is what tells the UI to hide the section instead of showing an empty
+    // list with a New button that could only fail.
+    if (demoMode()) return { items: [], supported: false }
     try {
       await ensureConnected()
       const { items } = await mustClient().playlistList()
@@ -2829,6 +3099,9 @@ const methods = {
   // declined - if any host added it, the music is coming) + which libraries it went to.
   // Single-host = just the active host's. Empty (not shown) on an all-old set of hosts.
   async requestList () {
+    // Requests go TO an operator, and a demo library has none. supported:false hides the
+    // 'ask for this music' affordance rather than offering a message with no recipient.
+    if (demoMode()) return { requests: [], supported: false }
     if (mergedMode()) {
       const libs = [...connectedLibs()]
       const names = hostList.libraryLabels(loadHostsFile().hosts)
@@ -3074,6 +3347,11 @@ const methods = {
   // player pulls it from the worklet's loopback server, which pulls it over P2P.
   async urlFor ({ trackId, libraryId, copies }) {
     await ensureShim()
+    // DEMO MODE needs no serving code of its own: the bundled tracks were installed as PINNED
+    // audio-cache entries, so the shim's ordinary cache-hit path already serves them off disk -
+    // ranges, seeking, backpressure and all. Nothing to route, no host to revive, and no lease to
+    // check (there is no host that could have authorized us; see ensureShim's leaseOk).
+    if (demoMode()) return { url: shim.urlFor(trackId), port: shimPort }
     // Merged mode: route to the track's best CONNECTED copy and mint a libraryId-scoped URL, so the
     // player's held URL routes to the owning host for the life of the queue (proposal §5). A cached
     // track with a fresh lease plays from disk host-agnostically (ids are namespaced); otherwise

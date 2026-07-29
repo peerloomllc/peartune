@@ -54,6 +54,16 @@ for pristine copies of the originals:
    tags reading 1, 2, 3, 4, 8 would render as a gap in the album view — which in a
    *demo* reads as "the app failed to load something", the exact opposite of the
    impression it exists to give.
+3. **A genre, `Lo-Fi`, was added in `manifest.json` only.** The files themselves
+   carry no genre frame, so the Genres view would otherwise be empty — again, a
+   working app looking broken. It is taken from the album's own title (*LOFI
+   AMBIENT SONGS !*), not invented, and it lives in our manifest rather than in
+   the ID3 tags so the files stay as they came.
+4. **The cover art is named `cover.bin`, not `cover.jpg`.** The bytes are an unmodified
+   JPEG. The extension is the change, and it is forced on us: React Native's Android
+   asset packager turns anything it recognises as an image into a drawable *resource*,
+   which the app can name but cannot open as a file - so the cover would never reach
+   the art store. See `metro.config.js`.
 
 Nothing else was touched: titles, artist, album and year are the artist's own.
 
