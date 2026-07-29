@@ -1,7 +1,10 @@
 # Scoping: a direct connection to a Start9 host via `bindPortRange`
 
-**Status:** scoping, not accepted. **Tier:** T2 (packaging + a small additive host option; no
-new trust boundary - see Security).
+**Status:** **REJECTED by measurement. P0 was built and run on 2026-07-29 and the answer is NO** -
+see [P0 RESULT](#p0-result-2026-07-29-the-forward-does-not-fix-the-punch) below. P1-P3 were not
+started, and Start9 releases are TABLED (Tim, 2026-07-29). The rest of this document is kept as
+the reasoning that led there, not as a plan.
+**Tier:** T2 (packaging + a small additive host option; no new trust boundary - see Security).
 **Question:** what would it actually take to stop every Start9 user's music crossing our relay?
 
 ## The problem, measured
@@ -65,6 +68,49 @@ explicitly, which is not how HyperDHT connects.
 Nothing in the SDK docs says whether the rule is symmetric. **This is unknown, it is the whole
 question, and it is cheap to answer** - which is why the plan below spends a probe on it before
 anything else.
+
+## P0 RESULT (2026-07-29): the forward does not fix the punch
+
+Built as a genuine **native** StartOS 0.4 package (SDK 2.0.9) - not a conversion - and installed
+on `returned-feline.local` alongside the converted one, which was **stopped first** so it could
+not confound the measurement. Package kept at `start9/probe-04/`.
+
+**Every precondition was met**, which is what makes the negative trustworthy:
+
+- The port is pinned: `49737` bound inside the container (`10.0.3.213`), read from `/proc/net/udp`.
+- StartOS installed **real forwards**, including on the LAN interface - something the converted
+  package never had: `ip daddr 192.168.50.253 ... th dport 49737-49738 dnat to 10.0.3.213`.
+- Outbound is the standard port-preserving masquerade: `ip saddr 10.0.3.0/24 ... masquerade`.
+
+**And the audio still relayed:**
+
+| Window | Relay bytes |
+|---|---|
+| idle | +95K / +62K / +29K / +33K / +33K per minute |
+| **minute play was tapped** | **+5,395,189** |
+
+Within 0.3% of the +5,409,600 measured before the probe existed, and both ~= the 5,004,158-byte
+demo track plus overhead. Control: the probe served 90+ seconds of continuous playback
+(`resume:set` 25.6s -> 97.9s).
+
+*Reading the timestamps:* the spike lands in the sample just **before** `resume:set` starts
+climbing. That is expected, not a mismatch - PearTune fetches a whole track in one request and
+plays from the buffer, so bytes move when you tap play, not while the counter advances. Pairing
+alone was ~141 KB, so 5.4 MB cannot be pairing.
+
+**Why:** inbound reachability was never the blocker. Holepunching needs the container's
+**outbound** UDP to leave from the same external port that inbound arrives on, and `lxcbr0` does
+not give us that. A forward fixes only the half that was not broken - precisely the risk named
+below as the one that decides this.
+
+**Consequence:** P1-P3 are not worth doing. Start9 on 0.4 is relayed, and the options are the two
+in Alternatives: ship relayed, or do not ship. Tim's call on 2026-07-29 was **do not ship for
+now**. Revisit only if StartOS gains host networking or a symmetric forward, or if the relay's
+economics change.
+
+**One correction to the plan below:** it puts P0 before P1, which is wrong. The probe cannot pin
+a port the host does not support, so the host option (`PEARTUNE_DHT_PORT`, shipped in #255) had to
+come first.
 
 ## Plan
 
