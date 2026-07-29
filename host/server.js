@@ -93,7 +93,7 @@ const ROCKS_LOG_KEEP = 3
 const ROCKS_LOG_PRUNE_MS = 12 * 60 * 60_000
 
 class PearTuneHost {
-  constructor ({ dataDir, musicDir, libraryName = 'My Library', subsonic = null, dht = null, bootstrap = null, log = () => {} }) {
+  constructor ({ dataDir, musicDir, libraryName = 'My Library', subsonic = null, dht = null, bootstrap = null, dhtPort = null, log = () => {} }) {
     this.dataDir = path.resolve(dataDir)
     this.musicDir = musicDir
     // A persisted operator rename (library.json) wins over the env/CLI default, so the
@@ -106,7 +106,19 @@ class PearTuneHost {
     this.libraryId = this.identity.libraryId
 
     this._ownDht = !dht
-    this.dht = dht || new HyperDHT(bootstrap ? { bootstrap } : {})
+    // dhtPort pins the DHT's UDP socket. Unset keeps today's behaviour, which is a
+    // RANDOM port per process - note that is despite `opts.port || 49737` in
+    // hyperdht/index.js, which is only a preference and does not survive (measured
+    // 36600 / 42742 / 59270 over three runs).
+    //
+    // A pinned port only matters where something outside the process has to forward
+    // to it: a router port-forward, or StartOS 0.4's `bindPortRange`, which cannot
+    // forward a port that changes every restart. See
+    // proposals/2026-07-29-start9-bindportrange.md.
+    this.dht = dht || new HyperDHT({
+      ...(bootstrap ? { bootstrap } : {}),
+      ...(dhtPort ? { port: Number(dhtPort) } : {})
+    })
 
     this.store = new Corestore(path.join(this.dataDir, 'store'))
     this.bee = new Hyperbee(this.store.get({ name: 'grants' }), {
