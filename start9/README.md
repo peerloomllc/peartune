@@ -6,11 +6,28 @@ this wraps it for StartOS's `.s9pk` format. Modeled on the proven
 [`pearcircle-seeder`](../../pearcircle/seeder-launcher/start9/) package - the
 reason to reuse it is its **networking**, which is already validated on StartOS.
 
-**What is built today targets StartOS 0.3.5.x**, and **the target for release is
-StartOS 0.4.0 installed from the PeerLoom community registry** (Tim, 2026-07-29),
-matching what PearCal and PearCircle have already proven. The 0.4 work is NOT done -
-see [Retargeting to 0.4](#retargeting-to-04-not-done-yet) before relying on anything
-in this file.
+> # TABLED 2026-07-29 (Tim). Do not plan a Start9 release from this file.
+>
+> A PearTune host runs on StartOS and works - it pairs, browses and plays. **But every
+> byte goes through the PeerLoom relay**, because StartOS runs each service behind a
+> container NAT that holepunching cannot get through, on home WiFi and on cellular
+> alike. That is ~5 MB per track across a $4 / 500 GB droplet whose binding constraint
+> is already bandwidth, for audio that usually never leaves the listener's house - and
+> the cost grows with how much people listen, not with how many people there are.
+>
+> `bindPortRange` was the one candidate fix and it was **built and measured** (a native
+> 0.4 package, SDK 2.0.9). It does not work: see [P0 RESULT](#p0-result-2026-07-29-the-forward-does-not-fix-the-punch)
+> in `proposals/2026-07-29-start9-bindportrange.md` and `start9/probe-04/`. No third
+> path has been found, so the honest options are ship-relayed or do not ship, and the
+> call is: **not now**.
+>
+> Nothing here is broken and nothing needs urgent work. Revisit only if StartOS gains
+> host networking or a symmetric port forward, or if the relay's economics change.
+
+**What is built today targets StartOS 0.3.5.x**, and the release target had been
+**StartOS 0.4.0 from the PeerLoom community registry** (Tim, 2026-07-29), matching what
+PearCal and PearCircle proved. That plan is now tabled per the box above; the sections
+below are kept as the record of what was learned, not as a plan to execute.
 
 The 0.3.5.x package that exists: a service is a `manifest.yaml`, one Docker image tar
 per arch, and deno-bundled TypeScript procedures, packed with `start-sdk pack`.

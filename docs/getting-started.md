@@ -45,7 +45,7 @@ Running it on a server, a NAS or a headless box instead? Pick your page:
 - **Linux, a NAS, or anything with Docker** - [`host-linux.md`](host-linux.md)
 - **macOS or Windows** - [`host-macos-windows.md`](host-macos-windows.md)
 - **Umbrel** - install PearTune from the app store; there is nothing else to do
-- **Start9** - [`../start9/README.md`](../start9/README.md)
+- **Start9** - not supported for now. A host runs there, but StartOS's container networking forces every connection through a relay rather than a direct one. See [`../start9/README.md`](../start9/README.md).
 
 Whichever you pick, the host prints something like this when it starts (the desktop app
 shows you the dashboard instead of a log):

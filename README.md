@@ -23,7 +23,9 @@ Every connection is end-to-end encrypted and mutually authenticated. The host kn
 
 **[Getting started](docs/getting-started.md)** walks the whole thing end to end, with screenshots: install the host, point it at your music, pair a phone, see who has access, and revoke someone.
 
-Install pages for a specific machine: [Linux and Docker](docs/host-linux.md) · [macOS and Windows](docs/host-macos-windows.md) · [Start9](start9/README.md). On Umbrel, install PearTune from the app store.
+Install pages for a specific machine: [Linux and Docker](docs/host-linux.md) · [macOS and Windows](docs/host-macos-windows.md). On Umbrel, install PearTune from the app store.
+
+**Start9 is not a supported target right now.** A host works there, but StartOS runs every service behind a container NAT that peer-to-peer connections cannot punch through, so all traffic falls back to a relay - which works, and costs PeerLoom bandwidth for music that often never leaves the listener's home. Measured and tabled on 2026-07-29; see [`start9/README.md`](start9/README.md) for the numbers.
 
 ### When the phone can't reach the host directly
 
