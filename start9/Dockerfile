@@ -16,3 +16,17 @@ RUN apt-get update \
 
 ADD ./docker_entrypoint.sh /usr/local/bin/docker_entrypoint.sh
 RUN chmod a+x /usr/local/bin/docker_entrypoint.sh
+
+# Bake the five CC0 demo tracks at /music, which is the host's default music dir
+# (host/index.js: PEARTUNE_MUSIC || '/music'), so the service has something to
+# play the moment it starts.
+#
+# This matters more on StartOS than anywhere else: the Start9 registry has no
+# music server left on a stock box - Jellyfin and Nextcloud Music are the only
+# two it ever had - so without this a fresh install is an empty library with no
+# obvious way to fill it. The tracks are CC0 1.0 (see assets/demo-music/LICENSE.md),
+# i.e. safe to redistribute inside a shipped package.
+#
+# Staged into this build context by the Makefile's `demo-music` target, because
+# the context is start9/ and the source of truth is ../assets/demo-music.
+COPY ./demo-music /music
