@@ -224,6 +224,48 @@ The relay is the $4 / 500 GB tier and bandwidth is already its binding constrain
 home listening on relay would burn quota for traffic that never leaves the house. Check
 HOW it connects, not just THAT it connects.
 
+## HARDWARE VERDICT 2026-07-29: it works, and EVERYTHING goes through the relay
+
+Tested against `returned-feline.local` on **StartOS 0.4.0** with a fresh s9pk (image 0.2.36,
+demo tracks baked in), Tim's Pixel doing the pairing and playback.
+
+**Both network conditions relay. The punch fails in both directions.**
+
+| Condition | Relay bytes in the playback minute | Idle baseline |
+|---|---|---|
+| Phone on home WiFi | **+5,409,600** | ~60 KB/min |
+| Phone on cellular, WiFi off | **+2,126,169** (+346,747 tail) | ~40 KB/min |
+
+The WiFi figure is 90x baseline and 5.4 MB is `01 Drowning in your smile.mp3` (5,004,158 B)
+plus overhead. Host-side control in both runs: `session:claim` then `resume:set` advancing in
+real time, so the audio genuinely came from this host and not from cache or another library.
+
+**This is worse than the old caveat, not better.** The 2026-07-18 note said cellular punched
+reliably and only same-WiFi failed. On 0.4 neither punches. Something about 0.4's LXC +
+nftables NAT is harder to holepunch than 0.3.5's podman bridge was - the service still sees
+only `10.0.3.x` on `lxcbr0` with no LAN interface, but now the outbound mapping does not
+survive either.
+
+So the honest summary of a Start9 install today: **it works, and PeerLoom pays for it.** Every
+byte a Start9 user streams crosses the relay droplet - the $4 / 500 GB tier whose binding
+constraint is already bandwidth - at roughly 5 MB per track, scaling with how much people
+listen rather than how many people there are.
+
+**Two things this DISPROVES, so nobody re-derives them:**
+
+- *"The relay cannot carry music bitrates"* (open question, TODO 2026-07-28, from a 1.4 kB/s
+  peak). It can: **~90 kB/s** measured on WiFi and **~35 kB/s** on cellular, both sustaining
+  real playback. The old figure was a sample of other people's idle sessions, not a ceiling.
+- *"Playback starved on the relay."* It did not. A frozen `resume:set` position during the
+  cellular run looked like a stall and was not - the app was backgrounded, and the WebView
+  that computes the position is throttled by Android while the native player keeps going.
+  Tim confirmed the audio never stopped. Do not read a flat position as a stall.
+
+**What would fix it:** `bindPortRange` (see above) forwarding a fixed UDP port so the phone has
+a real port to reach, which is now back on the table for a reason that has nothing to do with
+the local-address analysis that was disproved earlier the same day. Until then a Start9
+release is functional but costs PeerLoom bandwidth for every user.
+
 ## Open items
 
 - **Prove the `bindRange` theory** with a minimal 0.4 package that pins the DHT port.
