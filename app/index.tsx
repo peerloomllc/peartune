@@ -66,7 +66,24 @@ async function resolveAsset (mod: any): Promise<string | null> {
   try {
     const a = Asset.fromModule(mod)
     await a.downloadAsync()
-    return (a.localUri ?? a.uri ?? '').replace('file://', '') || null
+    const uri = a.localUri ?? a.uri ?? ''
+    if (!uri) return null
+    const path = uri.replace(/^file:\/\//, '')
+    // PERCENT-DECODE. A file:// URI is a URL, so its path is percent-encoded - and four of
+    // the five demo tracks have spaces in their names. Stripping the scheme alone leaves
+    // "%20" in the string, which bare-fs opens literally and ENOENTs, so every track failed
+    // to install and the demo library browsed perfectly while playing nothing.
+    //
+    // ANDROID NEVER SHOWED THIS: its asset packager copies each file out under a sanitised,
+    // space-free name (assets_demomusic_01drowninginyoursmile.mp3), so there was nothing to
+    // encode. iOS keeps the real filename inside the app bundle. The cover survived there
+    // only because `cover.bin` happens to have no space in it - which is exactly why the
+    // symptom was "art works, audio does not". Found on the iOS Simulator, 2026-07-28.
+    try {
+      return decodeURIComponent(path)
+    } catch {
+      return path // a malformed escape is not worth losing the asset over
+    }
   } catch {
     return null
   }
