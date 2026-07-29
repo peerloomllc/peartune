@@ -91,6 +91,21 @@ async function resolveAsset (mod: any): Promise<string | null> {
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void }
 
+// THE PENDING PAIR LINK LIVES AT MODULE SCOPE, not in a ref, and that is the whole fix for a
+// link doing nothing when the app is already open (2026-07-28).
+//
+// A warm pear:// intent REMOUNTS this component. Measured on the TCL by tagging each mount:
+//   [link] stash via event rv=d8k1di5y inst=974
+//   [link] UI collected NOTHING        inst=883
+// The URL was written into mount 974's ref and looked for in mount 883's, which is a fresh null.
+// So the link was never lost in transit and no listener was missing - every hop fired. It was
+// stored somewhere that does not outlive the event that fills it.
+//
+// A module-level slot survives any number of remounts, so whichever mount is alive when the UI
+// asks gets the link. It also makes the two orderings equivalent: if the remount lands after the
+// stash, the new mount's boot-time take collects it; if before, the link:pending nudge does.
+let pendingPairLink: string | null = null
+
 // The shell paints the strip behind the status bar and under the WebView, so it
 // has to know the theme too - otherwise a light UI sits under a black notch. The
 // UI owns the decision (it knows whether the setting is light, dark or system)
@@ -219,7 +234,6 @@ export default function App () {
   // here, park it, and let the UI take it. `app/+not-found.tsx` covers the other half
   // by redirecting anything unmatched back to index, so a stray link can no longer
   // strand the app on a debug screen.
-  const pendingLinkRef = useRef<string | null>(null)
   // Only PearTune's own pairing links. Another app's pear:// URL (the suite shares the
   // scheme) must not be shoved into the pairing flow, and the parser the UI uses is
   // deliberately strict, so filter here rather than hand it a URL it will only reject.
@@ -233,8 +247,10 @@ export default function App () {
     // first question any report about this will raise, and it is the one thing not visible from
     // the UI side. It is also how the three delivery modes were told apart while testing.
     const take = (url: string, how: string) => {
-      console.warn('[link] pair link via ' + how)
-      pendingLinkRef.current = url
+      // rv fingerprint, so a stash and a collect can be matched up in a log. Cheap, and it is
+      // what turned "the link does nothing" from a guess into a measurement.
+      console.warn('[link] stash via ' + how + ' rv=' + String(url).slice(-8))
+      pendingPairLink = url
       toWeb('link:pending', {})
     }
     Linking.getInitialURL()
@@ -1321,8 +1337,14 @@ export default function App () {
       // dark. The UI asks once on boot and again whenever link:pending says a new one
       // arrived, and both paths go through this same atomic take.
       if (msg.method === 'shell:pendingLink') {
-        const url = pendingLinkRef.current
-        pendingLinkRef.current = null
+        const url = pendingPairLink
+        pendingPairLink = null
+        // The COLLECTION half of the pair of log lines - `take` above records that a link
+        // ARRIVED, this records that the UI came and got it. Without both, a link that goes
+        // nowhere is indistinguishable between "the intent never reached JS" and "it did and
+        // nothing collected it", and those have completely different causes. That ambiguity
+        // cost real time on 2026-07-28.
+        console.warn('[link] UI collected ' + (url ? 'rv=' + String(url).slice(-8) : 'NOTHING'))
         return reply({ result: { url: url ?? null } })
       }
       if (msg.method === 'shell:openUrl') {
