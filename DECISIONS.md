@@ -44,6 +44,22 @@ to `res/raw` and copies out to a real file, which is why the five `.mp3`s worked
 is now `cover.bin` (unmodified JPEG bytes, non-image extension) with `bin` added to metro's
 assetExts. Recorded in `assets/demo-music/LICENSE.md` and `metro.config.js` so it is not "tidied" back.
 
+NAMING MOVED BEFORE THE DEMO CHOICE (Tim, 2026-07-28, on first use). The first cut put "Try it
+without a server" on the INTRO card, so a demo user reached a working library having never been
+asked who they were - and Connect from the demo banner then had to rewind them through the naming
+cards to avoid pairing them nameless. The order is now intro -> name -> whose library -> pair, and
+the demo is the THIRD answer on the whose-library card ("I don't have one yet") rather than an
+escape hatch on the intro: "where is your music?" has three honest answers and "nowhere yet" is one
+of them. Consequences: Connect from demo mode is now a single card (the code), and startDemo
+persists the name to settings.json - on the pairing path it would have ridden into pair(), but the
+demo path has no pair() to carry it, so without that write it lived only in React state and a
+relaunch lost it.
+
+AND THE BACK GESTURE. Backing out of the add-a-library card closed the app: the 'back' listener
+only walked cards when `!state.host`, and adding a library over a RUNNING app never matched. Found
+via demo mode's Connect button, but it was equally true of Settings > Libraries > Add on a paired
+phone, and had been since multi-host shipped.
+
 NOT TOUCHED, deliberately: the grant store, the identity keypair, the pairing window, the wire
 protocol and every host. The demo library is not in `hosts.json` and never will be - it is supplied
 by `listHostsData()` when the flag is on - so switchHost, removeHost and every connection path stay

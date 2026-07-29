@@ -474,6 +474,12 @@ button.scanbtn { display: inline-flex; align-items: center; justify-content: cen
 .obwhy span { font-size: .85rem; line-height: 1.45; }
 /* A card that is one paragraph of guidance (the "whose library" answers). */
 .onboard .namebox > p.sm { margin: 0; line-height: 1.5; }
+/* Separates the two "I have a server" answers from the "I don't have one yet" demo, so the
+   third button reads as a different KIND of answer rather than a third server option. */
+.obsep {
+  width: 100%; max-width: 22rem; height: 1px; margin: .9rem auto .2rem;
+  background: var(--color-divider);
+}
 
 /* The search box and the picker STICK; the library title above them scrolls away.
    Those two are what you reach for from halfway down a grid of 60 albums, and

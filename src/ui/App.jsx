@@ -563,6 +563,9 @@ export default function App () {
     if (s.host && !s.connected && !s.reconnecting) reconnect()
   }, [tab])
 
+  // The names typed on the onboarding card, readable from a callback that closed over an older
+  // render (startDemo runs across an await, and the second half must not save a stale name).
+  const pairNamesRef = useRef(pairNames); pairNamesRef.current = pairNames
   const mergedRef = useRef(null); mergedRef.current = merged
   const filterRef = useRef('_all'); filterRef.current = filter
   const browseRef = useRef('albums'); browseRef.current = browse
@@ -786,14 +789,19 @@ export default function App () {
   // app, as it should at the root. A ref, because the 'back' listener registers
   // once and must still see the latest state.
   const navRef = useRef({})
-  navRef.current = { scanning, donate, nudge, ownerTour, reqComposer, ownerPair, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner }
+  navRef.current = { scanning, donate, nudge, ownerTour, reqComposer, ownerPair, confirming, menu, viewing, expanded, stack, tab, host: state.host, obPhase, obOwner, addingLibrary }
 
   const canBack = !!(
     scanning || donate || nudge || ownerTour || reqComposer || ownerPair || confirming || menu || viewing || expanded ||
     stack.length || tab !== 'library' ||
     // On the onboarding wall there is no stack, but there are cards to walk back
     // through. At the intro there is nothing behind us, so the OS closes the app.
-    (!state.host && obPhase !== 'intro')
+    (!state.host && obPhase !== 'intro') ||
+    // Adding a library over the running app is a CARD, not a wall: there is always an app
+    // behind it to go back to. It was missing here, so back fell through every layer and
+    // Android closed the app instead - reported from demo mode (the Connect button), but it
+    // was equally true of Settings > Libraries > Add on a paired phone.
+    addingLibrary
   )
   useEffect(() => { call('shell:navState', { canBack }).catch(() => {}) }, [canBack])
 
@@ -815,13 +823,16 @@ export default function App () {
     if (n.confirming) return setConfirming(null)
     if (n.scanning) return setScanning(false)
     if (n.expanded) return setExpanded(false)
+    // Adding a library over the running app: one card, and behind it the app. Cancel back
+    // into it rather than letting the press fall through to the OS.
+    if (n.addingLibrary) return cancelAddLibrary()
     // The onboarding wall walks its cards back. On "whose library" an answer is
     // undone first, so back returns you to the two choices rather than skipping
     // the whole card.
     if (!n.host) {
-      if (n.obPhase === 'pair') return setObPhase('names')
-      if (n.obPhase === 'names') return setObPhase('whose')
-      if (n.obPhase === 'whose') return n.obOwner ? setObOwner(null) : setObPhase('intro')
+      if (n.obPhase === 'pair') return setObPhase('whose')
+      if (n.obPhase === 'whose') return n.obOwner ? setObOwner(null) : setObPhase('names')
+      if (n.obPhase === 'names') return setObPhase('intro')
       return
     }
     if (n.stack.length) return setStack(s => s.slice(0, -1))
@@ -1528,6 +1539,14 @@ export default function App () {
     setError(null)
     setDemoStarting(true)
     try {
+      // PERSIST THE NAME FIRST. It was typed on the card before this one and, on the pairing
+      // path, would ride straight into pair(). The demo path has no pair() to carry it, so
+      // without this it lives only in React state - and Connect (or a relaunch) would find a
+      // device that has been using the app for an hour and still cannot say who it belongs to.
+      const n = pairNamesRef.current
+      if (n.userName.trim() || n.deviceName.trim()) {
+        await call('setSettings', { userName: n.userName.trim(), deviceName: n.deviceName.trim() }).catch(() => {})
+      }
       const r = await call('shell:enableDemo')
       let hosts = null
       try { hosts = (await call('listHosts')).hosts } catch {}
@@ -1577,19 +1596,27 @@ export default function App () {
 
   function openAddLibrary () {
     haptic('light')
-    // From DEMO MODE this is a first pair, not an added library: the person has never been
-    // through the naming cards, so sending them straight to the scanner would pair them
-    // nameless and leave the operator an unclaimed row. Start at "whose library is it?" -
-    // the intro card has nothing left to introduce by now.
-    if (state.demo) setObPhase('whose')
     // `ident` is the live identity (what Settings shows and what the last Save wrote); the
     // settings mirror is the fallback for the offline case where ident never loaded. Reading
     // the mirror FIRST is what let a stale copy ride through a pair and clobber the real name.
-    setPairNames({
-      deviceName: ident?.deviceName || state.settings?.deviceName || '',
-      userName: ident?.userName || state.settings?.userName || ''
-    })
+    //
+    // ...and `p` last, because a DEMO user has neither: they named themselves on the onboarding
+    // card and no host has ever confirmed it, so `ident` is null and the settings mirror is only
+    // as good as the write that saved it. Falling back to what is already in hand means Connect
+    // from demo mode can never blank a name the person typed two cards ago.
+    setPairNames(p => ({
+      deviceName: ident?.deviceName || state.settings?.deviceName || p.deviceName || '',
+      userName: ident?.userName || state.settings?.userName || p.userName || ''
+    }))
     setError(null); setScanning(false); setAddingLibrary(true)
+  }
+
+  // Leave the add-a-library card without pairing, back into the running app. Android back
+  // calls this too - see the 'back' listener, where its absence is what closed the app.
+  function cancelAddLibrary () {
+    setError(null)
+    setScanning(false)
+    setAddingLibrary(false)
   }
 
   async function switchLibrary (hostKey) {
@@ -1884,22 +1911,24 @@ export default function App () {
         )
       : (
         <Onboarding
-          // Adding a library is the last card only: this device is already named and
-          // already claims a user, so there is nothing to introduce or ask.
-          //
-          // ...EXCEPT from demo mode, which never asked. A demo user has a library on screen but
-          // has given no name, and pairing them nameless leaves the operator an unclaimed row
-          // they cannot confirm - so from there this runs the real onboarding cards.
-          addHost={!state.demo}
-          phase={state.demo ? obPhase : 'pair'}
-          setPhase={state.demo ? setObPhase : () => {}}
-          owner={state.demo ? obOwner : null}
-          setOwner={state.demo ? setObOwner : () => {}}
+          // The last card only: this device is already named and already claims a user, so
+          // there is nothing left to introduce or ask. That now holds for DEMO MODE too - the
+          // naming card comes before the demo choice, so a demo user reached the library having
+          // already given a name (Tim, 2026-07-28). Hence addHost unconditionally: it is what
+          // says "do not re-ask", and gating Scan QR on a name we already have would disable the
+          // button with nothing on screen explaining why.
+          addHost
+          // ...but a demo user's server is their FIRST, not an added one, so the copy differs.
+          firstServer={!!state.demo}
+          phase='pair'
+          setPhase={() => {}}
+          owner={null}
+          setOwner={() => {}}
           names={pairNames}
           setNames={setPairNames}
           onScan={() => { setError(null); setScanning(true) }}
           onPaste={(link) => onPaired(link, pairNames)}
-          onCancel={() => { setError(null); setScanning(false); setAddingLibrary(false) }}
+          onCancel={cancelAddLibrary}
           error={error}
         />
         )
@@ -6010,25 +6039,33 @@ function DonationSheet ({ onClose }) {
 // A brand-new install is walked through four cards rather than dropped straight
 // onto a form:
 //
-//   intro -> whose library -> who are you -> pair
+//   intro -> who are you -> whose library -> pair
 //
-// The second one is PearTune's own problem, and the reason this is not just the
+// The third one is PearTune's own problem, and the reason this is not just the
 // siblings' intro-then-name flow. Every other PeerLoom app is phone-to-phone and
 // works the moment it is installed; PearTune needs a SERVER running somewhere,
 // and someone who installs the app first has nothing to scan and nothing telling
-// them why. That card says so, and splits the two ways people arrive: running
-// their own library, or being let into a friend's.
+// them why. That card says so, and splits the ways people arrive: running their
+// own library, being let into a friend's, or having no server at all yet - which
+// is the demo.
 //
-// ADDING a second library (Settings > Libraries > Add) skips to the last card:
-// the identity is already established, and re-asking would be a wall on the way
-// to scanning another server's code.
+// NAMING COMES BEFORE THE DEMO CHOICE (Tim, 2026-07-28). It used to sit after the
+// whose-library card, which put "Try it without a server" on the intro - so a demo
+// user reached a working library having never been asked who they were, and later
+// tapping Connect had to rewind them through the naming cards to avoid pairing
+// them nameless. Asking first costs one card up front and makes every path after it
+// a single step.
+//
+// ADDING a library over the running app (Settings > Libraries > Add, and Connect
+// from the demo banner) skips to the last card: the identity is already
+// established, and re-asking would be a wall on the way to scanning a code.
 //
 // The phase lives in App, not here, so Android back can walk it (see the 'back'
 // listener); this component is told which card to draw.
 function Onboarding ({
   phase, setPhase, owner, setOwner,
   names, setNames, onScan, onPaste, onCancel, error, addHost = false, pendingLink = null,
-  onDemo = null, demoStarting = false
+  onDemo = null, demoStarting = false, firstServer = false
 }) {
   // Pre-filled when the app was OPENED with a pear:// pairing link: the box exists so you can
   // paste a link, and we already have it. Initial value only - once the card is up this is the
@@ -6055,24 +6092,7 @@ function Onboarding ({
           <div><LockKey size={18} weight='bold' /><span>No account, no cloud copy of the files, and nothing on that machine exposed to the internet.</span></div>
           <div><DeviceMobile size={18} weight='bold' /><span>Scan a code once and this phone is allowed in. Whoever runs the library can cut it off any time.</span></div>
         </div>
-        <button className='primary' onClick={() => { haptic('light'); setPhase('whose') }}>Get started</button>
-        {/* THE WAY OUT OF THE WALL (proposal 2026-07-28-app-review-demo). Everything above this
-            line assumes a server exists somewhere. If one does not - the App Store reviewer's
-            position, and equally the position of anyone who installs the app before setting one
-            up - the app has nothing to show and no button to press. This is that button: a
-            handful of CC0 tracks bundled in the app, playable offline, with no pairing.
-            Deliberately a SECONDARY button: setting up a real library is still the point. */}
-        {onDemo && (
-          <>
-            <button onClick={onDemo} disabled={demoStarting}>
-              {demoStarting ? 'Setting up…' : 'Try it without a server'}
-            </button>
-            <p className='muted sm hint'>
-              Plays a few sample tracks that come with the app, so you can look around before you
-              have a library to connect to.
-            </p>
-          </>
-        )}
+        <button className='primary' onClick={() => { haptic('light'); setPhase('names') }}>Get started</button>
       </div>
     )
   }
@@ -6118,10 +6138,30 @@ function Onboarding ({
                   warning, open the dashboard, pair. */}
               {owner === 'mine' &&
                 <button onClick={() => { haptic('light'); openUrl('https://peerloomllc.com/peartune/docs/setting-up-a-server') }}>How to set up a server ↗</button>}
-              <button className='primary' onClick={() => { haptic('light'); setPhase('names') }}>Continue</button>
+              <button className='primary' onClick={() => { haptic('light'); setPhase('pair') }}>Continue</button>
               <button onClick={() => { haptic('light'); setOwner(null) }}>Back</button>
             </>
             )}
+        {/* THE THIRD ANSWER, and the way out of the wall (proposal 2026-07-28-app-review-demo).
+            The two above assume a server exists somewhere. If one does not - the App Store
+            reviewer's position, and equally the position of anyone who installs the app before
+            setting one up - PearTune has nothing to show and no button to press. So it belongs
+            HERE, next to the others, rather than as an escape hatch on the intro: "where is your
+            music?" has three honest answers, and "nowhere yet" is one of them.
+            Only on the un-answered card, so it never crowds an explainer someone is reading. */}
+        {onDemo && !owner && (
+          <>
+            <div className='obsep' />
+            <button onClick={onDemo} disabled={demoStarting}>
+              {demoStarting ? 'Setting up…' : 'I don’t have one yet'}
+            </button>
+            <p className='muted sm hint'>
+              Play a few sample tracks that come with the app, so you can look around before you
+              have a library to connect to.
+            </p>
+          </>
+        )}
+        {!owner && <button onClick={() => { haptic('light'); setPhase('names') }}>Back</button>}
       </div>
     )
   }
@@ -6162,12 +6202,12 @@ function Onboarding ({
         )}
         <button
           className='primary'
-          onClick={() => { haptic('light'); if (pendingLink) onPaste(pendingLink); else setPhase('pair') }}
+          onClick={() => { haptic('light'); if (pendingLink) onPaste(pendingLink); else setPhase('whose') }}
           disabled={!ready}
         >
           {pendingLink ? 'Pair' : 'Continue'}
         </button>
-        <button onClick={() => { haptic('light'); setPhase('whose') }}>Back</button>
+        <button onClick={() => { haptic('light'); setPhase('intro') }}>Back</button>
       </div>
     )
   }
@@ -6177,7 +6217,7 @@ function Onboarding ({
     <div className='center onboard'>
       <Wordmark />
       <p className='muted'>
-        {addHost
+        {addHost && !firstServer
           ? 'Open the PearTune dashboard on the server you want to add - yours or a friend’s - and show its pairing code.'
           : owner === 'friend'
             ? 'Scan the pairing code from their dashboard - or paste the link they sent you.'
