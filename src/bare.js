@@ -30,7 +30,7 @@ const { createAudioShim, mimeFor, DEFAULT_ART_SIZE } = require('../worklet/shim'
 const { streamParams } = require('../worklet/quality')
 const { isPairLink, parseLink } = require('../protocol/link')
 const { hostTopic, libraryId: deriveLibraryId } = require('../protocol/ids')
-const { RELAY_PUBLIC_KEY, relayThroughFor } = require('../protocol/relay')
+const { RELAY_PUBLIC_KEY, relayThroughFor, relayAudioDecision } = require('../protocol/relay')
 const hostList = require('../worklet/hosts')
 const { linkActions, WATCHDOG_MS, PING_TIMEOUT_MS } = require('../worklet/link-health')
 const { createRebuildGate } = require('../worklet/rebuild-gate')
@@ -159,6 +159,43 @@ const DEFAULT_SETTINGS = {
   // connect in ensureSwarm's relayThrough fn, so a change applies without a restart.
   useRelay: true
 }
+
+// --- relay consent (proposal 2026-07-29-relay-audio-consent) -----------------
+//
+// Which libraries are reachable only THROUGH PeerLoom's relay, and therefore need
+// consent before their AUDIO streams. Browse, search and artwork are deliberately NOT
+// gated (decision 1): kilobytes against audio's megabytes, and gating them would mean
+// a hard-NAT user opens a library to an empty screen and a dialog.
+//
+// RECORDED, not read off the socket, because there is no way to read it. The phone's
+// own `dht.stats.relaying` reports 0 while actually relaying (measured 2026-07-23,
+// Pixel over cellular; the relay node's stats were the ground truth), and hyperdht
+// keeps the real flag (`c.relaySocket`) private with no accessor. What we can know for
+// certain is what we told Hyperswarm to do, and that is the honest thing to gate on:
+// if we handed it the relay key and the connection then came up, the relay is why this
+// library is reachable at all.
+//
+// relayOffered  hostKeyZ -> did we hand Hyperswarm the relay key for this peer's most
+//               recent connect ATTEMPT. Overwritten per attempt and read when the
+//               connection lands, so it reflects the attempt that actually succeeded:
+//               Hyperswarm tries direct first (null) and only escalates after a
+//               HOLEPUNCH_ABORTED. A peer with no entry never had one offered, i.e. it
+//               is direct - which is also the right answer for an inbound connection.
+// relayedLibs   libraryId -> the resolved answer the audio gate reads.
+// relayAsked    libraryIds we have already emitted a prompt for, so ExoPlayer's many
+//               range requests for one track produce ONE prompt. Cleared when the
+//               consent changes, so a later decline-then-reconsider can ask again.
+// relaySession  libraryId -> 'allow' | 'deny' for THIS worklet session only, never
+//               written to disk. What the prompt's "Remember for this library" checkbox
+//               being UNTICKED produces. The box is ticked by default, so the default
+//               outcome of either button is the sticky one decision 3 asked for; this is
+//               the escape hatch that avoids needing a third button (decision 2). Beats
+//               the persisted value when set, so a session choice overrides a standing
+//               one until the app restarts.
+const relayOffered = new Map()
+const relayedLibs = new Map()
+const relayAsked = new Set()
+const relaySession = new Map()
 
 // What the network is right now, as reported by the shell (expo-network). Default
 // 'wifi' - the safe assumption, because wifi means original quality, i.e. no surprise
@@ -593,6 +630,65 @@ function stampAuth () { stampAuthFor(defaultLibraryId) }
 function leaseValid () {
   const la = loadLastAuth()
   return la > 0 && (Date.now() - la) < LEASE_GRACE_MS
+}
+
+// --- relay-audio consent gate (proposal 2026-07-29) --------------------------
+//
+// The shim calls this for every AUDIO request and nothing else. Returns 'play', 'ask'
+// or 'refuse'; on 'ask' it also emits the prompt, once per library, because ExoPlayer
+// range-requests one track many times and a prompt per range would be unusable.
+//
+// A null libraryId means the URL named no owning host, i.e. the default library - the
+// shim cannot resolve that itself, which is why the substitution happens here.
+function relayAudioGate ({ libraryId, trackId }) {
+  const lib = libraryId || defaultLibraryId
+  if (!lib) return 'play' // hostless (the demo library) - nothing of ours in the path
+
+  const decision = relayAudioDecision({
+    relayed: relayedLibs.get(lib) === true,
+    // A session choice (the prompt with "Remember" unticked) beats the persisted one.
+    consent: relaySession.get(lib) || hostList.relayAudioFor(loadHostsFile(), lib)
+  })
+
+  if (decision === 'ask' && !relayAsked.has(lib)) {
+    relayAsked.add(lib)
+    const h = loadHostsFile().hosts.find((x) => x.libraryId === lib)
+    emit('relay:consent-needed', {
+      libraryId: lib,
+      libraryName: h ? labelFor(lib, h.libraryName) : null,
+      trackId: trackId || null
+    })
+  }
+  return decision
+}
+
+// Record the user's answer.
+//
+// remember=true  persists it: 'allow' | 'deny' are stored, anything else clears the field
+//                back to "ask me again" (worklet/hosts.js setRelayAudio).
+// remember=false session only - held in memory and gone on restart, which is what the
+//                prompt's unticked checkbox means.
+//
+// Either way relayAsked is cleared, so a library that is later reconsidered can prompt
+// again rather than sitting silently refused.
+function setRelayAudioConsent (libraryId, value, remember = true) {
+  const f = loadHostsFile()
+  const h = f.hosts.find((x) => x.libraryId === libraryId)
+  if (!h) return false
+  const clean = (value === 'allow' || value === 'deny') ? value : ''
+  if (remember) {
+    // A remembered choice supersedes any session one, or the session value would keep
+    // winning and the Settings row would show something that is not being obeyed.
+    relaySession.delete(libraryId)
+    saveHostsFile(hostList.setRelayAudio(f, h.hostKey, clean))
+  } else if (clean) {
+    relaySession.set(libraryId, clean)
+  } else {
+    relaySession.delete(libraryId)
+  }
+  relayAsked.delete(libraryId)
+  log('relay:consent-set', { lib: libraryId.slice(0, 8), value: clean || 'ask', remember })
+  return true
 }
 
 // --- pinned-album registry (phase 5C) ---------------------------------------
@@ -1347,7 +1443,14 @@ function listHostsData () {
       // aliased ("Your server calls it X") so the mapping is discoverable and a server-side
       // rename is never invisible; `alias` rides along in the spread above for the editor.
       hostName: h.libraryName,
-      active: h.hostKey === f.activeHostKey
+      active: h.hostKey === f.activeHostKey,
+      // Relay consent (proposal 2026-07-29). `relayAudio` rides along in the spread above when
+      // set; these two are what the Settings row needs to say something true:
+      //   relayed      is this library CURRENTLY reachable only through the relay - so the row
+      //                can stay quiet on a library that never needs the choice
+      //   relayConsent the three-way, with absent normalised to 'ask' so the UI has no special case
+      relayed: relayedLibs.get(h.libraryId) === true,
+      relayConsent: h.relayAudio || 'ask'
     })),
     activeHostKey: f.activeHostKey
   }
@@ -1624,6 +1727,10 @@ async function ensureShim () {
     // The lease gate: a cached track is only served from disk while authorization is
     // fresh. Expired (a revoked or long-offline device) falls through to the live path.
     leaseOk: leaseValid,
+    // The relay-consent gate (proposal 2026-07-29). AUDIO ONLY - the shim does not call
+    // this for art. Owns the prompt and its debouncing, because the shim is the wrong
+    // place to know about IPC.
+    audioGate: relayAudioGate,
     // ...unless the id has no host to be authorized BY. Only the demo library is hostless, and a
     // real library's ids are never in demoIds, so every existing path is untouched.
     hostless: isDemoId,
@@ -1668,12 +1775,26 @@ function ensureSwarm () {
     swarm = new Hyperswarm({
       keyPair: identity,
       dht,
-      relayThrough: (force, s) => relayThroughFor({
-        force,
-        randomized: !!(s && s.dht && s.dht.randomized),
-        useRelay: loadSettings().useRelay !== false,
-        relayKey: RELAY_PUBLIC_KEY
-      })
+      relayThrough: (force, s, peerInfo) => {
+        const key = relayThroughFor({
+          force,
+          randomized: !!(s && s.dht && s.dht.randomized),
+          useRelay: loadSettings().useRelay !== false,
+          relayKey: RELAY_PUBLIC_KEY
+        })
+        // Record WHAT WE DECIDED for this peer, so the audio gate can ask later whether
+        // a library is only reachable through the relay (proposal 2026-07-29). See
+        // relayOffered for why this is recorded rather than read off the socket.
+        //
+        // peerInfo is absent on the SERVER-side relayThrough (hyperdht calls that one
+        // with no arguments), where there is no peer to attribute a decision to, and it
+        // is absent on the client side too unless patches/hyperswarm+4.17.0.patch is
+        // applied. That patch is what forwards it; without it nothing is ever recorded
+        // and nothing is ever gated, which is exactly the silent failure
+        // test/relay-consent.test.js exists to catch.
+        if (peerInfo && peerInfo.publicKey) relayOffered.set(z32.encode(peerInfo.publicKey), !!key)
+        return key
+      }
     })
     swarm.on('connection', onSwarmConnection)
     // One watchdog for the whole worklet, started with the swarm because every path that
@@ -1702,7 +1823,13 @@ function onSwarmConnection (conn, info) {
     try { conn.destroy() } catch {}
     return
   }
-  log('swarm:connection', { host: remoteHex.slice(0, 8) })
+  // Was THIS connection relayed? Read the decision we recorded at the relayThrough call
+  // site for this peer's most recent attempt (proposal 2026-07-29). No entry means we
+  // never offered the relay for it, so it is direct - which is also the correct answer
+  // for a connection that arrived inbound and never went through our client path.
+  relayedLibs.set(host.libraryId, relayOffered.get(remoteHex) === true)
+
+  log('swarm:connection', { host: remoteHex.slice(0, 8), relayed: relayedLibs.get(host.libraryId) })
   attach(host, conn).catch((e) => log('attach:failed', { host: remoteHex.slice(0, 8), err: e && e.message }))
 }
 
@@ -3587,6 +3714,19 @@ const methods = {
     // one can resolve someone else's - so the chips must re-read every label, not just this row's.
     if (mergedMode()) emit('merged:updated', mergedStatusData())
     return listHostsData()
+  },
+
+  // The per-library relay-audio consent (proposal 2026-07-29-relay-audio-consent). Called from
+  // the prompt the worklet raises on the first relayed playback, and from the library's own
+  // settings row so a standing 'deny' is reversible rather than an app that will not play.
+  //
+  // `value` is 'allow' | 'deny', or anything else to clear it back to "ask me again".
+  // `remember` defaults to true (the prompt's checkbox is ticked by default); false keeps the
+  // choice for this session only. Purely local, like the alias: no host is told anything, and
+  // the host never knew whether a connection was relayed in the first place.
+  setRelayAudio ({ libraryId, value, remember = true }) {
+    const ok = setRelayAudioConsent(libraryId, value, remember !== false)
+    return { ok, ...listHostsData() }
   },
 
   // Remove ONE library (per-host unpair). Purges just that library's local state and its

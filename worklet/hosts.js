@@ -70,6 +70,11 @@ function record (h) {
   }
   const alias = cleanAlias(h.alias)
   if (alias) r.alias = alias
+  // Same "present only when set" rule as alias, and for the same reason: a library
+  // that has never been asked round-trips exactly as it did before the field existed,
+  // so this is a no-migration change and an older build just drops it.
+  const relayAudio = cleanRelayAudio(h.relayAudio)
+  if (relayAudio) r.relayAudio = relayAudio
   return r
 }
 
@@ -152,6 +157,35 @@ function renameHost (raw, hostKey, libraryName) {
 // keeps tracking the server underneath an alias (renameHost/addHost above still run), which is
 // what stops clearing an alias from revealing a stale name. A missing host is a no-op, matching
 // renameHost - a rename racing a removeHost is not a caller bug.
+// The per-library relay-audio consent as we are willing to store it (proposal
+// 2026-07-29-relay-audio-consent). '' means "not set", i.e. 'ask', which is why the
+// field is absent rather than written as 'ask' - see record().
+const RELAY_AUDIO = new Set(['allow', 'deny'])
+
+function cleanRelayAudio (v) {
+  return RELAY_AUDIO.has(v) ? v : ''
+}
+
+// The stored consent for one library, as the three-way the policy fn expects.
+// Absent (never asked) reads as 'ask'.
+function relayAudioFor (raw, libraryId) {
+  const f = normalize(raw)
+  const h = f.hosts.find((x) => x.libraryId === libraryId)
+  return (h && h.relayAudio) || 'ask'
+}
+
+// Set (or clear) it. Passing anything other than 'allow'/'deny' - including 'ask' -
+// clears the field, which is how "ask me again" is expressed.
+function setRelayAudio (raw, hostKey, value) {
+  const f = normalize(raw)
+  const h = f.hosts.find((x) => x.hostKey === hostKey)
+  if (!h) return f
+  const clean = cleanRelayAudio(value)
+  if (clean) h.relayAudio = clean
+  else delete h.relayAudio
+  return f
+}
+
 function setAlias (raw, hostKey, alias) {
   const f = normalize(raw)
   const h = f.hosts.find((x) => x.hostKey === hostKey)
@@ -221,4 +255,4 @@ function libraryLabels (hosts) {
   return out
 }
 
-module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost, setAlias, electHome, libraryLabels, ALIAS_MAX }
+module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost, setAlias, setRelayAudio, relayAudioFor, electHome, libraryLabels, ALIAS_MAX }

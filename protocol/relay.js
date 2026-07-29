@@ -35,4 +35,35 @@ function relayThroughFor ({ force, randomized, useRelay, relayKey }) {
   return (force || randomized) ? relayKey : null
 }
 
-module.exports = { RELAY_PUBLIC_KEY, RELAY_PUBLIC_KEY_Z, relayThroughFor }
+// Whether a library reachable only THROUGH the relay may stream AUDIO right now
+// (proposal 2026-07-29-relay-audio-consent). Pure, so the decision is testable away
+// from the transport.
+//
+//   relayed - this library's current connection is riding the relay. Recorded by us at
+//             the relayThrough call site, not read off the socket: the phone's own
+//             dht.stats.relaying reads 0 while actually relaying, and hyperdht keeps
+//             the real flag private. See the proposal's load-bearing question.
+//   consent - the per-library 'ask' | 'allow' | 'deny', default 'ask'.
+//
+// Returns what to DO, not a boolean, because "cannot play" has two very different
+// shapes: one asks the user, the other is a standing no they already gave.
+//
+//   'play'   - stream it
+//   'ask'    - prompt once, then remember (decision 2 + 3)
+//   'refuse' - a sticky deny; do not prompt again, the library's settings row is where
+//              it gets reversed (decision 3)
+//
+// NOTE this gates AUDIO ONLY. Browse, search and artwork cross the relay with no
+// prompt (decision 1, Tim 2026-07-29): they are kilobytes against audio's megabytes,
+// and gating them would mean a hard-NAT user opens a library to an empty screen and a
+// dialog - the pairing-prompt problem moved one step later rather than solved. That is
+// a DISCLOSED trade, not a silent one; the privacy page says so. Do not "tighten this
+// up" by routing art or metadata through here without changing the privacy page too.
+function relayAudioDecision ({ relayed, consent }) {
+  if (!relayed) return 'play'
+  if (consent === 'allow') return 'play'
+  if (consent === 'deny') return 'refuse'
+  return 'ask'
+}
+
+module.exports = { RELAY_PUBLIC_KEY, RELAY_PUBLIC_KEY_Z, relayThroughFor, relayAudioDecision }
