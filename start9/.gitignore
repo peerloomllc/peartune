@@ -3,3 +3,4 @@
 docker-images/
 scripts/embassy.js
 *.s9pk.sha256
+demo-music/
