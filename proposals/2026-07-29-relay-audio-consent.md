@@ -123,15 +123,23 @@ Changes:
   connection is relayed and its consent is not `allow`, do not start: emit an IPC
   event and let the UI ask. Pinned/cached tracks still play (they need no connection).
 - Per-library persisted `relayAudio: 'ask' | 'allow' | 'deny'`, default `'ask'`.
-- UI - the prompt, plus the same control in the library's own settings so a decision
-  is reversible without hunting. The existing global `useRelay` stays as the master
-  kill switch and keeps its meaning: off = never relay anything, current behavior.
+  Declining writes `'deny'` and it STAYS (decision 3).
+- UI - a two-button prompt (`Stream via relay` / `Not now`) with a
+  `Remember for this library` checkbox, NOT a third button (decision 2). Plus a row in
+  the library's own settings showing the current state, so a standing `'deny'` is
+  findable and reversible rather than an app that mysteriously will not play
+  (decision 3). The existing global `useRelay` stays as the master kill switch and
+  keeps its meaning: off = never relay anything, current behavior.
+- Disclosure, which decision 1 makes part of this change rather than a follow-up:
+  `website/peartune/privacy.html` and both store listings must say that a library
+  reachable only via the relay has its BROWSING metadata cross the relay too, not just
+  its audio. Shipping the code without this would make the privacy page inaccurate.
 
 Does NOT change:
 
 - The wire protocol, the host, the grant model, revoke semantics.
 - `relayThroughFor`'s direct-first behavior, or the global toggle's default.
-- Browse, metadata and artwork over the relay. See open question 1.
+- Browse, search and artwork over the relay: allowed without a prompt (decision 1).
 
 ## Compat
 
@@ -152,7 +160,10 @@ and still does not.
 Unit:
 
 - `test/relay-policy.test.js` - extend for `relayAudioAllowed`: allow/deny/ask x
-  relayed/direct, plus master-switch-off short-circuits everything.
+  relayed/direct, plus master-switch-off short-circuits everything. Per decision 1,
+  also assert a NON-audio request over a relayed connection is allowed with consent
+  still `'ask'` - that is the case a later "tighten it up" refactor would silently
+  break.
 - A test asserting the patched `relayThrough` callback is invoked with a `peerInfo`
   carrying a `publicKey`. This is the guard that fails loudly if a hyperswarm bump
   drops the patch.
@@ -183,19 +194,35 @@ build, the patch is removed by dropping the file, and `relayThroughFor` is untou
 so the fallback returns to today's behavior with no persisted state to unwind. Nothing
 here is published or irreversible.
 
+## Decisions (Tim, 2026-07-29)
+
+1. **Browse, search and artwork over the relay: ALLOWED without a prompt, and
+   disclosed.** Only audio is gated. The reasoning that won: gating browse too means a
+   hard-NAT user opens a library to an empty screen and a dialog, which is the
+   pairing-prompt problem moved one step later rather than solved. Kilobytes against
+   the audio's megabytes. **The disclosure is not optional** and is in scope above -
+   the privacy page's relay section is currently about reaching a library, and it now
+   has to say browsing crosses the relay too.
+2. **Two buttons plus a `Remember for this library` checkbox.** No third button. A
+   session-only choice is arguably more honest for a friend's library, but three-button
+   dialogs are worse to use one-handed, and the checkbox makes the stickiness explicit
+   rather than implied.
+3. **Declining is sticky (`'deny'`), with the state shown in that library's settings.**
+   Sticky avoids nagging the user who already said no; the settings row is what stops
+   it becoming an app that inexplicably will not play. Rejected: return-to-ask (nags
+   exactly the wrong person) and session-only (the user cannot tell what state they
+   are in).
+4. **The hyperswarm patch: carry it locally, decide about upstreaming AFTER it works.**
+   We patch locally either way, so nothing is blocked, and offering it to Holepunch is
+   a separate decision that costs nothing to delay. The loud-failure test for the patch
+   is required regardless, since it is what stops a dependency bump silently disabling
+   the consent gate.
+
 ## Open questions
 
-1. **Browse, search and artwork over the relay without consent - allowed?** I propose
-   YES, disclosed, because the alternative is an app that appears broken before the
-   user has anything to consent to, and because it is kilobytes against the audio's
-   megabytes. But it IS the real consent boundary and it is Tim's call, not mine.
-2. **Should the prompt offer "just this once" as well as "remember"?** Three buttons
-   is worse UX; a session-only choice is more honest for a friend's library.
-3. **Should declining be sticky as `'deny'`, or return to `'ask'` next time?** Sticky
-   deny risks a user who forgets why nothing plays; the library settings row is the
-   mitigation.
-4. **Should the host be able to refuse relayed connections?** An owner might want
-   "my library is LAN-only, never via PeerLoom". Out of scope here, and it is a
-   host-side grant-policy change, but worth naming so it is not designed around later.
-5. **Upstream the hyperswarm patch?** Worth offering; carrying a patch indefinitely is
-   a maintenance tax on every dependency bump.
+1. **Should the host be able to refuse relayed connections?** An owner might want "my
+   library is LAN-only, never via PeerLoom". Deliberately OUT OF SCOPE here: it is a
+   host-side grant-policy change, not a phone-side consent change, and it needs its own
+   proposal. Named so nothing here is designed in a way that makes it awkward later. In
+   particular the per-library consent field lives on the PHONE, so a future host-side
+   policy would be a separate independent gate rather than a migration of this one.
