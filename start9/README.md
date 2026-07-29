@@ -180,41 +180,49 @@ options, i.e. TCP and TLS. **`bindRange` is the only raw-UDP door in the SDK**, 
 requires `numberOfPorts >= 2` (the docs push single ports at `bindPort`), so a PearTune
 package would request a small range and use the first port.
 
-**3. But `bindRange` ALONE WILL NOT FIX IT** - established by reading hyperdht on
-2026-07-29, BEFORE building anything. This corrects the optimistic reading written
-earlier the same day; do not re-derive that one either.
+**3. The same-WiFi caveat DID NOT REPRODUCE (2026-07-29), and the analysis that
+predicted it was wrong.** Recorded in full because two wrong conclusions were written
+earlier the same day and both are easy to re-derive.
 
-A forwarded UDP port is necessary but not sufficient, because the phone never learns an
-address to send it to. The chain, all of it in `node_modules/hyperdht`:
+THE PREDICTION, which was wrong as a *sufficient* cause: hyperdht announces LAN addresses
+from the socket's own interfaces (`lib/server.js:214` -> `lib/holepuncher.js:337`), and
+the phone filters them with `matchAddress` (`lib/holepuncher.js:356`), which requires the
+FIRST OCTET to match. A `192.168.50.x` phone therefore discards a container's `10.x`, and
+`shareLocalAddress` (`lib/server.js:41`) is a boolean that can only turn the local path
+off, never redirect it. All of that is TRUE. The error was concluding that losing the LAN
+path breaks the connection.
 
-- A server announces its LAN addresses from `Holepuncher.localAddresses(socket)`
-  (`lib/server.js:214`), which enumerates **the socket's own interfaces**
-  (`lib/holepuncher.js:337`). Inside a StartOS container that set is exactly `10.0.3.x`.
-- The phone picks a usable one with `matchAddress` (`lib/holepuncher.js:356`), which
-  compares dotted octets and requires **the first octet to match**. The phone is
-  `192.168.50.x`, and `10` never matches `192`, so every announced address is discarded.
-- With no LAN path the phone falls back to punching the router's external mapping - the
-  hairpin that home routers do not do. That is the observed failure, exactly.
-- **Nothing lets you override what is announced.** `shareLocalAddress` is a boolean
-  (`lib/server.js:41`, `opts.shareLocalAddress !== false`) - it can turn the local path
-  off, never point it elsewhere. No local-address option exists in `hyperdht/index.js`.
+TWO EXPERIMENTS, TCL on WiFi only (SIM absent) at `192.168.50.242`:
 
-So the container would announce `10.0.3.x` however the port is forwarded, and the phone
-would ignore it. **Building the package first would have proven the diagnosis and nothing
-else.**
+| | Setup | Result |
+|---|---|---|
+| B | Host on the dev box, forced to announce `10.99.0.5` (no container) | **paired in ~8s** |
+| D | Host in a real container: only `10.88.0.2`, private bridge, double NAT, announcing its own 10.x | **paired in ~28s** |
 
-One useful thing measured on the way: the DHT port IS cleanly pinnable.
-`new HyperDHT({ port: 49999 })` binds exactly 49999, whereas `new HyperDHT()` binds a
-random port per process (measured 36600, 42742, 59270 over three runs - the
-`opts.port || 49737` default at `hyperdht/index.js:27` is only a preference and does not
-survive). So half the ingredient list is cheap; the announcement is the hard half.
+D models the StartOS condition faithfully - private bridge, 10.x only, a second NAT layer
+- and it paired and connected anyway. The phone does discard the announced address
+exactly as predicted, then falls back to holepunching, and that fallback works. The 8s vs
+28s gap is the cost of losing the LAN shortcut, not a failure.
 
-**What a real fix takes**, one of:
-- **Patch hyperdht** to accept an announced-local-address override, so the container can
-  advertise `192.168.50.253:<pinned>` and let the `bindRange` nft forward deliver it. That
-  is a patch on a core dependency carried forever - the same class of cost as the
-  expo-audio patch, except this one is load-bearing for connectivity.
-- **Or host networking**, which 0.4 does not have.
+So **`bindRange` may not be needed at all**, and neither is a hyperdht patch. Do not
+build either on the strength of the octet analysis.
+
+WHY THE ORIGINAL CAVEAT PROBABLY NO LONGER APPLIES: it was recorded **2026-07-18**. The
+whole off-LAN transport saga - persistent Hyperswarm transport, NAT classification and the
+blind-relay backstop - shipped **22-24 July, after it**. Tim's read, and it fits the
+evidence: the relay backstop resolved it. A 0%-punch backstop is exactly the right shape
+for a same-LAN punch failure.
+
+**STILL UNVERIFIED ON THE ACTUAL BOX**, and one caveat is being replaced by a question:
+the committed `peartune.s9pk` predates the relay work, so testing it would test the
+pre-fix code. A real answer needs a fresh s9pk built from image 0.2.36, converted to v2,
+sideloaded onto the 0.4.0 box, and paired from a phone on the home WiFi.
+
+**A COST TO WATCH IF IT PASSES VIA THE RELAY.** If same-WiFi listening on Start9 works
+only *because* traffic is relayed, then every song a user plays at home crosses the VPS.
+The relay is the $4 / 500 GB tier and bandwidth is already its binding constraint, so
+home listening on relay would burn quota for traffic that never leaves the house. Check
+HOW it connects, not just THAT it connects.
 
 ## Open items
 
