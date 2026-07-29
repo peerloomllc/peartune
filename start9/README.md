@@ -6,16 +6,21 @@ this wraps it for StartOS's `.s9pk` format. Modeled on the proven
 [`pearcircle-seeder`](../../pearcircle/seeder-launcher/start9/) package - the
 reason to reuse it is its **networking**, which is already validated on StartOS.
 
-Targets **StartOS 0.3.5.x** (the stable channel): a service is a `manifest.yaml`,
-one Docker image tar per arch, and deno-bundled TypeScript procedures, packed
-with `start-sdk pack`. Distribution for v1 is **sideload** (not a registry
-publish - see Open items).
+**What is built today targets StartOS 0.3.5.x**, and **the target for release is
+StartOS 0.4.0 installed from the PeerLoom community registry** (Tim, 2026-07-29),
+matching what PearCal and PearCircle have already proven. The 0.4 work is NOT done -
+see [Retargeting to 0.4](#retargeting-to-04-not-done-yet) before relying on anything
+in this file.
+
+The 0.3.5.x package that exists: a service is a `manifest.yaml`, one Docker image tar
+per arch, and deno-bundled TypeScript procedures, packed with `start-sdk pack`.
+Distribution for it is **sideload**.
 
 ## Layout
 
 - `manifest.yaml` - metadata, entrypoint, interface (Tor + LAN), health check,
   backup, migrations.
-- `Dockerfile` - `FROM` the same digest-pinned `ghcr.io/peerloomllc/peartune-host:0.2.6`
+- `Dockerfile` - `FROM` the same digest-pinned `ghcr.io/peerloomllc/peartune-host:0.2.36`
   image the Umbrel app runs, plus `tini` and the StartOS entrypoint. Reuses the
   published multi-arch image instead of rebuilding. (0.2.1 is the first image to
   carry generate-and-print, which this package relies on for its dashboard
@@ -119,8 +124,101 @@ multi-arch manifest list, so each arch tar pulls its own layer. Building the
 arm64 tar on an x86 host runs a tiny apt step under qemu (`qemu-user-static`
 binfmt). Real arm-hardware P2P is unverified for lack of an arm Start9 box.
 
+## Retargeting to 0.4 (NOT DONE YET)
+
+The release target is **StartOS 0.4.0, installed by adding the PeerLoom community
+registry URL** rather than sideloading a `.s9pk`. None of it is built for PearTune yet.
+The pattern to copy lives in the PearCal repo at
+`seeder-launcher/start9/registry/README.md` (a different repo, hence a path rather than
+a link), which documents each of the following as something learned by driving a real
+0.4 client:
+
+- **0.4 is a different protocol, not a newer version of the same one.** 0.3.5.x serves
+  static files under `GET /package/v0/...`; 0.4 answers JSON-RPC at `POST /rpc/v0` from a
+  single document. A 0.4 box ignores the static tree completely - which is exactly how
+  PearCal stayed invisible on 0.4 while looking perfectly healthy on 0.3.5.
+- **The package format differs too.** 0.4 wants a **v2** s9pk (`start-cli s9pk convert`),
+  served from `/package/v1/...`. The two are not interchangeable: the 0.4 entry carries a
+  `commitment` hash computed over the v2 file, so handing a 0.4 client the v1 s9pk fails
+  the hash.
+- **Three fields 0.3.5 did not need:** `commitment` is mandatory, `signatures` must be
+  non-empty or install fails with "Signer(s) not accepted" even though browsing works
+  (self-signing is sufficient), and `icon` must be a real base64 data URL, not null.
+- **The generator must be merge-aware.** PeerLoom serves ONE registry listing several
+  packages from a single 0.4 document, so a generator that wrote it wholesale would
+  delist every other app in one line.
+- Needs the 0.4-era `start-cli` (1.x); the 0.3.5 SDK's `start-cli` has no `s9pk`
+  subcommand at all.
+
+## Does 0.4 fix the same-WiFi caveat? Investigated 2026-07-29
+
+The honest answer is **not by itself, but it finally provides the primitive that could**.
+The earlier framing in this file - "host networking would fix it, check whether 0.4
+exposes it" - was **wrong on both halves**, so do not re-derive it.
+
+Measured against `returned-feline.local`, which is now on **StartOS 0.4.0**
+(`/etc/os-release` VERSION="0.4.0", `startd` running, `start-cli 1.1.0`):
+
+**1. 0.4 does NOT expose host networking, and did not change the architecture.** Every
+package runs in an unprivileged **LXC** container on `lxcbr0`, `10.0.3.0/24`, with a
+startd-generated config of `lxc.net.0.type = veth` / `lxc.net.0.link = lxcbr0`. Checked
+inside all eight running containers: each has **only `eth0` on 10.0.3.x and no LAN
+interface**. The host's LAN is `wlp1s0` at `192.168.50.253`; no container can see it. So
+a service still cannot observe or announce a LAN address - the same trap as 0.3.5's
+podman bridge, in a new container runtime. There is no `hostNetwork`, `networkMode` or
+`macvlan` concept anywhere in `@start9labs/start-sdk` (2.0.9).
+
+**2. But 0.4 adds a raw UDP port forward, which 0.3.5 had no equivalent of.**
+`MultiHost.bindPortRange` / `Effects.bindRange` binds *"a contiguous range of **UDP+TCP**
+ports"*, documented for **coturn, RTP and SIP** - real NAT-traversal workloads - and
+`externalStartPort` may differ from `internalStartPort`, the forward mapping external
+onto internal by offset.
+
+That distinction matters, because the single-port API is no use to us: `bindPort` is
+protocol-typed over `http`/`https`/`ws`/`wss`/`ssh`/`dns` with `addSsl` / `secure`
+options, i.e. TCP and TLS. **`bindRange` is the only raw-UDP door in the SDK**, and it
+requires `numberOfPorts >= 2` (the docs push single ports at `bindPort`), so a PearTune
+package would request a small range and use the first port.
+
+**3. But `bindRange` ALONE WILL NOT FIX IT** - established by reading hyperdht on
+2026-07-29, BEFORE building anything. This corrects the optimistic reading written
+earlier the same day; do not re-derive that one either.
+
+A forwarded UDP port is necessary but not sufficient, because the phone never learns an
+address to send it to. The chain, all of it in `node_modules/hyperdht`:
+
+- A server announces its LAN addresses from `Holepuncher.localAddresses(socket)`
+  (`lib/server.js:214`), which enumerates **the socket's own interfaces**
+  (`lib/holepuncher.js:337`). Inside a StartOS container that set is exactly `10.0.3.x`.
+- The phone picks a usable one with `matchAddress` (`lib/holepuncher.js:356`), which
+  compares dotted octets and requires **the first octet to match**. The phone is
+  `192.168.50.x`, and `10` never matches `192`, so every announced address is discarded.
+- With no LAN path the phone falls back to punching the router's external mapping - the
+  hairpin that home routers do not do. That is the observed failure, exactly.
+- **Nothing lets you override what is announced.** `shareLocalAddress` is a boolean
+  (`lib/server.js:41`, `opts.shareLocalAddress !== false`) - it can turn the local path
+  off, never point it elsewhere. No local-address option exists in `hyperdht/index.js`.
+
+So the container would announce `10.0.3.x` however the port is forwarded, and the phone
+would ignore it. **Building the package first would have proven the diagnosis and nothing
+else.**
+
+One useful thing measured on the way: the DHT port IS cleanly pinnable.
+`new HyperDHT({ port: 49999 })` binds exactly 49999, whereas `new HyperDHT()` binds a
+random port per process (measured 36600, 42742, 59270 over three runs - the
+`opts.port || 49737` default at `hyperdht/index.js:27` is only a preference and does not
+survive). So half the ingredient list is cheap; the announcement is the hard half.
+
+**What a real fix takes**, one of:
+- **Patch hyperdht** to accept an announced-local-address override, so the container can
+  advertise `192.168.50.253:<pinned>` and let the `bindRange` nft forward deliver it. That
+  is a patch on a core dependency carried forever - the same class of cost as the
+  expo-audio patch, except this one is load-bearing for connectivity.
+- **Or host networking**, which 0.4 does not have.
+
 ## Open items
 
-- **Hardware smoke on returned-feline.local** (the acceptance above).
-- **Distribution**: publish to a PeerLoom community registry (analogous to the
-  Umbrel community store) so users can add it by URL, instead of sideloading.
+- **Prove the `bindRange` theory** with a minimal 0.4 package that pins the DHT port.
+  Do this FIRST - it decides whether a Start9 release is good or merely installable.
+- **Retarget to 0.4 + publish to the community registry** (above). Engineering, not a
+  docs change.

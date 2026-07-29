@@ -32,8 +32,10 @@ npm start            # or: npm run start:dev-linux
 
 ## Build installers
 
-**Unsigned for v1** (Windows shows a SmartScreen "unknown publisher" warning;
-an unsigned macOS build is Gatekeeper-blocked until signing is wired).
+**macOS is signed but NOT notarized; Windows and the AppImage are unsigned.** So macOS
+Gatekeeper still warns on first open (right-click > Open gets past it) and Windows shows
+a SmartScreen "unknown publisher" warning. Notarization and a Windows cert are the
+remaining distribution work.
 
 ```bash
 npm run build:linux      # AppImage + .deb, native, this box
@@ -53,8 +55,9 @@ PearCal):
 cd desktop && npm install && npm run build:mac    # dist/*.dmg (arm64 + x64)
 ```
 
-`package.json#build.mac` is set to unsigned (`identity: null`, `notarize: false`) for
-v1; wire the mac-mini's signing identity + notarization there when we sign.
+`package.json#build.mac` now carries a real signing `identity`, but `notarize` is still
+`false` - so the `.dmg` is signed and not notarized. Wiring notarization there is what
+removes the Gatekeeper warning.
 
 ## Not committed
 

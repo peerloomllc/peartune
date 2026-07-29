@@ -19,6 +19,12 @@ Two pieces:
 
 Every connection is end-to-end encrypted and mutually authenticated. The host knows exactly which device is calling, because the connection itself proves it. There are no passwords or connection strings to leak.
 
+## Setting it up
+
+**[Getting started](docs/getting-started.md)** walks the whole thing end to end, with screenshots: install the host, point it at your music, pair a phone, see who has access, and revoke someone.
+
+Install pages for a specific machine: [Linux and Docker](docs/host-linux.md) · [macOS and Windows](docs/host-macos-windows.md) · [Start9](start9/README.md). On Umbrel, install PearTune from the app store.
+
 ### When the phone can't reach the host directly
 
 Most of the time your phone connects straight to your host. But some mobile carriers and locked-down wifi refuse a direct peer-to-peer connection, and when that happens PearTune can fall back to a relay run by PeerLoom. The relay only forwards traffic that is already encrypted: it can see that your device is talking to your host and how much data moves, but never the contents, and it never keeps a copy of anything. It is on by default and you can turn it off in **Settings > Connection**. Full explanation at [peerloomllc.com/relay](https://peerloomllc.com/relay).
@@ -43,7 +49,7 @@ Grant access per device and per person. Your phone, your tablet, your partner's 
 
 **Alpha. Working, but not yet publicly released.**
 
-The wire protocol (`proposals/2026-07-13-wire-protocol.md`) is implemented and the whole path runs: scan the QR, browse the library, play. The host is packaged as a Docker image and runs on an Umbrel, and both the Android and the iOS clients are built. Pairing, gapless playback, per-person grants, live revocation and multiple hosts in one merged library have all been exercised on real devices against real hosts, including off-LAN over cellular.
+The wire protocol (`proposals/2026-07-13-wire-protocol.md`) is implemented and the whole path runs: scan the QR, browse the library, play. The host is packaged as a Docker image and runs on an Umbrel, and both the Android and the iOS clients run on real phones. Pairing, gapless playback, per-person grants, live revocation and multiple hosts in one merged library have all been exercised on real devices against real hosts, including off-LAN over cellular.
 
 What is missing is something you can install: there is no published release yet. Open work is tracked in `TODO.md` and design decisions in `DECISIONS.md`.
 
