@@ -35,7 +35,9 @@ DONE.md
 # deno bundle lockfile (start9 s9pk procedures)
 /deno.lock
 
-# Recorded demo videos (scripts/ios-sim-demo-video.sh writes here). Build OUTPUT, not source -
-# the script reproduces it from the app, and takes pile up fast at ~1 MB each.
+# Recorded demo videos (scripts/ios-sim-demo-video.sh writes here) and the screen-recorded
+# dashboard clips they get cut together with. Build OUTPUT, not source - the phone half is
+# reproducible from the app, the dashboard half is a re-shoot, and takes pile up fast.
 peartune-demo-ios.mp4
 *.mp4
+*.webm
