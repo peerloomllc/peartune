@@ -6,7 +6,10 @@ own NAS / desktop / VPS?"
 
 PearTune's host is a small always-on daemon: it holds the allow-list, gates connections,
 and serves your library over HyperDHT. Your phone reaches it with no port forwarding, no
-VPN, no account. This page covers three ways to run it on a plain Linux box, easiest first.
+VPN, no account. This page covers four ways to run it on a plain Linux box, easiest first.
+
+**On a Linux desktop, use the desktop app (Option A).** The Docker and systemd paths
+below are for a headless box, a NAS or a server.
 
 > On **macOS or Windows**? See [`host-macos-windows.md`](host-macos-windows.md).
 >
@@ -33,9 +36,43 @@ non-loopback bind (`0.0.0.0`, a LAN IP) requires a password. You have two choice
 
 A loopback-only bind (`127.0.0.1`, reached over an SSH tunnel) stays password-free.
 
+**Option A does not apply here at all.** The desktop app binds loopback, so it has no
+password to set, generate or type.
+
 ---
 
-## Option A — Docker Compose (recommended)
+## Option A — the desktop app (AppImage or .deb)
+
+If this machine has a desktop, this is the easiest path by a wide margin. It runs the
+same `host/` code as every option below, wrapped in a tray app: **Open dashboard** and
+**Quit**, starting at login, no terminal at any point.
+
+It binds the dashboard to loopback, so there is **no password to set or type** - the
+control panel is reachable only from this machine. The P2P host runs regardless, so
+phones still pair and stream from anywhere. Your library defaults to your `~/Music`
+folder and you change it from the dashboard.
+
+- **AppImage** - download, `chmod +x`, run. No install, no root, works on any distro.
+- **.deb** - for Debian/Ubuntu, if you would rather it be a package.
+
+> **Not yet on a downloads page.** PearTune has no public release, so there is nothing
+> to download today; the builds are made from this repo. Once the first release ships
+> these land on the GitHub releases page.
+
+To build them now:
+
+```bash
+cd desktop && npm install && npm run build:linux   # -> dist/*.AppImage and dist/*.deb
+```
+
+See [`../desktop/README.md`](../desktop/README.md). Note the AppImage is unsigned, and on
+a Wayland desktop you may need `--disable-gpu` if the tray icon misbehaves.
+
+**Not a desktop machine?** Skip to Option B. A tray app needs a desktop session, and
+launching it over SSH does not work - a GUI process started from an SSH session never
+reaches the interactive desktop and simply exits.
+
+## Option B — Docker Compose (recommended for a server)
 
 The published image runs anywhere Docker does. Grab the compose file from `host/deploy/`:
 
@@ -59,7 +96,7 @@ Key lines in that compose file:
 To serve an existing Subsonic/Navidrome/Jellyfin library instead of a folder, uncomment the
 `PEARTUNE_NAVIDROME_*` lines (they drive the Subsonic adapter; Jellyfin/Emby work too).
 
-## Option B — `docker run` (no compose)
+## Option C — `docker run` (no compose)
 
 ```bash
 docker run -d --name peartune-host \
@@ -73,7 +110,7 @@ docker run -d --name peartune-host \
 docker logs peartune-host   # generated password
 ```
 
-## Option C — native + systemd (no Docker at all)
+## Option D — native + systemd (no Docker at all)
 
 For running it as a plain OS service. Needs **Node 20+** on the box.
 

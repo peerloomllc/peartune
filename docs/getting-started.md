@@ -31,14 +31,24 @@ get a login, and no file is ever copied to you.
 
 ## Step 1 - install the host
 
-Pick the page for your machine and come back here when the host is running:
+**On a Mac, a Windows PC or a Linux desktop, install the PearTune desktop app.** It is
+the host wrapped in a menubar / tray app: it starts at login, has **Open dashboard** and
+**Quit**, and needs no terminal and no password. A `.dmg` on macOS, an installer `.exe`
+on Windows, an **AppImage** or `.deb` on Linux.
+
+> PearTune has no public release yet, so there is nothing to download today - the
+> installers are built from this repo, and they land on the GitHub releases page when the
+> first release ships. Build instructions are on the two install pages below.
+
+Running it on a server, a NAS or a headless box instead? Pick your page:
 
 - **Linux, a NAS, or anything with Docker** - [`host-linux.md`](host-linux.md)
 - **macOS or Windows** - [`host-macos-windows.md`](host-macos-windows.md)
 - **Umbrel** - install PearTune from the app store; there is nothing else to do
 - **Start9** - [`../start9/README.md`](../start9/README.md)
 
-Whichever you pick, the host prints something like this when it starts:
+Whichever you pick, the host prints something like this when it starts (the desktop app
+shows you the dashboard instead of a log):
 
 ```
   library    The Study Mac
@@ -53,8 +63,9 @@ Two things to note now, because they matter later:
 - **The dashboard password.** If your host is reachable on your network rather than only
   on itself, it needs one. Set `PEARTUNE_PASSWORD`, or leave it alone and the host
   generates a strong one on first run, prints it in the log, and saves it to
-  `<data>/dashboard-password`. A loopback-only host reached through an SSH tunnel needs
-  no password at all.
+  `<data>/dashboard-password`. **The desktop app has no password** - it binds to the
+  machine itself, so only someone already sitting at it can open the dashboard. The same
+  is true of any host you reach through an SSH tunnel.
 
 ---
 

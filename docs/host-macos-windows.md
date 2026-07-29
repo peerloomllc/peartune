@@ -5,9 +5,7 @@
 
 The PearTune host is a small always-on daemon: it holds the allow-list, gates
 connections, and serves your library over HyperDHT so your phone reaches it from
-anywhere with no port forwarding. It's plain Node, so it runs on macOS and Windows
-today. This page covers the two ways to do it. A polished menubar/tray app is a
-planned follow-on (see the end); until then this is the technical path.
+anywhere with no port forwarding.
 
 > **New to PearTune?** [`getting-started.md`](getting-started.md) walks the whole thing
 > end to end with screenshots - install, point it at your music, pair a phone, revoke a
@@ -15,20 +13,67 @@ planned follow-on (see the end); until then this is the technical path.
 
 ## Which path — and the one caveat that decides it
 
-- **Native (recommended).** Run the host directly with Node on your Mac/Windows.
-  It makes the outbound UDP that holepunching needs straight from the machine, so
-  the "reach it from anywhere" pitch works exactly as designed. This is the
-  reliable choice.
+- **The desktop app (recommended).** A menubar (macOS) / tray (Windows) app that runs
+  the host for you, starts at login and opens the dashboard in your browser. No
+  terminal, no Node, nothing to configure. **Start here** unless you have a reason not
+  to - the rest of this page is for people running it headless on a server.
+- **Native Node.** Run the host directly with Node. The right answer for a headless
+  box, a VM or anything without a desktop session. It makes the outbound UDP that
+  holepunching needs straight from the machine, exactly like the desktop app does.
 - **Docker Desktop (works, with a networking caveat).** The same image runs under
   Docker Desktop, but Docker Desktop runs Linux containers inside a **VM with its
   own NAT**, and `network_mode: host` does **not** behave the way it does on Linux
   there. Outbound UDP holepunching may not survive that extra layer of NAT. It's
   fine for trying the dashboard on your LAN, but if pairing/streaming from
-  **off-LAN** fails, that's why — use the native path instead.
+  **off-LAN** fails, that's why — use one of the paths above instead.
 
-The dashboard password works the same on both: any non-loopback bind (`0.0.0.0`)
-gets a password, and if you don't set `PEARTUNE_PASSWORD` the host **generates one
-on first run**, prints it, and saves it to `<data>/dashboard-password`.
+The dashboard password differs by path, and it is the one real difference between
+them:
+
+- **The desktop app binds loopback only** (`127.0.0.1`), so the control panel is
+  reachable only from that machine and there is **no password to set or type**. The
+  P2P host runs regardless, so phones still pair and stream from anywhere.
+- **The native and Docker paths bind `0.0.0.0`** so you can reach the dashboard from
+  another machine, and any non-loopback bind gets a password. Set `PEARTUNE_PASSWORD`,
+  or leave it and the host **generates one on first run**, prints it, and saves it to
+  `<data>/dashboard-password`.
+
+---
+
+## The desktop app
+
+Install it, and that is the whole install step. It runs the same `host/` code every
+other path on this page runs, wrapped in a tray app so a non-technical person never
+sees a terminal.
+
+- Lives in the menubar / tray with **Open dashboard** and **Quit**, and starts at login.
+- Binds the dashboard to loopback, so there is no password.
+- Defaults your library to your OS **Music** folder. Change it - or point it at a
+  Jellyfin / Subsonic server - from the dashboard, exactly as described in
+  [`getting-started.md`](getting-started.md).
+
+**macOS:** a `.dmg` (Apple Silicon and Intel). **Windows:** a `PearTune Setup x.y.z.exe`
+installer.
+
+> **Not yet on a downloads page.** PearTune has no public release, so there is no
+> installer to download today - the builds are made from this repo. Once the first
+> release ships, these land on the GitHub releases page and this section becomes
+> "download and open it".
+
+To build one now:
+
+```bash
+cd desktop && npm install && npm run build:mac       # dist/*.dmg  (run this ON a Mac)
+cd desktop && npm install && npm run build:windows   # dist/*.exe  (cross-builds from Linux via wine)
+```
+
+`electron-builder` cannot build a macOS target from Linux, so the `.dmg` has to be
+built on a Mac. See [`../desktop/README.md`](../desktop/README.md) for the details.
+
+**Signing, honestly:** the macOS build is signed but **not notarized**, and the Windows
+build is unsigned. So macOS Gatekeeper and Windows SmartScreen will both warn on first
+open until notarization and a Windows cert are wired up. On macOS, right-click the app
+and choose Open to get past it; on Windows, choose "More info" then "Run anyway".
 
 ---
 
@@ -153,10 +198,15 @@ Move the **data dir** (`PEARTUNE_DATA`) and every already-paired phone keeps wor
 with no re-pair — it carries the identity and the grant store. Point the new
 machine's music at the same files and you're done.
 
-## The polished app (planned follow-on)
+## What is left on the desktop app
 
-A menubar (macOS) / tray (Windows) app that starts the host, opens the dashboard,
-and runs at login — no terminal — is a planned follow-on. It's deferred because the
-real cost there is **code signing + notarization** (an Apple Developer account on
-macOS, a signing cert on Windows) and bundling the Node runtime, not the host
-itself. This technical path exists so you don't have to wait for it.
+The app itself is built and runs; what remains is distribution polish, and it is worth
+being precise about which is which:
+
+- **macOS notarization.** The build is signed but not notarized, so Gatekeeper still
+  warns on first open.
+- **A Windows signing certificate.** The build is unsigned, so SmartScreen warns.
+- **A published release** to download it from, rather than building it yourself.
+
+None of these change how the host behaves - they change how much friction a stranger
+hits installing it.

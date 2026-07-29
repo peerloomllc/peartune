@@ -6,10 +6,15 @@ this wraps it for StartOS's `.s9pk` format. Modeled on the proven
 [`pearcircle-seeder`](../../pearcircle/seeder-launcher/start9/) package - the
 reason to reuse it is its **networking**, which is already validated on StartOS.
 
-Targets **StartOS 0.3.5.x** (the stable channel): a service is a `manifest.yaml`,
-one Docker image tar per arch, and deno-bundled TypeScript procedures, packed
-with `start-sdk pack`. Distribution for v1 is **sideload** (not a registry
-publish - see Open items).
+**What is built today targets StartOS 0.3.5.x**, and **the target for release is
+StartOS 0.4.0 installed from the PeerLoom community registry** (Tim, 2026-07-29),
+matching what PearCal and PearCircle have already proven. The 0.4 work is NOT done -
+see [Retargeting to 0.4](#retargeting-to-04-not-done-yet) before relying on anything
+in this file.
+
+The 0.3.5.x package that exists: a service is a `manifest.yaml`, one Docker image tar
+per arch, and deno-bundled TypeScript procedures, packed with `start-sdk pack`.
+Distribution for it is **sideload**.
 
 ## Layout
 
@@ -119,8 +124,42 @@ multi-arch manifest list, so each arch tar pulls its own layer. Building the
 arm64 tar on an x86 host runs a tiny apt step under qemu (`qemu-user-static`
 binfmt). Real arm-hardware P2P is unverified for lack of an arm Start9 box.
 
+## Retargeting to 0.4 (NOT DONE YET)
+
+The release target is **StartOS 0.4.0, installed by adding the PeerLoom community
+registry URL** rather than sideloading a `.s9pk`. None of it is built for PearTune yet.
+The pattern to copy lives in the PearCal repo at
+`seeder-launcher/start9/registry/README.md` (a different repo, hence a path rather than
+a link), which documents each of the following as something learned by driving a real
+0.4 client:
+
+- **0.4 is a different protocol, not a newer version of the same one.** 0.3.5.x serves
+  static files under `GET /package/v0/...`; 0.4 answers JSON-RPC at `POST /rpc/v0` from a
+  single document. A 0.4 box ignores the static tree completely - which is exactly how
+  PearCal stayed invisible on 0.4 while looking perfectly healthy on 0.3.5.
+- **The package format differs too.** 0.4 wants a **v2** s9pk (`start-cli s9pk convert`),
+  served from `/package/v1/...`. The two are not interchangeable: the 0.4 entry carries a
+  `commitment` hash computed over the v2 file, so handing a 0.4 client the v1 s9pk fails
+  the hash.
+- **Three fields 0.3.5 did not need:** `commitment` is mandatory, `signatures` must be
+  non-empty or install fails with "Signer(s) not accepted" even though browsing works
+  (self-signing is sufficient), and `icon` must be a real base64 data URL, not null.
+- **The generator must be merge-aware.** PeerLoom serves ONE registry listing several
+  packages from a single 0.4 document, so a generator that wrote it wholesale would
+  delist every other app in one line.
+- Needs the 0.4-era `start-cli` (1.x); the 0.3.5 SDK's `start-cli` has no `s9pk`
+  subcommand at all.
+
+**There is a second reason to want 0.4 here, beyond distribution.** The same-WiFi caveat
+above is a genuine blocker for a music player - home listening on the same network as the
+box is a core case, not an edge one - and the fix is host networking, which the 0.3.5.x
+manifest does not expose. Whether 0.4 exposes it is the first thing to establish, because
+it decides whether PearTune on Start9 is actually good or merely installable.
+
 ## Open items
 
-- **Hardware smoke on returned-feline.local** (the acceptance above).
-- **Distribution**: publish to a PeerLoom community registry (analogous to the
-  Umbrel community store) so users can add it by URL, instead of sideloading.
+- **Retarget to 0.4 + publish to the community registry** (above). Engineering, not a
+  docs change.
+- **Confirm whether 0.4 fixes the same-WiFi caveat.** Establish this before doing the
+  packaging work, since it is the thing that decides whether a Start9 release is worth
+  shipping.
