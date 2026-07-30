@@ -52,6 +52,20 @@ fi
 # <data>/dashboard-password (0600), stable across restarts - and the dashboard can then
 # change it. Export PEARTUNE_PASSWORD before running this to pin one deliberately, which
 # is what the Umbrel app store listing does with umbrelOS's ${APP_PASSWORD}.
+
+# Did a password file exist BEFORE we started? Asked here, not after, because the container
+# creates one within seconds and then the answer is always yes.
+#
+# THIS IS A SILENT CREDENTIAL ROTATION AND IT HAS TO BE ANNOUNCED. On a host whose previous
+# container had PEARTUNE_PASSWORD baked in (every deploy before 2026-07-28), no file was ever
+# written - the password came from the env. Dropping the placeholder was right, but the FIRST
+# redeploy after it mints a fresh random password and says nothing, so the operator is locked out
+# of a dashboard that worked ten minutes earlier with no clue where to look. Cost Tim an hour on
+# 2026-07-30. The container logs the minted password once, at a point the `docker logs --tail 10`
+# below may well have scrolled past.
+HAD_PASSWORD=0
+$SUDO test -s "$DATA/dashboard-password" && HAD_PASSWORD=1
+
 $SUDO docker run -d \
   --name peartune-host \
   --restart unless-stopped \
@@ -70,6 +84,19 @@ echo "== verifying =="
 sleep 7
 curl -s -o /dev/null -w "dashboard -> %{http_code}\n" http://127.0.0.1:8741/ || true
 $SUDO docker logs --tail 10 peartune-host 2>&1 || true
+# Say it LAST, after the log tail, so it is the thing still on screen when the run ends.
+if [ -z "${PEARTUNE_PASSWORD:-}" ] && [ "$HAD_PASSWORD" = "0" ] && $SUDO test -s "$DATA/dashboard-password"; then
+  echo
+  echo "== !! THE DASHBOARD PASSWORD IS NEW !! =="
+  echo "   This host had no saved password, so it generated one. Any password you used before"
+  echo "   this deploy will NOT work. It is saved and stable - later redeploys reuse it."
+  echo
+  echo "   $($SUDO cat "$DATA/dashboard-password")"
+  echo
+  echo "   Read it again any time with:  sudo cat $DATA/dashboard-password"
+  echo "   Change it to something memorable from the dashboard once you are in."
+fi
+
 if [ "$WIPE" = "1" ]; then
   echo "== done. FULL WIPE: re-pair every device and set the music source on the dashboard. =="
 else
