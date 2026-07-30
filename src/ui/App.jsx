@@ -876,8 +876,15 @@ export default function App () {
       if (n.obPhase === 'names') return setObPhase('intro')
       return
     }
-    if (n.stack.length) return setStack(s => s.slice(0, -1))
-    if (n.tab !== 'library') return setTab('library')
+    // Through pop() and not a bare setStack, so a hardware Back restores the scroll of
+    // the screen it returns to exactly as the on-screen Back button does.
+    if (n.stack.length) return pop()
+    if (n.tab !== 'library') {
+      pendingScrollRef.current = 0
+      setTab('library')
+      window.scrollTo(0, 0)
+      return
+    }
   }), [])
 
   // BACKSTOP, not the mechanism. host:connected / host:disconnected are what
@@ -891,12 +898,59 @@ export default function App () {
     return () => clearTimeout(t)
   }, [firstConnect])
 
-  const push = (screen) => { haptic('light'); setStack(s => [...s, screen]) }
-  const pop = () => setStack(s => s.slice(0, -1))
+  // PER-LEVEL SCROLL MEMORY. One offset per level of the nav stack: index 0 is the
+  // tab's own screen, index n the nth drill-down. Opening a screen banks where you
+  // were and starts the new one at the top; Back puts the old offset back. Without
+  // it, drilling into an album from halfway down the grid and pressing Back returned
+  // you to the top of the grid, so finding your place again was manual every time.
+  //
+  // In memory only, deliberately: the launch snapshot (src/ui/viewstate.js) already
+  // persists the offset of the screen you are ON, and persisting the whole ladder
+  // would restore offsets for screens whose data may no longer exist.
+  const scrollMemRef = useRef([])
+  const stackRef = useRef([]); stackRef.current = stack
 
-  // A tab is a fresh start, so it drops any drill-down under it. Entering "You"
-  // kicks off the active collection's fetch (each loader guards on its own cache).
-  const goTab = (k) => { haptic('light'); setStack([]); setTab(k); if (k === 'you') openYou(youView) }
+  // Emptying the stack empties the ladder, whatever emptied it. EIGHT paths reset the
+  // stack wholesale (a library switch, unpair, leaving demo, a merged rebuild, the
+  // owner shortcut...), and clearing at each of them is a list somebody will one day
+  // add to and forget. This holds the invariant instead: a saved offset describes one
+  // visit to one screen, so once you are back at a tab root nothing is owed.
+  useEffect(() => { if (!stack.length) scrollMemRef.current = [] }, [stack.length])
+
+  const push = (screen) => {
+    haptic('light')
+    scrollMemRef.current[stackRef.current.length] = window.scrollY || 0
+    setStack(s => [...s, screen])
+    // A new screen starts at the top. It usually looked like it did anyway, because a
+    // short screen clamps the carried-over offset to zero - but a long one (an artist
+    // with many albums) would have opened part-way down.
+    pendingScrollRef.current = 0
+    window.scrollTo(0, 0)
+  }
+
+  const pop = () => {
+    const level = Math.max(0, stackRef.current.length - 1)
+    setStack(s => s.slice(0, -1))
+    // Top first, then chase: the screen we are returning to may re-fetch its own data,
+    // so it can be too short to hold the old offset for a moment (restoreScroll polls).
+    // Landing at the top and moving down beats landing part-way and jumping. Clearing
+    // the pending target first means a launch restore still in flight does not outlive
+    // the navigation that overtook it.
+    pendingScrollRef.current = 0
+    window.scrollTo(0, 0)
+    restoreScroll(scrollMemRef.current[level] || 0)
+  }
+
+  // A tab is a fresh start, so it drops any drill-down under it - and with it the
+  // scroll ladder, which belonged to that tab's stack. Entering "You" kicks off the
+  // active collection's fetch (each loader guards on its own cache).
+  const goTab = (k) => {
+    haptic('light')
+    pendingScrollRef.current = 0
+    setStack([]); setTab(k)
+    window.scrollTo(0, 0)
+    if (k === 'you') openYou(youView)
+  }
 
   // Open a "You" sub-view, loading it. Favorites is the default, but an old host with
   // no favorites support has only Most Played, so fall through to it rather than land
