@@ -3394,7 +3394,7 @@ function Library ({
           : browse === 'genres'
             ? (genres
                 ? (shownGenres.length
-                    ? <GenreGrid genres={shownGenres} onOpen={onOpenGenre} d={D} />
+                    ? <GenreGrid genres={shownGenres} onOpen={onOpenGenre} onLong={onLong} d={D} />
                     : <div className='blank'><p className='muted sm'>No genre matches “{query.trim()}”.</p></div>)
                 : <SkeletonGrid d={D} />)
           : browse === 'artists'
@@ -4432,13 +4432,22 @@ function ArtistGrid ({ artists, onOpen, onLong, d = DENSITY[2], favs, onFav, emp
 // the grid is real artwork, not a wall of grey. No long-press menu or heart: a genre
 // is a doorway to its albums, not a thing you favourite. Subsonic/Jellyfin genres
 // carry no art, so those fall back to the placeholder cover.
-function GenreGrid ({ genres, onOpen, d = DENSITY[2], empty = <p className='muted center-p'>No genres.</p> }) {
+function GenreGrid ({ genres, onOpen, onLong, d = DENSITY[2], empty = <p className='muted center-p'>No genres.</p> }) {
   if (!genres.length) return empty
   const list = d.cols === 1
   return (
     <div className={'grid' + (list ? ' aslist' : '')} style={{ '--cols': d.cols }}>
       {genres.map(g => (
-        <Tile key={g.id} className='album' onPress={() => onOpen(g)}>
+        <Tile
+          key={g.id} className='album'
+          onPress={() => onOpen(g)}
+          // Long-press for Play / Shuffle / Add to queue / Add to playlist, the same as albums
+          // and artists (Tim, 2026-07-30). Genres were the ONE browse view without it, for no
+          // reason anyone recorded - the whole machinery behind it already handled the type:
+          // menuAction routes 'genre' and tracksFor calls genreTracks. It was purely that this
+          // grid never took an onLong to pass along.
+          onLongPress={onLong && (() => onLong({ type: 'genre', id: g.id, name: g.name }))}
+        >
           <Cover src={g.art} />
           <div className='meta'>
             <div className='t sm'>{g.name}</div>
