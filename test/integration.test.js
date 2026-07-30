@@ -436,6 +436,41 @@ test('CONTINUE LISTENING: a client that sends no playedAt still works (old app, 
   assert.ok(r.playedAt > 0, 'the host stamped one, so ordering never has to special-case it')
 })
 
+// ACROSS SCOPES (proposal 2026-07-30-one-token-across-scopes). A phone in the blended library view
+// and one focused on a single library used to hold two independent tokens, so both could be "the
+// active player" and both play. Merged mode turns itself on at 2+ paired libraries, so the two
+// phones only need different pairing sets - no odd user action required.
+test('HANDOFF: claiming the MERGED session supersedes the single-library holder over the wire', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  // A is the active player in the SINGLE-library scope, playing.
+  const c0 = await a.client.sessionGet()
+  await a.client.sessionClaim({ generation: c0?.generation || 0 })
+  await a.client.sessionSet({ queue: [{ trackId: 'local1' }], index: 0, playing: true })
+
+  // B starts playing in the BLEND. Arm A's listener before the claim so it cannot be missed.
+  const pushed = oncePush(a.client, 'session-superseded')
+  const claimed = await b.client.sessionClaim({ generation: 0, merged: true })
+  assert.equal(claimed.ok, true)
+
+  const evt = await pushed
+  assert.equal(evt.data.merged, false, "the push names A's OWN scope, not the claimer's")
+  assert.ok(evt.data.generation, 'and carries the generation of the row A actually reads')
+
+  // The lazy backstop holds too: A's next write is refused, which is how it stops if it missed
+  // the push - the same mechanism a same-scope loser has always relied on.
+  const rejected = await a.client.sessionSet({ queue: [{ trackId: 'x' }], index: 0 })
+  assert.equal(rejected.ok, false, 'a cross-scope loser is refused exactly like a same-scope one')
+
+  // ...and A's queue is still there for a "Play here", because only the TOKEN moved.
+  const single = await b.client.sessionGet()
+  assert.equal(single.isActiveHere, true, 'B now holds the single-library token as well')
+  assert.deepEqual(single.queue.map((x) => x.trackId), ['local1'], 'the single-library queue survives')
+})
+
 test('HANDOFF: an idempotent re-claim by the current holder pushes nobody', async (t) => {
   const { testnet, host } = await scaffold(t)
   const { a, b } = await twoDevicesOnePerson(testnet, host)

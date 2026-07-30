@@ -375,6 +375,34 @@ class UserState {
       updatedAt: Date.now()
     }
     await this.bee.put(this._sessionKey(ownerId, merged), next, { valueEncoding: 'json' })
+
+    // ...AND TAKE THE OTHER SCOPE'S ROW TOO (proposal 2026-07-30-one-token-across-scopes).
+    //
+    // The queue is per-scope, but the TOKEN is per-PERSON. Without this, `session:{owner}` and
+    // `session:merged:{owner}` are two independent tokens: a phone in the blended view and one
+    // focused on a single library each hold "the" token and both play, indefinitely, because a
+    // compare-and-set on one row is invisible to the other. Nothing odd is needed to get there -
+    // merged mode turns itself on at 2+ paired libraries, so the two phones only need different
+    // pairing sets.
+    //
+    // Only activeDeviceKey and generation move. The other row's queue, index, position and modes
+    // are left exactly as they are, because they mean different things in each scope (a merged
+    // queue carries foreign trackIds tagged with their owning library) - which is also why the two
+    // rows are not simply collapsed into one. "Play here" from either scope still works.
+    //
+    // The previous holder over there learns the same two ways the same-scope loser does: the
+    // session-superseded push media.js sends, and - if it missed that - its next setSession, which
+    // gates on activeDeviceKey and no longer names it.
+    const other = await this.getSession(ownerId, !merged)
+    if (other && other.activeDeviceKey !== deviceKey) {
+      await this.bee.put(this._sessionKey(ownerId, !merged), {
+        ...other,
+        activeDeviceKey: deviceKey,
+        generation: (other.generation || 0) + 1,
+        updatedAt: Date.now()
+      }, { valueEncoding: 'json' })
+    }
+
     return next
   }
 

@@ -2,6 +2,39 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-30 - The play token is per PERSON; only the queue is per scope
+Tier: T1/T2. Proposal `proposals/2026-07-30-one-token-across-scopes.md`. Branch
+fix/session-across-scopes. Closes the follow-up left open by PR #272.
+
+Context: `session:{ownerId}` and `session:merged:{ownerId}` were two independent tokens, each with
+its own activeDeviceKey and generation, so a compare-and-set on one was invisible to the other. A
+phone in the blended view and one focused on a single library could each be "the active player"
+and both play indefinitely. Nothing odd was needed to reach it - merged mode turns itself on at 2+
+paired libraries, so the two phones only need different pairing sets.
+
+Choice: a successful claim in one scope also takes the OTHER scope's row for the claiming device -
+activeDeviceKey moves, generation bumps, and the queue/index/position/modes over there are left
+exactly as they were. The loser learns the same two ways a same-scope loser always has: the
+session-superseded push, and its next setSession being refused because the row no longer names it.
+
+WHY NOT COLLAPSE THE TWO ROWS, which is the obvious fix: the queues genuinely differ. A merged
+queue carries foreign trackIds tagged with their owning library; a single-library queue carries
+local ones. One host can be both a person's single-library home and the elected merged home, and
+sharing a queue between those would break "Play here" across scopes - a worse bug than the one
+being fixed. Separating the two things the row conflated is the whole idea: the queue answers
+"what", which is scope-dependent; the token answers "who is playing", which is not.
+
+A TEST ASSERTED THE OLD BEHAVIOUR AS A GUARANTEE - "the merged CAS is independent: a claim in one
+scope does not bump the other generation", with a line reading "a TABLET takeover of the MERGED
+session leaves the single-library holder untouched". That sentence IS the bug, written down as an
+intention in 2026-07-20. Replaced rather than deleted, with the reversal and the reason in the
+test, so nobody re-derives the original.
+
+Consequences: no schema change, no new methods, no wire change. An old host simply does not
+supersede across scopes (today's behaviour); an old client is superseded by mechanisms it has
+understood since 2026-07-17. NOT verified on hardware - it needs one phone paired to two libraries
+and one to a single library, a rig neither of Tim's phones is in.
+
 ## 2026-07-30 - Playlists push too, closing the last known live-update gap
 Tier: T2 (a new push kind). Branch fix/playlists-live-update. Third and last entry in the
 "no push exists for user state" thread; the favorites and request entries below are the others.

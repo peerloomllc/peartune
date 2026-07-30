@@ -423,6 +423,67 @@ test('setSession is allowed only for the active device; a superseded one is reje
   assert.equal(ok.queue[0].trackId, 'y')
 })
 
+// ONE TOKEN PER PERSON, ACROSS BOTH SCOPES (proposal 2026-07-30-one-token-across-scopes).
+// `session:{owner}` and `session:merged:{owner}` used to be two independent tokens, so a phone in
+// the blended view and one focused on a single library could each hold "the" token and both play.
+
+test('claiming one scope takes the OTHER scope\'s token too, and leaves its queue alone', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  // PHONE is the active player in the single-library scope, with a queue of its own.
+  await s.claimSession('p:TIM', 'PHONE', 0, false)
+  await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'local1' }], index: 0, positionMs: 5000 }, false)
+
+  // TABLET, in the blend, becomes the active player.
+  const merged = await s.claimSession('p:TIM', 'TABLET', 0, true)
+  assert.equal(merged.activeDeviceKey, 'TABLET')
+
+  const single = await s.getSession('p:TIM', false)
+  assert.equal(single.activeDeviceKey, 'TABLET', 'the token moved across the scope boundary')
+  assert.equal(single.generation, 2, 'and its generation bumped, so a stale CAS loses')
+  assert.deepEqual(single.queue, [{ trackId: 'local1' }], 'but the single-library QUEUE is untouched')
+  assert.equal(single.positionMs, 5000, '...and so is its position - the scopes mean different things')
+
+  // Which is what actually stops PHONE: setSession gates on activeDeviceKey.
+  assert.equal(await s.setSession('p:TIM', 'PHONE', { queue: [{ trackId: 'x' }], index: 0 }, false), null,
+    'the superseded device is refused in its own scope, exactly as a same-scope loser is')
+})
+
+test('...and the reverse: claiming the single scope takes the merged token', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'TABLET', 0, true)
+  await s.setSession('p:TIM', 'TABLET', { queue: [{ trackId: 'foreign1' }], index: 0 }, true)
+
+  await s.claimSession('p:TIM', 'PHONE', 0, false)
+  const mergedRow = await s.getSession('p:TIM', true)
+  assert.equal(mergedRow.activeDeviceKey, 'PHONE')
+  assert.deepEqual(mergedRow.queue, [{ trackId: 'foreign1' }], 'the blended queue survives for "Play here"')
+})
+
+test('a re-claim by the device that already holds BOTH scopes changes nothing', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0, false)
+  await s.claimSession('p:TIM', 'PHONE', 0, true)   // now holds both, single gen 1, merged gen 1
+  const before = await s.getSession('p:TIM', false)
+
+  // Re-claiming merged must not keep bumping the single row - that would be a write per heartbeat
+  // and would invalidate nobody, since the same device is on both sides.
+  await s.claimSession('p:TIM', 'PHONE', 1, true)
+  const after = await s.getSession('p:TIM', false)
+  assert.equal(after.generation, before.generation, 'no churn when one device holds both')
+})
+
+test('taking the other scope when it has NO row yet is a no-op, not an empty row', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.claimSession('p:TIM', 'PHONE', 0, false)
+  assert.equal(await s.getSession('p:TIM', true), null,
+    'a person who has only ever used one scope keeps exactly one row')
+})
+
 test('setSession sanitizes the queue and is owner-isolated; a missing session is null', async (t) => {
   const { bee } = await store(t)
   const s = new UserState(bee)
@@ -488,17 +549,26 @@ test('the merged session is a SEPARATE row from the single-library one for the s
   assert.deepEqual((await s.getSession('p:TIM', true)).queue.map(x => x.trackId), ['blend'])
 })
 
-test('the merged CAS is independent: a claim in one scope does not bump the other generation', async (t) => {
+// THIS TEST USED TO ASSERT THE OPPOSITE, and the property it guaranteed was the bug: "a TABLET
+// takeover of the MERGED session leaves the single-library holder untouched" is precisely how two
+// of one person's devices could both be the active player and both play, indefinitely (proposal
+// 2026-07-30-one-token-across-scopes). The independence that IS wanted - each scope keeping its own
+// QUEUE, because a merged queue carries foreign trackIds - is asserted by the test above this one
+// and by the cross-scope tests further up. Only the token is shared.
+test('the token is per-PERSON: a claim in one scope takes the other scope with it', async (t) => {
   const { bee } = await store(t)
   const s = new UserState(bee)
   await s.claimSession('p:TIM', 'PHONE', 0, false) // single gen -> 1
-  await s.claimSession('p:TIM', 'PHONE', 0, true)  // merged gen -> 1 (its own row, still 0->1)
-  assert.equal((await s.getSession('p:TIM', false)).generation, 1)
+  await s.claimSession('p:TIM', 'PHONE', 0, true)  // merged gen -> 1; PHONE already held single, so no churn
+  assert.equal((await s.getSession('p:TIM', false)).generation, 1, 'one device holding both bumps nothing')
   assert.equal((await s.getSession('p:TIM', true)).generation, 1)
-  // A TABLET takeover of the MERGED session leaves the single-library holder untouched.
+
+  // A TABLET takeover of the MERGED session now takes the single-library token as well, so PHONE
+  // is superseded rather than left playing alongside it.
   const t2 = await s.claimSession('p:TIM', 'TABLET', 1, true)
   assert.equal(t2.activeDeviceKey, 'TABLET')
-  assert.equal((await s.getSession('p:TIM', false)).activeDeviceKey, 'PHONE')
+  assert.equal((await s.getSession('p:TIM', false)).activeDeviceKey, 'TABLET')
+  assert.equal((await s.getSession('p:TIM', false)).generation, 2)
 })
 
 test('the merged session stores foreign trackIds + their routing tags opaquely', async (t) => {
