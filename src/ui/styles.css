@@ -1304,3 +1304,75 @@ label.flabel { display: block; margin-top: .6rem; }
    to baseline alignment, which drops a 12px glyph a couple of pixels low and makes the whole
    line look like it sagged; centring it on the text box keeps the row flat while it turns. */
 .inline-spin { vertical-align: -0.15em; }
+
+/* --- StepSlider (Tim, 2026-07-29) ------------------------------------------
+   A discrete slider for an ordered setting: tap the track or drag the thumb, and the text
+   underneath names the stop you are on, live. Replaces the vertical radio list for streaming
+   quality and the cache cap, where the choices are a magnitude and reading them as a scale is
+   the point.
+
+   Built on <input type=range>, so the browser owns touch, tap-to-position and keyboard, and
+   all of this is appearance only. */
+.stepslider { margin: .35rem 0 .2rem; position: relative; }
+
+.stepslider input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  display: block; width: 100%; background: transparent;
+  /* The global `input` rule gives every input a bordered, padded, filled box - right for a
+     text field, wrong here: it drew a rounded frame around the track. Undo it explicitly
+     rather than narrowing the global rule, which every text input in the app depends on. */
+  border: 0; padding: 0; border-radius: 0;
+  /* A comfortable touch target: the visible track is 6px but the input is 34px tall, so a
+     thumb-sized finger does not have to be accurate to grab it. */
+  height: 34px; margin: 0; cursor: pointer;
+}
+.stepslider input[type=range]::-webkit-slider-runnable-track {
+  height: 6px; border-radius: 3px; background: var(--color-track);
+}
+.stepslider input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--color-primary);
+  border: 3px solid var(--color-surface);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .45);
+  /* Centre the 24px thumb on the 6px track. */
+  margin-top: -9px;
+}
+.stepslider input[type=range]:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--color-primary); outline-offset: 2px;
+}
+
+/* The stops, so it is obvious this snaps rather than being continuous. Sits under the track,
+   pointer-events off so it never steals a tap from the input above it. */
+/* The stops, so it is obvious this snaps rather than being continuous.
+   POSITIONED, not nudged. This used to ride up with a -22px margin, which put the dots 3px
+   ABOVE the track's centre line: the input is 34px tall and the 6px track is centred in it, so
+   the centre is at 17px, and the old margin landed the 4px dots at 14px. Absolute positioning
+   against the track centre is exact and survives any change to the dot size.
+   The 7px inset is what aligns dot CENTRES with thumb centres: the thumb is 24px, so its centre
+   travels between 12px and width-12px, and with space-between the first dot's left EDGE sits at
+   the padding - so 12 minus the 5px dot radius. */
+.stepslider-ticks {
+  position: absolute; top: 17px; left: 0; right: 0; transform: translateY(-50%);
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0 7px; pointer-events: none;
+}
+/* Deliberately WIDER than the 6px track (Tim, 2026-07-29) so a stop reads as a notch on the
+   bar rather than a speck inside it. */
+.stepslider-ticks span {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--color-text-muted); opacity: .55;
+  /* A ring in the surface colour, so a dot sitting on the track still reads as a separate
+     mark instead of merging into it. */
+  box-shadow: 0 0 0 2px var(--color-surface);
+}
+.stepslider-ticks span.on { background: var(--color-primary); opacity: 1; }
+
+.stepslider-read { margin-top: .1rem; display: flex; flex-direction: column; gap: .1rem; }
+.stepslider-name { font-size: .95rem; font-weight: 600; color: var(--color-primary); }
+.stepslider-desc { color: var(--color-text-muted); font-size: .75rem; line-height: 1.45; }
+
+/* Disabled = the Auto toggle is driving. Still readable, clearly not yours to move. */
+.stepslider.off { opacity: .45; }
+.stepslider.off input[type=range] { cursor: default; }
+.stepslider.off .stepslider-name { color: var(--color-text-muted); }

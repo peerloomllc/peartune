@@ -5225,13 +5225,18 @@ function fmtBytes (n) {
 
 // --- settings ----------------------------------------------------------------
 
+// Ascending, because these are now a left-to-right slider (Tim, 2026-07-29) and a slider's
+// axis has to MEAN something. 'auto' is deliberately NOT in this list: it is a mode, not a
+// point on a quality scale (full quality on Wi-Fi, a smaller stream on cellular), so it sits
+// on the axis nowhere honestly - at the left it would claim to be the lowest quality, which
+// on Wi-Fi is the opposite of true. It gets its own toggle above the slider instead.
 const QUALITIES = [
-  { value: 'auto', label: 'Auto', desc: 'Full quality on Wi-Fi, a smaller stream on cellular' },
-  { value: 'original', label: 'Original', desc: 'Always the original file - best quality, ~1 GB an album' },
-  { value: '320', label: '320 kbps', desc: 'High quality, less data everywhere' },
+  { value: '128', label: '128 kbps', desc: 'Lowest quality, least data' },
   { value: '192', label: '192 kbps', desc: 'Good quality, saves more data' },
-  { value: '128', label: '128 kbps', desc: 'Lowest quality, least data' }
+  { value: '320', label: '320 kbps', desc: 'High quality, less data everywhere' },
+  { value: 'original', label: 'Original', desc: 'Always the original file - best quality, ~1 GB an album' }
 ]
+const QUALITY_AUTO_DESC = 'Full quality on Wi-Fi, a smaller stream on cellular'
 
 const CACHE_CAPS = [
   { value: 512 * 1024 * 1024, label: '512 MB' },
@@ -5239,6 +5244,58 @@ const CACHE_CAPS = [
   { value: 2 * 1024 * 1024 * 1024, label: '2 GB' },
   { value: 0, label: 'Unlimited', desc: 'Keep every played track' }
 ]
+
+// A discrete slider over an ordered option list (Tim, 2026-07-29). Tap anywhere on the track
+// or drag the thumb; the text underneath names the stop you are on and updates AS YOU MOVE,
+// before anything is committed.
+//
+// Built on <input type=range> rather than a hand-rolled div. That buys correct touch handling,
+// tap-to-position, keyboard arrows and a real slider role for free - all of which are easy to
+// get subtly wrong with pointer events, and none of which are the interesting part of this
+// change. The look is entirely ours via ::-webkit-slider-* (the WebView is Chromium).
+//
+// The value is committed on CHANGE (pointer up / key), not on INPUT. Dragging across four
+// stops would otherwise fire four worklet writes, and for the cache cap each one can trigger
+// an eviction pass - so a drag from Unlimited to 512 MB would start deleting audio at every
+// stop on the way past.
+function StepSlider ({ options, value, onChange, disabled = false, ariaLabel }) {
+  const at = Math.max(0, options.findIndex(o => o.value === value))
+  // Local index so the label can follow the finger while the committed value has not moved.
+  const [draft, setDraft] = useState(null)
+  const i = draft ?? at
+  const cur = options[i] || options[0]
+  // Re-sync when the committed value changes from elsewhere (a load, or the Auto toggle).
+  useEffect(() => { setDraft(null) }, [value])
+
+  return (
+    <div className={'stepslider' + (disabled ? ' off' : '')}>
+      <input
+        type='range' min={0} max={options.length - 1} step={1} value={i}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        // The number means nothing to a screen reader; the label is the actual value.
+        aria-valuetext={cur.label}
+        onInput={(e) => {
+          const n = Number(e.target.value)
+          if (n !== i) haptic('light')   // a detent per stop, so a drag feels like steps
+          setDraft(n)
+        }}
+        onChange={(e) => {
+          const n = Number(e.target.value)
+          setDraft(n)
+          if (options[n] && options[n].value !== value) onChange(options[n].value)
+        }}
+      />
+      <div className='stepslider-ticks' aria-hidden='true'>
+        {options.map((o, n) => <span key={String(o.value)} className={n <= i ? 'on' : ''} />)}
+      </div>
+      <div className='stepslider-read'>
+        <span className='stepslider-name'>{cur.label}</span>
+        {cur.desc && <span className='stepslider-desc'>{cur.desc}</span>}
+      </div>
+    </div>
+  )
+}
 
 // A vertical radio-style picker: every choice visible (no horizontal scroll), each
 // with a name + optional one-line descriptor, a check on the selected one.
@@ -5517,6 +5574,10 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
       setCache(await call('cacheStats'))
     } catch {}
   }
+  // The last NON-auto quality, so switching Auto off returns you to what you had rather than
+  // dumping you on a default. A ref, not state: nothing renders from it directly.
+  const lastFixedQuality = useRef(quality !== 'auto' ? quality : null)
+  useEffect(() => { if (quality && quality !== 'auto') lastFixedQuality.current = quality }, [quality])
   const [cellular, setCellular] = useState(state.settings?.downloadCellular ?? false)
   const toggleCellular = async () => { const on = !cellular; haptic('light'); setCellular(on); try { await call('setDownloadCellular', { on }) } catch {} }
   // The off-LAN relay privacy toggle. Default ON (the reliability backstop); OFF is
@@ -5786,8 +5847,29 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
             open (Tim, 2026-07-28). One row, quality first because it applies to every track and the
             cache only to what you keep. */}
         <Section id='sound' title='Sound and downloads' Icon={SpeakerHigh} open={open === 'sound'} onToggle={toggle}>
-          <div className='label'>Streaming quality</div>
-          <OptionList options={QUALITIES} value={quality} onChange={onQuality} />
+          {/* AUTO is a mode, not a rung on the quality ladder, so it is a toggle rather than
+              the slider's left-hand stop - see the comment on QUALITIES. With it on, the
+              slider is disabled and shows nothing misleading; turning it off drops you at
+              whatever fixed quality was last chosen. */}
+          <div className='row'>
+            <div>
+              <div className='label'>Choose quality automatically</div>
+              <div className='desc'>{QUALITY_AUTO_DESC}</div>
+            </div>
+            <button
+              className={'toggle' + (quality === 'auto' ? ' on' : '')}
+              role='switch' aria-checked={quality === 'auto'}
+              onClick={() => { haptic('light'); onQuality(quality === 'auto' ? (lastFixedQuality.current || '320') : 'auto') }}
+            >{quality === 'auto' ? 'On' : 'Off'}</button>
+          </div>
+          <div className='label' style={{ marginTop: '.6rem' }}>Streaming quality</div>
+          <StepSlider
+            options={QUALITIES}
+            value={quality === 'auto' ? (lastFixedQuality.current || '320') : quality}
+            onChange={onQuality}
+            disabled={quality === 'auto'}
+            ariaLabel='Streaming quality'
+          />
           <div className='label' style={{ marginTop: '.9rem' }}>Offline storage</div>
           <div className='desc'>
             Tracks you play are kept on this phone so they play again with no connection;
@@ -5801,7 +5883,7 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
             </span>
           </div>
           <div className='label' style={{ marginTop: '.5rem' }}>Keep up to</div>
-          <OptionList options={CACHE_CAPS} value={cap} onChange={setCap} />
+          <StepSlider options={CACHE_CAPS} value={cap} onChange={setCap} ariaLabel='Keep up to' />
           <button
             className='wide'
             style={{ marginTop: '.5rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '.4rem' }}
