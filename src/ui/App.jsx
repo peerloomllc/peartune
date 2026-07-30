@@ -4296,13 +4296,17 @@ function RecentShelf ({ albums, onOpen, artBase }) {
   // "there is more" is a runtime fact. Re-checked on scroll and on resize; the ResizeObserver
   // matters because the covers arrive asynchronously and the row grows under us.
   const rowRef = useRef(null)
-  const [more, setMore] = useState(false)
+  const [more, setMore] = useState(false) // more to the right
+  const [back, setBack] = useState(false) // ...and to the left, once you have moved
   useEffect(() => {
     const el = rowRef.current
     if (!el) return undefined
-    // 8px of slack: sub-pixel widths mean scrollLeft never quite reaches the exact end, and a
-    // hint that lingers after you have scrolled to the last album is worse than none.
-    const sync = () => setMore(el.scrollWidth - el.clientWidth - el.scrollLeft > 8)
+    // 8px of slack at BOTH ends: sub-pixel widths mean scrollLeft never quite reaches the exact
+    // end, and a hint that lingers when there is nothing left that way is worse than none.
+    const sync = () => {
+      setMore(el.scrollWidth - el.clientWidth - el.scrollLeft > 8)
+      setBack(el.scrollLeft > 8)
+    }
     sync()
     el.addEventListener('scroll', sync, { passive: true })
     const ro = new ResizeObserver(sync)
@@ -4314,7 +4318,7 @@ function RecentShelf ({ albums, onOpen, artBase }) {
   return (
     <div className='shelf'>
       <div className='shelf-head'>Recently added</div>
-      <div className={'shelf-scroll' + (more ? ' more' : '')}>
+      <div className={'shelf-scroll' + (more ? ' more' : '') + (back ? ' back' : '')}>
         <div className='shelf-row' ref={rowRef}>
           {albums.map(a => (
             <button className='shelf-item' key={a.id} onClick={() => onOpen(a.id)}>
@@ -4324,8 +4328,12 @@ function RecentShelf ({ albums, onOpen, artBase }) {
             </button>
           ))}
         </div>
-        {/* The fade alone is easy to read as "the picture ends here", so it carries a caret.
-            aria-hidden: it is a hint, not a control - the row itself is what scrolls. */}
+        {/* The fade alone is easy to read as "the picture ends here", so each carries a caret.
+            BOTH ENDS: the right-hand one shipped first and the left was missing (Tim,
+            2026-07-30) - once you have scrolled in, there is just as much off-screen behind you,
+            and nothing said so. Each shows only while there is something that way.
+            aria-hidden: they are hints, not controls - the row itself is what scrolls. */}
+        <div className='shelf-back' aria-hidden='true'><CaretLeft size={16} weight='bold' /></div>
         <div className='shelf-more' aria-hidden='true'><CaretRight size={16} weight='bold' /></div>
       </div>
     </div>
