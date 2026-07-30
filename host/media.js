@@ -589,14 +589,27 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         // Who held the token BEFORE this claim - so we can tell them, instantly, that they lost
         // it (instead of them finding out lazily on their next heartbeat, deferred follow-up #1).
         const prev = (await state.getSession(owner, merged))?.activeDeviceKey || null
+        // ...and who held the OTHER scope, because a claim now takes both (proposal
+        // 2026-07-30-one-token-across-scopes). Read BEFORE the claim, or we read ourselves.
+        const prevOther = (await state.getSession(owner, !merged))?.activeDeviceKey || null
         // Compare-and-set on the generation the client last saw. null = it lost the race.
         const row = await state.claimSession(owner, grant.deviceKey, Number(params?.generation) || 0, merged)
         // Push only on a SUCCESSFUL takeover from a DIFFERENT device (an idempotent re-claim by
         // the current holder, or a lost CAS race, must not tell anyone to stop). presence is
         // null in the unit tests; the push is best-effort and never gates the reply.
         let pushed = 0
-        if (row && prev && prev !== grant.deviceKey && presence) {
-          pushed = presence.notify(prev, 'session-superseded', { generation: row.generation, merged })
+        if (row && presence) {
+          if (prev && prev !== grant.deviceKey) {
+            pushed += presence.notify(prev, 'session-superseded', { generation: row.generation, merged })
+          }
+          // The other scope's loser gets the same message, carrying ITS row's new generation and
+          // ITS scope - a device must never be handed a generation from a row it does not read.
+          // Skipped when the same device held both, which is the ordinary single-phone case.
+          if (prevOther && prevOther !== grant.deviceKey && prevOther !== prev) {
+            const otherRow = await state.getSession(owner, !merged)
+            pushed += presence.notify(prevOther, 'session-superseded',
+              { generation: otherRow?.generation ?? null, merged: !merged })
+          }
         }
         log('session:claim', { merged, ok: !!row, generation: row?.generation ?? null, superseded: pushed })
         return send.res.send({ id, body: { ok: !!row, session: row } })
