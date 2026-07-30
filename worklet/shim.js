@@ -48,6 +48,8 @@ const ART_PATH1 = /^\/art\/([^/?#]+)/
 const ART_SIZE = /[?&]s=(\d+)/
 const DEFAULT_ART_SIZE = 300
 const MAX_ART_SIZE = 1200
+// /art/_g<N>/... - the artwork generation, stripped before routing. See refreshArt.
+const ART_GEN_SEG = /^\/art\/_g\d+\//
 
 function artSize (url) {
   const s = ART_SIZE.exec(String(url))
@@ -60,7 +62,12 @@ function artSize (url) {
 // can't be mistaken for art and vice-versa; a 1-segment cover (no interior '/') can't match the
 // 2-segment form (coverIds are always encodeURIComponent'd, so any '/' is a real separator).
 function parseUrl (url = '') {
-  const u = String(url)
+  // Strip the artwork GENERATION segment first, so everything below is unchanged. It is a pure
+  // cache-buster and carries no routing meaning - see ART_GEN and refreshArt in createAudioShim
+  // for why art URLs need one at all. The leading underscore is what makes it unambiguous: a
+  // libraryId is z32, whose alphabet has no '_', so a generation can never be mistaken for the
+  // merged form's library segment.
+  const u = String(url).replace(ART_GEN_SEG, '/art/')
   let m = ART_PATH2.exec(u)
   if (m) return { kind: 'art', libraryId: m[1], id: decodeURIComponent(m[2]), size: artSize(u) }
   m = ART_PATH1.exec(u)
@@ -339,6 +346,35 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
   const artCache = new Map()
   const ART_CACHE_MAX = 120
 
+  // THE ARTWORK GENERATION, and why a "clear the store" button needs one.
+  //
+  // "Refresh artwork" empties the persistent store, and until this existed that did nothing you
+  // could see: the covers already on screen kept rendering the old bytes, nothing re-fetched, and
+  // the Using figure sat at 0 while you browsed - which reads as broken. Measured on the TCL,
+  // 2026-07-30: 273 covers dropped, then browsing the same grid wrote back exactly zero.
+  //
+  // TWO caches sit in front of the store, and clearing the store clears neither:
+  //   1. artCache above - checked before disk, dies with the process.
+  //   2. THE WEBVIEW'S OWN HTTP CACHE, which is the one that actually bit. Art is served with
+  //      `cache-control: max-age=86400`, so a cover already rendered this session is answered by
+  //      the WebView without the request ever reaching this server. Emptying a cache the request
+  //      never consults cannot possibly help.
+  // Restarting the app worked only because artCache dies with it AND the shim binds port 0, so
+  // every launch mints URLs the WebView has never seen.
+  //
+  // So the generation rides in the PATH (`/art/_g2/<coverId>`), which changes every art URL and is
+  // the only thing that makes the WebView's cache miss. In the path rather than the query because
+  // the UI composes its own art URLs off artBase (the size depends on grid density, which only it
+  // knows) - a path segment rides along in artBase for free, where a query param would have to be
+  // threaded through every component that renders a cover.
+  // The alternative - dropping the max-age - would re-fetch every cover on every scroll and cost
+  // exactly the bandwidth the persistent store exists to save (proposal 2026-07-29).
+  //
+  // Never persisted: a fresh process starting at 0 is correct, because a fresh process has
+  // nothing stale to bust.
+  let artGen = 0
+  const genSeg = () => (artGen ? `_g${artGen}/` : '')
+
   async function serveArt (coverId, size, libraryId, req, res) {
     // Keyed by size as well as id, or the first request for a cover would decide
     // the resolution of every later one - a thumbnail blown up across a phone
@@ -474,13 +510,24 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
     // silly.
     artBase () {
       const { port } = server.address()
-      return `http://127.0.0.1:${port}/art/`
+      return `http://127.0.0.1:${port}/art/${genSeg()}`
     },
 
     artUrlFor (coverId, size) {
       const { port } = server.address()
       const q = size ? `?s=${Math.min(MAX_ART_SIZE, Number(size) || DEFAULT_ART_SIZE)}` : ''
-      return `http://127.0.0.1:${port}/art/${encodeURIComponent(coverId)}${q}`
+      return `http://127.0.0.1:${port}/art/${genSeg()}${encodeURIComponent(coverId)}${q}`
+    },
+
+    // Drop every cover held in memory and mint a new generation, so covers already on screen are
+    // re-requested instead of being answered from a cache. Returns the NEW artBase, which the UI
+    // must adopt - it holds the old one and composes its own URLs from it. The persistent store is
+    // not this module's to clear: refreshArtwork in src/bare.js owns that and calls this alongside.
+    refreshArt () {
+      artCache.clear()
+      artGen++
+      const { port } = server.address()
+      return `http://127.0.0.1:${port}/art/${genSeg()}`
     },
 
     async listen () {

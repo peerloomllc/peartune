@@ -57,3 +57,52 @@ test('unknown paths return null', () => {
   assert.equal(parseUrl('/nope/abc'), null)
   assert.equal(parseUrl(''), null)
 })
+
+// --- the artwork generation segment -----------------------------------------
+//
+// `/art/_g<N>/` is a cache-buster minted by "Refresh artwork", and it exists because clearing the
+// cover store did nothing you could see: the WebView answers a cover it has already rendered from
+// its OWN http cache (the shim serves art with max-age=86400), so the request never reaches the
+// shim and nothing re-fetches. A URL the WebView has never seen is the only thing that misses.
+//
+// It carries NO routing meaning, so what these pin is that it is invisible to the router - and,
+// most importantly, that it can never be mistaken for the merged form's library segment.
+
+test('a generation segment routes exactly like no segment', () => {
+  assert.deepEqual(parseUrl('/art/_g1/cover42'), parseUrl('/art/cover42'))
+  assert.deepEqual(parseUrl('/art/_g27/cover42?s=500'), parseUrl('/art/cover42?s=500'))
+})
+
+test('a generation segment does NOT become a libraryId', () => {
+  // The real hazard: /art/<libraryId>/<coverId> is the merged form, so a generation segment that
+  // matched it would route every cover to a library that does not exist. The leading underscore
+  // is what prevents it - z32 has no '_'.
+  const r = parseUrl('/art/_g3/cover42')
+  assert.equal(r.libraryId, null)
+  assert.equal(r.id, 'cover42')
+})
+
+test('a generation rides in FRONT of a real libraryId, and both survive', () => {
+  const r = parseUrl('/art/abc123/cover42?s=350')
+  assert.equal(r.libraryId, 'abc123')
+  const g = parseUrl('/art/_g2/abc123/cover42?s=350')
+  assert.deepEqual(g, r)
+})
+
+test('the size still parses through a generation segment', () => {
+  assert.equal(parseUrl('/art/_g9/cover42?s=1200').size, 1200)
+  assert.equal(parseUrl('/art/_g9/cover42').size, DEFAULT_ART_SIZE)
+})
+
+test('a cover legitimately named like a generation is not eaten', () => {
+  // Only a LEADING /art/_g<digits>/ is a generation. A cover id that merely looks like one, or a
+  // generation-shaped segment with no trailing path, must be left alone.
+  assert.equal(parseUrl('/art/_g5').id, '_g5')
+  assert.equal(parseUrl('/art/_gabc/cover42').libraryId, null)
+  assert.equal(parseUrl('/art/_gabc/cover42').id, '_gabc/cover42'.split('/')[0])
+})
+
+test('track URLs are untouched by any of this', () => {
+  assert.deepEqual(parseUrl('/t/abc123'), { kind: 'track', libraryId: null, id: 'abc123' })
+  assert.equal(parseUrl('/t/_g1/abc123'), null) // not a real form, and must not silently route
+})

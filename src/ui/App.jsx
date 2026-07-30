@@ -656,6 +656,16 @@ export default function App () {
     loadRecent()
   }
 
+  // "Refresh artwork" just emptied the cover store and minted a new art base. Adopt it and
+  // re-render: the grid composes its covers from artBase (artFor), but the lists also carry `art`
+  // URLs the worklet built at fetch time, and those still point at the old base - so a reload is
+  // what makes the detail screens refetch too. See refreshArtwork in src/bare.js for why a new
+  // base is needed at all rather than just clearing the store.
+  const onArtRefreshed = (artBase) => {
+    if (artBase) setState(s => ({ ...s, artBase }))
+    reloadBrowse()
+  }
+
   // Pick a source-filter chip: '_all' (the blend) or one library's id. Any chip RE-ENTERS merged
   // mode first if a Settings switch had focused a single library. Set the ref synchronously so the
   // reload reads the new filter immediately.
@@ -2315,6 +2325,7 @@ export default function App () {
       <Settings
         state={state} merged={merged} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
         ident={ident} onRefreshIdentity={loadIdentity} onSaveIdentity={saveIdentity} onSaveAvatar={saveAvatar} onQuality={changeQuality}
+        onArtRefreshed={onArtRefreshed}
         skin={skin} onSkin={setSkinValue}
         onSwitchHost={switchLibrary} onRemoveHost={removeLibrary} onAddLibrary={openAddLibrary}
         onDisableDemo={leaveDemo}
@@ -5725,7 +5736,7 @@ function OwnerPairSheet ({ link, toast, onClose }) {
   )
 }
 
-function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias, onSetRelayAudio, onDisableDemo }) {
+function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onArtRefreshed, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias, onSetRelayAudio, onDisableDemo }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [dev, setDev] = useState(null)
   const [usr, setUsr] = useState(null)
@@ -5764,9 +5775,14 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
   const refreshArt = async () => {
     haptic('light')
     try {
-      await call('refreshArtwork')
+      const r = await call('refreshArtwork')
       // Re-read, or the "Using" figure above keeps showing what was just thrown away.
       setCache(await call('cacheStats'))
+      // Hand the NEW art base up. Without this the button emptied the store and nothing
+      // re-fetched: every cover on screen kept being answered from the WebView's own http cache
+      // against the URLs it already had, so a wrong cover stayed wrong and Using stayed at 0
+      // until the app was restarted (measured on the TCL, 2026-07-30).
+      onArtRefreshed?.(r?.artBase)
     } catch {}
   }
   // The last NON-auto quality, so switching Auto off returns you to what you had rather than

@@ -3682,8 +3682,18 @@ const methods = {
   refreshArtwork () {
     const before = artStore.count()
     artStore.clear()
+    // Emptying the store was never enough on its own, and this is the half that was missing. Two
+    // caches sit in front of it - the shim's in-memory map, and the WEBVIEW'S OWN http cache,
+    // which answers a cover it has already rendered without the request reaching the shim at all.
+    // Measured on the TCL 2026-07-30: 273 covers dropped, then browsing the same grid re-fetched
+    // exactly none, so a wrong cover stayed wrong and "Using" sat at 0 until the app was
+    // restarted. refreshArt() clears the map and mints a new artBase, which the UI adopts - a URL
+    // the WebView has never seen is the only thing its cache cannot answer. See worklet/shim.js.
+    // Returned rather than pushed: init()'s `state` is a local, and the UI is the only holder of
+    // artBase that matters (it composes every cover URL from it).
+    const artBase = shim ? shim.refreshArt() : null
     log('art:refreshed', { dropped: before })
-    return { ok: true, dropped: before }
+    return { ok: true, dropped: before, artBase }
   },
 
   setCacheCap ({ bytes }) {
