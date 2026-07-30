@@ -8,7 +8,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const z32 = require('z32')
 
-const { Presence } = require('../host/presence')
+const { Presence, notifyOwners } = require('../host/presence')
 
 test('notify reaches every registered sender for a device and reports the count', (t) => {
   const p = new Presence()
@@ -142,6 +142,37 @@ test('notifyOwner with no exceptDevice still reaches everyone (request:resolved 
   p.register('TABLET', () => { hits++ }, 'p:sam')
   assert.equal(p.notifyOwner('p:sam', 'request:resolved', { id: 'r1' }), 2)
   assert.equal(hits, 2)
+})
+
+// notifyOwners (plural) reaches the OPERATORS, whoever they are - the grant store decides, not
+// the caller. Three sites now agree on that definition: a new request, a withdrawn one and a
+// resolved one. The first had the loop inline and the other two had nothing at all.
+test('notifyOwners reaches only live, unrevoked OWNER-scope devices', async (t) => {
+  const p = new Presence()
+  const got = []
+  p.register('OWNER1', () => got.push('owner1'))
+  p.register('OWNER2', () => got.push('owner2'))
+  p.register('PLAIN', () => got.push('plain'))
+  p.register('EXOWNER', () => got.push('exowner'))
+  const grants = {
+    list: async () => [
+      { deviceKey: 'OWNER1', scope: 'owner' },
+      { deviceKey: 'OWNER2', scope: 'owner' },
+      { deviceKey: 'PLAIN', scope: 'full' },
+      { deviceKey: 'EXOWNER', scope: 'owner', revokedAt: Date.now() },
+      { deviceKey: 'OFFLINE_OWNER', scope: 'owner' } // no live channel: counted as reached zero
+    ]
+  }
+  const n = await notifyOwners(p, grants, 'requests:changed', { reason: 'withdrawn' })
+  assert.equal(n, 2)
+  assert.deepEqual(got.sort(), ['owner1', 'owner2'])
+})
+
+test('notifyOwners survives a grant store that throws, and a missing presence/grants', async (t) => {
+  const p = new Presence()
+  assert.equal(await notifyOwners(p, { list: async () => { throw new Error('bee closed') } }, 'requests:changed'), 0)
+  assert.equal(await notifyOwners(null, { list: async () => [] }, 'requests:changed'), 0)
+  assert.equal(await notifyOwners(p, null, 'requests:changed'), 0)
 })
 
 test('notifyOwner for an ownerId with nobody connected is a no-op, not a throw', (t) => {

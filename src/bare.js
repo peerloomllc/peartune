@@ -923,6 +923,13 @@ function makeClient () {
       // The host pushed this to whoever filed the request, on every device they are signed in on.
       log('request:resolved', { status: m.data?.status ?? null })
       emit('request:resolved', m.data || {})
+    } else if (m?.kind === 'requests:changed') {
+      // The owner-side queue moved for a reason that is NOT a new arrival - a request was
+      // withdrawn by whoever asked, or resolved on the dashboard. Only arrivals were ever pushed,
+      // so Manage watched the queue grow and never shrink. No payload worth acting on: the list
+      // is a live read and "something changed" is the whole message.
+      log('requests:changed', { reason: m.data?.reason ?? null })
+      emit('requests:changed', m.data || {})
     } else if (m?.kind === 'favorites:changed') {
       // ANOTHER of this person's devices favorited something. Straight through to the UI, which
       // re-reads: favorites() is already a live host read (its on-disk copy is only the offline

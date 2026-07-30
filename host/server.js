@@ -39,7 +39,7 @@ const { createIdentity } = require('./identity')
 const { Grants } = require('./grants')
 const { UserState } = require('./state')
 const { decide, sweepKills, Connections } = require('./gate')
-const { Presence } = require('./presence')
+const { Presence, notifyOwners } = require('./presence')
 const { AvatarStore } = require('./avatars')
 
 // How often to sweep live connections for an expired guest grant. `decide()` covers
@@ -643,6 +643,11 @@ class PearTuneHost {
       this.presence.notifyOwner(row.requester, 'request:resolved', {
         id: row.id, status: row.status, kind: row.kind, name: row.name, artist: row.artist
       })
+      // ...and the OPERATORS, who are watching the same queue from the app. Only the requester
+      // was ever told, so resolving on the DASHBOARD left every owner's Manage list showing the
+      // row as still pending until something made the app ask again (Tim, 2026-07-30). Awaited
+      // for the same reason the requester push is not: this one reads the grant store.
+      await notifyOwners(this.presence, this.grants, 'requests:changed', { reason: 'resolved', id: row.id, status: row.status })
     }
     return row
   }
