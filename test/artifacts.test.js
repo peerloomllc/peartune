@@ -55,3 +55,28 @@ test('the phone-side build outputs stay gitignored, so a stale copy cannot ship'
     )
   }
 })
+
+// A REDEPLOY THAT ROTATES THE DASHBOARD PASSWORD MUST SAY SO.
+//
+// Not a style check. On a host whose previous container had PEARTUNE_PASSWORD baked in - every
+// deploy before 2026-07-28 - no password file was ever written, so the first redeploy after that
+// placeholder was dropped mints a fresh random one. Silently, that locks the operator out of a
+// dashboard that worked ten minutes earlier with no clue where to look; it cost Tim an hour on
+// 2026-07-30. The announcement is the whole control, and a control nobody asserts is a comment.
+test('redeploy-umbrel.sh announces a newly minted dashboard password', () => {
+  const sh = fs.readFileSync(path.join(ROOT, 'host/redeploy-umbrel.sh'), 'utf8')
+
+  assert.match(sh, /HAD_PASSWORD=0/,
+    'it must record whether a password file existed BEFORE the container starts - asked after, the ' +
+    'answer is always yes, because the container writes one within seconds')
+  assert.match(sh, /THE DASHBOARD PASSWORD IS NEW/,
+    'the run must end with a loud notice when it minted one')
+  assert.match(sh, /cat "\$DATA\/dashboard-password"/,
+    'the notice must PRINT the password, not merely mention that one exists - the whole failure is ' +
+    'not knowing where to look')
+
+  // ...and only when it actually minted one. An explicit PEARTUNE_PASSWORD, or a host that already
+  // had a file, must not be told its password changed when it did not.
+  assert.match(sh, /\[ -z "\$\{PEARTUNE_PASSWORD:-\}" \] && \[ "\$HAD_PASSWORD" = "0" \]/,
+    'the notice is gated on BOTH no explicit password and no pre-existing file')
+})
