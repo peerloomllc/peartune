@@ -280,6 +280,59 @@ test('HANDOFF: claiming the session pushes "superseded" to the device that held 
   assert.equal(after.isActiveHere, true, 'B holds the token')
 })
 
+// "Continue listening" belongs to the ASKING device, and is dated by when that device LISTENED,
+// not by when the write landed here. Both halves of a bug measured on hardware 2026-07-30: a
+// phone back from offline drained its outbox, the host dated those writes from the moment they
+// arrived, and the card on the phone that was actually playing flipped to the other phone's
+// track. Proposal 2026-07-30-one-device-plays.
+test('CONTINUE LISTENING: a device asks and gets ITS OWN last track, not the other phone\'s', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  // Resume rows are keyed by id and never dereferenced by the host, so opaque ids keep this
+  // about the ordering rule rather than about the scaffold's one-track library.
+  // A listened a minute ago. B listened just now.
+  await a.client.resumeSet({ trackId: 'trackA', positionMs: 30_000, playedAt: Date.now() - 60_000 })
+  await b.client.resumeSet({ trackId: 'trackB', positionMs: 60_000, playedAt: Date.now() })
+
+  assert.equal((await a.client.resumeLatest()).trackId, 'trackA', "A's card is A's track")
+  assert.equal((await b.client.resumeLatest()).trackId, 'trackB', "B's card is B's track")
+})
+
+test('CONTINUE LISTENING: a late outbox flush cannot jump in front of the device playing now', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  // A is playing now and writes straight through.
+  await a.client.resumeSet({ trackId: 'nowPlaying', positionMs: 30_000, playedAt: Date.now() })
+  // B was offline for hours and only now drains its outbox - the write is LATE, the listening
+  // was OLD. This is the exact shape that used to hijack the card.
+  await b.client.resumeSet({ trackId: 'staleFlush', positionMs: 60_000, playedAt: Date.now() - 6 * 3600_000 })
+
+  // A asks: its own track, obviously. The interesting assertion is the person-wide fallback a
+  // device with no listening of its own gets - it must be the RECENT one, not the flushed one.
+  assert.equal((await a.client.resumeLatest()).trackId, 'nowPlaying')
+  const person = (await host.grants.list()).find((g) => !g.revokedAt).personId
+  const anyDevice = await host.userState.latestResume('p:' + person)
+  assert.equal(anyDevice.trackId, 'nowPlaying', 'the person-wide newest is the one actually listened to last')
+})
+
+test('CONTINUE LISTENING: a client that sends no playedAt still works (old app, new host)', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close()) // both, or the open connection keeps the runner alive
+
+  await a.client.resumeSet({ trackId: 'oldClientTrack', positionMs: 12_000 })
+  const r = await a.client.resumeLatest()
+  assert.equal(r.trackId, 'oldClientTrack')
+  assert.ok(r.playedAt > 0, 'the host stamped one, so ordering never has to special-case it')
+})
+
 test('HANDOFF: an idempotent re-claim by the current holder pushes nobody', async (t) => {
   const { testnet, host } = await scaffold(t)
   const { a, b } = await twoDevicesOnePerson(testnet, host)

@@ -2,6 +2,51 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-30 - A playing device without the token reconciles; "Continue listening" is per-device
+Tier: T2. Proposal `proposals/2026-07-30-one-device-plays.md`. Branch fix/one-device-plays.
+
+Context: Tim reported two of his devices playing different tracks at once and confusing the
+"Continue listening" card. Reproduced on the TCL + Pixel against the Umbrel, both granted to one
+person. The framing in the report - "merged identity, or one-device-at-a-time?" - turned out to be
+the wrong question: BOTH already exist and both work. Every user-state row is already keyed by a
+host-derived owner, and the `session:{ownerId}` token with its generation compare-and-set already
+supersedes cleanly, sub-second, in both directions when both phones are online. The bugs were
+elsewhere, and there were two of them.
+
+Choice, part one: a device that is PLAYING but does not hold the token re-checks the session on the
+heartbeat it was previously skipping, and either adopts, stops or claims. The claim used to be a
+ONE-SHOT fired on the transition into playing (`app/index.tsx:387`), never retried, and a
+non-holder never spoke to the host about the session at all - so a phone that was offline when Play
+was pressed played untracked forever. Measured: 70s of two phones audibly playing, and the offline
+one still going after it reconnected while its own screen said the other device was active. The
+decision is pure in `worklet/session.js` so it is testable without a phone.
+
+The load-bearing detail is that "stop" is gated on the HOLDER saying `playing`. The token
+deliberately persists as last-known after a device stops, so another device can still offer "Play
+here"; without the gate a token left behind days ago would kill offline playback the moment the
+phone found wifi. Rejected accordingly: the strict reading, where a device that cannot claim
+refuses to start. That is airtight and would break playing downloads on a plane.
+
+Choice, part two: the resume row gains `playedAt` (the client's clock, when it LISTENED) and
+`deviceKey` (host-derived, never a param), and `latestResume` orders by playedAt and prefers the
+asking device. The old ordering was `updatedAt`, stamped on arrival - so a phone draining an
+offline outbox landed hours-old positions in FRONT of the phone playing right now. Measured: the
+Pixel playing "Strange Encounters" while its own card offered the TCL's "Interspace at 3:34". Note
+this half needs no simultaneous playback at all; one device returning from offline is enough.
+
+Alternatives for part two: scope the resume KEY per device (rejected - it forks positions, and two
+phones resuming one track sharing a position is the point of host-as-hub), or drop the card's
+cross-device reach entirely (rejected - a freshly paired phone should still get one, so the
+person-wide newest stays as a fallback). The explicit cross-device affordance is the "Playing on
+<name>" / "Play here" handoff card, which is untouched.
+
+Consequences: additive fields, no migration; old rows fall back to `updatedAt` and are treated as
+belonging to no device. A stopped device still loses its queue, because the reconcile stops through
+the same `stop()` the existing handoff uses - consistent, but it means an offline phone loses its
+queue on reconnect. Left as the proposal's open question. The merged-vs-single session split
+(`session:merged:{owner}` vs `session:{owner}`) is a SECOND way two devices can both play, real but
+not what Tim hit, and stays in TODO.md.
+
 ## 2026-07-28 - Demo mode: a bundled library, built as a third browse branch
 Tier: T2 (app-only). Proposal `proposals/2026-07-28-app-review-demo.md`. Branch feat/demo-mode.
 

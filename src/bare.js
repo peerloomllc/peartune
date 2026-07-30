@@ -39,6 +39,8 @@ const merge = require('../worklet/merge')
 const catalog = require('../worklet/catalog')
 const { coalesce, clientCall } = require('../worklet/outbox')
 const leaves = require('../worklet/leaves')
+const session = require('../worklet/session')
+const { sessionVerdict } = session
 const { AudioCache } = require('../worklet/cache')
 const { ArtStore } = require('../worklet/art-cache')
 const demo = require('../worklet/demo')
@@ -1724,6 +1726,33 @@ async function sessionReady () {
   return { c: defaultClient(), merged: false, lib: defaultLibraryId || null }
 }
 
+// We are PLAYING but do not hold the session token: ask the host what the truth is and act on it.
+// Returns true when the caller should report lostSession (the shell then hands off, which stops
+// us). The DECISION is pure and lives in worklet/session.js with the reasoning; this is the I/O
+// around it. Proposal 2026-07-30-one-device-plays.
+async function reconcileSession (tgt) {
+  try {
+    const s = await tgt.c.sessionGet(tgt.merged ? { merged: true } : undefined)
+    if (s) sessionGen = s.generation
+    const verdict = sessionVerdict(s)
+    if (verdict === session.ADOPT) { sessionActive = true; return false }
+    if (verdict === session.STOP) {
+      log('session:reconcile-lost', { merged: tgt.merged, generation: s.generation })
+      return true
+    }
+    const r = await tgt.c.sessionClaim({ generation: s?.generation || 0, merged: tgt.merged })
+    if (r?.ok) {
+      sessionActive = true
+      sessionGen = r.session.generation
+      log('session:reconcile-claimed', { merged: tgt.merged, generation: r.session.generation })
+    }
+    return false
+  } catch (e) {
+    if (e?.code === 'ENOMETHOD') markSessionUnsupported(tgt.lib)
+    return false // offline / transient: keep playing, try again on the next heartbeat
+  }
+}
+
 // Tag a session queue item with its owning host, so the receiver routes each track to the host
 // that holds it. The receiver's own merged index resolves it too, but a self-describing session
 // survives an index that differs slightly between devices. No-op (returns base) in single mode.
@@ -2934,8 +2963,10 @@ const methods = {
     // The session target is the elected home host in merged mode (carrying the mixed-host queue),
     // else the single active client. SYNC lookup - a heartbeat never dials; if the home is offline
     // we keep the token and retry on the next snapshot, exactly as single mode does when offline.
-    const tgt = sessionActive ? sessionTarget() : null
-    if (tgt && tgt.c && sessionSupportedFor(tgt.lib) && snapshot) {
+    // Looked up whether or not we hold the token, because a device that does NOT hold it still
+    // has something to do here - see the reconcile below.
+    const tgt = sessionTarget()
+    if (tgt && tgt.c && sessionSupportedFor(tgt.lib) && snapshot && sessionActive) {
       const items = Array.isArray(snapshot.items) ? snapshot.items : []
       try {
         const queue = items.map(t => tagSessionItem(
@@ -2951,6 +2982,20 @@ const methods = {
         if (e?.code === 'ENOMETHOD') markSessionUnsupported(tgt.lib)
         // offline / transient: keep the token, retry on the next snapshot
       }
+    } else if (tgt && tgt.c && sessionSupportedFor(tgt.lib) && snapshot && snapshot.playing) {
+      // PLAYING WITHOUT THE TOKEN - reconcile (proposal 2026-07-30-one-device-plays).
+      //
+      // sessionActivate is fired once, on the transition into playing, and before this a failed
+      // claim was never retried: a phone that was offline at that instant (playing a download)
+      // played with no token forever, and since the block above only ran for a HOLDER it never
+      // spoke to the host about the session again. Measured 2026-07-30: two of Tim's phones
+      // playing different tracks for 70s, the offline one still going after it reconnected and
+      // could see on its own screen that the other was the active player.
+      //
+      // Riding the heartbeat means the fix is "the moment you are back on the wire", with no new
+      // timer and no dialing (sessionTarget is sync). Only while PLAYING - a paused device must
+      // not fight for a token it is not using.
+      lostSession = await reconcileSession(tgt)
     }
 
     // TELL THE OWNING LIBRARY WHAT WE ARE PLAYING (proposal 2026-07-28-nowplaying-from-the-phone).
@@ -3112,21 +3157,27 @@ const methods = {
     // Nowhere to write it: the demo library has no host, and queuing it to an outbox would
     // leave a write on disk aimed at a library that will never exist.
     if (demoMode()) return { ok: true }
+    // WHEN WE ACTUALLY LISTENED, stamped here rather than on arrival. An offline write sits in
+    // the outbox until the next reconnect, and the host used to date it from the moment it
+    // landed - which put a returning phone's stale positions in FRONT of the phone playing right
+    // now, and made "Continue listening" flip (proposal 2026-07-30-one-device-plays). Riding in
+    // the params means the outbox carries it for free; an old host just ignores it.
+    const playedAt = Date.now()
     if (mergedMode()) {
       // Route the resume to the track's OWNING host; queue to that host's outbox if it's unreachable,
       // so it syncs when the host reconnects (coalesce keeps only the latest position per track).
       const lib = favHost('track', trackId)
       const c = lib && clientFor(lib)
-      if (c) { try { await c.resumeSet({ trackId, positionMs, durationMs }) } catch { enqueueFor(lib, 'resume.set', { trackId, positionMs, durationMs }) } }
-      else if (lib) enqueueFor(lib, 'resume.set', { trackId, positionMs, durationMs })
+      if (c) { try { await c.resumeSet({ trackId, positionMs, durationMs, playedAt }) } catch { enqueueFor(lib, 'resume.set', { trackId, positionMs, durationMs, playedAt }) } }
+      else if (lib) enqueueFor(lib, 'resume.set', { trackId, positionMs, durationMs, playedAt })
       return { ok: true }
     }
     // When connected, write straight through; when not, queue immediately rather than
     // block this frequent call on a doomed connect. The flush rides the next reconnect.
     if (defaultConnected()) {
-      try { await mustClient().resumeSet({ trackId, positionMs, durationMs }) } catch { enqueue('resume.set', { trackId, positionMs, durationMs }) }
+      try { await mustClient().resumeSet({ trackId, positionMs, durationMs, playedAt }) } catch { enqueue('resume.set', { trackId, positionMs, durationMs, playedAt }) }
     } else {
-      enqueue('resume.set', { trackId, positionMs, durationMs })
+      enqueue('resume.set', { trackId, positionMs, durationMs, playedAt })
     }
     return { ok: true }
   },
@@ -3163,7 +3214,10 @@ const methods = {
       }))
       const cands = settled.filter((x) => x.status === 'fulfilled' && x.value).map((x) => x.value)
       if (!cands.length) return null
-      cands.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+      // By playedAt where the host offers it, so a host we were offline from cannot win the
+      // blend just because its outbox drained a second ago. An old host sends only updatedAt.
+      const when = (r) => Number(r.playedAt) || Number(r.updatedAt) || 0
+      cands.sort((a, b) => when(b) - when(a))
       const best = cands[0]
       const c = clientFor(best.lib)
       const t = c && await c.get({ id: best.trackId, type: 'track' }).catch(() => null)

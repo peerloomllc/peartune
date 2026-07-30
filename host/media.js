@@ -286,15 +286,26 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
 
       case 'resume.latest': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        const row = await state.latestResume(ownerOf(grant))
-        // updatedAt lets the merged client pick the globally-newest resume across hosts.
-        return send.res.send({ id, body: row ? { trackId: row.trackId, positionMs: row.positionMs, durationMs: row.durationMs, updatedAt: row.updatedAt || 0 } : null })
+        // Scoped to the asking device (proposal 2026-07-30-one-device-plays): the card answers
+        // "what was I playing on THIS phone", with the person-wide newest as a fallback.
+        const row = await state.latestResume(ownerOf(grant), grant.deviceKey)
+        // updatedAt lets the merged client pick the globally-newest resume across hosts, and
+        // playedAt lets it order by when the device LISTENED rather than when the write landed
+        // (an outbox flush lands late). An old host sends no playedAt; the client falls back.
+        return send.res.send({ id, body: row ? { trackId: row.trackId, positionMs: row.positionMs, durationMs: row.durationMs, updatedAt: row.updatedAt || 0, playedAt: row.playedAt || row.updatedAt || 0 } : null })
       }
 
       case 'resume.set': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
-        await state.setResume(ownerOf(grant), params.trackId, Number(params.positionMs) || 0, params.durationMs)
+        // playedAt is the CLIENT's clock (when it actually listened) - the one thing the host
+        // cannot know, because a write can arrive from an outbox hours later. deviceKey comes
+        // from the authenticated connection, never a param: a device may only ever write as
+        // itself, exactly as everywhere else in this file.
+        await state.setResume(ownerOf(grant), params.trackId, Number(params.positionMs) || 0, params.durationMs, {
+          playedAt: Number(params.playedAt) || 0,
+          deviceKey: grant.deviceKey
+        })
         log('resume:set', { positionMs: Number(params.positionMs) || 0 })
         return send.res.send({ id, body: { ok: true } })
       }
