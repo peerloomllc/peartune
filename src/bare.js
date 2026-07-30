@@ -1211,7 +1211,7 @@ function startNudge (host) {
     e.nudgeTimer = null
     if (!loadHostsFile().hosts.some((h) => h.libraryId === libId)) return // library removed
     if (clientFor(libId)) return // landed
-    log('nudge:link', { lib: libId.slice(0, 8), ...swarmDiag(host.hostKey) })
+    log('nudge:link', { lib: libId.slice(0, 8), net: networkType, ...swarmDiag(host.hostKey) })
     nudge(libId)
     e.nudgeTimer = setTimeout(tick, ACTIVE_NUDGE_MS)
     if (e.nudgeTimer.unref) e.nudgeTimer.unref()
@@ -2092,7 +2092,16 @@ const methods = {
         // The first connection did not land inside the wait; the swarm membership persists
         // and keeps trying in the background (the host may just be booting, or the wifi not
         // up yet), so nothing to schedule - attach fires host:connected when it lands.
-        log('init:connect-failed', { err: e.message })
+        // WITH THE SWARM'S OWN VIEW, because this line alone cannot tell the three cases
+        // apart and they need different fixes: nothing being attempted (`peer:"none"` or
+        // attempts capped), every attempt failing (att climbing, conns 0), or rediscovery
+        // being a NO-OP because a stale connection is already booked for this peer
+        // (`conns:1` with no client - Hyperswarm allows one connection per peer, so the
+        // nudge loop below can never land while that entry exists). Tim reports a cold open
+        // that will not connect until the app is dismissed and reopened, which is what the
+        // third case would look like from the outside; ten scripted relaunches could not
+        // reproduce it, so the next real occurrence has to explain itself.
+        log('init:connect-failed', { err: e.message, net: networkType, ...swarmDiag(host.hostKey) })
         emit('host:disconnected', { hostKey: host.hostKey })
       })
 
