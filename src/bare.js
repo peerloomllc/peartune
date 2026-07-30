@@ -153,6 +153,9 @@ const pinsFile = () => path.join(libDir(), 'pins.json')
 const DEFAULT_SETTINGS = {
   theme: 'system', deviceName: '', userName: '', avatar: '', streamQuality: 'auto',
   cacheCap: DEFAULT_CACHE_CAP, downloadCellular: false,
+  // The Recently Added shelf above the album grid. On by default - it is the one surface that
+  // answers "what is new since I last looked", which is most of why people open a music app.
+  showRecent: true,
   // The off-LAN relay backstop (proposal 2026-07-23). On by default so the app "just
   // works" for a 0%-punch user; a privacy maximalist turns it OFF for pure peer-to-peer,
   // accepting that a genuinely-unpunchable network will not connect. Read live per

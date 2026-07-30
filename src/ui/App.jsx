@@ -146,6 +146,10 @@ export default function App () {
   const [viewing, setViewing] = useState(null) // artwork, full screen
   const [expanded, setExpanded] = useState(false) // the player: mini vs full
   const [skin, setSkin] = useState('modern') // player skin: modern | classic (the retro Winamp-style face)
+  // Show the Recently Added shelf above the album grid. A SETTING, not a dismiss (Tim asked for
+  // "hide/dismiss"): a dismiss has to answer "when does it come back?", and any answer to that is
+  // a rule nobody can see. This is a switch you can find again where you turned it off.
+  const [showRecent, setShowRecent] = useState(true)
   const [albumsLoaded, setAlbumsLoaded] = useState(false)
   // How many background refreshes are in flight. A COUNT, not a boolean: a cold launch fires one
   // per library as each connects, and a boolean would clear on the first to finish while three
@@ -250,6 +254,8 @@ export default function App () {
         setState({ ...s, loading: false })
         if (s.settings?.density) setDensity(String(s.settings.density))
         if (s.settings?.skin) setSkin(String(s.settings.skin))
+        // Default true, so only an explicit false hides it - a missing key must not read as "off".
+        if (s.settings?.showRecent === false) setShowRecent(false)
         // Restore the persisted per-view sort. Held in a local, not read back from state,
         // for the load below: setSort has not committed yet in this same tick, so the
         // first albums load must take its params directly (same reason applySort does).
@@ -1602,6 +1608,13 @@ export default function App () {
 
   // The player skin (modern | classic). Same worklet-settings home as density/theme, so it
   // survives a relaunch. Classic is the retro Winamp-style face on the EXPANDED player only.
+  // Same worklet-settings home as density and the theme, so it survives a relaunch.
+  function setShowRecentValue (v) {
+    haptic('light')
+    setShowRecent(v)
+    call('setSettings', { showRecent: v }).catch(() => {})
+  }
+
   function setSkinValue (v) {
     haptic('light')
     setSkin(v)
@@ -2326,7 +2339,7 @@ export default function App () {
         state={state} merged={merged} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
         ident={ident} onRefreshIdentity={loadIdentity} onSaveIdentity={saveIdentity} onSaveAvatar={saveAvatar} onQuality={changeQuality}
         onArtRefreshed={onArtRefreshed}
-        skin={skin} onSkin={setSkinValue}
+        skin={skin} onSkin={setSkinValue} showRecent={showRecent} onShowRecent={setShowRecentValue}
         onSwitchHost={switchLibrary} onRemoveHost={removeLibrary} onAddLibrary={openAddLibrary}
         onDisableDemo={leaveDemo}
         onSetAlias={saveLibraryAlias}
@@ -2338,7 +2351,7 @@ export default function App () {
   } else {
     screen = (
       <Library
-        state={state} albums={albums} artists={artists} genres={genres} songs={songs} recent={recent}
+        state={state} albums={albums} artists={artists} genres={genres} songs={songs} recent={recent} showRecent={showRecent}
         merged={merged} filter={filter} onFilter={pickFilter} onAddLibrary={openAddLibrary}
         cursor={cursor} songCursor={songCursor} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
@@ -3001,7 +3014,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 }
 
 function Library ({
-  state, albums, artists, genres, songs, recent, merged, filter, onFilter, onAddLibrary, cursor, songCursor, density, updating,
+  state, albums, artists, genres, songs, recent, showRecent, merged, filter, onFilter, onAddLibrary, cursor, songCursor, density, updating,
   browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting, firstConnect,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
@@ -3053,6 +3066,10 @@ function Library ({
   // the shelf comes from recentMerged (each host's own 'added' order, interleaved), so show it there
   // whenever it returned anything.
   const recentSupported = merged?.merged || !!state.sorts?.albums?.keys?.includes('added')
+  // Whether the shelf renders AT ALL, in one place: the host has to advertise the 'added' sort,
+  // there has to be something in it, and the user has to want it (Settings > Appearance). Three
+  // conditions that were previously spread across the render.
+  const shelfShown = recentSupported && showRecent && !!recent && recent.length > 0
   // The worklet hands us the base URL rather than finished art URLs, because only
   // the UI knows the density, and therefore the size to ask for.
   const artBase = state.artBase || state.host?.artBase || null
@@ -3389,8 +3406,10 @@ function Library ({
                 : albums.length
                   ? (
                     <>
-                      {recentSupported && recent && recent.length > 0 &&
-                        <RecentShelf albums={recent} onOpen={onOpenAlbum} artBase={artBase} />}
+                      {shelfShown && <RecentShelf albums={recent} onOpen={onOpenAlbum} artBase={artBase} />}
+                      {/* Only when the shelf is above it: the heading exists to separate the two,
+                          and on its own at the top of the page it would be a label for nothing. */}
+                      {shelfShown && <div className='grid-head'>All albums</div>}
                       <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} favs={favs} onFav={onFav} />
                       {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
                     </>
@@ -4271,18 +4290,43 @@ function SearchResults ({ results, now, d, artBase, favs, onFav, onOpenAlbum, on
 // Fixed-size tiles that scroll sideways, visually distinct from the full grid so it
 // reads as a shelf rather than the top of the list. Tapping opens the album.
 function RecentShelf ({ albums, onOpen, artBase }) {
+  // Is there more to the right? The shelf scrolls sideways and nothing said so, so the albums
+  // past the edge were easy to miss entirely (Tim, 2026-07-30). Measured rather than assumed:
+  // the row holds however many the host returned, at a width that depends on the screen, so
+  // "there is more" is a runtime fact. Re-checked on scroll and on resize; the ResizeObserver
+  // matters because the covers arrive asynchronously and the row grows under us.
+  const rowRef = useRef(null)
+  const [more, setMore] = useState(false)
+  useEffect(() => {
+    const el = rowRef.current
+    if (!el) return undefined
+    // 8px of slack: sub-pixel widths mean scrollLeft never quite reaches the exact end, and a
+    // hint that lingers after you have scrolled to the last album is worse than none.
+    const sync = () => setMore(el.scrollWidth - el.clientWidth - el.scrollLeft > 8)
+    sync()
+    el.addEventListener('scroll', sync, { passive: true })
+    const ro = new ResizeObserver(sync)
+    ro.observe(el)
+    return () => { el.removeEventListener('scroll', sync); ro.disconnect() }
+  }, [albums.length])
+
   if (!albums.length) return null
   return (
     <div className='shelf'>
       <div className='shelf-head'>Recently added</div>
-      <div className='shelf-row'>
-        {albums.map(a => (
-          <button className='shelf-item' key={a.id} onClick={() => onOpen(a.id)}>
-            <Cover src={artFor(a, DENSITY[2], artBase)} />
-            <div className='shelf-t'>{a.name}</div>
-            {a.artist && <div className='shelf-a muted'>{a.artist}</div>}
-          </button>
-        ))}
+      <div className={'shelf-scroll' + (more ? ' more' : '')}>
+        <div className='shelf-row' ref={rowRef}>
+          {albums.map(a => (
+            <button className='shelf-item' key={a.id} onClick={() => onOpen(a.id)}>
+              <Cover src={artFor(a, DENSITY[2], artBase)} />
+              <div className='shelf-t'>{a.name}</div>
+              {a.artist && <div className='shelf-a muted'>{a.artist}</div>}
+            </button>
+          ))}
+        </div>
+        {/* The fade alone is easy to read as "the picture ends here", so it carries a caret.
+            aria-hidden: it is a hint, not a control - the row itself is what scrolls. */}
+        <div className='shelf-more' aria-hidden='true'><CaretRight size={16} weight='bold' /></div>
       </div>
     </div>
   )
@@ -5736,7 +5780,7 @@ function OwnerPairSheet ({ link, toast, onClose }) {
   )
 }
 
-function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onArtRefreshed, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias, onSetRelayAudio, onDisableDemo }) {
+function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onArtRefreshed, onQuality, skin, onSkin, showRecent, onShowRecent, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias, onSetRelayAudio, onDisableDemo }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [dev, setDev] = useState(null)
   const [usr, setUsr] = useState(null)
@@ -6188,6 +6232,18 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
                 onClick={() => onSkin(k)}
               >{l}</button>
             ))}
+          </div>
+          {/* The Recently Added shelf. Off is a real preference, not a fault: someone who knows
+              their own library does not need a "new arrivals" rail above it every time. */}
+          <div className='row' style={{ marginTop: '.7rem' }}>
+            <div>
+              <div className='label'>Recently added row</div>
+              <div className='desc'>The row of newest albums above your library.</div>
+            </div>
+            <button
+              className={'toggle' + (showRecent ? ' on' : '')} role='switch' aria-checked={showRecent}
+              onClick={() => onShowRecent(!showRecent)}
+            >{showRecent ? 'On' : 'Off'}</button>
           </div>
         </Section>
 
