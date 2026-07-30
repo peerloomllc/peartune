@@ -37,7 +37,7 @@ Distribution for it is **sideload**.
 
 - `manifest.yaml` - metadata, entrypoint, interface (Tor + LAN), health check,
   backup, migrations.
-- `Dockerfile` - `FROM` the same digest-pinned `ghcr.io/peerloomllc/peartune-host:0.2.37`
+- `Dockerfile` - `FROM` the same digest-pinned `ghcr.io/peerloomllc/peartune-host:0.2.38`
   image the Umbrel app runs, plus `tini` and the StartOS entrypoint. Reuses the
   published multi-arch image instead of rebuilding. (0.2.1 is the first image to
   carry generate-and-print, which this package relies on for its dashboard
