@@ -208,6 +208,10 @@ export default function App () {
   const [favs, setFavs] = useState(() => ({ track: new Set(), album: new Set(), artist: new Set() }))
   const [favSupported, setFavSupported] = useState(true) // false = host too old
   const [favItems, setFavItems] = useState(null) // the Favorites view, resolved + grouped
+  // For the once-registered push handlers, which close over the first render and would otherwise
+  // read a favItems that is forever null. Same trick as youViewRef, right below.
+  const favItemsRef = useRef(null)
+  favItemsRef.current = favItems
   // Which libraries were in the blend last time we heard: a ref, not state, because it only ever
   // answers "did a host just JOIN?" for the merged:updated handler and must never cause a render.
   // Starts empty on purpose - the first event after launch then re-reads the hearts once, which is
@@ -430,7 +434,10 @@ export default function App () {
         blendLibsRef.current = live
         if (joined) {
           loadFavs()
-          setFavItems(null) // the resolved list is missing that host's rows too; refetch on open
+          // The resolved list is missing that host's rows too. Same in-place refresh as the
+          // favorites push: nulling it here would leave the Favorites view on ghost shells if it
+          // happens to be the screen you are on when a library reconnects.
+          refreshFavItems()
         }
       }),
       // A library reachable only through the relay is about to stream audio and has not been
@@ -529,7 +536,7 @@ export default function App () {
       // interrupt with, it should just be right.
       on('favorites:changed', () => {
         loadFavs()
-        setFavItems(null)
+        refreshFavItems()
       }),
       // A pear:// pairing link was opened while the app was already running. The shell parks
       // it and nudges; we take it below. See takePendingLink.
@@ -1374,6 +1381,29 @@ export default function App () {
     } catch (e) {
       setError(e.message)
       setMostPlayed({ items: [] })
+    }
+  }
+
+  // The favorites changed underneath the Favorites view - because another of this person's devices
+  // changed one, or because a host joined the blend and brought its own rows.
+  //
+  // If that view is the one being LOOKED AT, refetch IN PLACE, leaving the current rows on screen
+  // until the new ones land. Setting favItems to null is what the callers used to do, and on a
+  // screen that is already open it is a trap: null renders <SkeletonRows/>, and the only thing
+  // that refetches is OPENING the view - so it sat on ghost shells until you navigated out and
+  // back in (Tim, 2026-07-30, on the first version of the favorites push). Null is still right
+  // when nobody is looking: it makes the next open fetch fresh, without fetching rows for a screen
+  // that is not on screen.
+  //
+  // On failure, fall back to null rather than keeping rows we now know are stale - a wrong list
+  // that looks authoritative is worse than a spinner.
+  async function refreshFavItems () {
+    if (!favItemsRef.current || youViewRef.current !== 'favorites') { setFavItems(null); return }
+    try {
+      const r = await call('favoriteItems')
+      setFavItems({ tracks: r.tracks || [], albums: r.albums || [], artists: r.artists || [] })
+    } catch {
+      setFavItems(null)
     }
   }
 
