@@ -355,9 +355,27 @@ export default function App () {
         // music is still going. Just note we are off the wire; play:stopped is what
         // clears the player, and only if the buffer actually starves (a revoke).
         setState(s => ({ ...s, connected: false }))
-        // The cold-launch attempt has now CONCLUDED, badly. Stop the spinner and let
-        // the wall say so - this is the honest end of the "trying" state.
-        setFirstConnect(false)
+        // DELIBERATELY NOT setFirstConnect(false) here, which is what used to make the failure
+        // wall flash up mid-launch (Tim, 2026-07-30). The old comment claimed "the cold-launch
+        // attempt has now CONCLUDED, badly" - and that is simply not true. This event fires when
+        // init's background connectTo misses its 20s waitForLink, but the swarm membership
+        // OUTLIVES that wait: the nudge loop keeps forcing fresh discovery every 10s and the
+        // connection frequently lands moments later. waitForLink's own comment says as much -
+        // "a UX bound, not a give-up".
+        //
+        // MEASURED on the TCL by polling the live WebView (a screenshot cannot see it):
+        //   t+ 3.69s  "Connecting…"
+        //   t+23.69s  "Not connected"   <- 20s exactly: the wait elapsing, not a failure
+        //   t+29.18s  library loads
+        // 5.5 seconds of telling the user it could not reach a library it was busy reaching. The
+        // cost is worse than the flash itself: this is the same wall a REAL failure shows, so
+        // crying wolf here teaches people to disbelieve it - and it is the exact screen that was
+        // stuck wrongly in #268.
+        //
+        // The spinner now runs until either the connection lands or the 45s backstop above
+        // decides we have been trying long enough. That backstop was already chosen for this
+        // very reason: "sized well past the worklet's own 20s first-connect wait so a
+        // legitimately slow off-LAN connect is never called a failure early".
         // In merged mode, re-read the per-library status (cheap - no rebuild): a revoke drops the
         // host's pool connection at once, so this greys its chip + Settings row immediately, without
         // waiting for the next index rebuild. A transient background drop greys it too and un-greys
