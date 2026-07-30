@@ -2167,6 +2167,31 @@ const methods = {
       await ensureShim()
       state.shimPort = shimPort
       state.artBase = shim.artBase()
+      // ARE WE ALREADY CONNECTED? Ask, rather than always answering "no".
+      //
+      // init() used to hardcode connected:false and leave it entirely to the host:connected
+      // EVENT to correct - which is fine on a cold launch, where the connect really has not
+      // happened yet. It is wrong on a WEBVIEW RELOAD, and the app reloads its own WebView after
+      // any background of 20s (the Vanadium freeze recovery in app/index.tsx). There the worklet
+      // never disconnected, so the "connection" is instantaneous: connectTo takes its
+      // already-connected fast path and emits host:connected within MILLISECONDS of the UI
+      // booting. Win that race and everything is fine; lose it and the event lands in a WebView
+      // with no listener yet, and there is never another one - a link that does not drop has no
+      // further events to emit. The UI then sits on "PearTune can't reach this library" over a
+      // perfectly healthy connection, until you dismiss the app and open it again.
+      //
+      // CAUGHT ON TIM'S PIXEL, 2026-07-30, which is what turned this from a theory into a fix:
+      //   10:13:40.123  [webview] terminated 1 renderer(s) after 215s backgrounded
+      //   10:13:40.621  [webview] render process gone -> reload
+      //   10:13:41.382  [worklet] link:default {"lib":"jud4pgi4"}   <- already connected
+      // and two minutes later the UI still read "Not connected", 0 albums, with the worklet
+      // having logged nothing else at all. Read out of the live WebView over CDP, so it is the
+      // UI's actual state and not an inference from a screenshot.
+      //
+      // clientFor rather than defaultConnected(): this reports on the library init is handing
+      // over, which is the one the UI is about to render, and it does not depend on
+      // defaultLibraryId having been set yet.
+      state.connected = !!clientFor(host.libraryId)
       // Connect in the BACKGROUND. The connect can take up to the timeout when the host
       // is unreachable, and blocking init on it would leave a cold launch stuck on
       // "Starting…" for 20s - unbearable, and pointless when the useful surfaces
