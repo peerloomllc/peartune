@@ -190,6 +190,74 @@ test('latestResume returns the MOST RECENTLY updated resume (the continue candid
   assert.equal((await s.latestResume('p:tim')).trackId, 't1')
 })
 
+// --- "Continue listening" is the ASKING DEVICE's, and dated by when it LISTENED ---------------
+//
+// Proposal 2026-07-30-one-device-plays. Both halves of a real, measured bug: a phone coming back
+// from offline drained its outbox, the host dated those writes from the moment they LANDED, and
+// the card on the phone that was actually playing flipped to the other phone's track.
+
+test('latestResume orders by playedAt, so a late outbox flush cannot jump the queue', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  // The phone that is playing NOW listened a minute ago and its write landed then.
+  await s.setResume('p:tim', 'now', 10000, 200000, { playedAt: Date.now() - 60_000, deviceKey: 'devA' })
+  // The phone that was OFFLINE listened hours ago, but its write lands this instant.
+  await s.setResume('p:tim', 'stale', 20000, 300000, { playedAt: Date.now() - 6 * 3600_000, deviceKey: 'devB' })
+
+  const latest = await s.latestResume('p:tim')
+  assert.equal(latest.trackId, 'now', 'the one actually listened to last wins, not the one written last')
+  // And the gap the bug lived in is visible on the stale row: listened long before it landed.
+  const stale = await s.getResume('p:tim', 'stale')
+  assert.ok(stale.updatedAt - stale.playedAt > 3600_000, 'the outbox delay is recorded, not erased')
+})
+
+test('a row written with no playedAt still orders by its write time (old client, old row)', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  await s.setResume('p:tim', 't1', 10000, 200000)
+  await new Promise(r => setTimeout(r, 5))
+  await s.setResume('p:tim', 't2', 20000, 300000)
+  assert.equal((await s.latestResume('p:tim')).trackId, 't2', 'unchanged from before playedAt existed')
+
+  // And a genuinely legacy row - no playedAt field at all - is still a candidate.
+  await bee.put('resume:p:tim:legacy', { trackId: 'legacy', positionMs: 5000, durationMs: 100000, updatedAt: Date.now() + 10_000 }, { valueEncoding: 'json' })
+  assert.equal((await s.latestResume('p:tim')).trackId, 'legacy', 'falls back to updatedAt')
+})
+
+test('latestResume prefers the ASKING device, and falls back to the person for a device with none', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  const t0 = Date.now()
+  await s.setResume('p:tim', 'mine', 10000, 200000, { playedAt: t0 - 60_000, deviceKey: 'devA' })
+  await s.setResume('p:tim', 'theirs', 20000, 300000, { playedAt: t0, deviceKey: 'devB' })
+
+  // devA asks: it gets ITS OWN track, even though the other device listened more recently. That
+  // is the whole point - the card stops flip-flopping between two phones in use.
+  assert.equal((await s.latestResume('p:tim', 'devA')).trackId, 'mine')
+  assert.equal((await s.latestResume('p:tim', 'devB')).trackId, 'theirs')
+
+  // A phone with no listening of its own still gets a card: the person's newest.
+  assert.equal((await s.latestResume('p:tim', 'devC')).trackId, 'theirs', 'fallback for a fresh device')
+
+  // No deviceKey at all (an old caller) behaves exactly as it always did.
+  assert.equal((await s.latestResume('p:tim')).trackId, 'theirs')
+})
+
+test('setResume records the writing device and stamps playedAt when the client offers none', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+
+  const row = await s.setResume('p:tim', 't1', 90000, 240000, { deviceKey: 'devA' })
+  assert.equal(row.deviceKey, 'devA')
+  assert.ok(row.playedAt >= row.updatedAt - 5 && row.playedAt <= row.updatedAt, 'defaults to the write time')
+
+  const plain = await s.setResume('p:tim', 't2', 90000, 240000)
+  assert.equal(plain.deviceKey, null, 'a caller that names no device attributes to nobody')
+})
+
 test('favorites persist across a store reopen (they are on disk, not in memory)', async (t) => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pt-state-persist-'))
   t.after(() => fsp.rm(dir, { recursive: true, force: true }))

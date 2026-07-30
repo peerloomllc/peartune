@@ -106,18 +106,41 @@ class UserState {
 
   // --- resume positions (milestone 3, phase 2) ------------------------------
   //
-  // resume:{ownerId}:{trackId} -> { trackId, positionMs, durationMs, updatedAt }.
+  // resume:{ownerId}:{trackId} -> { trackId, positionMs, durationMs, updatedAt, playedAt, deviceKey }.
   // Same host-as-hub deal: the host stamps updatedAt, the owner comes from the
   // connection, and cross-device "pick up where you left off" is free because a
   // person's devices share the store. A position of 0 (or less) is not stored - it is a
   // DELETE, so finishing a track leaves no row and it starts fresh next time.
-  async setResume (ownerId, trackId, positionMs, durationMs) {
+  //
+  // playedAt is WHEN THE DEVICE ACTUALLY LISTENED, sent by the client; updatedAt is when the
+  // write landed here. They differ whenever a write came out of an offline outbox, and that gap
+  // is a real bug: the host used to order "continue listening" by updatedAt, so a phone
+  // reconnecting after a flight put its hours-old positions in FRONT of the phone playing right
+  // now (proposal 2026-07-30-one-device-plays). Rows written before this have no playedAt and
+  // fall back to updatedAt, which is exactly the old behavior.
+  //
+  // deviceKey is WHICH of the person's devices wrote it last, taken from the authenticated
+  // connection and never from a param. The key stays per-PERSON per-track (two phones resuming
+  // the same track share one position, which is the point of host-as-hub); this only records
+  // attribution, so latestResume can prefer the asking device's own listening.
+  async setResume (ownerId, trackId, positionMs, durationMs, { playedAt = 0, deviceKey = null } = {}) {
     const key = `resume:${ownerId}:${trackId}`
     if (!(positionMs > 0)) {
       await this.bee.del(key)
       return null
     }
-    const row = { trackId, positionMs, durationMs: durationMs || null, updatedAt: Date.now() }
+    const now = Date.now()
+    const p = Number(playedAt)
+    const row = {
+      trackId,
+      positionMs,
+      durationMs: durationMs || null,
+      updatedAt: now,
+      // A client with no clock to offer (or an old one) gets the write time, so the field is
+      // always present going forward and ordering never has to special-case a fresh row.
+      playedAt: Number.isFinite(p) && p > 0 ? Math.round(p) : now,
+      deviceKey: deviceKey || null
+    }
     await this.bee.put(key, row, { valueEncoding: 'json' })
     return row
   }
@@ -159,15 +182,30 @@ class UserState {
   }
 
   // The owner's MOST RECENT resume - the "continue listening" candidate. Null if none.
-  async latestResume (ownerId) {
+  //
+  // Ordered by playedAt (when the device listened), NOT updatedAt (when the write landed), so a
+  // reconnecting phone flushing an offline outbox cannot put its stale positions in front of the
+  // phone that is playing now. Rows from before that field existed fall back to updatedAt.
+  //
+  // `deviceKey` scopes it to the ASKING device: this card answers "what was I listening to on
+  // THIS phone", which is stable, rather than "what did any of my devices touch last", which
+  // flip-flops between two phones in use. The person-wide newest is kept as a FALLBACK for a
+  // device with no listening of its own, so a freshly paired phone still gets a card. The
+  // explicit cross-device affordance is the "Playing on <name>" handoff card, not this one.
+  // Called with no deviceKey (an old caller, or a test) it behaves exactly as it always did.
+  async latestResume (ownerId, deviceKey = null) {
     const lo = `resume:${ownerId}:`
     const hi = `resume:${ownerId};`
-    let best = null
+    const when = (v) => Number(v.playedAt) || Number(v.updatedAt) || 0
+    let mine = null
+    let any = null
     for await (const node of this.bee.createReadStream({ gte: lo, lt: hi }, { valueEncoding: 'json' })) {
       const v = node.value
-      if (v && v.positionMs > 0 && (!best || v.updatedAt > best.updatedAt)) best = v
+      if (!v || !(v.positionMs > 0)) continue
+      if (!any || when(v) > when(any)) any = v
+      if (deviceKey && v.deviceKey === deviceKey && (!mine || when(v) > when(mine))) mine = v
     }
-    return best
+    return mine || any
   }
 
   // The owner's favorites, grouped by kind: { track:[ids], album:[ids], artist:[ids] }.
