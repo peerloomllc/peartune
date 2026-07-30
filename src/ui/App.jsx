@@ -27,6 +27,7 @@ import { call, on, haptic } from './bridge'
 import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
 import { shouldShowNudge } from './donation'
+import { normalizeViewState, isDefaultView, sameViewState } from './viewstate'
 
 // --- About + donation (suite config, shared across PeerLoom apps) ------------
 const APP_VERSION = '0.1.0'
@@ -253,7 +254,15 @@ export default function App () {
         // for the load below: setSort has not committed yet in this same tick, so the
         // first albums load must take its params directly (same reason applySort does).
         const savedSort = s.settings?.sort && typeof s.settings.sort === 'object' ? s.settings.sort : null
-        if (savedSort) setSort(savedSort)
+        // The REF too, synchronously: it is normally assigned during render, so a
+        // loader fired from here (the restored browse view below) would otherwise
+        // read the first render's empty sort and ask for the default order.
+        if (savedSort) { setSort(savedSort); sortRef.current = savedSort }
+        // Where you were last time - the tab, the drill-down, the source filter, the
+        // player size and the scroll. Before the loads below, because it sets the
+        // source filter they read (see restoreView).
+        const view = restoreView(s)
+        const showAlbums = !view || view.browse === 'albums'
         loadPinned() // pins are local - available even offline
         // Load the identity on mount, not only on host:connected: fully offline (no host ever
         // connects) that event never fires, so the Name/Device fields sat blank forever. identity()
@@ -267,8 +276,11 @@ export default function App () {
         // Merged is the default when 2+ hosts are paired: the browse serves from the cached index
         // INSTANTLY (no connection needed), and a background rebuild refreshes it via merged:updated.
         setMerged(s.merged || null)
-        if (s.merged?.merged) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
-        if (s.connected) { loadAlbums(0, sortParamsFor(savedSort, 'albums')); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists() }
+        if (s.merged?.merged && showAlbums) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
+        if (s.connected) {
+          if (showAlbums) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
+          loadRecent(); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists()
+        }
         // Paired but not connected YET: the background connect is in flight, so show
         // a spinner rather than a verdict until it lands or fails.
         else if (s.host) setFirstConnect(true)
@@ -297,7 +309,10 @@ export default function App () {
       // follows - update the length the navbar badge reads from this event instead,
       // or the badge stays stale until the next status tick.
       on('play:queued', (d) => setStatus(s => ({ ...(s || {}), queueLength: d.queueLength }))),
-      on('play:stopped', () => { setNow(null); setStatus(null); setSleep(null); loadContinue(); loadHandoff() }),
+      // Collapsing matters beyond tidiness: the full player unmounts with the track,
+      // but `canBack` still counts `expanded`, so leaving it set costs one back press
+      // that appears to do nothing at all.
+      on('play:stopped', () => { setNow(null); setStatus(null); setSleep(null); setExpanded(false); loadContinue(); loadHandoff() }),
       // Sleep timer state from the shell (where the countdown actually lives). `fired`
       // means the timer just stopped playback; the deadline drives the UI countdown.
       on('sleep:state', (d) => {
@@ -886,14 +901,140 @@ export default function App () {
   // Open a "You" sub-view, loading it. Favorites is the default, but an old host with
   // no favorites support has only Most Played, so fall through to it rather than land
   // on an empty, unswitchable Favorites list.
-  const openYou = (v) => {
-    haptic('light')
+  const openYou = (v) => { haptic('light'); openYouView(v) }
+  // The same dispatch WITHOUT the haptic, for the launch restore: a phone that buzzes
+  // in your hand while it is only putting the screen back is reporting an input that
+  // never happened.
+  const openYouView = (v) => {
     if (v === 'downloads') showDownloads()
     else if (v === 'requests') showRequests()
     else if (v === 'manage') showManage()
     else if (v === 'playlists') showPlaylists()
     else if (v === 'top' || !favSupported) showMostPlayed()
     else showFavorites()
+  }
+
+  // --- where you were --------------------------------------------------------
+  //
+  // Coming back to PearTune must land you where you left off. It does not today
+  // because the app reloads its OWN WebView after 20s in the background (the
+  // Vanadium freeze recovery in app/index.tsx), which is a cold document - so the
+  // tab, the drill-down and the scroll are gone on every stock-Android phone, not
+  // just on GrapheneOS. src/ui/viewstate.js carries the measurement and the rules;
+  // this is the plumbing.
+  //
+  // Read through a ref rather than the effect's closure: the scroll listener
+  // registers once and must still see the current tab.
+  const viewRef = useRef({})
+  viewRef.current = { tab, browse, youView, filter, stack, expanded }
+  const viewSavedRef = useRef(null) // last snapshot written, so an idle scroll is not a write
+  const viewReadyRef = useRef(false) // nothing is persisted until the restore has run
+  const viewTimer = useRef(null)
+  const pendingScrollRef = useRef(0) // a restore target still waiting for its content
+  const pendingExpandedRef = useRef(false) // ditto, waiting for the shell to re-announce the track
+
+  // Snapshot on a trailing debounce. Navigation coalesces (a tab tap that drops a
+  // stack is two state changes, one write) and scrolling writes once you stop, not
+  // once a frame.
+  function scheduleViewSave (delay) {
+    if (!viewReadyRef.current) return
+    clearTimeout(viewTimer.current)
+    viewTimer.current = setTimeout(() => {
+      // While a restore is still chasing its target, the live scroll is 0 and would
+      // overwrite the position we are in the middle of putting back.
+      const scroll = pendingScrollRef.current || window.scrollY || 0
+      const v = normalizeViewState({ ...viewRef.current, scroll })
+      if (sameViewState(v, viewSavedRef.current)) return
+      viewSavedRef.current = v
+      call('setSettings', { view: v }).catch(() => {})
+    }, delay)
+  }
+
+  useEffect(() => { scheduleViewSave(200) }, [tab, browse, youView, filter, stack, expanded])
+  useEffect(() => {
+    const onScroll = () => scheduleViewSave(600)
+    // A finger on the screen ends any restore still in flight. Touch is the one signal
+    // that separates "the user is scrolling" from "we are putting the scroll back" -
+    // our own scrollTo fires the scroll event but never this one - and without it a
+    // restore that arrives late would yank the page out from under someone.
+    const onTouch = () => { pendingScrollRef.current = 0 }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('touchstart', onTouch, { passive: true })
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('touchstart', onTouch)
+      clearTimeout(viewTimer.current)
+    }
+  }, [])
+
+  // Put the scroll back once the screen is tall enough to hold it. Its data arrives
+  // asynchronously (and a drill-down fetches its own), so this polls rather than
+  // firing once and landing at the top. The deadline stops it chasing a target that
+  // will never be reachable - a shorter album, or a screen that failed to load - and
+  // settles for as far down as the content actually goes.
+  function restoreScroll (target) {
+    if (!target) return
+    pendingScrollRef.current = target
+    const deadline = Date.now() + 8000
+    const tick = () => {
+      if (!pendingScrollRef.current) return // a real scroll or a nav change took over
+      const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+      if (max >= target) { window.scrollTo(0, target); pendingScrollRef.current = 0; return }
+      if (Date.now() > deadline) { window.scrollTo(0, max); pendingScrollRef.current = 0; return }
+      setTimeout(tick, 120)
+    }
+    setTimeout(tick, 60)
+  }
+
+  // The full-size player only exists while something is playing, and `now` comes back
+  // from the shell a beat after the reload. Holding the restored size until it lands
+  // matters for more than looks: `canBack` counts `expanded`, so setting it with
+  // nothing playing would render nothing at all while still swallowing a back press.
+  useEffect(() => {
+    if (!pendingExpandedRef.current || !now) return
+    pendingExpandedRef.current = false
+    setExpanded(true)
+  }, [now])
+
+  // Apply the snapshot from settings.json. Returns it so init() can skip the album
+  // load when the restored view is not the album grid. Call it BEFORE that load: the
+  // source filter is read from filterRef, so setting it here is what makes the first
+  // browse call ask the right library instead of asking twice.
+  function restoreView (s) {
+    const v = normalizeViewState(s.settings?.view)
+    viewSavedRef.current = v
+    viewReadyRef.current = true
+    // No library yet means the pairing wall, which has no tabs to put back.
+    if (!v || !s.host || isDefaultView(v)) return null
+    // A filter naming a library that is no longer paired would browse an empty list
+    // under a chip that is not there, so it falls back to the blend.
+    const libs = s.merged?.libraries || []
+    if (v.filter !== '_all' && libs.some(l => l.libraryId === v.filter)) {
+      filterRef.current = v.filter
+      setFilter(v.filter)
+      // The WORKLET holds the filter too (it routes streaming), and it SURVIVES a
+      // WebView reload - so on that path this is a no-op, and on a cold start it is
+      // what stops playback resolving to a different library than the one on screen.
+      call('setLibraryFilter', { libraryId: v.filter }).catch(() => {})
+    }
+    if (v.tab !== 'library') setTab(v.tab)
+    if (v.tab === 'you') openYouView(v.youView)
+    if (v.stack.length) setStack(v.stack)
+    if (v.expanded) pendingExpandedRef.current = true
+    // Artists / genres / songs each load their own list. Albums is the default and
+    // init() loads it, so it is the one view this must NOT ask for twice.
+    //
+    // A launch with nothing to read from (no connection, no cached blend) DELIBERATELY
+    // drops back to Albums rather than restoring the view: setting `browse` without a
+    // loader would leave an empty Songs list that only a manual tap could fill, since
+    // the single-host reconnect path reloads albums and not the current view.
+    if (v.browse !== 'albums' && (s.connected || s.merged?.merged)) {
+      if (v.browse === 'artists') showArtists()
+      else if (v.browse === 'genres') showGenres()
+      else showSongs()
+    }
+    restoreScroll(v.scroll)
+    return v
   }
 
   // The dock (player + navbar) is fixed, so the content underneath has to know how
