@@ -394,10 +394,27 @@ summary { cursor: pointer; padding: .5rem; }
    classic CSS grid blowout. min-width:0 on the cell is the same guard. */
 /* Recently Added shelf: a horizontal strip of the newest albums above the grid. Fixed
    tiles that scroll sideways, set apart from the grid so it reads as a shelf. */
-.shelf { margin: .3rem 0 1.2rem; }
+/* The shelf is a SECTION, not the first row of the grid. Without the rule it ran straight into
+   the albums below and read as one list (Tim, 2026-07-30); the grid gets its own heading for the
+   same reason, so the two read as two things rather than one thing with a gap in it. */
+.shelf { margin: .3rem 0 1rem; padding-bottom: .9rem; border-bottom: 1px solid var(--color-divider); }
 .shelf-head { font-size: .95rem; font-weight: 600; color: var(--color-text-primary); margin: 0 0 .6rem; }
+.grid-head { font-size: .95rem; font-weight: 600; color: var(--color-text-primary); margin: 0 0 .7rem; }
+.shelf-scroll { position: relative; }
 .shelf-row { display: flex; gap: .7rem; overflow-x: auto; padding-bottom: .35rem; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
 .shelf-row::-webkit-scrollbar { display: none; }
+/* "There is more to the right." Shown only while there actually is - RecentShelf measures it.
+   The gradient ends in the page background so the last cover looks cut off rather than framed,
+   which is the thing that reads as "keep going"; the caret makes it unmissable. Not a button:
+   pointer-events stay off so it can never eat a tap meant for the cover underneath. */
+.shelf-more {
+  position: absolute; right: 0; top: 0; bottom: .35rem; width: 2.6rem;
+  display: flex; align-items: center; justify-content: flex-end;
+  color: var(--color-text-muted); pointer-events: none;
+  opacity: 0; transition: opacity .18s ease;
+  background: linear-gradient(90deg, transparent, var(--color-surface-base) 65%);
+}
+.shelf-scroll.more .shelf-more { opacity: 1; }
 .shelf-item {
   flex: 0 0 auto; width: 128px; scroll-snap-align: start;
   background: none; border: none; padding: 0; text-align: left; cursor: pointer; color: inherit;
