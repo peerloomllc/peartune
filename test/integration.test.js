@@ -314,6 +314,52 @@ test('FAVORITES: favoriting on one device pushes to the person\'s OTHER devices,
   assert.equal(aHeard, false, 'the device that made the change is not told about it')
 })
 
+// Playlists had the identical gap favorites did: one created or edited on a person's device did
+// not reach their others until something made the app ask again, and nothing does while it sits
+// connected. All five mutations push.
+test('PLAYLISTS: every mutation pushes to the person\'s OTHER devices, never back to itself', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  let aHeard = 0
+  a.client.onPush = (m) => { if (m?.kind === 'playlists:changed') aHeard++ }
+
+  // CREATE
+  let heard = oncePush(b.client, 'playlists:changed')
+  const pl = await a.client.playlistCreate({ name: 'Road trip' })
+  let evt = await heard
+  assert.equal(evt.data.reason, 'created')
+  assert.equal(evt.data.id, pl.id)
+  assert.ok(evt.data.libraryId, 'the payload says which library, for the merged blend')
+
+  // ADD TRACKS
+  heard = oncePush(b.client, 'playlists:changed')
+  await a.client.playlistAdd({ id: pl.id, trackIds: ['t1', 't2'] })
+  assert.equal((await heard).data.reason, 'tracks-added')
+
+  // REORDER / SET
+  heard = oncePush(b.client, 'playlists:changed')
+  await a.client.playlistSetTracks({ id: pl.id, trackIds: ['t2', 't1'] })
+  assert.equal((await heard).data.reason, 'tracks-set')
+
+  // RENAME
+  heard = oncePush(b.client, 'playlists:changed')
+  await a.client.playlistRename({ id: pl.id, name: 'Long drive' })
+  assert.equal((await heard).data.reason, 'renamed')
+
+  // DELETE
+  heard = oncePush(b.client, 'playlists:changed')
+  await a.client.playlistDelete({ id: pl.id })
+  evt = await heard
+  assert.equal(evt.data.reason, 'deleted')
+  assert.deepEqual((await b.client.playlistList()).items, [], 'and B reading live agrees')
+
+  await new Promise((r) => setTimeout(r, 300))
+  assert.equal(aHeard, 0, 'the device making the changes is never told about its own')
+})
+
 test('FAVORITES: UNfavoriting pushes too, so the other device clears its heart', async (t) => {
   const { testnet, host } = await scaffold(t)
   const { a, b } = await twoDevicesOnePerson(testnet, host)

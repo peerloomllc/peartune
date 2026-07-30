@@ -224,6 +224,10 @@ export default function App () {
   const youViewRef = useRef('favorites') // for the once-registered devices:changed handler
   youViewRef.current = youView
   const [playlists, setPlaylists] = useState(null) // the Playlists list: [{ id, name, count }]
+  // Bumped when ANOTHER of this person's devices changes a playlist. An open PlaylistScreen takes
+  // it as a dep and refetches IN PLACE (its effect overwrites rather than clearing, so there is no
+  // skeleton flash) - the lesson from the Favorites ghost shells, applied before it could repeat.
+  const [plRefresh, setPlRefresh] = useState(0)
   const [plSupported, setPlSupported] = useState(true) // false = host too old for playlists
   const [serverPls, setServerPls] = useState(null) // the source's OWN playlists (read-only, v2)
   const [addingTo, setAddingTo] = useState(null) // an item pending "add to playlist" (the picker)
@@ -546,6 +550,15 @@ export default function App () {
       on('favorites:changed', () => {
         loadFavs()
         refreshFavItems()
+      }),
+      // ...and the same for playlists, which had the identical gap: one created, renamed, deleted
+      // or reordered on another phone did not arrive until something made the app ask again, and
+      // nothing does while it sits connected. loadPlaylists(true) forces past its cache; plRefresh
+      // reaches an open playlist DETAIL, which is a second surface that would otherwise show the
+      // old track list. No toast - your own edit on your own other device is not an interruption.
+      on('playlists:changed', () => {
+        loadPlaylists(true)
+        setPlRefresh((n) => n + 1)
       }),
       // A pear:// pairing link was opened while the app was already running. The shell parks
       // it and nudges; we take it below. See takePendingLink.
@@ -2356,7 +2369,7 @@ export default function App () {
         )
       : (
         <PlaylistScreen
-          key={top.id} id={top.id} name={top.name} now={now} onBack={pop}
+          key={top.id} id={top.id} name={top.name} now={now} onBack={pop} refreshKey={plRefresh}
           onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
           onRename={renamePlaylist}
           onSetTracks={(pid, trackIds) => call('setPlaylistTracks', { id: pid, trackIds }).then(() => loadPlaylists(true))}
@@ -4797,7 +4810,7 @@ function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay
   )
 }
 
-function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onRename, onDelete, onSetTracks, server, sourceName }) {
+function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onRename, onDelete, onSetTracks, server, sourceName, refreshKey = 0 }) {
   const [pl, setPl] = useState(null)
   const [err, setErr] = useState(null)
   const [editing, setEditing] = useState(false)
@@ -4813,7 +4826,10 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
       .then(p => { if (live) setPl(p) })
       .catch(e => { if (live) setErr(e.message) })
     return () => { live = false }
-  }, [id, server])
+    // refreshKey: another of this person's devices edited a playlist, so refetch. The effect
+    // OVERWRITES pl rather than clearing it first, so the rows on screen stay up until the new
+    // ones land - no skeleton flash, which is the trap the Favorites view fell into.
+  }, [id, server, refreshKey])
 
   const title = pl?.name ?? name ?? 'Playlist'
   const tracks = pl?.tracks || []

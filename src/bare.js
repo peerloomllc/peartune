@@ -923,6 +923,12 @@ function makeClient () {
       // The host pushed this to whoever filed the request, on every device they are signed in on.
       log('request:resolved', { status: m.data?.status ?? null })
       emit('request:resolved', m.data || {})
+    } else if (m?.kind === 'playlists:changed') {
+      // Another of this person's devices created, renamed, deleted or reordered a playlist. Same
+      // deal as favorites: playlistList is a live host read behind a cache, so refreshing anything
+      // here would just be a wasted round-trip before the one the UI is about to make.
+      log('playlists:changed', { reason: m.data?.reason ?? null })
+      emit('playlists:changed', m.data || {})
     } else if (m?.kind === 'requests:changed') {
       // The owner-side queue moved for a reason that is NOT a new arrival - a request was
       // withdrawn by whoever asked, or resolved on the dashboard. Only arrivals were ever pushed,
