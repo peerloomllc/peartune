@@ -13,3 +13,7 @@ utc,label,network,tun_ifaces,use_relay,host,library,outcome,dial_failures
 2026-07-30T02:00:56Z,cell-ts-off,cellular,0,true,cc971fqe,Tim's Mac Mini,relayed,8
 2026-07-30T02:00:56Z,cell-ts-off,cellular,0,true,se4t5s91,Tim's Umbrel,direct,8
 2026-07-30T02:01:50Z,cell-ts-off,cellular,0,false,,,no-connection,8
+2026-07-30T02:13:04Z,cell-ts-on,cellular,0,true,,,no-connection,2
+2026-07-30T02:13:57Z,cell-ts-on,cellular,0,false,,,no-connection,2
+2026-07-30T02:16:07Z,cell-ts-on,cellular,0,true,,,no-connection,2
+2026-07-30T02:17:00Z,cell-ts-on,cellular,0,false,,,no-connection,2

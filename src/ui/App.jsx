@@ -5507,6 +5507,9 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
   const cap = cache?.cap ?? (state.settings?.cacheCap ?? 0)
   const setCap = async (bytes) => { haptic('light'); try { setCache(await call('setCacheCap', { bytes })) } catch {} }
   const clearCache = async () => { haptic('warn'); try { setCache(await call('clearCache')) } catch {} }
+  // Drop the stored covers so they refetch at whatever the server now has (proposal
+  // 2026-07-29-persist-album-art). Art only - downloads still play offline.
+  const refreshArt = async () => { haptic('light'); try { await call('refreshArtwork') } catch {} }
   const [cellular, setCellular] = useState(state.settings?.downloadCellular ?? false)
   const toggleCellular = async () => { const on = !cellular; haptic('light'); setCellular(on); try { await call('setDownloadCellular', { on }) } catch {} }
   // The off-LAN relay privacy toggle. Default ON (the reliability backstop); OFF is
@@ -5798,6 +5801,25 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
             onClick={clearCache} disabled={!cache?.count}
           >
             <Trash size={16} weight='bold' /> Clear cache
+          </button>
+          {/* ARTWORK. Covers are kept until their library is removed, which is predictable and
+              never re-downloads on a timer (decision 1, proposal 2026-07-29-persist-album-art).
+              But a server CAN change an album's art without changing its cover id, and then the
+              old image would be right forever - so this is the escape hatch. Whole store rather
+              than one album, because "which cover is wrong" is not something the app can know.
+              Deliberately NOT next to Clear cache's danger styling: this costs a re-download,
+              not your offline music. */}
+          <div className='label' style={{ marginTop: '.9rem' }}>Album artwork</div>
+          <div className='desc'>
+            Covers are saved on this phone the first time they load, so browsing doesn't
+            re-download them. If a cover looks wrong or out of date, fetch them again.
+          </div>
+          <button
+            className='wide'
+            style={{ marginTop: '.5rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '.4rem' }}
+            onClick={refreshArt}
+          >
+            <ArrowsClockwise size={16} weight='bold' /> Refresh artwork
           </button>
           <div className='row' style={{ marginTop: '.4rem' }}>
             <div>

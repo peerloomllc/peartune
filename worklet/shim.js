@@ -112,7 +112,7 @@ function parseRange (header, size) {
 // local disk, so it skips the lease gate (nothing could have authorized it) and the art store's
 // one-size rule (there is no host to fetch a better size from). Defaults to false, which is
 // exactly the behaviour every real library has always had.
-function createAudioShim ({ log = () => {}, defaultClient = async () => null, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostless = () => false, hostClient = null, libForTrack = null, libForCover = null, altCopy = null, onRehost = null, audioGate = () => 'play' }) {
+function createAudioShim ({ log = () => {}, defaultClient = async () => null, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostless = () => false, hostClient = null, libForTrack = null, libForCover = null, altCopy = null, onRehost = null, audioGate = () => 'play', artLibrary = null }) {
   if (!http) http = require('bare-http1') // on-device only; see the note at the top of this file
   const meta = new Map() // trackId -> { size, mime }
 
@@ -352,20 +352,25 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
       // lease exactly like cached audio, so a revoked/long-offline device goes dark. Only
       // this one size hits disk, so the library grid (120/350/500) keeps its exact-size,
       // freshly-fetched art.
-      // A HOSTLESS cover ignores BOTH gates. The one-size rule exists so a stored thumbnail can't
-      // decide the resolution of a request a host could answer properly - but a demo cover has no
-      // host to ask, so disk is the only source there will ever be, at whatever size the grid's
-      // density asked for. Without this the demo library browses as a wall of placeholders.
+      // ANY size may come off disk now (proposal 2026-07-29-persist-album-art). The store used
+      // to be keyed by coverId alone, so one stored image could not answer a request for a
+      // different size and the read had to be pinned to DEFAULT_ART_SIZE - which meant the
+      // library grid (120/350/500) never hit disk at all and re-fetched every cold start. It is
+      // keyed by coverId AND size now, so each resolution is its own entry and there is nothing
+      // to confuse.
+      //
+      // A HOSTLESS cover still ignores the lease: a demo cover has no host that could ever have
+      // authorized it, and gating it would browse the demo library as a wall of placeholders.
       const localOnly = hostless(coverId)
-      if (artStore && (localOnly || (size === DEFAULT_ART_SIZE && leaseOk()))) {
-        const disk = artStore.get(coverId)
+      if (artStore && (localOnly || leaseOk())) {
+        const disk = artStore.get(coverId, size)
         if (disk && disk.length) {
           res.writeHead(200, {
             'content-type': 'image/jpeg',
             'content-length': String(disk.length),
             'cache-control': 'max-age=86400'
           })
-          log('art:hit', { cover: String(coverId).slice(0, 12) })
+          log('art:hit', { cover: String(coverId).slice(0, 12), size })
           return res.end(disk)
         }
       }
@@ -385,6 +390,20 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
           artCache.delete(artCache.keys().next().value) // oldest out
         }
         artCache.set(key, buf)
+        // ...and to DISK, which is the actual fix. The in-memory Map above is 120 entries and
+        // dies with the process, so before this every cold start re-fetched every visible
+        // cover - over the relay, on someone else's bill, for bytes that never change. Tagged
+        // with the owning library so removing that library can reclaim them (artStore
+        // .removeLibrary); `artLibrary` resolves the same way the fetch above did, and a null
+        // is stored honestly rather than guessed.
+        if (artStore) {
+          try {
+            artStore.put(coverId, buf, {
+              size,
+              library: libraryId || (artLibrary ? artLibrary(coverId) : null)
+            })
+          } catch {}
+        }
       }
 
       res.writeHead(200, {

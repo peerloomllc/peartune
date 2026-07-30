@@ -454,6 +454,15 @@ function purgeLibrary (libraryId) {
     const { removed, bytes, untagged } = audioCache.removeLibrary(libraryId)
     if (removed || untagged) log('local:audio-purged', { library: libraryId.slice(0, 8), removed, bytes, untagged })
   } catch {}
+
+  // The ART, which removeLibrary never reclaimed at all until now: the store had no index, so a
+  // coverId on disk could not be traced back to the library it came from (proposal
+  // 2026-07-29-persist-album-art). Same shape and same honesty as the audio purge above -
+  // untagged rows predate the tag and are left to the cap rather than guessed at.
+  try {
+    const { removed, bytes, untagged } = artStore.removeLibrary(libraryId)
+    if (removed || untagged) log('local:art-purged', { library: libraryId.slice(0, 8), removed, bytes, untagged })
+  } catch {}
   for (const n of ['queue.json', 'favorites.json', 'playlists.json', 'outbox.json', 'lease.json', 'pins.json']) {
     try { fs.unlinkSync(path.join(dir, n)) } catch {}
   }
@@ -565,6 +574,14 @@ const audioCache = new AudioCache({
 // Persistent covers for downloaded albums, so Downloads shows real art offline. Small,
 // bounded by the pinned albums; the shim reads it as an offline fallback (lease-gated).
 const artStore = new ArtStore({ dir: ART_DIR })
+// One-time sweep of art written before it was keyed by size (proposal
+// 2026-07-29-persist-album-art). Those files have no '@<size>' suffix so nothing will ever
+// read them again - they would sit there forever as dead bytes. Cheap, idempotent, and a no-op
+// on a fresh install or after the first run.
+try {
+  const swept = artStore.sweepLegacy()
+  if (swept) console.warn('[worklet] art:legacy-swept', swept)
+} catch {}
 
 function loadOutbox () {
   try {
@@ -1783,6 +1800,12 @@ async function ensureShim () {
     hostClient: ensureHostById,
     libForTrack,
     libForCover,
+    // Which library a browse-fetched cover belongs to, so the art store can tag it and a later
+    // removeHost can reclaim it (proposal 2026-07-29-persist-album-art). In merged mode
+    // libForCover knows; in single-host mode the URL names no library and the default one is
+    // the answer. Returns null rather than guessing when neither can say, and an untagged row
+    // is simply never claimed by a per-library purge.
+    artLibrary: (coverId) => libForCover(coverId) || defaultLibraryId || null,
     // Mid-song failover: which copy to continue from, and - when the copies are not byte-identical
     // and a splice is impossible - a nudge to the shell to re-open the track on the other library
     // at the same TIMESTAMP. The shim cannot restart a player; only the shell can.
@@ -3547,6 +3570,21 @@ const methods = {
     return { bytes: 0, count: 0, cap: audioCache.cap }
   },
 
+  // Throw away the stored artwork so it refetches at whatever the server now has (decision 1
+  // of proposal 2026-07-29-persist-album-art). Covers are kept until their library is removed,
+  // which is predictable and never re-downloads on a timer - but a server CAN change an album's
+  // art without changing its coverId, and then the old image would be right forever. This is
+  // the escape hatch for that, and it is the whole store rather than one album because "which
+  // cover is wrong" is not something the app can know.
+  //
+  // Only art. The audio cache is untouched, so downloads still play offline.
+  refreshArtwork () {
+    const before = artStore.count()
+    artStore.clear()
+    log('art:refreshed', { dropped: before })
+    return { ok: true, dropped: before }
+  },
+
   setCacheCap ({ bytes }) {
     const cap = Math.max(0, Number(bytes) || 0)
     const s = loadSettings()
@@ -3617,12 +3655,15 @@ const methods = {
     if (album.coverId || album.coverArt) covers.add(album.coverId || album.coverArt)
     for (const m of meta) if (m.coverId) covers.add(m.coverId)
     for (const coverId of covers) {
-      if (artStore.has(coverId)) continue
+      // Already on disk from BROWSING? Just protect it from eviction rather than downloading it
+      // again to earn its pin (proposal 2026-07-29-persist-album-art).
+      if (artStore.has(coverId, DEFAULT_ART_SIZE)) { artStore.setPinned(coverId, true); continue }
       try {
-        // Store at the size the shim serves from disk (DEFAULT_ART_SIZE) so the two stay
-        // in lockstep - that is the size the Downloads views request.
+        // Store at the size the Downloads views request. Pinned at write time so the LRU can
+        // never take a downloaded album's cover - an offline download whose art was evicted
+        // renders as a placeholder, which defeats the point of downloading it.
         const buf = await mustClient().art({ coverId, size: DEFAULT_ART_SIZE })
-        artStore.put(coverId, buf)
+        artStore.put(coverId, buf, { size: DEFAULT_ART_SIZE, library: defaultLibraryId, pinned: true })
       } catch (e) { log('pin:art-failed', { err: e?.message }) }
     }
 
@@ -3651,7 +3692,10 @@ const methods = {
       for (const coverId of covers) {
         const stillUsed = Object.values(pins).some(o =>
           o.coverId === coverId || (o.tracks || []).some(t => t.coverId === coverId))
-        if (!stillUsed) artStore.remove(coverId)
+        // Un-PIN rather than delete: the cover is still perfectly good for browsing, and the LRU
+        // reclaims it in its own time if it stops being looked at. Deleting here guaranteed a
+        // re-download the next time the user scrolled past the album.
+        if (!stillUsed) artStore.setPinned(coverId, false)
       }
       savePins(pins)
       log('unpin:album', { albumId })
