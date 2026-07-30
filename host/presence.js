@@ -41,15 +41,20 @@ class Presence {
     if (!set) { set = new Set(); this._byDevice.set(key, set) }
     set.add(pushFn)
     let oset = null
+    let entry = null
     if (ownerId) {
       oset = this._byOwner.get(ownerId)
       if (!oset) { oset = new Set(); this._byOwner.set(ownerId, oset) }
-      oset.add(pushFn)
+      // The owner set holds { deviceKey, fn }, not a bare fn, so a push to a PERSON can skip the
+      // device that caused it - "your favorites changed" is news to your other phones and not to
+      // the one you just tapped, which already re-rendered optimistically.
+      entry = { deviceKey: key, fn: pushFn }
+      oset.add(entry)
     }
     return () => {
       const s = this._byDevice.get(key)
       if (s) { s.delete(pushFn); if (s.size === 0) this._byDevice.delete(key) }
-      if (oset) { oset.delete(pushFn); if (oset.size === 0) this._byOwner.delete(ownerId) }
+      if (oset && entry) { oset.delete(entry); if (oset.size === 0) this._byOwner.delete(ownerId) }
     }
   }
 
@@ -69,12 +74,18 @@ class Presence {
   // Send a typed event to every live connection of one PERSON (all their devices), keyed by the
   // ownerId their state is stored under. Best-effort, same swallow-a-bad-sender contract as notify.
   // Used to tell whoever filed a request that it was resolved, wherever they are signed in.
-  notifyOwner (ownerId, kind, data = null) {
+  //
+  // `exceptDevice` skips one device's connections - for a change that device MADE, where the news
+  // is only news to the person's other phones. Omit it and every device hears, which is what the
+  // request:resolved caller wants (it did not make the change; the operator did).
+  notifyOwner (ownerId, kind, data = null, { exceptDevice = null } = {}) {
     const set = this._byOwner.get(ownerId)
     if (!set) return 0
+    const skip = exceptDevice ? keyOf(exceptDevice) : null
     let n = 0
-    for (const pushFn of set) {
-      try { pushFn({ kind, data }); n++ } catch {}
+    for (const entry of set) {
+      if (skip && entry.deviceKey === skip) continue
+      try { entry.fn({ kind, data }); n++ } catch {}
     }
     return n
   }

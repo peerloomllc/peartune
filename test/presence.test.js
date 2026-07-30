@@ -106,6 +106,44 @@ test('notifyOwner reaches every device of one PERSON, keyed by ownerId', (t) => 
   }
 })
 
+// The favorites push (proposal 2026-07-30-favorites-live-update) is news to a person's OTHER
+// phones and not to the one that just tapped the heart - that one already re-rendered, and
+// pushing to it would fight its own optimistic update.
+test('notifyOwner skips exceptDevice - the device that MADE the change is not told about it', (t) => {
+  const p = new Presence()
+  const got = []
+  p.register('PHONE', (e) => got.push(['phone', e]), 'p:sam')
+  p.register('TABLET', (e) => got.push(['tablet', e]), 'p:sam')
+  p.register('OTHER', (e) => got.push(['other', e]), 'p:kim')
+
+  const n = p.notifyOwner('p:sam', 'favorites:changed', { kind: 'artist', id: 'a1', on: true }, { exceptDevice: 'PHONE' })
+  assert.equal(n, 1, "only Sam's other device")
+  assert.deepEqual(got.map((g) => g[0]), ['tablet'])
+  assert.deepEqual(got[0][1].data, { kind: 'artist', id: 'a1', on: true })
+})
+
+test('notifyOwner with a SECOND connection of the excepted device skips them all', (t) => {
+  // One device can hold more than one live connection (a reconnect briefly overlaps the old one),
+  // and every one of them is the same phone - so the exception has to be per DEVICE, not per
+  // channel, or the tapping phone still hears about its own write down the other pipe.
+  const p = new Presence()
+  const got = []
+  p.register('PHONE', (e) => got.push('phone-a'), 'p:sam')
+  p.register('PHONE', (e) => got.push('phone-b'), 'p:sam')
+  p.register('TABLET', (e) => got.push('tablet'), 'p:sam')
+  assert.equal(p.notifyOwner('p:sam', 'favorites:changed', null, { exceptDevice: 'PHONE' }), 1)
+  assert.deepEqual(got, ['tablet'])
+})
+
+test('notifyOwner with no exceptDevice still reaches everyone (request:resolved is unchanged)', (t) => {
+  const p = new Presence()
+  let hits = 0
+  p.register('PHONE', () => { hits++ }, 'p:sam')
+  p.register('TABLET', () => { hits++ }, 'p:sam')
+  assert.equal(p.notifyOwner('p:sam', 'request:resolved', { id: 'r1' }), 2)
+  assert.equal(hits, 2)
+})
+
 test('notifyOwner for an ownerId with nobody connected is a no-op, not a throw', (t) => {
   const p = new Presence()
   p.register('PHONE', () => {}, 'p:sam')

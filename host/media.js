@@ -257,7 +257,19 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         } catch {
           return safeErr(id, ERR.BAD_PARAMS, 'bad favorite kind')
         }
-        log('fav:set', { kind: row.kind, on: row.on })
+        // TELL THIS PERSON'S OTHER DEVICES, or they show the old hearts until something makes
+        // them ask again - and nothing does while the app sits connected, which is why a
+        // favorite made on one phone only appeared on the other after a relaunch (Tim,
+        // 2026-07-30; proposal 2026-07-30-favorites-live-update). Not the device that just
+        // wrote it: it already re-rendered, and a push would fight its own optimistic update.
+        // Best-effort, and never gates the reply - presence is null in the unit tests.
+        let told = 0
+        if (presence) {
+          told = presence.notifyOwner(ownerOf(grant), 'favorites:changed',
+            { kind: row.kind, id: row.id, on: row.on, libraryId },
+            { exceptDevice: grant.deviceKey })
+        }
+        log('fav:set', { kind: row.kind, on: row.on, told })
         return send.res.send({ id, body: { ok: true, kind: row.kind, id: row.id, on: row.on } })
       }
 

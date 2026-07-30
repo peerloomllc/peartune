@@ -280,6 +280,63 @@ test('HANDOFF: claiming the session pushes "superseded" to the device that held 
   assert.equal(after.isActiveHere, true, 'B holds the token')
 })
 
+// A favorite made on one of a person's devices reaches the OTHERS while they are connected, with
+// no reload. Before this, no push existed for user state at all, so a phone sitting connected
+// showed the old hearts and the old Favorites list until the app was reopened (Tim, 2026-07-30;
+// proposal 2026-07-30-favorites-live-update).
+test('FAVORITES: favoriting on one device pushes to the person\'s OTHER devices, not back to itself', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  const { items } = await a.client.list({ type: 'tracks' })
+  const id = items[0].id
+
+  // B must hear about it. A must NOT - it already knows, and a push would fight its own
+  // optimistic render. Arm both BEFORE the write so neither can be missed.
+  const heard = oncePush(b.client, 'favorites:changed')
+  let aHeard = false
+  a.client.onPush = (m) => { if (m?.kind === 'favorites:changed') aHeard = true }
+
+  await a.client.favSet({ kind: 'track', id, on: true })
+
+  const evt = await heard
+  assert.equal(evt.data.kind, 'track')
+  assert.equal(evt.data.id, id)
+  assert.equal(evt.data.on, true)
+  assert.ok(evt.data.libraryId, 'the payload says WHICH library changed, for the merged blend')
+
+  // ...and the push is not a substitute for the truth: B reading live now sees it.
+  assert.deepEqual((await b.client.favList()).track, [id])
+
+  await new Promise((r) => setTimeout(r, 300))
+  assert.equal(aHeard, false, 'the device that made the change is not told about it')
+})
+
+test('FAVORITES: UNfavoriting pushes too, so the other device clears its heart', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  const { items } = await a.client.list({ type: 'tracks' })
+  const id = items[0].id
+
+  // Wait for the ADD's push to land before arming for the REMOVE. favSet resolves on the host's
+  // reply, but the push to B travels on B's own connection and can arrive after - so arming
+  // straight after the write catches the previous event and the assertion reads the wrong one.
+  const added = oncePush(b.client, 'favorites:changed')
+  await a.client.favSet({ kind: 'track', id, on: true })
+  await added
+
+  const heard = oncePush(b.client, 'favorites:changed')
+  await a.client.favSet({ kind: 'track', id, on: false })
+  const evt = await heard
+  assert.equal(evt.data.on, false, 'a removal is as much news as an addition')
+  assert.deepEqual((await b.client.favList()).track, [])
+})
+
 // "Continue listening" belongs to the ASKING device, and is dated by when that device LISTENED,
 // not by when the write landed here. Both halves of a bug measured on hardware 2026-07-30: a
 // phone back from offline drained its outbox, the host dated those writes from the moment they
