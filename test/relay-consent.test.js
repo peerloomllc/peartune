@@ -151,6 +151,38 @@ test('the installed hyperswarm actually has the patch applied', () => {
     'relay-consent gate is inert. Run `npx patch-package` (npm postinstall does this).')
 })
 
+// --- 5. the pairing-path regression ------------------------------------------
+
+test('relayed-ness is derived per request, NOT cached by onSwarmConnection', () => {
+  // WHAT THIS PINS, and what it does not claim.
+  //
+  // The first implementation cached relayed-ness per library in onSwarmConnection. That
+  // handler EARLY-RETURNS on the pairing path - the host is not in hosts.json yet, so its
+  // connection is handed to the in-flight pair handshake - and the app then keeps using
+  // that very connection. So a library's first session after pairing would record nothing,
+  // the gate would read "not relayed", and audio would stream over the relay unasked.
+  // That is the UNSAFE direction, and pairing is precisely when a user is most likely to
+  // be on the network that needs the relay.
+  //
+  // This is a code-path argument, NOT a reproduced failure: the 2026-07-29 TCL run could
+  // not distinguish it, because that Mac mini connection was genuinely direct (a LAN
+  // punch, logged relayed:false), so playing without a prompt was correct there. Deriving
+  // from the recorded per-HOST decision makes the gate independent of which path the
+  // connection took, so the case cannot arise either way.
+  const src = fs.readFileSync(path.join(ROOT, 'src/bare.js'), 'utf8')
+
+  assert.match(src, /function libraryRelayed \(libraryId\)/,
+    'libraryRelayed() is gone - the gate must derive relayed-ness, not read a cache')
+  assert.doesNotMatch(src, /relayedLibs/,
+    'a per-library relayed cache is back. onSwarmConnection cannot be the place that ' +
+    'records it: it early-returns on the pairing path, so the first session after ' +
+    'pairing would relay audio without asking.')
+
+  // The gate must consult the derivation, not a map lookup.
+  const gate = src.slice(src.indexOf('function relayAudioGate'), src.indexOf('function setRelayAudioConsent'))
+  assert.match(gate, /libraryRelayed\(lib\)/, 'relayAudioGate no longer calls libraryRelayed')
+})
+
 test('src/bare.js records the decision from peerInfo, and tolerates it being absent', () => {
   const src = fs.readFileSync(path.join(ROOT, 'src/bare.js'), 'utf8')
   assert.match(src, /relayThrough: \(force, s, peerInfo\)/,

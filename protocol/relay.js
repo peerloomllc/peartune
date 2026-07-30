@@ -39,10 +39,12 @@ function relayThroughFor ({ force, randomized, useRelay, relayKey }) {
 // (proposal 2026-07-29-relay-audio-consent). Pure, so the decision is testable away
 // from the transport.
 //
-//   relayed - this library's current connection is riding the relay. Recorded by us at
-//             the relayThrough call site, not read off the socket: the phone's own
-//             dht.stats.relaying reads 0 while actually relaying, and hyperdht keeps
-//             the real flag private. See the proposal's load-bearing question.
+//   relayed - we OFFERED the relay for this library's connection. Recorded by us at the
+//             relayThrough call site, not read off the socket: the phone's own
+//             dht.stats.relaying reads 0 while actually relaying, and hyperdht keeps the
+//             real flag private. See the proposal's load-bearing question, and the
+//             KNOWN LIMITATION note in src/bare.js - offering is not using, so this can
+//             be true of a connection that ended up direct. It errs towards asking.
 //   consent - the per-library 'ask' | 'allow' | 'deny', default 'ask'.
 //
 // Returns what to DO, not a boolean, because "cannot play" has two very different

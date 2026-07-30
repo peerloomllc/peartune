@@ -170,10 +170,23 @@ const DEFAULT_SETTINGS = {
 // RECORDED, not read off the socket, because there is no way to read it. The phone's
 // own `dht.stats.relaying` reports 0 while actually relaying (measured 2026-07-23,
 // Pixel over cellular; the relay node's stats were the ground truth), and hyperdht
-// keeps the real flag (`c.relaySocket`) private with no accessor. What we can know for
-// certain is what we told Hyperswarm to do, and that is the honest thing to gate on:
-// if we handed it the relay key and the connection then came up, the relay is why this
-// library is reachable at all.
+// keeps the real flag (`c.relaySocket`) private with no accessor. So what we record is
+// what we TOLD Hyperswarm to do, which is not the same claim.
+//
+// KNOWN LIMITATION, measured on the TCL 2026-07-29 and stated here rather than implied
+// away: offering the relay is not the same as using it. hyperdht punches AND sets up the
+// relay, and if the punch wins the connection is direct while we have already recorded
+// "relayed". On the LAN that happens every time - a force-relay build logged
+// relayed:true, the gate fired, the user was asked, and the relay node's byte counter
+// never moved beyond its idle floor while 3.1 MB of audio was served. So the connection
+// was direct and the prompt was unnecessary.
+//
+// The direction of that error is the safe one and that is why it is acceptable: we may
+// ASK when we did not need to, and we never stream over the relay without asking. Under
+// the real policy it is also much rarer than in that test, because the key is only
+// offered after a HOLEPUNCH_ABORTED - the punch has already failed once - so a false
+// positive needs the retry to then succeed directly. Tightening it would mean reading
+// hyperdht internals, which is a worse trade than an occasional extra prompt.
 //
 // relayOffered  hostKeyZ -> did we hand Hyperswarm the relay key for this peer's most
 //               recent connect ATTEMPT. Overwritten per attempt and read when the
@@ -181,7 +194,6 @@ const DEFAULT_SETTINGS = {
 //               Hyperswarm tries direct first (null) and only escalates after a
 //               HOLEPUNCH_ABORTED. A peer with no entry never had one offered, i.e. it
 //               is direct - which is also the right answer for an inbound connection.
-// relayedLibs   libraryId -> the resolved answer the audio gate reads.
 // relayAsked    libraryIds we have already emitted a prompt for, so ExoPlayer's many
 //               range requests for one track produce ONE prompt. Cleared when the
 //               consent changes, so a later decline-then-reconsider can ask again.
@@ -193,9 +205,35 @@ const DEFAULT_SETTINGS = {
 //               the persisted value when set, so a session choice overrides a standing
 //               one until the app restarts.
 const relayOffered = new Map()
-const relayedLibs = new Map()
 const relayAsked = new Set()
 const relaySession = new Map()
+
+// Is this library's connection riding the relay? Derived from relayOffered via the
+// host's key, NOT cached per library.
+//
+// It WAS cached per library, set in onSwarmConnection. That is fragile in the one case
+// that matters most: onSwarmConnection EARLY-RETURNS on the pairing path (the host is not
+// in hosts.json yet, so its connection is routed to the in-flight handshake) before any
+// recording happens, and the app then keeps using that very connection. A library's first
+// session after pairing would therefore record nothing and the gate would read "not
+// relayed" - and pairing is exactly when a user is most likely to be on the network that
+// needs the relay.
+//
+// Not an observed failure: it is a code-path reading. The TCL run on 2026-07-29 could not
+// distinguish it, because the Mac mini connection there was genuinely DIRECT (a LAN punch,
+// logged relayed:false), so 'play' with no prompt was the correct answer, not a symptom.
+// Deriving it here removes the dependency on which path the connection took, so the case
+// cannot arise whether or not it ever did.
+// `live` guards against a SECOND thing hardware found (TCL, 2026-07-29): relayOffered
+// records the offer at DIAL time, including for a dial that then failed, so an offline
+// library reads as relayed. Settings said "Reachable only through the relay right now"
+// under a library labelled Offline - true of the attempt, nonsense as a statement about
+// the library. Requiring a live connection makes the claim match what the row asserts.
+function libraryRelayed (libraryId) {
+  const h = loadHostsFile().hosts.find((x) => x.libraryId === libraryId)
+  if (!h || relayOffered.get(h.hostKey) !== true) return false
+  return !!clientFor(libraryId)
+}
 
 // What the network is right now, as reported by the shell (expo-network). Default
 // 'wifi' - the safe assumption, because wifi means original quality, i.e. no surprise
@@ -645,7 +683,7 @@ function relayAudioGate ({ libraryId, trackId }) {
   if (!lib) return 'play' // hostless (the demo library) - nothing of ours in the path
 
   const decision = relayAudioDecision({
-    relayed: relayedLibs.get(lib) === true,
+    relayed: libraryRelayed(lib),
     // A session choice (the prompt with "Remember" unticked) beats the persisted one.
     consent: relaySession.get(lib) || hostList.relayAudioFor(loadHostsFile(), lib)
   })
@@ -1449,7 +1487,7 @@ function listHostsData () {
       //   relayed      is this library CURRENTLY reachable only through the relay - so the row
       //                can stay quiet on a library that never needs the choice
       //   relayConsent the three-way, with absent normalised to 'ask' so the UI has no special case
-      relayed: relayedLibs.get(h.libraryId) === true,
+      relayed: libraryRelayed(h.libraryId),
       relayConsent: h.relayAudio || 'ask'
     })),
     activeHostKey: f.activeHostKey
@@ -1823,13 +1861,9 @@ function onSwarmConnection (conn, info) {
     try { conn.destroy() } catch {}
     return
   }
-  // Was THIS connection relayed? Read the decision we recorded at the relayThrough call
-  // site for this peer's most recent attempt (proposal 2026-07-29). No entry means we
-  // never offered the relay for it, so it is direct - which is also the correct answer
-  // for a connection that arrived inbound and never went through our client path.
-  relayedLibs.set(host.libraryId, relayOffered.get(remoteHex) === true)
-
-  log('swarm:connection', { host: remoteHex.slice(0, 8), relayed: relayedLibs.get(host.libraryId) })
+  // Log whether this connection is relayed (proposal 2026-07-29). Read, not stored: see
+  // libraryRelayed() for why caching it here was wrong.
+  log('swarm:connection', { host: remoteHex.slice(0, 8), relayed: relayOffered.get(remoteHex) === true })
   attach(host, conn).catch((e) => log('attach:failed', { host: remoteHex.slice(0, 8), err: e && e.message }))
 }
 

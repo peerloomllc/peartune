@@ -21,7 +21,7 @@ import {
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
   Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode,
-  WarningCircle, LockKey, DeviceMobile, MusicNotesPlus, XCircle
+  WarningCircle, LockKey, DeviceMobile, MusicNotesPlus, XCircle, CheckSquare, Square
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
@@ -2669,12 +2669,23 @@ function RelayConsentSheet ({ libraryName, onDecide, onClose }) {
           Choose no and downloaded albums still play. You can change this any time in
           Settings under this library.
         </p>
-        <label className='row' style={{ cursor: 'pointer' }}>
-          <input
-            type='checkbox' checked={remember}
-            onChange={e => setRemember(e.target.checked)}
-          />
-          <span className='label' style={{ marginLeft: 8 }}>Remember for this library</span>
+        {/* Label LEFT, checkbox RIGHT, on ONE line - the same shape as every other
+            toggle row in Settings, so it reads as a setting rather than a form field.
+            .row is space-between, so order alone does the placement; nowrap is what
+            stops "Remember for this library" wrapping under the box in the narrow sheet. */}
+        <label className='row' style={{ cursor: 'pointer', flexWrap: 'nowrap' }}>
+          <span className='label' style={{ whiteSpace: 'nowrap' }}>Remember for this library</span>
+          {/* A Phosphor icon, not the browser's native checkbox - that renders as a
+              platform-blue box with a generic tick and looks nothing like the rest of
+              the app. role/aria-checked keep it a real checkbox for accessibility. */}
+          <span
+            role='checkbox' aria-checked={remember} tabIndex={0}
+            style={{ flex: '0 0 auto', display: 'flex', color: remember ? 'var(--color-primary)' : 'var(--color-text-muted)' }}
+          >
+            {remember
+              ? <CheckSquare size={26} weight='fill' />
+              : <Square size={26} weight='regular' />}
+          </span>
         </label>
         <div className='btnrow'>
           <button onClick={() => { haptic('light'); onDecide('deny', remember) }}>Not now</button>
