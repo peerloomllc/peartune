@@ -127,20 +127,25 @@ Revert. The index and the size-keyed files are additive and an older build ignor
 the only irreversible act is the legacy sweep, which deletes art that build could not read
 anyway and which re-fetches on demand.
 
+## Decisions (Tim, 2026-07-29)
+
+1. **Stale art: accept it, plus a manual refresh.** Covers live until their library is
+   removed, which is predictable and never re-downloads on a timer. Most sources change the
+   coverId when the art changes, so that case self-invalidates for free. A "Refresh artwork"
+   action covers the rest. Rejected: a periodic re-check, which would reintroduce exactly the
+   repeated downloads this change exists to remove, only less often.
+2. **A generous COUNT cap, with pinned covers exempt.** LRU eviction, a few thousand
+   entries, and never evicting a downloaded album's cover. Deliberately NOT a user-facing
+   setting - nobody wants to tune an artwork budget, and putting art in competition with
+   music for one storage number would be a worse trade than the disk it saves.
+3. **The audio cache's per-library purge lands in the SAME change.** The index makes it
+   possible and the code comment already asks for it. Today removing one library strands its
+   downloaded audio - 97 MB measured on 2026-07-21 - with no way left to reclaim it. Doing
+   art alone would leave a documented gap open with the mechanism sitting right there unused.
+4. **Ordering: proposal 2026-07-29-relay-audio-consent merged first** (PR #259, merged), so
+   this work branches off a clean master rather than stacking on an open PR that edits the
+   same `worklet/shim.js`.
+
 ## Open questions
 
-1. **Should the store be invalidated when a server changes an album's art?** Tim's framing
-   is "keep it unless they delete the library", which is simple and predictable. The risk is
-   a stale cover that never updates. Most sources change the coverId when the art changes,
-   which self-invalidates - but not all do. Options: accept it, add a manual "refresh
-   artwork" action, or re-fetch on some interval. I lean accept-it plus a manual refresh, on
-   the grounds that a wrong cover is annoying and a repeated download is expensive.
-2. **What cap, and by count or by bytes?** The audio cache uses a byte cap the user controls
-   (`cacheCap`). Art is small individually and unbounded in count: a 1358-track library is
-   perhaps 150 albums, so tens of MB - but a large shared library could be thousands. I lean
-   a generous count cap (a few thousand entries) that never evicts a pinned album's cover,
-   and NOT a user-facing setting, because nobody wants to tune an artwork budget.
-3. **Should the audio cache's per-library purge land in the same change?** The index makes it
-   possible and the code comment already asks for it. Doing both is barely more work than
-   doing art alone; doing art only leaves the documented gap open with the mechanism sitting
-   right there unused.
+None outstanding. The three that gated implementation are decided above.
