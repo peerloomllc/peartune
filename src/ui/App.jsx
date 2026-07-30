@@ -2665,6 +2665,14 @@ function RelayConsentSheet ({ libraryName, onDecide, onClose }) {
           get here through a relay PeerLoom runs. It passes the audio along encrypted, so
           we can’t hear what you play, and it keeps no copy.
         </p>
+        {/* Expectation-setting, not a funding appeal (Tim, 2026-07-29). One line here so a
+            future slowdown is not a mystery and so "direct is better" is the obvious
+            reading; the full story - what it costs, what happens if capacity or funding
+            runs short - lives on /relay/, which the privacy page links. */}
+        <p className='muted sm'>
+          It’s shared and PeerLoom pays for it, so it can be slower when lots of people
+          are using it, and it isn’t guaranteed.
+        </p>
         <p className='muted sm'>
           Choose no and downloaded albums still play. You can change this any time in
           Settings under this library.

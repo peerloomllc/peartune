@@ -182,11 +182,15 @@ const DEFAULT_SETTINGS = {
 // was direct and the prompt was unnecessary.
 //
 // The direction of that error is the safe one and that is why it is acceptable: we may
-// ASK when we did not need to, and we never stream over the relay without asking. Under
-// the real policy it is also much rarer than in that test, because the key is only
-// offered after a HOLEPUNCH_ABORTED - the punch has already failed once - so a false
-// positive needs the retry to then succeed directly. Tightening it would mean reading
-// hyperdht internals, which is a worse trade than an occasional extra prompt.
+// ASK when we did not need to, and we never stream over the relay without asking.
+//
+// And on the network this is FOR, the record is right. Verified on the Pixel over
+// cellular the same day, with the normal build and no force-relay: the direct dial
+// failed (PEER_NOT_FOUND x4), both hosts came up relayed:true, the gate asked, and after
+// consent the relay carried +19.0 MB of audio - against an idle floor of ~2-3 kB/s. So
+// the false positive is a LAN artifact (the punch wins there), not the hard-NAT case.
+// Tightening it would mean reading hyperdht internals, a worse trade than an occasional
+// extra prompt on a network that did not need one.
 //
 // relayOffered  hostKeyZ -> did we hand Hyperswarm the relay key for this peer's most
 //               recent connect ATTEMPT. Overwritten per attempt and read when the
