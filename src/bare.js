@@ -32,7 +32,7 @@ const { isPairLink, parseLink } = require('../protocol/link')
 const { hostTopic, libraryId: deriveLibraryId } = require('../protocol/ids')
 const { RELAY_PUBLIC_KEY, relayThroughFor, relayAudioDecision } = require('../protocol/relay')
 const hostList = require('../worklet/hosts')
-const { linkActions, WATCHDOG_MS, PING_TIMEOUT_MS } = require('../worklet/link-health')
+const { linkActions, stuckDialAction, WATCHDOG_MS, PING_TIMEOUT_MS } = require('../worklet/link-health')
 const { createRebuildGate } = require('../worklet/rebuild-gate')
 const { pickAltCopy } = require('../worklet/failover')
 const merge = require('../worklet/merge')
@@ -1095,7 +1095,9 @@ function joinTopic (host) {
   const libId = host.libraryId
   const s = ensureSwarm()
   let e = links.get(libId)
-  if (!e) { e = { host, client: null, discovery: null, nudgeTimer: null, waiters: [] }; links.set(libId, e) }
+  // stuckSince: when a booked-but-never-opened dial was first seen for this library, 0 when there
+  // is none. Drives the stuck-dial clear in startNudge - see stuckDial.
+  if (!e) { e = { host, client: null, discovery: null, nudgeTimer: null, stuckSince: 0, lastTickAt: 0, waiters: [] }; links.set(libId, e) }
   e.host = host
   // server:false - the phone never announces, it only looks the host up and dials it, so this
   // adds no discoverability. s.join is idempotent per topic.
@@ -1200,6 +1202,55 @@ function nudge (libId) {
   if (e && e.discovery) { try { e.discovery.refresh({ client: true, server: false }).catch(() => {}) } catch {} }
 }
 
+// --- the stuck dial (Tim, 2026-07-30) ---------------------------------------
+//
+// A dial that STARTED and never finished blocks every future one, forever, and no amount of
+// nudging can clear it. Straight from hyperswarm/index.js: _connect() adds the connection to
+// _allConnections at DIAL time (line 216) and only to `connections` on 'open' (line 240), and
+// its very first statement is `if (peerInfo.banned || this._allConnections.has(publicKey))
+// return` (line 199). So while a never-opened entry sits there, the peer is deduped out of
+// every reconnect attempt - discovery.refresh() re-enqueues it and _connect() drops it again.
+//
+// CAUGHT ON TIM'S PIXEL, 2026-07-30, which is the only reason this is a fix and not a theory:
+//   08:36:27  ActivityManager: freezing 31156 com.peartune.debug
+//   08:40:49  ActivityManager: freezing 31156 com.peartune.debug
+//   08:49:50  START ... from com.android.launcher3 LAUNCH_SINGLE_TASK   (same pid resumed)
+//   08:49:50  nudge:link {"conns":1,"live":0}          <- booked, not live: the stuck dial
+//   08:49:50  method:failed {"method":"reconnect","err":"could not reach the host"}
+// ANDROID'S CACHED-APP FREEZER IS THE TRIGGER, not a swipe-away. The process is frozen mid-dial,
+// so the dial's own timers never fire; on resume the entry is still booked and nothing will ever
+// close it. That is why ten scripted relaunches could not reproduce this - every adb way of
+// closing an app KILLS the process, and a killed process has no swarm to leave a booking in.
+//
+// The existing link watchdog cannot see this one: it probes connections that are wired up to a
+// client (worklet/link-health.js), and this one never got that far.
+//
+// Returns the stuck connection, or null. `live` is deliberately a per-connection check
+// (swarm.connections.has) rather than the global count - with several libraries paired, another
+// library's healthy connection would otherwise mask this one.
+function stuckDial (hostKeyZ) {
+  try {
+    if (!swarm || !hostKeyZ) return null
+    const conn = swarm._allConnections.get(z32.decode(hostKeyZ))
+    if (!conn || swarm.connections.has(conn)) return null
+    return conn
+  } catch {
+    return null
+  }
+}
+
+// How long a booked-but-never-opened dial must persist before we destroy it. NOT zero, and this
+// is the whole risk of the fix: a hole-punch legitimately in flight looks identical from here,
+// and off-LAN punches have been measured at 8-28s (the Start9 runs, DONE 2026-07-29). Destroying
+// one of those would abort a connection that was about to succeed, so the threshold sits above
+// the slowest punch we have ever recorded rather than at the fastest self-heal we could get.
+// Worst case is ~40s to recover (this is checked on the ACTIVE_NUDGE_MS tick), against never.
+const STUCK_DIAL_MS = 30000
+// A nudge tick this much later than scheduled means the worklet was not running in between -
+// Android's cached-app freezer, or the device asleep. Three missed ticks, so ordinary timer jitter
+// and a brief doze can never be mistaken for it.
+const SUSPEND_GAP_MS = ACTIVE_NUDGE_MS * 3
+
 // Keep nudging every ACTIVE_NUDGE_MS while a library is disconnected, so the hole-punch is retried
 // steadily instead of stalling in Hyperswarm's 10-min backoff (see the constant). Self-cancels the
 // moment a connection lands or the library is removed. Idempotent.
@@ -1212,6 +1263,36 @@ function startNudge (host) {
     if (!loadHostsFile().hosts.some((h) => h.libraryId === libId)) return // library removed
     if (clientFor(libId)) return // landed
     log('nudge:link', { lib: libId.slice(0, 8), net: networkType, ...swarmDiag(host.hostKey) })
+    // Clear a stuck dial before nudging, or the nudge is a no-op (see stuckDial).
+    //
+    // WE WERE SUSPENDED is the precise signal, and it is better than any timer: this tick is
+    // supposed to arrive every ACTIVE_NUDGE_MS, so a much larger gap means the process was
+    // frozen (or the device slept) in between - which is exactly the condition that strands a
+    // dial. A punch that was in flight across a freeze is dead regardless, so there is nothing
+    // to lose by clearing it, and clearing it AT ONCE is what makes the app connect the moment
+    // Tim opens it rather than 30-40s later.
+    const now = Date.now()
+    const stuck = stuckDial(host.hostKey)
+    if (!stuck) e.stuckSince = 0
+    else if (!e.stuckSince) e.stuckSince = now
+    // The rule itself is in worklet/link-health.js, with the rest of the link-repair decisions
+    // and its own tests - this is only the plumbing that finds the connection and destroys it.
+    const why = stuckDialAction({
+      hasStuck: !!stuck,
+      stuckSince: e.stuckSince,
+      lastTickAt: e.lastTickAt,
+      now,
+      suspendGapMs: SUSPEND_GAP_MS,
+      holdMs: STUCK_DIAL_MS
+    })
+    e.lastTickAt = now
+    if (why) {
+      log('link:stuck-dial', { lib: libId.slice(0, 8), why, heldMs: now - e.stuckSince })
+      e.stuckSince = 0
+      // Its 'close' handler is hyperswarm's own (index.js:248): it removes the entry from
+      // _allConnections and re-queues the peer, which is exactly what unblocks the next dial.
+      try { stuck.destroy() } catch {}
+    }
     nudge(libId)
     e.nudgeTimer = setTimeout(tick, ACTIVE_NUDGE_MS)
     if (e.nudgeTimer.unref) e.nudgeTimer.unref()

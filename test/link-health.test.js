@@ -12,7 +12,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 
 const {
-  linkActions, WATCHDOG_MS, PING_TIMEOUT_MS, PROVEN_WINDOW_MS
+  linkActions, stuckDialAction, WATCHDOG_MS, PING_TIMEOUT_MS, PROVEN_WINDOW_MS
 } = require('../worklet/link-health')
 
 const HOSTS = [
@@ -114,4 +114,84 @@ test('the proven window is shorter than the watchdog interval', () => {
   // Otherwise every tick would find the previous tick's own probe inside the window and skip -
   // an idle connection would never be probed at all.
   assert.ok(PROVEN_WINDOW_MS < WATCHDOG_MS)
+})
+
+// --- the stuck dial (Tim, 2026-07-30) ---------------------------------------
+//
+// A booking hyperswarm made at dial time that never opened. It blocks every future dial for
+// that peer (index.js:199 returns early while _allConnections has the key), so the failure mode
+// is "never reconnects until the app is restarted" - which is what Tim reported. Caught on his
+// Pixel after Android's cached-app freezer held the process ~13 minutes: nudge:link showed
+// conns:1 / live:0 and the reconnect failed.
+//
+// What these pin is the SAFETY of the clear, not the clearing: an in-flight hole-punch looks
+// identical from here and has been measured at 8-28s off-LAN, so a rule that fires too eagerly
+// would break connections that were about to succeed.
+
+const GAP = 30000 // suspendGapMs
+const HOLD = 30000 // holdMs
+
+test('no booking, nothing to clear', () => {
+  assert.strictEqual(stuckDialAction({ hasStuck: false, lastTickAt: 1, now: 10 * 60000, suspendGapMs: GAP, holdMs: HOLD }), null)
+})
+
+test('a suspension clears it at once - the observed case', () => {
+  // Ticked at t=0, next tick 13 minutes later: the worklet was frozen in between.
+  const now = 13 * 60000
+  assert.strictEqual(
+    stuckDialAction({ hasStuck: true, stuckSince: now, lastTickAt: 0 + 1, now, suspendGapMs: GAP, holdMs: HOLD }),
+    'suspended'
+  )
+})
+
+test('an on-time tick is NOT a suspension, however long the booking has been there', () => {
+  // 10s apart is the normal cadence. The booking is fresh, so nothing fires yet.
+  assert.strictEqual(
+    stuckDialAction({ hasStuck: true, stuckSince: 100000, lastTickAt: 100000, now: 110000, suspendGapMs: GAP, holdMs: HOLD }),
+    null
+  )
+})
+
+test('the FIRST tick never counts as a suspension', () => {
+  // lastTickAt 0 means we have not ticked yet, so there is no gap to measure and a long
+  // wall-clock time cannot be read as a freeze. A booking made moments ago is a dial in
+  // progress, not a stranded one, and must survive.
+  const now = 10 * 60000
+  assert.strictEqual(
+    stuckDialAction({ hasStuck: true, stuckSince: now - 2000, lastTickAt: 0, now, suspendGapMs: GAP, holdMs: HOLD }),
+    null
+  )
+  // ...but the hold backstop still applies on that first tick, or a booking stranded before we
+  // started ticking would be immortal.
+  assert.strictEqual(
+    stuckDialAction({ hasStuck: true, stuckSince: now - HOLD, lastTickAt: 0, now, suspendGapMs: GAP, holdMs: HOLD }),
+    'held'
+  )
+})
+
+test('a punch still in flight at 28s is NOT aborted', () => {
+  // The slowest hole-punch we have measured (Start9, 2026-07-29). Clearing this would break a
+  // connection that was about to succeed, which is the whole risk of this fix.
+  assert.strictEqual(
+    stuckDialAction({ hasStuck: true, stuckSince: 0, lastTickAt: 0, now: 28000, suspendGapMs: GAP, holdMs: HOLD }),
+    null
+  )
+  assert.strictEqual(
+    stuckDialAction({ hasStuck: true, stuckSince: 1000, lastTickAt: 20000, now: 29000, suspendGapMs: GAP, holdMs: HOLD }),
+    null
+  )
+})
+
+test('a booking held past holdMs with no suspension is cleared as the backstop', () => {
+  assert.strictEqual(
+    stuckDialAction({ hasStuck: true, stuckSince: 1000, lastTickAt: 25000, now: 31000, suspendGapMs: GAP, holdMs: HOLD }),
+    'held'
+  )
+})
+
+test('suspension wins over held, so the reason logged is the true one', () => {
+  assert.strictEqual(
+    stuckDialAction({ hasStuck: true, stuckSince: 1000, lastTickAt: 1000, now: 600000, suspendGapMs: GAP, holdMs: HOLD }),
+    'suspended'
+  )
 })
