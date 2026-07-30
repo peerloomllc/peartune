@@ -37,8 +37,13 @@ description: |
   files on your phone. Second, some networks stop a phone and a host connecting
   directly. When that happens PearTune can fall back to a relay PeerLoom runs,
   which forwards encrypted data it cannot read and keeps no copy of it. Your
-  phone tries a direct connection first, and one switch in Settings turns the
-  relay off entirely.
+  phone always tries a direct connection first.
+
+  When the relay is the only route to a library, PearTune asks before streaming
+  that library's music through it and remembers your answer. Browsing that
+  library goes over the relay without asking, which is a much smaller amount of
+  data and is stated here rather than left for you to assume. One switch in
+  Settings turns the relay off entirely.
 
 tags:
   - music

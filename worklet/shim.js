@@ -112,7 +112,7 @@ function parseRange (header, size) {
 // local disk, so it skips the lease gate (nothing could have authorized it) and the art store's
 // one-size rule (there is no host to fetch a better size from). Defaults to false, which is
 // exactly the behaviour every real library has always had.
-function createAudioShim ({ log = () => {}, defaultClient = async () => null, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostless = () => false, hostClient = null, libForTrack = null, libForCover = null, altCopy = null, onRehost = null }) {
+function createAudioShim ({ log = () => {}, defaultClient = async () => null, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostless = () => false, hostClient = null, libForTrack = null, libForCover = null, altCopy = null, onRehost = null, audioGate = () => 'play' }) {
   if (!http) http = require('bare-http1') // on-device only; see the note at the top of this file
   const meta = new Map() // trackId -> { size, mime }
 
@@ -175,6 +175,30 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
       // mode connFor picks (and revives) the track's OWNING host; single-host mode
       // revives the one active client, unchanged.
       const conn = await connFor(trackLib, trackId, libForTrack)
+
+      // RELAY CONSENT (proposal 2026-07-29-relay-audio-consent). AUDIO ONLY: art and
+      // metadata cross the relay with no prompt by decision, so the art path below is
+      // deliberately NOT gated. Placed after connFor (which library is serving is not
+      // known until it resolves) and before metaFor (the first call that would put
+      // bytes on the wire).
+      //
+      // The cache hit above returns before reaching here, on purpose: a pinned album
+      // needs no connection, so it still plays with consent refused.
+      //
+      // Resolved the same way connFor resolves its client; a null library means "the
+      // default one", which audioGate's owner substitutes since only it knows which
+      // that is. audioGate owns the prompt and its debouncing too - ExoPlayer
+      // range-requests a single track many times, and one prompt per range would be
+      // unusable.
+      const gateLib = trackLib || (libForTrack ? libForTrack(trackId) : null)
+      const gate = audioGate({ libraryId: gateLib, trackId })
+      if (gate !== 'play') {
+        // 403, not 503: this is a policy refusal, and a retry without a decision
+        // changes nothing. The UI is what recovers, via the prompt or the settings row.
+        res.writeHead(403, { 'content-type': 'text/plain' })
+        log('shim:relay-consent-blocked', { track: trackId.slice(0, 8), lib: gateLib && gateLib.slice(0, 8), gate })
+        return res.end(gate === 'ask' ? 'relay consent required' : 'relay declined for this library')
+      }
 
       const m = await metaFor(trackId, conn)
       if (!m) {

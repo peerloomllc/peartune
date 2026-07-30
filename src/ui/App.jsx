@@ -21,7 +21,7 @@ import {
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
   Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode,
-  WarningCircle, LockKey, DeviceMobile, MusicNotesPlus, XCircle
+  WarningCircle, LockKey, DeviceMobile, MusicNotesPlus, XCircle, CheckSquare, Square
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
@@ -136,6 +136,9 @@ export default function App () {
   const [ownerPair, setOwnerPair] = useState(null) // { link } while an owner-opened pairing window is up
   const [ownerTour, setOwnerTour] = useState(false) // one-shot "you're an owner now" walkthrough
   const [confirming, setConfirming] = useState(null)
+  // The pending relay-audio consent prompt, or null (proposal 2026-07-29). Set by the
+  // worklet's relay:consent-needed event, cleared when answered or dismissed.
+  const [relayAsk, setRelayAsk] = useState(null)
   const [menu, setMenu] = useState(null) // long-press: play / shuffle / queue
   const [queue, setQueue] = useState(null) // the up-next list, when opened
   const [note, setNote] = useState(null) // a transient confirmation
@@ -391,6 +394,15 @@ export default function App () {
           setFavItems(null) // the resolved list is missing that host's rows too; refetch on open
         }
       }),
+      // A library reachable only through the relay is about to stream audio and has not been
+      // asked yet (proposal 2026-07-29-relay-audio-consent). The worklet raises this ONCE per
+      // library - ExoPlayer range-requests a single track many times - and has already refused
+      // the request with a 403, so the player has stopped. Whichever way this is answered, the
+      // user presses play again; we do not try to resume behind their back.
+      on('relay:consent-needed', (d) => {
+        setRelayAsk({ libraryId: d.libraryId, libraryName: d.libraryName })
+      }),
+
       // The operator renamed the library on the dashboard; the worklet caught it on connect and
       // persisted it. Reflect it live in the header, the Settings switcher, and the merged chips.
       on('host:renamed', (d) => {
@@ -1674,6 +1686,17 @@ export default function App () {
     } catch (e) { setError(e.message) }
   }
 
+  // Flip one library's relay-audio consent from Settings (proposal 2026-07-29). Always
+  // REMEMBERED - a deliberate trip to Settings is a standing decision, unlike the prompt
+  // where the checkbox governs it. Local to this phone, like the alias.
+  async function saveRelayAudio (libraryId, value) {
+    haptic('light')
+    try {
+      const r = await call('setRelayAudio', { libraryId, value, remember: true })
+      if (r?.hosts) setState(s => ({ ...s, hosts: r.hosts }))
+    } catch (e) { setError(e.message) }
+  }
+
   function removeLibrary (host) {
     setConfirming({
       title: `Remove ${host.libraryName || 'this library'}?`,
@@ -2101,6 +2124,7 @@ export default function App () {
         onSwitchHost={switchLibrary} onRemoveHost={removeLibrary} onAddLibrary={openAddLibrary}
         onDisableDemo={leaveDemo}
         onSetAlias={saveLibraryAlias}
+        onSetRelayAudio={saveRelayAudio}
       />
     )
   } else if (tab === 'about') {
@@ -2245,6 +2269,30 @@ export default function App () {
           {...confirming}
           onClose={() => setConfirming(null)}
           onConfirm={() => { setConfirming(null); confirming.onYes() }}
+        />
+      )}
+      {relayAsk && (
+        <RelayConsentSheet
+          libraryName={relayAsk.libraryName}
+          onDecide={(value, remember) => {
+            const { libraryId } = relayAsk
+            setRelayAsk(null)
+            call('setRelayAudio', { libraryId, value, remember })
+              .then((r) => { if (r?.hosts) setState(s => ({ ...s, hosts: r.hosts })) })
+              .catch(() => {})
+            if (value === 'allow') toast('Press play again to start.')
+          }}
+          // Dismissing without choosing is NOT a decision, so the consent stays 'ask'. But
+          // the worklet only raises this event ONCE per library (its relayAsked debounce),
+          // so a bare dismiss would make every later play attempt fail with a 403 and NO
+          // prompt - silently unplayable. Sending value 'ask' clears that debounce without
+          // storing anything, so the next attempt asks again. Answering "Not now" is the
+          // way to actually say no.
+          onClose={() => {
+            const { libraryId } = relayAsk
+            setRelayAsk(null)
+            call('setRelayAudio', { libraryId, value: 'ask', remember: false }).catch(() => {})
+          }}
         />
       )}
     </>
@@ -2588,6 +2636,70 @@ function Confirm ({ title, body, yes = 'Confirm', danger, onConfirm, onClose }) 
             className={danger ? 'danger' : 'primary'}
             onClick={() => { haptic(danger ? 'warn' : 'light'); onConfirm() }}
           >{yes}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// The relay-audio consent prompt (proposal 2026-07-29-relay-audio-consent). Raised the
+// FIRST time a library that is only reachable through PeerLoom's relay would stream
+// audio, not at pairing: at pairing the user has not heard a note yet and cannot
+// reasonably weigh it, and pairing is a handshake anyway - the megabytes are here.
+//
+// Two buttons plus a remember checkbox, TICKED BY DEFAULT (decisions 2 + 3): the default
+// outcome of either button is the sticky one, and unticking is the session-only escape
+// hatch that saves us a third button.
+//
+// The copy has to survive being read by someone who does not know what a relay is, and
+// must not oversell: say what it can and cannot see, and that it stores nothing.
+function RelayConsentSheet ({ libraryName, onDecide, onClose }) {
+  const [remember, setRemember] = useState(true)
+  const name = libraryName || 'this library'
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Stream {name} through the relay?</h1>
+        <p className='muted sm'>
+          This network won’t let your phone reach {name} directly, so the music can only
+          get here through a relay PeerLoom runs. It passes the audio along encrypted, so
+          we can’t hear what you play, and it keeps no copy.
+        </p>
+        {/* Expectation-setting, not a funding appeal (Tim, 2026-07-29). One line here so a
+            future slowdown is not a mystery and so "direct is better" is the obvious
+            reading; the full story - what it costs, what happens if capacity or funding
+            runs short - lives on /relay/, which the privacy page links. */}
+        <p className='muted sm'>
+          It’s shared and PeerLoom pays for it, so it can be slower when lots of people
+          are using it, and it isn’t guaranteed.
+        </p>
+        <p className='muted sm'>
+          Choose no and downloaded albums still play. You can change this any time in
+          Settings under this library.
+        </p>
+        {/* Label LEFT, checkbox RIGHT, on ONE line - the same shape as every other
+            toggle row in Settings, so it reads as a setting rather than a form field.
+            .row is space-between, so order alone does the placement; nowrap is what
+            stops "Remember for this library" wrapping under the box in the narrow sheet. */}
+        <label className='row' style={{ cursor: 'pointer', flexWrap: 'nowrap' }}>
+          <span className='label' style={{ whiteSpace: 'nowrap' }}>Remember for this library</span>
+          {/* A Phosphor icon, not the browser's native checkbox - that renders as a
+              platform-blue box with a generic tick and looks nothing like the rest of
+              the app. role/aria-checked keep it a real checkbox for accessibility. */}
+          <span
+            role='checkbox' aria-checked={remember} tabIndex={0}
+            style={{ flex: '0 0 auto', display: 'flex', color: remember ? 'var(--color-primary)' : 'var(--color-text-muted)' }}
+          >
+            {remember
+              ? <CheckSquare size={26} weight='fill' />
+              : <Square size={26} weight='regular' />}
+          </span>
+        </label>
+        <div className='btnrow'>
+          <button onClick={() => { haptic('light'); onDecide('deny', remember) }}>Not now</button>
+          <button className='primary' onClick={() => { haptic('light'); onDecide('allow', remember) }}>
+            Stream via relay
+          </button>
         </div>
       </div>
     </div>
@@ -5361,7 +5473,7 @@ function OwnerPairSheet ({ link, toast, onClose }) {
   )
 }
 
-function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias, onDisableDemo }) {
+function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onQuality, skin, onSkin, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias, onSetRelayAudio, onDisableDemo }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [dev, setDev] = useState(null)
   const [usr, setUsr] = useState(null)
@@ -5617,6 +5729,27 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
                       and clearing the alias looks like it produced a name from nowhere. */}
                   {h.alias && h.hostName && h.hostName !== h.alias && (
                     <div className='desc'>Your server calls it “{h.hostName}”</div>
+                  )}
+                  {/* RELAY CONSENT (proposal 2026-07-29-relay-audio-consent). Shown only when it
+                      is actually true of this library - either it is on the relay right now, or a
+                      standing answer is stored - so a library that never needs the choice never
+                      mentions it. Without this row a "Not now" is a sticky no with no visible
+                      cause: the album simply refuses to play and nothing says why. */}
+                  {(h.relayed || (h.relayConsent && h.relayConsent !== 'ask')) && (
+                    <div className='desc'>
+                      {h.relayConsent === 'allow'
+                        ? 'Streaming through the relay is allowed for this library. '
+                        : h.relayConsent === 'deny'
+                          ? 'Streaming through the relay is turned off for this library, so it only plays downloads. '
+                          : 'Reachable only through the relay right now. '}
+                      <button
+                        className='linkbtn'
+                        onClick={(e) => {
+                          e.stopPropagation(); haptic('light')
+                          onSetRelayAudio(h.libraryId, h.relayConsent === 'allow' ? 'deny' : 'allow')
+                        }}
+                      >{h.relayConsent === 'allow' ? 'Turn off' : 'Allow'}</button>
+                    </div>
                   )}
                 </div>
                 <div className='rowacts'>
