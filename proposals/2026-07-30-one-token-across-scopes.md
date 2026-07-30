@@ -74,8 +74,17 @@ which is a much larger design question. Logged in TODO.md rather than smuggled i
   by `setSession`.
 - Integration, two devices one person against a real host: A claims single, B claims merged, A
   receives `session-superseded` and its next write is refused.
-- NOT verified on hardware. It needs one phone paired to two libraries and one to a single
-  library, which is a rig neither of Tim's phones is currently in.
+- VERIFIED ON HARDWARE 2026-07-30, before and after, on the same rig: TCL paired to BOTH the Mac
+  and the Umbrel (blended, so its session home elects the Mac), Pixel paired to both but FOCUSED on
+  the Mac (single scope), both devices assigned to one person on the Mac. Same script both times;
+  only the host code changed.
+    * BEFORE (Mac running 2026-07-24 host source): both phones `state=PLAYING(3)` for a full
+      minute, and both `sessionInfo` calls returning `active:true` at the same moment - each
+      reading its own row, each certain it held the token.
+    * AFTER: exactly one plays. The blended TCL claiming while the Pixel played stopped the Pixel
+      within 10s, and the Pixel's own read became `active:false, activeDeviceName:"TCL"`. The
+      other direction stops the TCL and reads `activeDeviceName:"Pixel"`.
+  The Pixel was returned to its original single-library Umbrel pairing afterwards.
 
 ## Rollback
 
