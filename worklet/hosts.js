@@ -255,4 +255,16 @@ function libraryLabels (hosts) {
   return out
 }
 
-module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost, setAlias, setRelayAudio, relayAudioFor, electHome, libraryLabels, ALIAS_MAX }
+// WHICH host holds a person's play token, for a device in ANY view. The elected home when one can
+// be elected, else the device's own default library (0-1 paired libraries, or nothing connected).
+//
+// The point is that it does NOT depend on the view: a device showing the blend and one focused on a
+// single library must resolve the SAME host, or the cross-scope arbitration on that host never sees
+// both of them. Before 2026-07-30 a focused device used its focused library, so the two agreed only
+// when the focused library happened to be the elected one - always with one library, a coin flip
+// with two (proposal 2026-07-30-session-home-regardless-of-view).
+function sessionHost (raw, live, defaultLibraryId = null) {
+  return electHome(raw, live) || defaultLibraryId || null
+}
+
+module.exports = { empty, normalize, record, activeHost, addHost, setActive, removeHost, renameHost, setAlias, setRelayAudio, relayAudioFor, electHome, sessionHost, libraryLabels, ALIAS_MAX }

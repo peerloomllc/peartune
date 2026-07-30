@@ -2,6 +2,39 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-30 - CORRECTION to the entry below, plus: the token host no longer follows the view
+Tier: T1. Proposal `proposals/2026-07-30-session-home-regardless-of-view.md`. Branch
+fix/session-home-any-view.
+
+CORRECTION FIRST. The entry below (#283) claimed to stop a blended device and a focused one both
+playing. The code and its tests are right, but the claim was too broad: it only bites when both
+devices' session rows live on the SAME host, and they often did not. `sessionTarget()` sent a
+blended device to the ELECTED home and a focused device to whatever library it was FOCUSED on.
+Those coincide always with one paired library - which is why every test passed - and about half the
+time with two. The hardware rig that proved #283 passed because the focused phone happened to be
+pointed at the elected host; pointing it at the other library would have reproduced the bug with
+the fix in place. Recorded rather than quietly folded in, because the merged PR text reads
+stronger than what shipped.
+
+THE FIX: `sessionTarget()` now returns the elected home in BOTH modes. `merged` still selects the
+SCOPE - which row - and only the HOST is unified, so two devices paired to the same libraries
+always coordinate through one authority and #283 applies by construction rather than by luck. The
+decision is pure in `worklet/hosts.js` as `sessionHost()`, next to `electHome`, so the property
+that matters - a blended device and a focused device resolve the SAME host - is a unit test rather
+than a hardware ritual.
+
+Consequence: a focused device's queue lands on the elected host rather than the one it is reading.
+That is already what a merged queue does (a host stores a queue opaquely and never dereferences a
+trackId), so nothing host-side changes. It did expose one thing worth fixing alongside:
+`sessionTakeover`'s resume fallback used the SESSION client to look up a track's position, which is
+now the wrong host in single mode too - it routes by the track's owning library instead.
+
+With ONE paired library, which is nearly every install, the behaviour is byte-for-byte unchanged.
+
+Still NOT fixed, and still logged: devices with DIFFERENT pairing sets elect different hosts and
+cannot be arbitrated at all. That needs a person identity spanning hosts, and `personId` is minted
+per host.
+
 ## 2026-07-30 - The play token is per PERSON; only the queue is per scope
 Tier: T1/T2. Proposal `proposals/2026-07-30-one-token-across-scopes.md`. Branch
 fix/session-across-scopes. Closes the follow-up left open by PR #272.
