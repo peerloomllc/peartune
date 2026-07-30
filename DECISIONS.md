@@ -2,6 +2,40 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-30 - The host pushes favorites changes to a person's other devices
+Tier: T2. Proposal `proposals/2026-07-30-favorites-live-update.md`. Branch fix/favorites-live-update.
+
+Context: Tim favorited an artist on the Pixel and it did not appear in the TCL's Favorites list;
+same for a track; "if I dismiss the app and reopen it, everything gets updated and looks to be in
+sync". An earlier report the same day was the SAME bug from the other side - the Favorites list had
+the item while the heart on the album/artist/song was empty.
+
+Cause: NO PUSH EXISTED FOR USER STATE AT ALL. The host pushes `library-renamed`, `devices:changed`,
+`request:new`, `request:resolved` and `session-superseded`, and nothing for favorites - so a
+connected device was never told. The worklet's `favorites()` is already a live host read (its
+on-disk copy is only the offline fallback), so the staleness was purely in WHEN the app asked: on
+mount, on `host:connected`, on a merged host joining, on a host switch, and on its own toggle. A
+phone sitting connected hits none of those, which is exactly why a relaunch fixed it.
+
+That also explains the list-and-heart disagreement: the Favorites screen refetches its resolved
+rows when opened, but the id sets that fill the hearts do not. One root cause, two symptoms - so
+the UI handler refreshes BOTH, and clearing only one is called out in the comment as the thing that
+produced the first report.
+
+Choice: `presence.notifyOwner` gains `exceptDevice`, and `fav.set` pushes `favorites:changed` to
+the person's other devices. Not to the writer - it already re-rendered optimistically and a push
+would fight that. The exception is per DEVICE, not per channel, because one device can hold two
+overlapping connections during a reconnect.
+
+Rejected: having the client patch its id sets from the payload instead of refetching. Cheaper, but
+in merged mode the sets are a UNION across hosts, so a removal on one host is only a removal if no
+other host still has it - a refetch cannot be wrong. Also rejected: a toast. A favorite you made on
+your own other phone is not news worth interrupting for; it should just be right.
+
+Consequences: needs BOTH a new host and a new app - an old host never sends the kind and the app
+behaves exactly as before, which is the current behavior rather than a regression. Playlists have
+the identical gap and are NOT fixed here; TODO.md.
+
 ## 2026-07-30 - A playing device without the token reconciles; "Continue listening" is per-device
 Tier: T2. Proposal `proposals/2026-07-30-one-device-plays.md`. Branch fix/one-device-plays.
 

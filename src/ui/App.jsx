@@ -518,6 +518,19 @@ export default function App () {
         toast(d?.name ? `Your request for ${d.name} was ${verb}` : `A request was ${verb}`)
         loadRequests(true)
       }),
+      // ANOTHER of this person's devices changed a favorite. Nothing else asks while the app sits
+      // connected - loadFavs runs on mount, on connect, on a host join and on our own toggle - so
+      // without this the hearts and the list stayed on the old answer until the app was reopened
+      // (Tim, 2026-07-30). BOTH have to be refreshed: `favs` is the id sets the hearts read, and
+      // favItems is the resolved list. Dropping favItems to null makes the Favorites screen
+      // refetch when it is next opened rather than fetching rows nobody is looking at - and
+      // clearing only ONE of the two is what made the list and the heart disagree in the first
+      // report of this bug. No toast: a favorite you made on your other phone is not news to
+      // interrupt with, it should just be right.
+      on('favorites:changed', () => {
+        loadFavs()
+        setFavItems(null)
+      }),
       // A pear:// pairing link was opened while the app was already running. The shell parks
       // it and nudges; we take it below. See takePendingLink.
       on('link:pending', () => { takePendingLink() })

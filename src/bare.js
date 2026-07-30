@@ -923,6 +923,13 @@ function makeClient () {
       // The host pushed this to whoever filed the request, on every device they are signed in on.
       log('request:resolved', { status: m.data?.status ?? null })
       emit('request:resolved', m.data || {})
+    } else if (m?.kind === 'favorites:changed') {
+      // ANOTHER of this person's devices favorited something. Straight through to the UI, which
+      // re-reads: favorites() is already a live host read (its on-disk copy is only the offline
+      // fallback), so refreshing anything HERE would just be a wasted round-trip before the one
+      // the UI is about to make. The host does not send us our own writes.
+      log('favorites:changed', { kind: m.data?.kind ?? null, on: m.data?.on ?? null })
+      emit('favorites:changed', m.data || {})
     }
   }
   return c
