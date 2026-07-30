@@ -43,6 +43,19 @@ honestly for a person rather than for a scope.
 **Not in scope.** Merging the rows, electing one scope per person, or teaching the client to read
 both. All three were considered; see below.
 
+**AND A LIMIT WORTH STATING PLAINLY, because it is not obvious from the fix.** This arbitrates two
+scopes on ONE host. It cannot arbitrate two devices whose session targets are DIFFERENT hosts, and
+that is reachable: the merged home is the smallest hostKey among a device's connected libraries
+(`electHome`), so a blended phone can elect host A while a single-library phone sits on host B.
+Their rows then live in different stores under different ownerIds - the Umbrel's `p:naz38xk...`
+means nothing on the Mac - and no host can see both. Concretely, with Tim's two hosts today
+(Mac `cc971fqe...`, Umbrel `se4t5s91...`), a blended phone elects the MAC while a single-library
+phone on the Umbrel is untouchable from there.
+
+That is structural to host-as-hub rather than a defect in this change: arbitration needs one
+authority, and there are two. Fixing it would mean a cross-host election for the token itself,
+which is a much larger design question. Logged in TODO.md rather than smuggled in here.
+
 ## Compat
 
 - No schema change. Same fields, same keys, same methods.
