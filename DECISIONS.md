@@ -2,6 +2,30 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-30 - Playlists push too, closing the last known live-update gap
+Tier: T2 (a new push kind). Branch fix/playlists-live-update. Third and last entry in the
+"no push exists for user state" thread; the favorites and request entries below are the others.
+
+Context: written up as a follow-up when the favorites push shipped, and picked by Tim off the
+backlog rather than found in use - the gap was identical and known, so fixing it while the pattern
+was fresh beat waiting for him to hit it. All five mutations push `playlists:changed` to the
+person's other devices: create, rename, delete, add, setTracks.
+
+Choice worth recording: the payload carries `{ id, reason, libraryId }` and the client still
+RE-READS rather than patching. A create/add/remove all shift the counts the summaries carry, so a
+patch would have to reimplement the host's own arithmetic on the client - the exact bug class the
+merged favorites union has (a removal on one host is only a removal if no other host still has it).
+
+The OPEN PLAYLIST DETAIL is a second surface, and it gets a `refreshKey` prop rather than a
+remount. A remount would reset `pl` to null, and PlaylistScreen renders its loading state on null -
+which is precisely the Favorites ghost-shell regression from earlier the same day. Its effect
+OVERWRITES instead of clearing, so the rows stay up until the new ones land. Applying that lesson
+before it could repeat is the whole reason the prop exists rather than a key bump.
+
+Consequences: needs a new host and a new app. Verified against a real host across all five
+mutations, including that the writing device is never told about its own change. NOT verified on
+hardware.
+
 ## 2026-07-30 - The owner request queue is pushed when it SHRINKS, not only when it grows
 Tier: T2 (a new push kind). Branch fix/manage-requests-live. Extends the same "no push exists for
 user state" thread as the favorites entry below.

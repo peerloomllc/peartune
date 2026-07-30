@@ -75,6 +75,21 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
     } catch {}
   }
 
+  // Tell this person's OTHER devices that their playlists moved. Same gap the favorites push
+  // closed (proposal 2026-07-30-favorites-live-update): a playlist created, renamed, deleted or
+  // reordered on one phone did not reach the others until something made the app ask again, and
+  // nothing does while it sits connected. Not the device that made the change - it already
+  // re-rendered, and a push would fight its own optimistic update.
+  //
+  // `id` is which playlist (null when the change is not about one in particular), `reason` is
+  // what happened. Neither is enough to patch a list with, deliberately: the client re-reads,
+  // because the summaries carry counts that a create/add/remove all shift.
+  function playlistsChanged (id, reason) {
+    if (!presence) return
+    presence.notifyOwner(ownerOf(grant), 'playlists:changed', { id: id || null, reason, libraryId },
+      { exceptDevice: grant.deviceKey })
+  }
+
   // Backpressure. Protomux `send()` returns false when the underlying stream is
   // full; pushing a whole album through regardless would balloon memory on a
   // Pi-class host. Wait for drain before the next frame.
@@ -345,6 +360,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       case 'playlist.create': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         const row = await state.createPlaylist(ownerOf(grant), params?.name)
+        playlistsChanged(row.id, 'created')
         log('playlist:create', { id: row.id, name: row.name })
         return send.res.send({ id, body: { id: row.id, name: row.name } })
       }
@@ -354,6 +370,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
         const row = await state.renamePlaylist(ownerOf(grant), params.id, params?.name)
         if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
+        playlistsChanged(row.id, 'renamed')
         log('playlist:rename', { id: row.id, name: row.name })
         return send.res.send({ id, body: { id: row.id, name: row.name } })
       }
@@ -362,6 +379,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
         await state.deletePlaylist(ownerOf(grant), params.id)
+        playlistsChanged(params.id, 'deleted')
         log('playlist:delete', { id: params.id })
         return send.res.send({ id, body: { ok: true } })
       }
@@ -375,6 +393,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         const row = await state.addToPlaylist(ownerOf(grant), params.id, params?.trackIds)
         if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
         const added = row.trackIds.length - before
+        playlistsChanged(row.id, 'tracks-added')
         log('playlist:add', { id: row.id, count: row.trackIds.length, added })
         return send.res.send({ id, body: { ok: true, count: row.trackIds.length, added } })
       }
@@ -384,6 +403,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
         const row = await state.setPlaylistTracks(ownerOf(grant), params.id, params?.trackIds)
         if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
+        playlistsChanged(row.id, 'tracks-set')
         log('playlist:set-tracks', { id: row.id, count: row.trackIds.length })
         return send.res.send({ id, body: { ok: true, count: row.trackIds.length } })
       }
