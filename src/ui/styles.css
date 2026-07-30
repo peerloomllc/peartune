@@ -403,18 +403,27 @@ summary { cursor: pointer; padding: .5rem; }
 .shelf-scroll { position: relative; }
 .shelf-row { display: flex; gap: .7rem; overflow-x: auto; padding-bottom: .35rem; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
 .shelf-row::-webkit-scrollbar { display: none; }
-/* "There is more to the right." Shown only while there actually is - RecentShelf measures it.
-   The gradient ends in the page background so the last cover looks cut off rather than framed,
-   which is the thing that reads as "keep going"; the caret makes it unmissable. Not a button:
-   pointer-events stay off so it can never eat a tap meant for the cover underneath. */
-.shelf-more {
-  position: absolute; right: 0; top: 0; bottom: .35rem; width: 2.6rem;
-  display: flex; align-items: center; justify-content: flex-end;
+/* "There is more this way." One at each end, each shown only while there actually is - RecentShelf
+   measures both. The gradient ends in the page background so the outermost cover looks cut off
+   rather than framed, which is the thing that reads as "keep going"; the caret makes it
+   unmissable. Not buttons: pointer-events stay off so they can never eat a tap meant for the
+   cover underneath. */
+.shelf-more, .shelf-back {
+  position: absolute; top: 0; bottom: .35rem; width: 2.6rem;
+  display: flex; align-items: center;
   color: var(--color-text-muted); pointer-events: none;
   opacity: 0; transition: opacity .18s ease;
+}
+.shelf-more {
+  right: 0; justify-content: flex-end;
   background: linear-gradient(90deg, transparent, var(--color-surface-base) 65%);
 }
+.shelf-back {
+  left: 0; justify-content: flex-start;
+  background: linear-gradient(270deg, transparent, var(--color-surface-base) 65%);
+}
 .shelf-scroll.more .shelf-more { opacity: 1; }
+.shelf-scroll.back .shelf-back { opacity: 1; }
 .shelf-item {
   flex: 0 0 auto; width: 128px; scroll-snap-align: start;
   background: none; border: none; padding: 0; text-align: left; cursor: pointer; color: inherit;
