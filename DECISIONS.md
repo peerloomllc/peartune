@@ -2,6 +2,36 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-07-30 - The owner request queue is pushed when it SHRINKS, not only when it grows
+Tier: T2 (a new push kind). Branch fix/manage-requests-live. Extends the same "no push exists for
+user state" thread as the favorites entry below.
+
+Context: Tim reported that requests do not update on the Manage page in real time. MEASURED FIRST,
+and the measurement contradicted the report in a useful way: filing a request from the TCL made it
+appear on the Pixel's Manage page instantly, twice, with the count tracking 1 -> 2. Arrivals were
+never broken. What is broken is the queue SHRINKING - a request that LEAVES.
+
+Two ways it leaves, and neither told an owner anything. `resolveRequestAndNotify` pushed
+`request:resolved` to the REQUESTER only, so resolving on the dashboard left every owner's Manage
+list showing the row as pending. `request.delete` (a requester withdrawing) pushed nothing at all.
+So the queue only ever grew, which reads exactly as "does not update in real time".
+
+Choice: both sites push `requests:changed` to every OWNER-scope device. A deliberately empty
+payload beyond a reason - the owner list is a live read, and "something changed" is the whole
+message; carrying the row would invite the client to patch a list it did not fetch.
+
+The three sites that push to owners (arrive, withdraw, resolve) now share `notifyOwners` in
+presence.js rather than each deciding for itself who an owner is. The arrival case had that loop
+INLINE and the other two had nothing, which is how they drifted apart in the first place.
+
+Rejected: a toast on `requests:changed`. A row leaving is not worth interrupting an operator over,
+and a resolve they just performed on the dashboard would toast back at them.
+
+Consequences: needs a new host and a new app; an old host sends nothing and the app behaves as it
+does today. Verified by integration tests against a real host (withdraw and resolve both push, and
+the owner's live read agrees). The ARRIVAL path is verified on hardware; the two new ones are not,
+because a second owner device or dashboard access was needed and neither was to hand.
+
 ## 2026-07-30 - The host pushes favorites changes to a person's other devices
 Tier: T2. Proposal `proposals/2026-07-30-favorites-live-update.md`. Branch fix/favorites-live-update.
 

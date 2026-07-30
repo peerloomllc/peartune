@@ -511,6 +511,15 @@ export default function App () {
         if (youViewRef.current === 'manage') loadOwnerReqs()
         else refreshOwnerPending()
       }),
+      // The owner queue changed WITHOUT a new arrival: someone withdrew their ask, or it was
+      // resolved on the dashboard. Only arrivals used to be pushed, so Manage watched the queue
+      // grow and never shrink (Tim, 2026-07-30). No toast - a row leaving is not something to
+      // interrupt an operator about, and a resolve they just did on the dashboard would toast
+      // back at them. loadOwnerReqs sets the list in place, so there is no skeleton flash.
+      on('requests:changed', () => {
+        if (youViewRef.current === 'manage') loadOwnerReqs()
+        else refreshOwnerPending()
+      }),
       // Pushed to whoever filed the request, on every device they are on. Tell them and refresh
       // their own list so the status colour is right the moment they open Requests.
       on('request:resolved', (d) => {

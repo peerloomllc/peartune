@@ -11,6 +11,7 @@ const b4a = require('b4a')
 const { mediaChannel } = require('../protocol/channels')
 const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 const { REQUEST_KINDS } = require('./state')
+const { notifyOwners } = require('./presence')
 
 // Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
 // so a new mutating method cannot accidentally ship without a scope check.
@@ -420,9 +421,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
               (await grants.getPerson(grant.personId).catch(() => null))?.name || 'Someone'
           } else requesterName = grant.label || 'A device'
           const payload = { id: row.id, kind: row.kind, name: row.name, artist: row.artist, requesterName, count: row.count }
-          for (const g of await grants.list().catch(() => [])) {
-            if (g.scope === SCOPE.OWNER && !g.revokedAt) presence.notify(g.deviceKey, 'request:new', payload)
-          }
+          await notifyOwners(presence, grants, 'request:new', payload)
         }
         return send.res.send({ id, body: { ok: true, id: row.id, status: row.status, count: row.count } })
       }
@@ -531,6 +530,11 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!row) return send.res.send({ id, body: { ok: true, deleted: false } }) // already gone
         if (row.requester !== ownerOf(grant)) return safeErr(id, ERR.FORBIDDEN, 'not your request')
         const deleted = await state.deleteRequest(params.id)
+        // A WITHDRAWAL IS NEWS TO THE OPERATORS TOO. Only the arrival of a request was ever
+        // pushed, so an owner sitting on Manage watched the queue grow and never shrink - the row
+        // stayed until something made the app ask again (Tim, 2026-07-30). No payload beyond the
+        // reason: the owner list is a live read, and telling it "something changed" is enough.
+        if (deleted) await notifyOwners(presence, grants, 'requests:changed', { reason: 'withdrawn', id: params.id })
         log('request:delete', { deleted })
         return send.res.send({ id, body: { ok: true, deleted } })
       }

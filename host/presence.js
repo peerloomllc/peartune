@@ -15,9 +15,29 @@
 // pushed to. The registry keys by the same z32 deviceKey string the grant carries.
 
 const z32 = require('z32')
+const { SCOPE } = require('../protocol/constants')
 
 function keyOf (deviceKey) {
   return typeof deviceKey === 'string' ? deviceKey : z32.encode(deviceKey)
+}
+
+// Push to every device holding OWNER scope on this host - the operators, wherever they are signed
+// in. The grant store is the authority on who that is (scope OWNER, not revoked); presence only
+// reaches the ones with a live channel, and an owner who is offline picks the change up on their
+// next load. Best-effort, like every push here.
+//
+// Factored out because there are now three callers and they must agree on who counts as an owner:
+// a new request, a withdrawn one, and a resolved one. The first had this loop inline, and the
+// other two had NOTHING - which is why an owner watching Manage saw a request arrive but never saw
+// it leave (Tim, 2026-07-30).
+async function notifyOwners (presence, grants, kind, data = null) {
+  if (!presence || !grants) return 0
+  let n = 0
+  for (const g of await grants.list().catch(() => [])) {
+    if (g.scope !== SCOPE.OWNER || g.revokedAt) continue
+    n += presence.notify(g.deviceKey, kind, data)
+  }
+  return n
 }
 
 class Presence {
@@ -110,4 +130,4 @@ class Presence {
   }
 }
 
-module.exports = { Presence }
+module.exports = { Presence, notifyOwners }

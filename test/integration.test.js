@@ -495,6 +495,56 @@ test('REQUEST: a new request pushes "request:new" to a connected owner, with who
   assert.equal(reqGotNew, false, 'a non-owner requester is never sent request:new')
 })
 
+// AN OWNER WATCHING MANAGE SAW THE QUEUE GROW AND NEVER SHRINK. Only the ARRIVAL of a request was
+// ever pushed to owners: a withdrawal pushed nothing at all, and a resolve pushed only to the
+// requester - so a row resolved on the dashboard sat in the app's Manage list as still pending
+// until something made it ask again (Tim, 2026-07-30).
+test('REQUEST: WITHDRAWING pushes "requests:changed" to the owner, so Manage drops the row', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { req, own } = await requesterAndOwner(testnet, host, { requesterName: 'Sam' })
+  t.after(() => req.close())
+  t.after(() => own.close())
+
+  // Let the ARRIVAL push land first, or the listener below catches that instead of the withdrawal.
+  const arrived = oncePush(own, 'request:new')
+  const added = await req.requestAdd({ kind: 'album', name: 'Discovery', artist: 'Daft Punk' })
+  await arrived
+
+  const pushed = oncePush(own, 'requests:changed')
+  const gone = await req.requestDelete({ id: added.id })
+  assert.equal(gone.deleted, true)
+
+  const evt = await pushed
+  assert.equal(evt.data.reason, 'withdrawn')
+  assert.equal(evt.data.id, added.id)
+  // ...and the owner reading live now sees an empty queue, so the push is not a lie.
+  assert.deepEqual((await own.ownerRequests()).requests, [])
+})
+
+test('REQUEST: RESOLVING pushes "requests:changed" to owners as well as the requester', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { req, own } = await requesterAndOwner(testnet, host, { requesterName: 'Sam' })
+  t.after(() => req.close())
+  t.after(() => own.close())
+
+  const arrived = oncePush(own, 'request:new')
+  const added = await req.requestAdd({ kind: 'track', name: 'Aerodynamic' })
+  await arrived
+
+  // BOTH sides must hear, for different reasons: the requester so their status colour is right,
+  // the owner so the queue they are looking at loses the row. Resolving is a dashboard-side call.
+  const ownerHeard = oncePush(own, 'requests:changed')
+  const requesterHeard = oncePush(req, 'request:resolved')
+  await host.resolveRequestAndNotify(added.id, 'added')
+
+  const evt = await ownerHeard
+  assert.equal(evt.data.reason, 'resolved')
+  assert.equal(evt.data.status, 'added')
+  assert.equal(evt.data.id, added.id)
+  const reqEvt = await requesterHeard
+  assert.equal(reqEvt.data.status, 'added', 'the requester still gets their own push, unchanged')
+})
+
 test('REQUEST: resolving pushes "request:resolved" to the requester over the wire', async (t) => {
   const { testnet, host } = await scaffold(t)
   const { req, own } = await requesterAndOwner(testnet, host, { requesterName: 'Sam' })
