@@ -67,4 +67,37 @@ function linkActions ({ hosts, activeLibraryId, isLive, provenAt = () => 0, now 
   return out
 }
 
-module.exports = { linkActions, WATCHDOG_MS, PING_TIMEOUT_MS, PROVEN_WINDOW_MS }
+
+// --- the stuck dial (Tim, 2026-07-30) ---------------------------------------
+//
+// The watchdog above cannot see this one, and the distinction is the point: 'probe' is for a
+// connection that is WIRED UP to a client and may have died quietly. A stuck dial never got that
+// far - hyperswarm booked it in _allConnections at dial time and it never opened - so there is no
+// client to probe and no traffic to prove. Meanwhile that booking makes _connect() return early
+// for the peer, so every redial and every discovery refresh is a no-op. Left alone it never
+// recovers; only a fresh process does, which is why it presented as "reopen the app and it works".
+//
+// OBSERVED, not theorised - Tim's Pixel, 2026-07-30, after Android's cached-app freezer held the
+// process for ~13 minutes across two freezes:
+//     nudge:link {"conns":1,"live":0}
+//     method:failed {"method":"reconnect","err":"could not reach the host"}
+//
+// The decision lives here, away from the swarm internals, so it can be tested without a phone.
+//
+//   suspended - this tick arrived far later than scheduled, so the worklet was not running in
+//               between. Anything booked before that is dead whatever it looked like, so clear it
+//               AT ONCE: that is what makes the app connect when opened rather than ~40s later.
+//   held      - the backstop. A booking that has simply sat un-opened for holdMs. Not zero,
+//               because a hole-punch legitimately in flight is indistinguishable from here and
+//               off-LAN punches have been measured at 8-28s; aborting one of those would break a
+//               connection that was about to succeed.
+//
+// Returns 'suspended' | 'held' | null.
+function stuckDialAction ({ hasStuck, stuckSince = 0, lastTickAt = 0, now = 0, suspendGapMs, holdMs }) {
+  if (!hasStuck) return null
+  if (lastTickAt > 0 && now - lastTickAt > suspendGapMs) return 'suspended'
+  if (stuckSince > 0 && now - stuckSince >= holdMs) return 'held'
+  return null
+}
+
+module.exports = { linkActions, stuckDialAction, WATCHDOG_MS, PING_TIMEOUT_MS, PROVEN_WINDOW_MS }
