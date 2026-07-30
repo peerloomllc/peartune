@@ -691,6 +691,17 @@ function leaseValid () {
   return la > 0 && (Date.now() - la) < LEASE_GRACE_MS
 }
 
+// Artwork usage, reported alongside the audio cache numbers so the UI needs no second call.
+//
+// The cap stays a COUNT and stays out of Settings (Tim, proposal 2026-07-29-persist-album-art),
+// but the SPACE a count can reach is not obvious from the count: covers measured ~137 KB each on
+// a real library, so the 4000-entry backstop is a few hundred MB. Showing the bytes is what stops
+// that being invisible - there is no setting to tune, just a number you can see and a Refresh
+// that reclaims it.
+function artStats () {
+  try { return { artBytes: artStore.totalBytes(), artCount: artStore.count() } } catch { return { artBytes: 0, artCount: 0 } }
+}
+
 // --- relay-audio consent gate (proposal 2026-07-29) --------------------------
 //
 // The shim calls this for every AUDIO request and nothing else. Returns 'play', 'ask'
@@ -3561,7 +3572,7 @@ const methods = {
 
   // --- storage / offline cache (milestone 3, phase 5B) ------------------------
   cacheStats () {
-    return { bytes: audioCache.totalBytes(), count: audioCache.count(), cap: audioCache.cap }
+    return { bytes: audioCache.totalBytes(), count: audioCache.count(), cap: audioCache.cap, ...artStats() }
   },
 
   clearCache () {
@@ -3591,7 +3602,7 @@ const methods = {
     s.cacheCap = cap
     saveSettings(s)
     audioCache.setCap(cap) // may evict immediately if the new cap is smaller
-    return { bytes: audioCache.totalBytes(), count: audioCache.count(), cap }
+    return { bytes: audioCache.totalBytes(), count: audioCache.count(), cap, ...artStats() }
   },
 
   // --- pinned albums / Downloads (milestone 3, phase 5C) ----------------------
