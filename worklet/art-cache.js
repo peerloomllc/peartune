@@ -60,6 +60,10 @@ class ArtStore {
 
   _touch (e) { e.use = this._seq++; e.lastUsed = Date.now(); return e }
 
+  // Persist pending in-memory touches. Called by anything that already writes, and available
+  // to a caller that wants ordering durable right now.
+  flush () { if (this._dirty) { this._dirty = false; this._save() } }
+
   // coverIds come from a source server and can carry slashes or other path characters, so
   // encode them into a single safe filename. The '@<size>' suffix is what lets one cover
   // hold several resolutions at once, and the size is always trailing digits, so splitting
@@ -82,6 +86,7 @@ class ArtStore {
   }
 
   _save () {
+    this._dirty = false
     try {
       fs.mkdirSync(this.dir, { recursive: true })
       fs.writeFileSync(this.indexPath, JSON.stringify(this.index))
@@ -110,8 +115,13 @@ class ArtStore {
       this._save()
       return null
     }
+    // Touch in memory but do NOT rewrite the index here. get() is the hottest path in the
+    // store - a grid re-render asks for dozens of covers - and persisting the whole index on
+    // every read was pure write amplification. `use` ordering is an optimisation, not
+    // correctness: it is flushed by the next put/remove/evict, and a restart in between simply
+    // starts from slightly staler ordering.
     this._touch(e)
-    this._save()
+    this._dirty = true
     return buf
   }
 

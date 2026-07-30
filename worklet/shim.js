@@ -362,9 +362,21 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
       // A HOSTLESS cover still ignores the lease: a demo cover has no host that could ever have
       // authorized it, and gating it would browse the demo library as a wall of placeholders.
       const localOnly = hostless(coverId)
-      if (artStore && (localOnly || leaseOk())) {
+
+      // MEMORY FIRST, then disk, then the network. The disk read used to come first, which was
+      // harmless while the store only held pinned covers at one size - it almost always missed.
+      // Now that browsing populates it, disk-first meant every repeat request in a session did a
+      // file read AND rewrote the whole index, and a grid re-render asks for the same covers
+      // constantly. Measured on the Pixel: a single cold run logged 63 art:hit against 63 files
+      // written, i.e. every cover was served from disk a second time when RAM already had it.
+      let buf = artCache.get(key)
+
+      if (!buf && artStore && (localOnly || leaseOk())) {
         const disk = artStore.get(coverId, size)
         if (disk && disk.length) {
+          // Into RAM too, so the next request for this cover costs nothing at all.
+          if (artCache.size >= ART_CACHE_MAX) artCache.delete(artCache.keys().next().value)
+          artCache.set(key, disk)
           res.writeHead(200, {
             'content-type': 'image/jpeg',
             'content-length': String(disk.length),
@@ -374,8 +386,6 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
           return res.end(disk)
         }
       }
-
-      let buf = artCache.get(key)
 
       if (!buf) {
         // Route the live cover fetch to its owning host (the URL's libraryId, or the resolver in

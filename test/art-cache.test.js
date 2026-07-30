@@ -270,3 +270,40 @@ test('a slashed coverId still matches for setPinned and remove', async (t) => {
   store.remove(id)
   assert.equal(store.has(id, 350), false)
 })
+
+test('get() does not rewrite the index, but ordering still holds', async (t) => {
+  // get() is the hottest path - a grid re-render asks for dozens of covers - so persisting the
+  // whole index on every read was pure write amplification. Ordering is kept in memory and
+  // flushed by the next write, which is enough because LRU order is an optimisation, not
+  // correctness.
+  const d = await dir(t)
+  const store = new ArtStore({ dir: d, maxEntries: 2 })
+  store.put('a', buf('A'))
+  store.put('b', buf('B'))
+
+  const before = fs.statSync(path.join(d, 'index.json')).mtimeMs
+  store.get('a')                       // touch 'a' so 'b' becomes the LRU victim
+  const after = fs.statSync(path.join(d, 'index.json')).mtimeMs
+  assert.equal(after, before, 'a read must not rewrite the index')
+
+  store.put('c', buf('C'))             // over the cap - evicts the least recently used
+  assert.equal(store.has('a'), true, 'the un-persisted touch still ordered the eviction')
+  assert.equal(store.has('b'), false)
+  assert.equal(store.has('c'), true)
+})
+
+test('flush() persists pending touches for a caller that needs them durable', async (t) => {
+  const d = await dir(t)
+  const store = new ArtStore({ dir: d })
+  store.put('a', buf('A'))
+  store.put('b', buf('B'))
+  store.get('a')
+  store.flush()
+
+  // A fresh instance must see 'a' as more recently used than 'b'. Cap of 2, not 1: with three
+  // entries against a cap of 1 it would evict TWO and prove nothing about the ordering.
+  const reopened = new ArtStore({ dir: d, maxEntries: 2 })
+  reopened.put('c', buf('C'))
+  assert.equal(reopened.has('b'), false, 'the older entry went')
+  assert.equal(reopened.has('a'), true, 'the flushed touch survived the restart')
+})

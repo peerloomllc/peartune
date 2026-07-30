@@ -60,10 +60,12 @@ test('the shim gates the TRACK path and NOT the art path (decision 1)', () => {
   const gateAt = shim.indexOf('audioGate({')
   assert.ok(gateAt > 0, 'the shim calls audioGate somewhere')
 
-  // The art handler starts at the artStore/localOnly branch. The single audioGate call
-  // must sit BEFORE it, in the track handler.
-  const artAt = shim.indexOf('if (artStore && (localOnly')
-  assert.ok(artAt > 0, 'found the art branch')
+  // Anchor on the art HANDLER, not on a line inside it: an earlier version of this test
+  // pinned the exact `if (artStore && (localOnly` condition and broke the moment that branch
+  // was reordered for an unrelated reason (memory-before-disk, 2026-07-29). The function
+  // boundary is what actually matters here and it does not move.
+  const artAt = shim.indexOf('async function serveArt')
+  assert.ok(artAt > 0, 'found the art handler')
   assert.ok(gateAt < artAt,
     'audioGate is called at or after the art branch - artwork must NOT be gated (decision 1). ' +
     'If art is now meant to require consent, website/peartune/privacy.html has to change first.')
