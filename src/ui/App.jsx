@@ -127,6 +127,11 @@ export default function App () {
   const [reqComposer, setReqComposer] = useState(null) // music-request composer: { name } prefill, or null
   const [reqSupported, setReqSupported] = useState(true) // false = active host too old for requests
   const [myRequests, setMyRequests] = useState(null) // this device's own requests (the You > Requests view)
+  // For the once-registered reconnect handler, which closed over the first render. Only reload the
+  // list if it has ever been looked at - a device that never opens Requests should not pay a
+  // round-trip for it on every reconnect.
+  const myRequestsRef = useRef(null)
+  myRequestsRef.current = myRequests
   const [ownerDevices, setOwnerDevices] = useState(null) // the managed library's devices, for an owner (You > Manage)
   const [ownerReqs, setOwnerReqs] = useState(null) // the full request queue, for an owner to resolve (You > Manage)
   const [ownedLibs, setOwnedLibs] = useState([]) // libraries this device OWNS + can reach (the Manage picker)
@@ -407,6 +412,14 @@ export default function App () {
         loadContinue()
         loadHandoff(); setTimeout(loadHandoff, 2000) // retry: the active device may push its queue just after we connect
         loadPlaylists(true)
+        // REQUESTS TOO, and this is not symmetry for its own sake. A backgrounded phone loses its
+        // connection in about 30 seconds (measured on the TCL, 2026-07-30), and a push cannot
+        // reach a device that is not there - so anything that happened while it was away is
+        // missed, and the reconnect is the only chance to notice. Everything else in this list
+        // already understood that; requests were the one thing left out, so a request resolved
+        // while your phone was in your pocket kept its old status until the app was reopened.
+        if (myRequestsRef.current) loadRequests(true)
+        if (youViewRef.current === 'manage') loadOwnerReqs()
         // In merged mode, if any paired host is still missing from the blend, rebuild to fold the
         // one that just came online in (merged:updated then reloads browse + chips). If the blend is
         // already complete, just re-render browse from the current index rather than re-fetching.
@@ -1526,9 +1539,14 @@ export default function App () {
       if (r.supported === false) setReqSupported(false)
     } catch { setMyRequests(m => m || []) }
   }
-  async function showRequests (force) {
+  async function showRequests () {
     setYouView('requests')
-    await loadRequests(force)
+    // ALWAYS refetch on open, like Manage does. loadRequests early-returns when the list is
+    // already loaded, and showRequests used to pass no force - so your own Requests screen was
+    // fetched once per app session and never again, and a request resolved in between kept its
+    // old status colour every time you opened it. The list is small and this is a tap, not a
+    // heartbeat. It sets in place rather than clearing, so there is no skeleton flash.
+    await loadRequests(true)
   }
   // Owner: the active library's devices + request queue (You > Manage). Reloads each open -
   // a revoke, a resolve or a new pair should show promptly, and the lists are small.
