@@ -6,6 +6,17 @@ PearTune is a peer-to-peer music player. The library stays on a machine someone 
 
 That machine does not have to be yours. A library's owner can let a friend or family member in, each as their own person with their own devices, and cut any of them off again in a second. So PearTune is two things at once: how you reach your own music from anywhere, and how someone shares theirs with you without handing out a login or copying a file.
 
+<table>
+<tr>
+<td width="50%"><img src="docs/img/app-pair-a-device.png" alt="The app showing a pairing QR code, valid for five minutes and good for one device, with the same link in text underneath and Copy and Share buttons"></td>
+<td width="50%"><img src="docs/img/app-who-has-access.png" alt="The app listing everyone with access to a library: this phone badged as owner, three other devices with their people and whether each is connected, and a revoke button on each"></td>
+</tr>
+<tr>
+<td><em>Letting someone in: they scan, or you send the link.</em></td>
+<td><em>Who has access, and cutting any of them off.</em></td>
+</tr>
+</table>
+
 ## Why
 
 Self-hosted music servers (Navidrome, Jellyfin, Plex) are good at playback. The part people actually struggle with is **remote access**: reverse proxies, port forwarding, VPNs, dynamic DNS, or paying for someone's remote-access tier. PearTune makes that part disappear.
