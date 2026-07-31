@@ -1745,6 +1745,22 @@ if ! $SKIP_DESKTOP; then
     for _f in "${DESKTOP_ARTIFACTS[@]}"; do
       echo "    - $(basename "$_f")  ($(du -sh "$_f" | cut -f1))"
     done
+
+    # .sha256 sidecars for the desktop artifacts (step 4e does the MOBILE ones).
+    # The upload step already picks up "${asset}.sha256" when it exists and already
+    # maps the .sha256 content type - only the generation was missing, so desktop
+    # downloads have shipped with nothing to verify them against.
+    #
+    # THE SIDECAR MUST NAME THE FILE, NOT ITS BUILD PATH. These artifacts are
+    # absolute paths on this machine, and `sha256sum /home/tim/.../PearTune.AppImage`
+    # writes that path into the file - so `sha256sum -c` fails for every downloader,
+    # who has the file in their own directory under its bare name. Hashing from
+    # inside the artifact's own directory keeps the sidecar to "<hash>  <basename>",
+    # which is what the mobile ones already produce and what -c expects.
+    for _f in "${DESKTOP_ARTIFACTS[@]}"; do
+      ( cd "$(dirname "$_f")" && sha256sum "$(basename "$_f")" > "$(basename "$_f").sha256" )
+      echo "    sha256  $(cut -d' ' -f1 < "${_f}.sha256")  $(basename "$_f")"
+    done
   else
     echo "==> No desktop installers produced (all skipped or failed); mobile release continues."
   fi

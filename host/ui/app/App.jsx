@@ -14,6 +14,7 @@ import { PairModal, DAY_MS } from './Pair'
 import { MaintenanceModal } from './Maintenance'
 import SetupWizard from './Wizard'
 import { needsSetup, setupDismissed, dismissSetup, undismissSetup } from './setup'
+import { shouldShowUpdate, dismissUpdate, dismissedVersion } from './update'
 
 // The operator control plane, as an app shell adapted from the PearCircle seeder's
 // #153 redesign: a fixed top bar, a scrollable middle (stats + the people-first
@@ -37,6 +38,13 @@ export default function App () {
   // configured one never sees it. Once set, it is the operator's, not the poll's:
   // finishing or skipping must not be undone by the next refresh.
   const [setup, setSetup] = useState(null)
+  // GET /api/update, kept off the 3s /api/state poll on purpose: the host only asks
+  // GitHub once an hour, so polling it with the dashboard's hot path would be 1200
+  // requests for one answer. null until the first reply, and never fatal.
+  const [update, setUpdate] = useState(null)
+  // Read once at mount, then held in state so a dismissal hides the banner without a
+  // reload. localStorage is the durable copy; this is just what the render reads.
+  const [dismissedUpdate, setDismissedUpdate] = useState(dismissedVersion)
 
   useEffect(() => { applyThemePref(pref) }, [pref])
 
@@ -61,6 +69,15 @@ export default function App () {
     const t = setInterval(refresh, 3000)
     return () => clearInterval(t)
   }, [refresh])
+
+  useEffect(() => {
+    const poll = () => api('/api/update').then(setUpdate).catch(() => {})
+    poll()
+    // Half the host's own check interval, so a dashboard left open overnight picks up
+    // a release without a reload, and a shut one costs nothing.
+    const t = setInterval(poll, 30 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [])
 
   const cycleTheme = () => setPref(resolveTheme(pref) === 'dark' ? 'light' : 'dark')
   const isDark = resolveTheme(pref) === 'dark'
@@ -92,6 +109,9 @@ export default function App () {
       <TopBar state={state} isDark={isDark} onTheme={cycleTheme} onOpen={setModal} onSetup={openSetup} />
 
       <div className='main'>
+        {shouldShowUpdate(update, dismissedUpdate) &&
+          <UpdateBanner info={update} onDismiss={() => { dismissUpdate(update.latest); setDismissedUpdate(update.latest) }} />}
+
         {state.sourceError &&
           <div className='banner'>The music source is not working: {state.sourceError}</div>}
 
@@ -143,6 +163,26 @@ export default function App () {
       {modal === 'maintenance' && <MaintenanceModal state={state} onClose={() => setModal(null)} onSaved={refresh} toast={toast} />}
       {note && <div className={'toast' + (note.bad ? ' err' : '')}>{note.msg}</div>}
       <ConfirmHost />
+    </div>
+  )
+}
+
+/* ---- "a new PearTune is out" ---------------------------------------------- */
+// Notify only FOR NOW: a version, a link and a way to dismiss it. An "Update now"
+// button belongs here next - the PearCircle seeder has one and applies in place - and
+// this is the element it goes in. See host/update-check.js for what PearTune's own
+// packaging needs before that is safe.
+function UpdateBanner ({ info, onDismiss }) {
+  return (
+    <div className='banner info'>
+      <span>
+        <strong>PearTune {info.latest} is out.</strong>{' '}
+        {info.htmlUrl
+          ? <a href={info.htmlUrl} target='_blank' rel='noreferrer'>See what changed and download it</a>
+          : 'Grab it from the PearTune releases page.'}
+      </span>
+      <button className='bannerx' onClick={onDismiss} title='Hide until the next release'
+        aria-label='Hide this update notice'>×</button>
     </div>
   )
 }
