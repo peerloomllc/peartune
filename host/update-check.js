@@ -74,13 +74,19 @@ function isNewer (latest, current) {
 //                                                only and skips host/package*.json, so a
 //                                                bare require('../package.json') THROWS
 //                                                at startup and takes the tray app with it.
+//   desktop SERVICE   resources/app.asar/vendor/host/  ->  ../../package.json, the packaged
+//                                                app's own manifest. The tray app never needed
+//                                                this because it passes app.getVersion() in;
+//                                                the systemd unit runs host/index.js directly
+//                                                with no Electron `app` to ask, so without this
+//                                                candidate a serviced host silently reports
+//                                                "unknown version" and checks for updates NEVER.
 //
-// So the desktop passes its version in (Electron's app.getVersion()), and this is the
-// fallback for the other two. Null when nothing answers - the caller then runs no check
-// at all rather than comparing against a version it had to invent.
+// The desktop tray still passes its version in explicitly. Null when nothing answers - the
+// caller then runs no check at all rather than comparing against a version it had to invent.
 function hostVersion ({ env = process.env, load = (p) => require(p) } = {}) {
   if (env.PEARTUNE_VERSION) return env.PEARTUNE_VERSION
-  for (const p of ['../package.json', './package.json']) {
+  for (const p of ['../package.json', './package.json', '../../package.json']) {
     try {
       const v = load(p).version
       if (v) return v

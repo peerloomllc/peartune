@@ -119,7 +119,17 @@
       "desktop": {
         "Name": "PearTune",
         "StartupWMClass": "peartune"
-      }
+      },
+      "extraResources": [
+        {
+          "from": "installer/linux/peartune-host.service",
+          "to": "peartune-host.service"
+        }
+      ]
+    },
+    "deb": {
+      "afterInstall": "installer/linux/postinst.sh",
+      "afterRemove": "installer/linux/postrm.sh"
     }
   }
 }

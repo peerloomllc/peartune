@@ -78,6 +78,12 @@ test('the host finds its own version in every layout it ships in', () => {
   assert.equal(hostVersion({ env: {}, load: (p) => p === '../package.json' ? { version: '1.0.0' } : (() => { throw new Error('nope') })() }), '1.0.0')
   assert.equal(hostVersion({ env: {}, load: (p) => p === './package.json' ? { version: '1.0.0' } : (() => { throw new Error('nope') })() }), '1.0.0', 'the docker/host-local copy')
   assert.equal(hostVersion({ env: {}, load: () => { throw new Error('no such file') } }), null, 'the desktop layout: nothing to read, and it must not throw')
+  // The fourth layout, found by running the systemd service for real: the host runs from
+  // inside resources/app.asar/vendor/host/, where the packaged app's manifest is two up.
+  // The tray app never hit this because it passes app.getVersion() in; a serviced host has
+  // no Electron `app` to ask, and without this candidate it reports "unknown version" and
+  // therefore never checks for updates at all.
+  assert.equal(hostVersion({ env: {}, load: (p) => p === '../../package.json' ? { version: '1.0.0' } : (() => { throw new Error('nope') })() }), '1.0.0', 'the packaged desktop-service layout')
 })
 
 test('every refusal to check returns null and a reason, and starts nothing', () => {
