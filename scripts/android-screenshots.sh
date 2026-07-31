@@ -12,8 +12,8 @@
 # Output: metadata/android/screenshots/<avd>/<light|dark>/scene-N.png
 #         metadata/android/screenshots/<avd>_Framed/<light|dark>/scene-N.png
 #
-# The app does NOT implement the screenshotScene extra yet, so every frame is
-# currently the same screen. See TODO.md ("store screenshot scenes").
+# The app reads the screenshotScene extra and routes to that scene's screen
+# (src/ui/screenshot.js). It needs the fixture too - see scripts/screenshots.sh.
 #
 # Emulator, not a phone, per the suite-wide rule 15 - and it must stay that way
 # for this script: it wipes data and drives taps, which is exactly what must never
@@ -32,6 +32,9 @@ MAIN_ACTIVITY="${ANDROID_MAIN_ACTIVITY:?ANDROID_MAIN_ACTIVITY is not set - check
 APK_PATH="${APK_PATH:-$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk}"
 
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/metadata/android/screenshots}"
+# The album data + inlined covers every scene renders from. Gitignored (real album art), built by
+# scripts/screenshot-fixture.sh then scripts/screenshot-fixture-pack.js.
+FIXTURE="${FIXTURE:-$REPO_ROOT/metadata/screenshot-fixtures/pack.json}"
 SCENES=(1 2 3 4 5 6)
 # Dark only: PearTune's UI is dark by design. Add light here if the Play listing
 # ever wants both.
@@ -69,6 +72,15 @@ fi
 [ -f "$APK_PATH" ] || { echo "Error: APK not found at $APK_PATH" >&2; exit 1; }
 echo "    APK: $APK_PATH"
 
+# FAIL HERE, not at the end. Without the fixture the app does not error - it falls through to its
+# real self, which on a wiped emulator is the pairing wall, and the run completes with six
+# perfectly good screenshots of the wrong thing.
+if [ ! -f "$FIXTURE" ]; then
+  echo "Error: no fixture at $FIXTURE" >&2
+  echo "  Build one: ./scripts/screenshot-fixture.sh <genre> && node scripts/screenshot-fixture-pack.js" >&2
+  exit 1
+fi
+
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
@@ -91,6 +103,10 @@ enable_demo_mode() {
   "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command clock -e hhmm 0941 >/dev/null
   "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command battery -e level 100 -e plugged false >/dev/null
   "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command network -e wifi show -e level 4 >/dev/null
+  # `-e datatype none` is meant to drop the data-type letters and this system image prints "3G"
+  # anyway - a poor look on a 2026 listing. Left as-is deliberately: `-e mobile hide` was tried and
+  # is WORSE (two wifi glyphs, both with the no-internet "!"). Needs a proper pass over the demo
+  # broadcasts, not a one-word swap. See TODO.md.
   "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command network -e mobile show -e datatype none -e level 4 >/dev/null
   "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command notifications -e visible false >/dev/null
 }
@@ -146,6 +162,20 @@ for avd in "${AVDS[@]}"; do
   "$ADB" -s "$SERIAL" shell am start -n "$MAIN_ACTIVITY" >/dev/null
   sleep 20
   "$ADB" -s "$SERIAL" shell am force-stop "$APP_ID" >/dev/null
+
+  # Hand the app its fixture, into the private dir expo-file-system calls documentDirectory. AFTER
+  # the warm-up launch, which is what creates files/. Base64 over stdin rather than a push through
+  # /sdcard: scoped storage means run-as cannot read /sdcard back, and a binary pipe through
+  # `adb shell` mangles bytes - this arrives byte-identical.
+  base64 -w0 "$FIXTURE" | "$ADB" -s "$SERIAL" shell \
+    "run-as $APP_ID sh -c 'mkdir -p files && base64 -d > files/screenshot-fixture.json'"
+  # Positive control. A silent truncation here reads downstream as "the app has no library", which
+  # looks exactly like a scene that failed to route - so prove the bytes landed before capturing.
+  want=$(wc -c <"$FIXTURE" | tr -d ' ')
+  # sh -c, or the redirect is resolved by the DEVICE shell (cwd /) instead of inside run-as.
+  got=$("$ADB" -s "$SERIAL" shell "run-as $APP_ID sh -c 'wc -c < files/screenshot-fixture.json'" | tr -d ' \r')
+  [ "$got" = "$want" ] || { echo "Error: fixture landed as $got bytes, expected $want" >&2; exit 1; }
+  echo "    Fixture: $want bytes -> $APP_ID files/screenshot-fixture.json"
 
   for appearance in "${APPEARANCES[@]}"; do
     DARK_BOOL=false; DARK=0

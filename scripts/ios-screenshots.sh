@@ -12,8 +12,8 @@
 #
 # Output: metadata/ios/screenshots/<device-name>/<appearance>/scene-N.png
 #
-# The app does NOT implement -screenshotScene yet, so every frame is currently the
-# same screen. See the header of scripts/screenshots.sh and TODO.md.
+# The app reads -screenshotScene and routes to that scene's screen (src/ui/screenshot.js).
+# It needs the fixture too - see the header of scripts/screenshots.sh.
 
 set -euo pipefail
 
@@ -30,6 +30,9 @@ XCODE_WORKSPACE="${XCODE_WORKSPACE:-ios/${APP_NAME}.xcworkspace}"
 XCODE_SCHEME="${XCODE_SCHEME:-$APP_NAME}"
 
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/metadata/ios/screenshots}"
+# The album data + inlined covers every scene renders from. Gitignored (real album art), built by
+# scripts/screenshot-fixture.sh then scripts/screenshot-fixture-pack.js.
+FIXTURE="${FIXTURE:-$REPO_ROOT/metadata/screenshot-fixtures/pack.json}"
 SCENES=(1 2 3 4 5 6)
 # PearTune's UI is dark by design (see the #17140f splash and adaptive icon
 # background), so dark is the appearance that represents the app. Add light here
@@ -44,6 +47,15 @@ if [ -z "${IOS_SCREENSHOT_DEVICES:-}" ]; then
   exit 1
 fi
 read -ra DEVICES <<<"$IOS_SCREENSHOT_DEVICES"
+
+# FAIL HERE, not at the end. Without the fixture the app does not error - it falls through to its
+# real self, which on a fresh simulator is the pairing wall, and the run completes with six
+# perfectly good screenshots of the wrong thing.
+if [ ! -f "$FIXTURE" ]; then
+  echo "Error: no fixture at $FIXTURE" >&2
+  echo "  Build one: ./scripts/screenshot-fixture.sh <genre> && node scripts/screenshot-fixture-pack.js" >&2
+  exit 1
+fi
 
 # ── Build ──
 # CODE_SIGNING_ALLOWED=NO: a simulator build needs no identity, and asking for
@@ -88,6 +100,14 @@ for dev in "${DEVICES[@]}"; do
   xcrun simctl boot "$UDID" 2>/dev/null || true
   xcrun simctl bootstatus "$UDID" -b >/dev/null
   xcrun simctl install "$UDID" "$APP_PATH"
+
+  # Hand the app its fixture. It reads <documentDirectory>/screenshot-fixture.json and only when a
+  # scene is set (app/index.tsx), so this is inert on every other launch. After install, because
+  # that is what creates the data container.
+  CONTAINER=$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data)
+  mkdir -p "$CONTAINER/Documents"
+  cp "$FIXTURE" "$CONTAINER/Documents/screenshot-fixture.json"
+  echo "    Fixture: $(wc -c <"$FIXTURE" | tr -d ' ') bytes -> $CONTAINER/Documents/"
 
   # Pretty status bar: 9:41, full signal + battery
   xcrun simctl status_bar "$UDID" override \
