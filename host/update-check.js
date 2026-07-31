@@ -3,10 +3,16 @@
 // Ported from PearCircle's seeder (seeder-launcher/host/updateCheck.js + the pure
 // comparison in src/lib/seederUpdateCheck.js), with two deliberate differences:
 //
-//   * NOTIFY ONLY. PearCircle's slice 3 downloads and swaps the installer per platform,
-//     and its own comments say the privileged helper for .deb and .pkg is still unwritten.
-//     A banner that says "1.0.1 is out, here is the download" is most of the value for
-//     none of the platform-specific risk, so that is all this does.
+//   * NOTIFY ONLY, FOR NOW - this is the seeder's slice 1+2, not its slice 3. PearCircle
+//     DOES apply updates in place, on all three platforms and with the privileged helpers
+//     actually written (seeder-launcher/host/updateApply.js plus installer/{linux,macos,
+//     windows}/updater-helper.sh): an AppImage swap, an NSIS run through the already-
+//     privileged Windows service, a root LaunchDaemon fed a notarized .pkg, and a
+//     passwordless pkexec rule for the .deb. PearTune will do the same (Tim, 2026-07-31);
+//     it needs its own design pass first, because its packaging differs where it matters -
+//     it ships a .dmg rather than a .pkg, it is a login-item tray app rather than a
+//     service, and its release script publishes no .sha256 sidecars to verify against.
+//     Until that lands, the banner names the version and links the download.
 //   * ONE VERSION LINE. The seeder had a version of its own to compare. Everything PearTune
 //     ships now moves together (Tim, 2026-07-31), so the host compares its own
 //     package.json against the repo's latest release tag and the answer means something.

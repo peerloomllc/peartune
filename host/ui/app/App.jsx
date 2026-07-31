@@ -168,9 +168,10 @@ export default function App () {
 }
 
 /* ---- "a new PearTune is out" ---------------------------------------------- */
-// Notify only: a version, a link and a way to dismiss it. No "update now" button,
-// because applying an update means a privileged installer swap per platform and the
-// sibling seeder's own notes say that helper is still unwritten. See update.js.
+// Notify only FOR NOW: a version, a link and a way to dismiss it. An "Update now"
+// button belongs here next - the PearCircle seeder has one and applies in place - and
+// this is the element it goes in. See host/update-check.js for what PearTune's own
+// packaging needs before that is safe.
 function UpdateBanner ({ info, onDismiss }) {
   return (
     <div className='banner info'>
