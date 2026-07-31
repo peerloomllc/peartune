@@ -1191,7 +1191,19 @@ APP_VERSION="$APP_VERSION" node -e "
   const j = JSON.parse(fs.readFileSync(f, 'utf8'));
   const v = process.env.APP_VERSION;
   const [major, minor, patch] = v.split('.').map(Number);
-  const versionCode = major * 1000000 + minor * 1000 + patch;
+  const derived = major * 1000000 + minor * 1000 + patch;
+  // MONOTONIC, because the formula is not the only thing that has ever set this.
+  // Play refuses any versionCode it has already seen, and refuses to go backwards - so a
+  // versionCode set BY HAND between releases (2026-07-31: 1000001, to re-upload a build with
+  // the unused permissions stripped) makes the derived value for the SAME version number a
+  // regression. That failure lands at step 10, after GitHub and Zapstore have already
+  // published, which is the worst place to discover it.
+  const current = Number(j.expo.android && j.expo.android.versionCode) || 0;
+  const versionCode = derived > current ? derived : current + 1;
+  if (versionCode !== derived) {
+    console.log('    NOTE versionCode ' + derived + ' would not be higher than the ' + current +
+                ' already in app.json - using ' + versionCode + ' instead.');
+  }
   j.expo.version = v;
   if (!j.expo.android) j.expo.android = {};
   j.expo.android.versionCode = versionCode;
