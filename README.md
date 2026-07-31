@@ -98,3 +98,5 @@ Questions, bugs or a host that will not behave: [open an issue](https://github.c
 ## License
 
 MIT. See `LICENSE`.
+
+Two things ship *inside* the app that PearTune did not write - the Manrope typeface (SIL Open Font License 1.1) and five CC0 demo tracks. Both are recorded in [`THIRD-PARTY.md`](THIRD-PARTY.md), because "do you have the rights to that" is a question worth being able to answer without reconstructing it.
