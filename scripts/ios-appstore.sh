@@ -39,6 +39,16 @@ fi
 : "${APP_NAME:?APP_NAME is not set - check scripts/app.conf}"
 : "${BUNDLE_ID:?BUNDLE_ID is not set - check scripts/app.conf}"
 
+# HOMEBREW ON THE PATH, AND THIS IS THE BUG THAT HID THE WHOLE ASC ROUTE. `asc` is installed
+# on the Mac (1.1.1, via brew) but brew's bin is not on a NON-INTERACTIVE ssh PATH, so the
+# `command -v asc` test below quietly answered no and the script fell through to altool - which
+# then failed for want of an app-specific password nobody had set. Found 2026-07-31 while
+# wiring the first upload; the fix is one line and the diagnosis was the expensive part.
+#
+# It composes with XCODE_PATH further down, which STRIPS this same directory back out: Xcode's
+# packaging step shells out to rsync, and Homebrew's GNU rsync breaks it. Both are needed.
+export PATH="/opt/homebrew/bin:$PATH"
+
 # ios/ is generated, not committed. If the rsync brought no project there is
 # nothing to archive, and saying so beats a wall of xcodebuild output.
 if [ ! -f "$REPO_ROOT/${XCODE_WORKSPACE}" ] && [ ! -d "$REPO_ROOT/${XCODE_WORKSPACE}" ]; then
@@ -60,11 +70,104 @@ if command -v asc &>/dev/null \
 elif [ -n "${ASC_APPLE_ID:-}" ] && [ -n "${ASC_APP_PASSWORD:-}" ]; then
   echo "Upload method: altool (app-specific password, legacy)"
 else
-  echo "Error: No upload credentials configured."
-  echo "  Option A (preferred): Install 'asc' and set ASC_KEY_ID, ASC_ISSUER_ID, ASC_APP_ID"
-  echo "  Option B (legacy):    Set ASC_APPLE_ID and ASC_APP_PASSWORD"
+  # NOT an exit. Preflight below reports every missing thing in ONE run - being told about the
+  # credentials, fixing them, and only then being told the provisioning profile is missing too
+  # is two round trips for no reason.
+  NO_CREDS=1
+fi
+
+# ── Preflight ───────────────────────────────────────────────────────────────
+#
+# EVERYTHING HERE IS CHECKED BEFORE THE ARCHIVE, and that is the entire point. An archive is
+# ~10 minutes of arm64 compilation; the export that follows it is where a missing provisioning
+# profile surfaces, and the upload after that is where a missing credential surfaces. Finding
+# out at either of those is finding out at the most expensive possible moment. The keychain
+# comment further down was written after exactly that afternoon.
+preflight_fail=0
+say_missing () { echo "  ✗ $1" >&2; preflight_fail=1; }
+
+echo "==> Preflight"
+
+# The provisioning profile, BY NAME, because ExportOptions.plist names it explicitly and manual
+# signing will not go and find one for you. Profiles live in two places depending on the Xcode
+# version that installed them, so look in both and match on the decoded Name.
+profile_installed () {
+  local want="$1" d f
+  for d in "$HOME/Library/MobileDevice/Provisioning Profiles" \
+           "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*.mobileprovision; do
+      [ -e "$f" ] || continue
+      if [ "$(security cms -D -i "$f" 2>/dev/null | plutil -extract Name raw - 2>/dev/null)" = "$want" ]; then
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+if [ -n "${IOS_PROVISIONING_PROFILE:-}" ] && profile_installed "$IOS_PROVISIONING_PROFILE"; then
+  echo "  ✓ profile: $IOS_PROVISIONING_PROFILE"
+else
+  say_missing "no installed provisioning profile named \"${IOS_PROVISIONING_PROFILE:-<unset>}\""
+  echo "     Create an App Store distribution profile for $BUNDLE_ID at" >&2
+  echo "     developer.apple.com -> Profiles -> +, name it exactly that, download it and" >&2
+  echo "     double-click it on this Mac. Or archive from Xcode once and let automatic" >&2
+  echo "     signing make one." >&2
+fi
+
+# A signing identity to sign WITH. Distribution, not Development - the export names it.
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Distribution"; then
+  echo "  ✓ signing identity: Apple Distribution"
+else
+  say_missing "no Apple Distribution certificate in the keychain"
+fi
+
+# Credentials for the upload, checked HERE rather than after the IPA exists.
+if $USE_ASC; then
+  ASC_KEY_FILE="${ASC_PRIVATE_KEY_PATH:-$HOME/.appstoreconnect/AuthKey_${ASC_KEY_ID}.p8}"
+  if [ -f "$ASC_KEY_FILE" ]; then
+    echo "  ✓ api key: $ASC_KEY_FILE"
+  else
+    say_missing "no .p8 at $ASC_KEY_FILE (set ASC_PRIVATE_KEY_PATH)"
+  fi
+  echo "  ✓ app id: $ASC_APP_ID"
+elif [ -n "${NO_CREDS:-}" ]; then
+  say_missing "no upload credentials"
+  echo "     Preferred: ASC_KEY_ID, ASC_ISSUER_ID and ASC_APP_ID in scripts/.env (asc 1.1.1 is" >&2
+  echo "     installed on this Mac, and AuthKey_28U2P9D99H.p8 is already in ~/.appstoreconnect)." >&2
+  echo "     The only one you have to go and fetch is the Issuer ID: App Store Connect ->" >&2
+  echo "     Users and Access -> Integrations -> App Store Connect API. ASC_APP_ID is the" >&2
+  echo "     numeric id in the App Information page URL." >&2
+  echo "     Legacy: ASC_APPLE_ID and ASC_APP_PASSWORD. See scripts/.env.example." >&2
+else
+  echo "  ✓ credentials: altool as ${ASC_APPLE_ID}"
+  echo "    NOTE altool is the legacy path. asc is installed on this Mac and is preferred -" >&2
+  echo "    set ASC_KEY_ID, ASC_ISSUER_ID and ASC_APP_ID in scripts/.env to use it." >&2
+fi
+
+# The Bare bundle has a HOST-SPECIFIC addon suffix baked in (.so on Linux, .dylib on macOS), so
+# a tree rsynced from the Linux box carries a bundle that crash-lands at launch on require.addon.
+# release.sh runs the rebuild before calling this; a by-hand run has to be told.
+#
+# CHECK THE BUNDLE THAT EXISTS. The first version of this checked assets/bare-ios.bundle, which
+# this project has not produced since it moved to a single universal bundle - and bash's `-ot`
+# is true when the first file is ABSENT, so the warning fired on every run and meant nothing.
+# A check that cannot pass is not a check.
+BARE_BUNDLE="$REPO_ROOT/assets/bare-universal.bundle"
+if [ ! -f "$BARE_BUNDLE" ]; then
+  say_missing "no assets/bare-universal.bundle - run: npm run build:ui && npm run build:bare"
+elif [ "$BARE_BUNDLE" -ot "$REPO_ROOT/src/bare.js" ]; then
+  echo "  ! bare-universal.bundle is older than src/bare.js - run: npm run build:ui && npm run build:bare" >&2
+else
+  echo "  ✓ bare bundle newer than src/bare.js"
+fi
+
+if [ "$preflight_fail" != "0" ]; then
+  echo "" >&2
+  echo "Preflight failed. Nothing was built - fix the above and run again." >&2
   exit 1
 fi
+echo ""
 
 TEAM_ID="${ASC_TEAM_ID:-G79ALD29NA}"
 ARCHIVE_PATH="${ARCHIVE_PATH:-/tmp/${APP_NAME}.xcarchive}"

@@ -79,7 +79,7 @@ body:
     attributes:
       label: App and host versions
       description: The app version is at the bottom of the About tab. The host prints its version when it starts, and the dashboard shows it.
-      placeholder: app 0.1.0, host 0.2.41
+      placeholder: app 1.0.0, host 0.2.41
     validations:
       required: false
 

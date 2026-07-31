@@ -16,7 +16,12 @@ await build({
   bundle: true,
   format: 'iife',
   jsx: 'automatic',
-  define: { 'process.env.NODE_ENV': '"production"' },
+  // __APP_VERSION__ comes from app.json so the About tab and every bug report say what actually
+  // shipped. See the comment on APP_VERSION in src/ui/App.jsx for why this is not a constant.
+  define: {
+    'process.env.NODE_ENV': '"production"',
+    __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync('app.json', 'utf8')).expo.version)
+  },
   outfile: 'assets/app-ui.bundle',
   legalComments: 'none'
 })

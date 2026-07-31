@@ -31,7 +31,11 @@ import { normalizeViewState, isDefaultView, sameViewState } from './viewstate'
 import { runScene, sceneOpens } from './screenshot'
 
 // --- About + donation (suite config, shared across PeerLoom apps) ------------
-const APP_VERSION = '0.1.0'
+// INJECTED AT BUILD TIME from app.json, which is the one place the version is set (and the one
+// place scripts/release.sh rewrites). It was a hardcoded '0.1.0' and NOTHING synced it - not the
+// release script, not a plugin - so About and every bug report would have gone on saying 0.1.0
+// through every release after the first. The fallback is for a bundle built by some other means.
+const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
 const LIGHTNING_ADDRESS = 'peerloomllc@strike.me'
 const STRIKE_TIP_URL = 'https://strike.me/peerloomllc/'
 const BTC_ONCHAIN_ADDRESS = 'bc1q0kksenz3j4u9ppe6f4krclvzwxk7sjy00cc9cf'

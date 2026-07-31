@@ -1,6 +1,6 @@
 {
   "name": "peartune",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Your self-hosted music, playable anywhere. P2P music player with no port forwarding, no VPN and no account.",
   "license": "MIT",
   "private": true,
