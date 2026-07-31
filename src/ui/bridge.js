@@ -1,3 +1,5 @@
+import { wrapCall } from './screenshot.js'
+
 // WebView -> shell IPC. Same shape as every app in the suite: post { id, method,
 // args }, get a __pearResponse back, listen for __pearEvent pushes.
 
@@ -17,13 +19,21 @@ window.__pearEvent = (name, data) => {
   for (const fn of listeners.get(name) || []) fn(data)
 }
 
-export function call (method, args = {}) {
+function realCall (method, args = {}) {
   return new Promise((resolve, reject) => {
     const id = nextId++
     pending.set(id, { resolve, reject })
     window.ReactNativeWebView.postMessage(JSON.stringify({ id, method, args }))
   })
 }
+
+// STORE-SCREENSHOT SCENES. When the shell injected a scene (only ever from an intent extra the
+// capture script set - see plugins/with-screenshot-scene.js), canned answers stand in for the
+// worklet so the six frames show six screens. wrapCall returns realCall UNCHANGED when there is
+// no scene, which is every ordinary launch, so this costs a normal run nothing but one branch at
+// module load. Intercepting HERE means no screen knows scenes exist and none can drift from what
+// actually ships.
+export const call = wrapCall(realCall)
 
 // A tap you can feel. Fire-and-forget by design: a dropped buzz is not worth a
 // rejected promise anywhere up the call stack.
