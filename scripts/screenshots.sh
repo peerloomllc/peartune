@@ -7,13 +7,11 @@
 #   ./scripts/screenshots.sh                 # full rebuild
 #   SKIP_BUILD=1 ./scripts/screenshots.sh    # skip xcodebuild (fixtures-only changes)
 #
-# READ THIS FIRST. This is the capture harness, and it works. What does NOT exist
-# yet is the SCENES it captures: the app has no -screenshotScene handling, so every
-# frame this produces today is the same screen the app opens on. See TODO.md ("store
-# screenshot scenes") for what the app side needs - a native module plus fixture
-# data, the shape of pearguard/android/.../ScreenshotModule.kt and its src/ui/main.jsx
-# handling. Until then treat the output as a smoke test of the pipeline, not as
-# store assets.
+# THE FIXTURE IS NOT OPTIONAL. The six scenes render from metadata/screenshot-fixtures/
+# pack.json (scripts/screenshot-fixture.sh, then screenshot-fixture-pack.js), which is
+# gitignored - it holds real album art. Without it the app falls through to whatever the
+# capture device actually has, which on a fresh install is the pairing wall. Build it
+# first, or the run produces six frames of nothing.
 
 set -euo pipefail
 

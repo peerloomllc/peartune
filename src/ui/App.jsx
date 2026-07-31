@@ -28,6 +28,7 @@ import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
 import { shouldShowNudge } from './donation'
 import { normalizeViewState, isDefaultView, sameViewState } from './viewstate'
+import { runScene, sceneOpens } from './screenshot'
 
 // --- About + donation (suite config, shared across PeerLoom apps) ------------
 const APP_VERSION = '0.1.0'
@@ -1184,6 +1185,21 @@ export default function App () {
     restoreScroll(v.scroll)
     return v
   }
+
+  // STORE-SCREENSHOT SCENES, and the same exception `busy` above makes. Nearly all of a scene
+  // arrives as DATA: the canned init answer carries a `settings.view`, and restoreView right
+  // above puts the app on that screen by the ordinary relaunch path - so no screen knows scenes
+  // exist and none can drift from what ships. Two things have no data path in. The full-size
+  // player only exists once a track is PLAYING, which is an event from the shell; and the pairing
+  // sheet is local state here. runScene fires the first and is handed the second, which is why
+  // this is one guarded read rather than a scene number threaded through the tree.
+  //
+  // Guarded on the injected global, so an ordinary launch - every launch that is not the capture
+  // script - never reaches the call at all.
+  useEffect(() => {
+    if (!window.__pearScreenshotScene || state.loading) return
+    runScene({ openOwnerPair })
+  }, [state.loading])
 
   // The dock (player + navbar) is fixed, so the content underneath has to know how
   // tall it is or its last row hides behind it. It changes height when the player
@@ -3198,7 +3214,12 @@ function Library ({
 
   // Library switcher: the header title is a dropdown (replaces the old source-filter chips, 2026-07-24).
   // Only a switcher with 2+ libraries in the blend; a single library shows a plain, un-tappable title.
-  const [libMenuOpen, setLibMenuOpen] = useState(false)
+  // Open from the start ONLY in the store capture of scene 3 (sceneOpens is false whenever there
+  // is no injected scene, which is every real launch). The blended grid alone looks the same as
+  // one library's grid, so a frame captioned "every library at once" would have shown a title and
+  // nothing else - the menu is where the libraries are actually named. The second and last read
+  // of the scene in the UI; see the runScene note in App.
+  const [libMenuOpen, setLibMenuOpen] = useState(() => sceneOpens('libraryMenu'))
   const canSwitch = !!(merged?.merged && merged.libraries?.length >= 2)
 
   const onTouchStart = (e) => {

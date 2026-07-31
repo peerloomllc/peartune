@@ -45,3 +45,9 @@ peartune-demo-ios.mp4
 # Screenshot fixtures: real album art from a live library. Never committed - see
 # scripts/screenshot-fixture.sh for why.
 metadata/screenshot-fixtures/
+# ...and the CAPTURES made from them, for the same reason: every frame is a grid of that
+# same album art, so committing the output would put in the repo exactly what the line above
+# keeps out. They are build output anyway - scripts/screenshots.sh and
+# scripts/android-screenshots.sh reproduce them from the fixture in a couple of minutes.
+metadata/ios/screenshots/
+metadata/android/screenshots/
