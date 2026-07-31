@@ -772,7 +772,7 @@ if $CHECK_VERSIONS_ONLY; then
   echo ""
   if [ -n "$HOST_IMAGE_CURRENT" ]; then
     echo "    Host image query succeeded: $HOST_IMAGE_CURRENT ($HOST_IMAGE)"
-    echo "    Next host image would be: $(_patch_bump "$HOST_IMAGE_CURRENT")  (override with HOST_IMAGE_VERSION)"
+    echo "    Next host image would be: $APP_VERSION  (the app version; override with HOST_IMAGE_VERSION)"
   else
     echo "    Host image query returned nothing for $HOST_IMAGE — the image may not be"
     echo "    published yet, the package may be private, or the registry was unreachable."
@@ -1101,7 +1101,11 @@ if ! $CHECK_VERSIONS_ONLY; then
   if $SKIP_HOST; then
     echo "    - Host image (skipped via --skip-host)"
   else
-    _host_next="${HOST_IMAGE_VERSION:-$(_patch_bump "$HOST_IMAGE_CURRENT")}"
+    # ONE CADENCE (Tim, 2026-07-31): the host image rides the app version rather than
+    # patch-bumping a line of its own. It had drifted to 0.2.41 against an app at 1.0.0,
+    # which is what made "am I out of date" unanswerable and left four version lines to
+    # reconcile by hand. HOST_IMAGE_VERSION still overrides for a host-only rebuild.
+    _host_next="${HOST_IMAGE_VERSION:-$APP_VERSION}"
     if [ -z "$_host_next" ]; then
       SKIP_HOST=true
       echo "    - Host image (skipped — could not read the current tag from ghcr;"
