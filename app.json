@@ -2,14 +2,14 @@
   "expo": {
     "name": "PearTune",
     "slug": "peartune",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "newArchEnabled": true,
     "orientation": "portrait",
     "scheme": "pear",
     "userInterfaceStyle": "automatic",
     "android": {
       "package": "com.peartune",
-      "versionCode": 1,
+      "versionCode": 1000000,
       "permissions": [
         "CAMERA",
         "INTERNET",
@@ -57,7 +57,8 @@
             }
           }
         }
-      }
+      },
+      "buildNumber": "1"
     },
     "plugins": [
       [
