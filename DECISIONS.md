@@ -2,6 +2,12 @@
 
 Append-only, newest on top. See Constitution §4.
 
+> Entries below sometimes say a loose end is "logged in TODO.md". **`TODO.md` and `DONE.md`
+> are local working notes and are not in this repository** - they are gitignored. Open work
+> that matters to anyone outside belongs in the issue tracker; those two files are the
+> maintainer's own scratch, and the pointers are kept as written rather than rewritten after
+> the fact, because this file is append-only.
+
 ## 2026-07-30 - CORRECTION to the entry below, plus: the token host no longer follows the view
 Tier: T1. Proposal `proposals/2026-07-30-session-home-regardless-of-view.md`. Branch
 fix/session-home-any-view.

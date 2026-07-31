@@ -19,11 +19,19 @@ Two pieces:
 
 Every connection is end-to-end encrypted and mutually authenticated. The host knows exactly which device is calling, because the connection itself proves it. There are no passwords or connection strings to leak.
 
+## Getting the app
+
+**There is no published app yet.** PearTune has not been released to the Play Store, the App Store or Zapstore, and there is no GitHub release to download. The Android and iOS clients are built from this repo; the [Status](#status) section below says exactly where things stand.
+
+When there is something to install, it will be linked here.
+
 ## Setting it up
 
 **[Getting started](docs/getting-started.md)** walks the whole thing end to end, with screenshots: install the host, point it at your music, pair a phone, see who has access, and revoke someone.
 
-Install pages for a specific machine: [Linux and Docker](docs/host-linux.md) · [macOS and Windows](docs/host-macos-windows.md). On Umbrel, install PearTune from the app store.
+Install pages for a specific machine: [Linux and Docker](docs/host-linux.md) · [macOS and Windows](docs/host-macos-windows.md).
+
+**On Umbrel**, use the Docker path on the Linux page for now. The PearTune community-store listing is written but not published, so it will not appear in Umbrel's app store yet.
 
 **Start9 is not a supported target right now.** A host works there, but StartOS runs every service behind a container NAT that peer-to-peer connections cannot punch through, so all traffic falls back to a relay - which works, and costs PeerLoom bandwidth for music that often never leaves the listener's home. Measured and tabled on 2026-07-29; see [`start9/README.md`](start9/README.md) for the numbers.
 
@@ -47,13 +55,34 @@ The app cannot tell the difference. Switching sources keeps each one's settings,
 
 Grant access per device and per person. Your phone, your tablet, your partner's phone, a friend you lend the library to. Revoke any one of them without disturbing the others, and revocation takes effect immediately - mid-song, if need be.
 
+A pass can also be temporary: a **guest pass** expires on its own after a time you set, and the app shows the guest a countdown. Lending someone the library for a weekend does not depend on you remembering to cut them off.
+
+## In the app
+
+Browse by artist, album, genre or track, with artwork, and search the whole library. Gapless playback, shuffle and repeat, a sleep timer, and audio that keeps going in the background and on the lock screen.
+
+Beyond playing:
+
+- **Playlists** you make on the phone, plus the read-only ones your server already has.
+- **Downloads** - pin an album to keep it on the phone, for a flight or a tunnel.
+- **Favourites and resume points** that follow you between your own devices, so a track paused on one is where you left it on another. Playback itself hands over rather than doubling up: starting on a second device pauses the first.
+- **Requests** - someone you have let in can ask the owner for music they cannot find, and the owner works through the queue in the app.
+- **Manage from the phone** - an owner sees every device, pairs a new one and revokes any of them without going to the dashboard.
+- **Several libraries at once**, blended into one, if you are let into more than one.
+
 ## Status
 
 **Alpha. Working, but not yet publicly released.**
 
 The wire protocol (`proposals/2026-07-13-wire-protocol.md`) is implemented and the whole path runs: scan the QR, browse the library, play. The host is packaged as a Docker image and runs on an Umbrel, and both the Android and the iOS clients run on real phones. Pairing, gapless playback, per-person grants, live revocation and multiple hosts in one merged library have all been exercised on real devices against real hosts, including off-LAN over cellular.
 
-What is missing is something you can install: there is no published release yet. Open work is tracked in `TODO.md` and design decisions in `DECISIONS.md`.
+What is missing is distribution: no app in any store, no GitHub release, and the Umbrel community-store listing written but not published. Design decisions and the reasoning behind them are in `DECISIONS.md`.
+
+## Privacy and support
+
+PearTune has no account and no server of ours between you and your music. What the optional relay can and cannot see is spelled out in the [privacy policy](https://peerloomllc.com/peartune/privacy).
+
+Questions, bugs or a host that will not behave: [open an issue](https://github.com/peerloomllc/peartune/issues), or see the [support page](https://peerloomllc.com/peartune/support).
 
 ## License
 
