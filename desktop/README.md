@@ -2,7 +2,9 @@
 
 The PearTune **host** as a menubar / tray app for macOS, Windows, and Linux — so a
 non-technical user runs the always-on daemon without a terminal. It wraps the same
-[`host/`](../host/) code the Umbrel/Start9/Docker installs run.
+[`host/`](../host/) code the Umbrel and Docker installs run. (Start9 is not a supported
+target — see [`../start9/README.md`](../start9/README.md) for the measurement that tabled
+it.)
 
 ## What it does
 

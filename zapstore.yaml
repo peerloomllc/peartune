@@ -18,11 +18,14 @@ description: |
   embedded cover art - so a folder is a real library, not a list of filenames.
 
   Features:
-  - Browse by artist, album or track, with artwork
-  - Gapless playback, shuffle and repeat, background audio
+  - Browse by artist, album, genre or track, with artwork
+  - Gapless playback, shuffle and repeat, a sleep timer, background and lock-screen audio
   - Search across the whole library
-  - Favourites and resume points that follow you between your own devices
+  - Playlists you make on the phone, plus the read-only ones your server already has
+  - Favourites and resume points that follow you between your own devices, and playback
+    that hands over rather than doubling up - starting on one device pauses the other
   - Offline caching: pin an album for a flight, and recent listening is kept
+  - Ask the owner for music you cannot find, and see what they did with the request
   - Pair a phone by scanning a QR code - there is no password to type
 
   The library does not have to be yours. Someone can let a friend or a family
@@ -56,18 +59,20 @@ tags:
 license: MIT
 website: https://peerloomllc.com/peartune/
 
-# NO images: block yet, deliberately.
+# NO images: block, and this is now a deliberate CHOICE rather than a gap.
 #
-# Store screenshots come from scripts/android-screenshots.sh, which drives the app
-# through numbered "scenes" with fixture data. PearTune has the capture harness but
-# not the scene support in the app yet (see TODO.md), so every frame it produces
-# today is the same cold-start screen. A listing with six identical screenshots is
-# worse than one with none, and pointing this file at paths that do not exist would
-# fail the publish outright.
+# The capture works. scripts/android-screenshots.sh drives the app through six numbered
+# scenes and produces six framed PNGs under metadata/android/screenshots/Pixel_9_Framed/.
 #
-# Once the scenes land, add the framed PNGs here, e.g.:
-#   images:
-#     - ./metadata/android/screenshots/Pixel_9_Framed/dark/scene-1.png
+# They are NOT committed, and that is why they cannot be listed here. Every frame renders
+# real album art out of a real library (see scripts/screenshot-fixture.sh) - fine in a store
+# listing, not fine in a public MIT repo's git history - so both the fixture and the captures
+# are gitignored. Pointing this file at those paths would fail the publish on a clean
+# checkout, which is worse than shipping without images.
+#
+# To publish with screenshots, either commit a set built from art that can be committed, or
+# host them somewhere the publish step can fetch. Regenerate any time:
+#   ./scripts/android-screenshots.sh
 
 metadata_sources:
   - github

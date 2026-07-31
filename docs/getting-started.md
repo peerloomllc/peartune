@@ -44,7 +44,9 @@ Running it on a server, a NAS or a headless box instead? Pick your page:
 
 - **Linux, a NAS, or anything with Docker** - [`host-linux.md`](host-linux.md)
 - **macOS or Windows** - [`host-macos-windows.md`](host-macos-windows.md)
-- **Umbrel** - install PearTune from the app store; there is nothing else to do
+- **Umbrel** - use the Docker path on [`host-linux.md`](host-linux.md) for now. The
+  community-store listing is written but **not published**, so PearTune does not appear in
+  Umbrel's app store yet
 - **Start9** - not supported for now. A host runs there, but StartOS's container networking forces every connection through a relay rather than a direct one. See [`../start9/README.md`](../start9/README.md).
 
 Whichever you pick, the host prints something like this when it starts (the desktop app
@@ -119,6 +121,10 @@ fine if you add music rarely; you can always press **Rescan** by hand.
 
 Install PearTune on the phone, then press **Pair a device** at the bottom right of the
 dashboard.
+
+> **There is no published app yet** - not in the Play Store, the App Store or Zapstore, and
+> no APK on a releases page. The clients are built from this repo for now. See
+> [Getting the app](../README.md#getting-the-app).
 
 ![The Pair a Device dialog offering a choice between Full access and Guest pass](img/dashboard-pair-modal.png)
 
