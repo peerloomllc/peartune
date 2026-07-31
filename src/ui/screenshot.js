@@ -18,6 +18,12 @@
 // Which screen each scene is. The ORDER is the store listing's order and was chosen
 // deliberately (TODO.md, 2026-07-30): open looking like a good music player, THEN earn the
 // differentiator, because a store browser judges the first frame in about a second.
+// NOT YET WIRED: `view` is what each scene SHOULD show, and nothing routes to it yet - every
+// scene currently renders whatever the app opens on, which is the library grid. Captured on the
+// iOS Simulator 2026-07-30 and all six frames came out identical, which is the exact failure
+// TODO.md warns about ("six identical screenshots is worse than none"). The data layer, the scene
+// plumbing, the forced appearance and the suppressed spinner all work; routing is the missing
+// piece. See TODO.md for what each view needs.
 export const SCENES = {
   1: { tab: 'library', view: 'nowplaying', label: 'Now playing' },
   2: { tab: 'library', view: 'albums', label: 'Your library' },

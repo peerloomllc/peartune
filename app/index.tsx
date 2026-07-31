@@ -1201,7 +1201,10 @@ export default function App () {
         shotFixture +
         (shot && shotDark === 0 ? 'window.__pearScreenshotDark=false;' : '') +
         (shot && shotDark === 1 ? 'window.__pearScreenshotDark=true;' : '') +
-        `window.__pearColorScheme=${JSON.stringify(os)};` +
+        // The SCENE's appearance wins, not the simulator's. The UI resolves 'system' against
+        // __pearColorScheme, so injecting the raw OS scheme here let the device's own light mode
+        // override a `-screenshotDark 1` capture - which is exactly what it did on the first run.
+        `window.__pearColorScheme=${JSON.stringify(shotDarkPref === 0 || shotDarkPref === 1 ? resolved : os)};` +
         `window.__pearTheme=${JSON.stringify(settings?.theme ?? 'system')};` +
         `window.__pearPlatform=${JSON.stringify(Platform.OS)};` +
         `document.documentElement.setAttribute('data-theme',${JSON.stringify(resolved)});` +

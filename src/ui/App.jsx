@@ -195,7 +195,12 @@ export default function App () {
   }, [])
   // The ONE "something is happening" signal the library screen reads: it drives both the header
   // hint and the empty state, so those two can never disagree about whether we are still working.
-  const busy = booting || updatingSteady
+  // ...and NEVER during a store capture. `booting` only falls once a real reload has run and
+  // settled, and in screenshot mode nothing real ever runs - so the header sat on a permanent
+  // "Updating…" in every frame. This is the one thing the fixture layer cannot express, since it
+  // stands in for the transport and this is a UI state, so it is read from the global directly
+  // rather than pretending a call answered it.
+  const busy = (booting || updatingSteady) && !window.__pearScreenshotScene
   const [reconnecting, setReconnecting] = useState(false)
   // A cold launch has not FAILED - it has not tried yet. init() answers with
   // connected:false and kicks the connect off in the background (src/bare.js), so
