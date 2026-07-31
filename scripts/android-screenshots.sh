@@ -224,6 +224,31 @@ for avd in "${AVDS[@]}"; do
   wait $EMU_PID 2>/dev/null || true
 done
 
+# ── Make them uploadable ────────────────────────────────────────────────────
+#
+# TWO THINGS PLAY REJECTS THAT LOOK PERFECTLY FINE ON SCREEN, both found 2026-07-31 with six
+# good captures already in hand:
+#
+#   1. ASPECT RATIO. Play requires the long side to be at most TWICE the short side. A modern
+#      phone screenshot is 1080x2424, i.e. 2.24 - so every frame a real device produces is out
+#      of spec. Padded rather than cropped: cropping 264px off the bottom would eat the app's
+#      own navbar, and the pad colour is #17140f, which IS the app's background (sampled from
+#      the frame edge), so the bars are invisible.
+#   2. ALPHA. screencap writes RGBA even though every pixel is opaque. Play takes 24-bit PNG
+#      with no alpha, the same trap as App Store Connect.
+if command -v magick >/dev/null 2>&1; then
+  echo ""
+  echo "==> Making the captures uploadable (pad to <=2:1, strip alpha)"
+  find "$OUT_DIR" -path '*_Framed*' -prune -o -name '*.png' -print | while read -r f; do
+    W=$(magick identify -format '%w' "$f"); H=$(magick identify -format '%h' "$f")
+    # Widen (or heighten) just enough to reach 2:1, keeping the capture untouched in the middle.
+    MINW=$(( (H + 1) / 2 )); [ "$W" -ge "$MINW" ] && MINW=$W
+    magick "$f" -background '#17140f' -gravity center -extent "${MINW}x${H}" -alpha off -colorspace sRGB "PNG24:$f"
+  done
+  magick identify -format '    %f  %wx%h  %[channels]\n' "$OUT_DIR"/*/*/*.png 2>/dev/null | grep -v _Framed | sort
+  echo "    Play limits: each side 320-3840px, long side <= 2x short side, 24-bit PNG, no alpha."
+fi
+
 echo ""
 echo "==> Framing screenshots"
 ANDROID_SCREENSHOT_AVDS="$ANDROID_SCREENSHOT_AVDS" "$REPO_ROOT/scripts/frame-android-screenshots.sh"
