@@ -52,6 +52,25 @@ echo "==> Pulling PNGs into $OUT_DIR"
 mkdir -p "$OUT_DIR"
 rsync -az --delete "$MAC_MINI:$MAC_REPO/metadata/ios/screenshots/" "$OUT_DIR/"
 
+# STRIP THE ALPHA CHANNEL. `simctl io screenshot` writes sRGBA even though every pixel is
+# opaque, and App Store Connect refuses a screenshot carrying an alpha channel. The frames
+# look identical either way, so this is invisible right up until an upload is rejected.
+# Done here rather than on the Mac because ImageMagick lives on this side.
+if command -v magick >/dev/null 2>&1; then
+  echo "==> Stripping alpha (App Store Connect rejects RGBA)"
+  find "$OUT_DIR" -name '*.png' -exec magick mogrify -alpha off {} +
+fi
+
 echo ""
 echo "==> Done. Screenshots in $OUT_DIR"
-find "$OUT_DIR" -name "*.png" | sort
+# PRINT THE DIMENSIONS, because a capture at the wrong SIZE looks exactly like a good one.
+# App Store Connect's iPhone slots are 6.9" (1320x2868) and 6.7" (1290x2796); the standing
+# PearTune-Test simulator is a 6.3" iPhone 16 Pro and quietly produces 1206x2622, which has no
+# slot at all. Cost a full capture cycle on 2026-07-31 before anyone looked at a pixel count.
+if command -v magick >/dev/null 2>&1; then
+  magick identify -format '%f  %wx%h  %[channels]\n' "$OUT_DIR"/*/*/*.png 2>/dev/null | sort
+  echo ""
+  echo "    Upload slots: 6.9in = 1320x2868, 6.7in = 1290x2796. Anything else has nowhere to go."
+else
+  find "$OUT_DIR" -name "*.png" | sort
+fi
