@@ -143,8 +143,16 @@ async function main () {
   await host.ready()
 
   const stats = await host.adapter.stats().catch(() => ({ source: host.adapter.kind, tracks: 0 }))
+  // "A new PearTune is out" - notify only, and OFF inside a container, where the image
+  // and the app store own updates (see host/update-check.js). Nothing here can fail in a
+  // way that reaches the dashboard: a null checker just means the route says disabled.
+  const { createUpdateChecker } = require('./update-check')
+  const upd = createUpdateChecker({ log })
+  if (!upd.checker) log('update:disabled', { reason: upd.reason })
+
   const dashboard = await startDashboard({
-    host, bind: args.host, port: args.port, password: args.password, passwordSource: pw.source
+    host, bind: args.host, port: args.port, password: args.password, passwordSource: pw.source,
+    version: upd.version, updateChecker: upd.checker
   })
 
   // StartOS Properties: surface the generated dashboard password in the service's

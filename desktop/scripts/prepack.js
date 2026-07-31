@@ -45,8 +45,10 @@ function main () {
     copyDir(from, path.join(vendorDir, dir))
   }
 
-  // Sanity: the two files the Electron main + the host serve at runtime.
-  for (const f of ['host/server.js', 'host/ui/server.js', 'host/ui/dashboard.html']) {
+  // Sanity: every file the Electron main requires, plus what the host serves at
+  // runtime. A miss here is a packaged app that dies on launch with MODULE_NOT_FOUND,
+  // which is a far worse place to find out than a failed pack.
+  for (const f of ['host/server.js', 'host/ui/server.js', 'host/ui/dashboard.html', 'host/update-check.js']) {
     if (!fs.existsSync(path.join(vendorDir, f))) {
       console.error(`[prepack] expected ${f} in vendor/ but it is missing`)
       process.exit(1)
