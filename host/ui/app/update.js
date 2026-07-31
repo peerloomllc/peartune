@@ -1,10 +1,11 @@
 // Should the "a new PearTune is out" banner render, and has this operator already
 // waved it away? No React, no DOM, so the rule is unit-testable (test/update-ui.test.js).
 //
-// The banner is NOTIFY ONLY - it links to the release page and nothing more. The host
-// half (host/update-check.js) explains why: a dashboard that downloads and swaps its
-// own installer needs a privileged helper per platform, and the seeder's own comments
-// say that part is still unwritten.
+// The banner is NOTIFY ONLY *for now* - it links to the release page and nothing more.
+// An "Update now" button that applies in place is the intent (Tim, 2026-07-31), and the
+// PearCircle seeder already does exactly that; host/update-check.js records what PearTune
+// needs before it can. This module does not change when that button arrives: whether to
+// SHOW the banner is a separate question from what the banner can do.
 
 const KEY = 'peartune.update.dismissed'
 

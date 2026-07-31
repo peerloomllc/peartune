@@ -121,9 +121,9 @@ function createTray () {
 // menu bar forever, so the tray object is made once and only its menu is replaced.
 function refreshMenu () {
   if (!tray) return
-  // Notify only, exactly like the dashboard banner: this opens the releases page in a
-  // browser. Applying an update means a privileged installer swap per platform, which
-  // the sibling seeder's own notes say is still unwritten.
+  // Notify only for now, exactly like the dashboard banner: this opens the releases page
+  // in a browser. Applying in place is the intent and the seeder already does it; see
+  // vendor/host/update-check.js for what PearTune's packaging needs first.
   const u = updateChecker && updateChecker.get()
   const updateItem = u && u.available && u.latest
     ? [{ label: `PearTune ${u.latest} is available…`, click: () => shell.openExternal(u.htmlUrl || RELEASES_URL) },
