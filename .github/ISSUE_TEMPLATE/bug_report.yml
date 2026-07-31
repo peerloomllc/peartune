@@ -1,0 +1,105 @@
+name: Something is broken
+description: The app or the host does not do what it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two questions below do most of the work, so please do not skip them: **which
+        machine runs the host**, and **whether it fails on the same wifi as the host or
+        only away from it**. "PearTune can't reach my library" has turned out to be
+        three completely different problems, and that one answer separates them.
+
+        Setting it up for the first time? The [support page](https://peerloomllc.com/peartune/support)
+        and [getting started](https://github.com/peerloomllc/peartune/blob/master/docs/getting-started.md)
+        cover that better than an issue thread will.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+      placeholder: |
+        I opened the app on mobile data and it sat on "Reconnecting" for a minute, then said it
+        could not reach my library. On my home wifi the same phone plays fine.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reach
+    attributes:
+      label: Does it happen on the same wifi as the host, or only away from it?
+      description: The single most useful line in the whole report.
+      options:
+        - Both - same wifi and away
+        - Only away from home (mobile data, or someone else's wifi)
+        - Only on the same wifi as the host
+        - Not a connection problem
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host
+    attributes:
+      label: Where does the host run?
+      options:
+        - Umbrel
+        - Docker on Linux or a NAS
+        - The desktop app (macOS, Windows or Linux tray app)
+        - Native Node / systemd
+        - No host - I am using the demo ("Try it without a server")
+        - Something else
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: What is the host pointed at?
+      description: Set on the dashboard's Music Source tab.
+      options:
+        - A folder of files
+        - Navidrome, or another Subsonic-API server
+        - Jellyfin or Emby
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: phone
+    attributes:
+      label: Phone
+      placeholder: Pixel 8, Android 15 - or iPhone 13, iOS 18
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: App and host versions
+      description: The app version is at the bottom of the About tab. The host prints its version when it starts, and the dashboard shows it.
+      placeholder: app 0.1.0, host 0.2.41
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Anything the host printed
+      description: |
+        Docker: `docker logs peartune-host --tail 100`. Desktop app: there is a log file next to
+        the data directory. Paste the lines from around the time it went wrong.
+
+        This box is formatted as a log, so no need for backticks.
+      render: text
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        **Before you post**, have a quick look for anything you would rather not publish. The
+        app's own Report button strips device keys and library ids automatically, but a log you
+        paste by hand does not go through that - keys, library names and file paths come through
+        as they are.

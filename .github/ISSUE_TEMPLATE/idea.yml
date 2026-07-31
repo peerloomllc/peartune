@@ -1,0 +1,30 @@
+name: An idea, or something missing
+description: A feature, a source PearTune should read, or something that works but is awkward.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like PearTune to do?
+      description: Describe it from where you sit - what you are trying to do, and what gets in the way. How it should be built is our problem, not yours.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What do you do about it today?
+      description: A workaround, another app, or simply going without. This says more about how much it matters than any priority label would.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        Two things that are settled, so nobody spends an evening writing them up:
+
+        - **Plex will not be supported.** Not for legal reasons - because a Plex server can only
+          be read through a cloud account whose token expires weekly, which is the exact problem
+          PearTune exists to remove. See `DECISIONS.md`, 2026-07-14.
+        - **PearTune will not play files stored on the phone.** It plays a library on a machine
+          you run. That is the whole design, not a missing feature.

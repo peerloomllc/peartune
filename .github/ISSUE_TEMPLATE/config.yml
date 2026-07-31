@@ -1,0 +1,16 @@
+# BLANK ISSUES STAY ENABLED, and this is not the default-because-nobody-changed-it.
+#
+# The app has a Report button (src/ui/errors.mjs) that opens
+# /issues/new?labels=bug&title=...&body=... with the error already filled in and keys
+# stripped out. Turning blank issues off makes GitHub ignore that prefill and show the
+# template chooser instead, so the one report that arrives with real detail in it would
+# arrive empty. The forms below are for people typing from scratch.
+blank_issues_enabled: true
+
+contact_links:
+  - name: I need help setting it up
+    url: https://peerloomllc.com/peartune/support
+    about: Installing the host, pointing it at your music, pairing a phone. Start here rather than filing a bug - most setup questions are answered on this page or in docs/getting-started.md.
+  - name: A security problem
+    url: https://peerloomllc.com/peartune/support
+    about: Anything about access control, revocation or who can reach a library - mail peerloomllc@proton.me rather than opening a public issue, so it can be fixed before it is described.
