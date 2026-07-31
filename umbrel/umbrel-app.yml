@@ -51,6 +51,11 @@ releaseNotes: >-
   dashboard for pairing devices, naming who holds them, and revoking access mid-song.
 path: ""
 defaultUsername: ""
-defaultPassword: $APP_PASSWORD
+# umbrelOS replaces defaultPassword with the derived value when this is set - it is the
+# ONLY supported way to show a generated password. `defaultPassword: $APP_PASSWORD` was
+# never a token umbrelOS substitutes: the compose DOES get the real value, so the app
+# worked, but the UI printed the literal string "$APP_PASSWORD" and nobody could log in
+# (found on a real store install, 2026-07-31). No other app in the official store uses it.
+deterministicPassword: true
 submitter: PeerLoom
 submission: https://github.com/peerloomllc/peartune
