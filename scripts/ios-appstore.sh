@@ -148,8 +148,18 @@ fi
 # The Bare bundle has a HOST-SPECIFIC addon suffix baked in (.so on Linux, .dylib on macOS), so
 # a tree rsynced from the Linux box carries a bundle that crash-lands at launch on require.addon.
 # release.sh runs the rebuild before calling this; a by-hand run has to be told.
-if [ "$REPO_ROOT/assets/bare-ios.bundle" -ot "$REPO_ROOT/src/bare.js" ] 2>/dev/null; then
-  echo "  ! assets/bare-ios.bundle is older than src/bare.js - run: npm run build:ui && npm run build:bare" >&2
+#
+# CHECK THE BUNDLE THAT EXISTS. The first version of this checked assets/bare-ios.bundle, which
+# this project has not produced since it moved to a single universal bundle - and bash's `-ot`
+# is true when the first file is ABSENT, so the warning fired on every run and meant nothing.
+# A check that cannot pass is not a check.
+BARE_BUNDLE="$REPO_ROOT/assets/bare-universal.bundle"
+if [ ! -f "$BARE_BUNDLE" ]; then
+  say_missing "no assets/bare-universal.bundle - run: npm run build:ui && npm run build:bare"
+elif [ "$BARE_BUNDLE" -ot "$REPO_ROOT/src/bare.js" ]; then
+  echo "  ! bare-universal.bundle is older than src/bare.js - run: npm run build:ui && npm run build:bare" >&2
+else
+  echo "  ✓ bare bundle newer than src/bare.js"
 fi
 
 if [ "$preflight_fail" != "0" ]; then
