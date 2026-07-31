@@ -57,7 +57,7 @@ async function readBody (req) {
   }
 }
 
-async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '', passwordSource = 'none' }) {
+async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '', passwordSource = 'none', version = null, updateChecker = null }) {
   // Before anything listens. A control plane on a LAN with no password is not a
   // configuration we are willing to run, so this throws rather than warns.
   requireSafeBind(bind, password)
@@ -105,6 +105,16 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         if (!buf) { res.writeHead(404); return res.end() }
         res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'private, no-cache' })
         return res.end(buf)
+      }
+
+      // --- update check ---
+      // Its own route rather than a field on /api/state: /api/state is the hot path the
+      // dashboard polls, and a GitHub-backed value has no business making that page's
+      // shape depend on a third party's availability. Null checker (container install,
+      // or PEARTUNE_NO_UPDATE_CHECK) answers `disabled` and the banner never renders.
+      if (req.method === 'GET' && url.pathname === '/api/update') {
+        if (!updateChecker) return json(res, 200, { disabled: true, current: version })
+        return json(res, 200, updateChecker.get())
       }
 
       // --- state ---

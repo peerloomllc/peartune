@@ -16,15 +16,19 @@ const path = require('path')
 
 const { PearTuneHost } = require('../../vendor/host/server')
 const { startDashboard } = require('../../vendor/host/ui/server')
+const { createUpdateChecker } = require('../../vendor/host/update-check')
 
 const PORT = 8741
 const BIND = '127.0.0.1'
 const DASH_URL = `http://${BIND}:${PORT}`
 const BUILD = path.join(__dirname, '..', '..', 'build')
 
+const RELEASES_URL = 'https://github.com/peerloomllc/peartune/releases/latest'
+
 let host = null
 let dashboard = null
 let tray = null
+let updateChecker = null
 
 // One host per data dir / port. A second launch just re-opens the dashboard.
 if (!app.requestSingleInstanceLock()) {
@@ -51,7 +55,26 @@ async function main () {
       log: (msg, data) => console.log(msg, data ? JSON.stringify(data) : '')
     })
     await host.ready()
-    dashboard = await startDashboard({ host, bind: BIND, port: PORT, password: '', passwordSource: 'none' })
+
+    // "A new PearTune is out", notify only. The version MUST be passed in: prepack.js
+    // vendors host source without its package.json, so the host cannot find its own
+    // version in this layout (see hostVersion() in vendor/host/update-check.js).
+    // app.getVersion() is desktop/package.json's, which rides the one release cadence.
+    const upd = createUpdateChecker({
+      currentVersion: app.getVersion(),
+      // The menu is built before the first check answers, so rebuild it when one lands.
+      // The checker's own log line is the hook for that - no polling, no timer.
+      log: (msg, data) => {
+        console.log(msg, data ? JSON.stringify(data) : '')
+        if (msg === 'update:available') refreshMenu()
+      }
+    })
+    updateChecker = upd.checker
+
+    dashboard = await startDashboard({
+      host, bind: BIND, port: PORT, password: '', passwordSource: 'none',
+      version: app.getVersion(), updateChecker
+    })
   } catch (e) {
     dialog.showErrorBox('PearTune could not start', String(e && e.message || e))
     app.quit()
@@ -89,13 +112,30 @@ function createTray () {
   const img = nativeImage.createFromPath(path.join(BUILD, 'tray-icon.png'))
   tray = new Tray(img)
   tray.setToolTip('PearTune host')
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open dashboard', click: openDashboard },
-    { type: 'separator' },
-    { label: 'Quit PearTune', click: () => app.quit() }
-  ]))
+  refreshMenu()
   tray.on('click', openDashboard)
   tray.on('double-click', openDashboard)
+}
+
+// Rebuilt, never re-created. A second `new Tray()` leaves the first icon sitting in the
+// menu bar forever, so the tray object is made once and only its menu is replaced.
+function refreshMenu () {
+  if (!tray) return
+  // Notify only, exactly like the dashboard banner: this opens the releases page in a
+  // browser. Applying an update means a privileged installer swap per platform, which
+  // the sibling seeder's own notes say is still unwritten.
+  const u = updateChecker && updateChecker.get()
+  const updateItem = u && u.available && u.latest
+    ? [{ label: `PearTune ${u.latest} is available…`, click: () => shell.openExternal(u.htmlUrl || RELEASES_URL) },
+        { type: 'separator' }]
+    : []
+  tray.setContextMenu(Menu.buildFromTemplate([
+    ...updateItem,
+    { label: 'Open dashboard', click: openDashboard },
+    { type: 'separator' },
+    { label: `PearTune ${app.getVersion()}`, enabled: false },
+    { label: 'Quit PearTune', click: () => app.quit() }
+  ]))
 }
 
 // No windows, ever: never quit just because a window closed (this is a background
