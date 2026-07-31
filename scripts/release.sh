@@ -772,7 +772,7 @@ if $CHECK_VERSIONS_ONLY; then
   echo ""
   if [ -n "$HOST_IMAGE_CURRENT" ]; then
     echo "    Host image query succeeded: $HOST_IMAGE_CURRENT ($HOST_IMAGE)"
-    echo "    Next host image would be: $(_patch_bump "$HOST_IMAGE_CURRENT")  (override with HOST_IMAGE_VERSION)"
+    echo "    Next host image would be: $APP_VERSION  (the app version; override with HOST_IMAGE_VERSION)"
   else
     echo "    Host image query returned nothing for $HOST_IMAGE — the image may not be"
     echo "    published yet, the package may be private, or the registry was unreachable."
@@ -1101,7 +1101,11 @@ if ! $CHECK_VERSIONS_ONLY; then
   if $SKIP_HOST; then
     echo "    - Host image (skipped via --skip-host)"
   else
-    _host_next="${HOST_IMAGE_VERSION:-$(_patch_bump "$HOST_IMAGE_CURRENT")}"
+    # ONE CADENCE (Tim, 2026-07-31): the host image rides the app version rather than
+    # patch-bumping a line of its own. It had drifted to 0.2.41 against an app at 1.0.0,
+    # which is what made "am I out of date" unanswerable and left four version lines to
+    # reconcile by hand. HOST_IMAGE_VERSION still overrides for a host-only rebuild.
+    _host_next="${HOST_IMAGE_VERSION:-$APP_VERSION}"
     if [ -z "$_host_next" ]; then
       SKIP_HOST=true
       echo "    - Host image (skipped — could not read the current tag from ghcr;"
@@ -1191,7 +1195,19 @@ APP_VERSION="$APP_VERSION" node -e "
   const j = JSON.parse(fs.readFileSync(f, 'utf8'));
   const v = process.env.APP_VERSION;
   const [major, minor, patch] = v.split('.').map(Number);
-  const versionCode = major * 1000000 + minor * 1000 + patch;
+  const derived = major * 1000000 + minor * 1000 + patch;
+  // MONOTONIC, because the formula is not the only thing that has ever set this.
+  // Play refuses any versionCode it has already seen, and refuses to go backwards - so a
+  // versionCode set BY HAND between releases (2026-07-31: 1000001, to re-upload a build with
+  // the unused permissions stripped) makes the derived value for the SAME version number a
+  // regression. That failure lands at step 10, after GitHub and Zapstore have already
+  // published, which is the worst place to discover it.
+  const current = Number(j.expo.android && j.expo.android.versionCode) || 0;
+  const versionCode = derived > current ? derived : current + 1;
+  if (versionCode !== derived) {
+    console.log('    NOTE versionCode ' + derived + ' would not be higher than the ' + current +
+                ' already in app.json - using ' + versionCode + ' instead.');
+  }
   j.expo.version = v;
   if (!j.expo.android) j.expo.android = {};
   j.expo.android.versionCode = versionCode;
@@ -1774,7 +1790,10 @@ else
     # tee keeps the full log. PIPESTATUS[0] is the builder's real exit (grep/awk
     # after it never mask a build failure); set +e so the pipeline can't abort us.
     set +e
-    ( cd "$REPO_ROOT" && ${HOST_IMAGE_BUILD:-bash host/build-image.sh} "$HOST_IMAGE_BUILT" ) 2>&1 \
+    # STORE_DIR is what makes build-image.sh sync the community store listing from
+    # umbrel/. Without it the builder pins the in-repo files and the store keeps whatever
+    # snapshot it had - which on 2026-07-31 was image 0.1.0 pointed at an empty music path.
+    ( cd "$REPO_ROOT" && STORE_DIR="${UMBREL_STORE_DIR:-}" ${HOST_IMAGE_BUILD:-bash host/build-image.sh} "$HOST_IMAGE_BUILT" ) 2>&1 \
       | tee /tmp/peartune-build-host.log \
       | grep --line-buffered -E '^==|STEP [0-9]+/|Copying (blob|config)|Writing manifest|pinned |WARNING|[Ee]rror' \
       | awk '{ print "      " $0; fflush() }'

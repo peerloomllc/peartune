@@ -41,6 +41,54 @@ for f in docs/host-linux.md start9/README.md; do
   sed -i -E "s|${REF}:[0-9]+\.[0-9]+\.[0-9]+|${REF}:${VER}|g" "$f"
 done
 
+# ---------------------------------------------------------------------------
+# The PeerLoom community app store (STORE_DIR), if a clone is pointed at us.
+#
+# SYNCED, NOT BUMPED, and that difference is the whole point. PearCircle's builder
+# surgically edits `version:` and `image:` in the store's copy, which is fine while the
+# two copies are otherwise identical - and silently wrong the moment they are not. On
+# 2026-07-31 PearTune's store copy turned out to be an old SNAPSHOT: image 0.1.0, and a
+# music volume of ${UMBREL_ROOT}/data/storage/downloads, the path that is EMPTY on a real
+# Umbrel and made a folder install look broken. A version bump would have published that
+# with a fresh digest on top.
+#
+# So the in-repo umbrel/ is the source of truth and the store copy is overwritten from it
+# wholesale. Anything stale in the store cannot survive a release.
+#
+# Committing + pushing that repo stays manual (it publishes to real users); release.sh's
+# step 13c refuses to call the run clean until it is done.
+# ---------------------------------------------------------------------------
+if [ -n "${STORE_DIR:-}" ] && [ -d "${STORE_DIR}" ]; then
+  DEST="${STORE_DIR}/peerloom-peartune"
+  # Read BEFORE the copy overwrites it, so the no-update warning below has something to compare.
+  PREV_STORE_VER=$(grep -m1 -E '^version:' "$DEST/umbrel-app.yml" 2>/dev/null | sed -E 's|^version: "?([^"]*)"?|\1|')
+  mkdir -p "$DEST"
+  cp umbrel/umbrel-app.yml umbrel/docker-compose.yml umbrel/icon.svg "$DEST/"
+  # THE LISTING ADVERTISES THE PRODUCT VERSION, NOT THE IMAGE VERSION (Tim, 2026-07-31).
+  # One number across the App Store, Play and Umbrel. The image tag + digest above still
+  # move independently; this field is what a user sees and what umbrelOS compares.
+  APP_VER=$(node -p "require('./app.json').expo.version")
+  sed -i -E "s|^version: \".*\"|version: \"${APP_VER}\"|" "$DEST/umbrel-app.yml"
+  # ...AND THE COST OF THAT CHOICE, said out loud rather than discovered by a user who never
+  # got an update. umbrelOS keys "update available" off `version:` alone. A host-only fix -
+  # new image, unchanged app version - therefore ships to nobody. The host has had forty
+  # image versions to the app's one, so this is not hypothetical.
+  if [ "$PREV_STORE_VER" = "$APP_VER" ]; then
+    echo
+    echo "   !! WARNING: the store listing version is still $APP_VER, but the image moved to $VER."
+    echo "      umbrelOS compares `version:` only, so INSTALLED USERS WILL NOT BE OFFERED THIS UPDATE."
+    echo "      Bump the app version, or hand-edit the listing, before publishing."
+  fi
+  echo
+  echo "== community store synced from umbrel/ =="
+  echo "   $DEST  (version: ${VER}, image pinned to ${VER}@${DIGEST})"
+  git -C "$STORE_DIR" status --porcelain -- '*peartune*' | sed 's/^/   /'
+  echo "   commit + push that repo to publish - release.sh step 13c checks it"
+else
+  echo
+  echo "== community store NOT synced (set STORE_DIR to a local clone to auto-sync) =="
+fi
+
 echo
 echo "== pinned to $VER =="
 grep -rn "${REF}:" host/redeploy-umbrel.sh host/deploy/docker-compose.yml umbrel/docker-compose.yml \

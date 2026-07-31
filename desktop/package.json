@@ -1,6 +1,6 @@
 {
   "name": "peartune-desktop",
-  "version": "0.2.3",
+  "version": "1.0.0",
   "description": "PearTune host as a desktop tray app (macOS / Windows / Linux).",
   "license": "MIT",
   "private": true,
@@ -44,7 +44,7 @@
   "build": {
     "appId": "com.peartune.desktop",
     "productName": "PearTune",
-    "copyright": "Copyright © 2026 PeerLoom LLC",
+    "copyright": "Copyright \u00a9 2026 PeerLoom LLC",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -67,13 +67,28 @@
       "**/node_modules/*/prebuilds/**/*"
     ],
     "protocols": [
-      { "name": "PearTune", "schemes": ["peartune"] }
+      {
+        "name": "PearTune",
+        "schemes": [
+          "peartune"
+        ]
+      }
     ],
     "mac": {
       "category": "public.app-category.music",
-      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
       "icon": "build/icon.png",
-      "extendInfo": { "LSUIElement": 1 },
+      "extendInfo": {
+        "LSUIElement": 1
+      },
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
@@ -93,12 +108,18 @@
       "shortcutName": "PearTune"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "build/icon.png",
       "category": "AudioVideo",
       "maintainer": "PeerLoom LLC <peerloomllc@proton.me>",
       "synopsis": "Self-hosted music, playable anywhere",
-      "desktop": { "Name": "PearTune", "StartupWMClass": "peartune" }
+      "desktop": {
+        "Name": "PearTune",
+        "StartupWMClass": "peartune"
+      }
     }
   }
 }
