@@ -41,3 +41,7 @@ DONE.md
 peartune-demo-ios.mp4
 *.mp4
 *.webm
+
+# Screenshot fixtures: real album art from a live library. Never committed - see
+# scripts/screenshot-fixture.sh for why.
+metadata/screenshot-fixtures/
