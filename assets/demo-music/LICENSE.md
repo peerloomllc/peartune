@@ -26,11 +26,33 @@ would not create a problem.
 - **Source download:** <https://archive.org/details/loyalty-freak-music-lofi-ambient-songs>
 
 The archive.org item carries `licenseurl: creativecommons.org/publicdomain/zero/1.0/`,
-**and** the artist's own site states the same CC0 policy for their whole catalogue.
-Both were checked, deliberately: archive.org's licence field is user-supplied and
-is not trustworthy on its own. While searching for this music that same field
-returned a "CC0" Alexander Desplat soundtrack and a Beatles covers album, neither
-of which is remotely public domain. A single source would not have been evidence.
+**and** the artist's own site states a CC0 policy. Both were checked, deliberately:
+archive.org's licence field is user-supplied and is not trustworthy on its own.
+While searching for this music that same field returned a "CC0" Alexander Desplat
+soundtrack and a Beatles covers album, neither of which is remotely public domain.
+A single source would not have been evidence.
+
+**CORRECTED 2026-07-30.** This section previously said the artist's site states CC0
+"for their whole catalogue". It does not, and the difference matters for anything
+added later. The FAQ says:
+
+> 98 % of my work is under Creative Commons 0, so you can remix, use it in a
+> commercial way and don't even need to credit me to use it. [...] **Check the
+> description of the album to see the license if you want to be sure.**
+
+So the site is a *policy*, not a per-album guarantee, and it names the remaining
+~2% as an explicit exception without listing which. The five tracks here are still
+sound: their own archive.org item is explicitly CC0 and its description says nothing
+to the contrary, which is two independent sources for *this* album. But the earlier
+wording would have let someone add a seventh album on the strength of the site alone.
+
+**So the rule for adding any further demo music is per-ALBUM, not per-artist:**
+
+1. The album's own `archive.org/metadata/<id>` must carry the CC0 `licenseurl`, and
+2. that item's own description must not state a different licence, and
+3. where the artist's site has a page for the album, its description must agree.
+
+One album passing does not carry another, even by the same artist.
 
 ## Tracks
 
