@@ -3,7 +3,7 @@ id: peerloom-peartune
 name: PearTune
 tagline: Your music, playable anywhere - and shareable with friends
 category: media
-version: "0.1.0"
+version: "1.0.0"
 port: 8741
 description: >-
   Play the music on your Umbrel from anywhere, without exposing your server to the

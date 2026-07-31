@@ -60,10 +60,25 @@ done
 # ---------------------------------------------------------------------------
 if [ -n "${STORE_DIR:-}" ] && [ -d "${STORE_DIR}" ]; then
   DEST="${STORE_DIR}/peerloom-peartune"
+  # Read BEFORE the copy overwrites it, so the no-update warning below has something to compare.
+  PREV_STORE_VER=$(grep -m1 -E '^version:' "$DEST/umbrel-app.yml" 2>/dev/null | sed -E 's|^version: "?([^"]*)"?|\1|')
   mkdir -p "$DEST"
   cp umbrel/umbrel-app.yml umbrel/docker-compose.yml umbrel/icon.svg "$DEST/"
-  # The store listing's own version line - umbrelOS keys "update available" off it.
-  sed -i -E "s|^version: \".*\"|version: \"${VER}\"|" "$DEST/umbrel-app.yml"
+  # THE LISTING ADVERTISES THE PRODUCT VERSION, NOT THE IMAGE VERSION (Tim, 2026-07-31).
+  # One number across the App Store, Play and Umbrel. The image tag + digest above still
+  # move independently; this field is what a user sees and what umbrelOS compares.
+  APP_VER=$(node -p "require('./app.json').expo.version")
+  sed -i -E "s|^version: \".*\"|version: \"${APP_VER}\"|" "$DEST/umbrel-app.yml"
+  # ...AND THE COST OF THAT CHOICE, said out loud rather than discovered by a user who never
+  # got an update. umbrelOS keys "update available" off `version:` alone. A host-only fix -
+  # new image, unchanged app version - therefore ships to nobody. The host has had forty
+  # image versions to the app's one, so this is not hypothetical.
+  if [ "$PREV_STORE_VER" = "$APP_VER" ]; then
+    echo
+    echo "   !! WARNING: the store listing version is still $APP_VER, but the image moved to $VER."
+    echo "      umbrelOS compares `version:` only, so INSTALLED USERS WILL NOT BE OFFERED THIS UPDATE."
+    echo "      Bump the app version, or hand-edit the listing, before publishing."
+  fi
   echo
   echo "== community store synced from umbrel/ =="
   echo "   $DEST  (version: ${VER}, image pinned to ${VER}@${DIGEST})"
