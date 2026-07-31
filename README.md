@@ -32,9 +32,9 @@ Every connection is end-to-end encrypted and mutually authenticated. The host kn
 
 ## Getting the app
 
-**There is no published app yet.** PearTune has not been released to the Play Store, the App Store or Zapstore, and there is no GitHub release to download. The Android and iOS clients are built from this repo; the [Status](#status) section below says exactly where things stand.
+**iOS: [download PearTune on the App Store](https://apps.apple.com/app/id6796709523).**
 
-When there is something to install, it will be linked here.
+**Android is not published yet.** It is in closed testing on Google Play and goes to the Play Store once that finishes. There is no Zapstore listing and no GitHub release of the app yet either - until then the Android client is built from this repo.
 
 ## Setting it up
 
@@ -83,11 +83,11 @@ Beyond playing:
 
 ## Status
 
-**Alpha. Working, but not yet publicly released.**
+**1.0 on iOS. Android in closed testing.**
 
 The wire protocol (`proposals/2026-07-13-wire-protocol.md`) is implemented and the whole path runs: scan the QR, browse the library, play. The host is packaged as a Docker image and runs on an Umbrel, and both the Android and the iOS clients run on real phones. Pairing, gapless playback, per-person grants, live revocation and multiple hosts in one merged library have all been exercised on real devices against real hosts, including off-LAN over cellular.
 
-What is missing is distribution: no app in any store, no GitHub release, and the Umbrel community-store listing written but not published. Design decisions and the reasoning behind them are in `DECISIONS.md`.
+What is still missing is the rest of distribution: Android is mid closed-test, there is no GitHub release of the host or the desktop app, and the Umbrel community-store listing is written but not published. Design decisions and the reasoning behind them are in `DECISIONS.md`.
 
 ## Privacy and support
 
