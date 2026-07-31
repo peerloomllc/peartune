@@ -129,6 +129,35 @@ test('electHome() picks the smallest-hostKey host among the CONNECTED ones', () 
   assert.equal(H.electHome(f, []), null)                   // nothing reachable -> no home
 })
 
+// --- sessionHost: the same answer whatever VIEW a device is in ----------------
+//
+// The property that matters is not "which host" but "the same host on both devices". A blended
+// device and a focused one must agree, or the cross-scope arbitration on that host (#283) never
+// sees both. Before 2026-07-30 a focused device used its FOCUSED library, so they agreed only when
+// that happened to be the elected one.
+
+test('sessionHost() is the SAME for a blended device and a focused one', () => {
+  const f = H.addHost(H.addHost(H.empty(), A, 1), B, 2) // aaa < bbb, so libA is home
+  const live = ['libA', 'libB']
+  // The blended device passes its default (whatever it is); the focused device passes the library
+  // it is focused on. Both must land on libA - THAT is the fix.
+  assert.equal(H.sessionHost(f, live, 'libA'), 'libA')
+  assert.equal(H.sessionHost(f, live, 'libB'), 'libA', 'a device focused on bbb still uses the elected home')
+})
+
+test('sessionHost() falls back to the device default when nothing can be elected', () => {
+  const f = H.addHost(H.empty(), A, 1)
+  assert.equal(H.sessionHost(f, [], 'libA'), 'libA', 'nothing connected -> the default library')
+  assert.equal(H.sessionHost(H.empty(), [], null), null, 'no hosts at all -> nothing')
+})
+
+test('sessionHost() with ONE library is exactly the old behaviour', () => {
+  // The overwhelming majority of installs. electHome returns the only host, which IS the default,
+  // so the change is byte-for-byte invisible here.
+  const f = H.addHost(H.empty(), A, 1)
+  assert.equal(H.sessionHost(f, ['libA'], 'libA'), 'libA')
+})
+
 test('electHome() is device-agnostic: every device computes the same home from the same list', () => {
   // Order of the host list must not change the answer (two devices may have added in either order).
   const f1 = H.addHost(H.addHost(H.empty(), B, 1), A, 2)

@@ -1736,14 +1736,26 @@ function sessionHomeLib () {
 // c: null offline. `lib` is the target host's libraryId - the key handoff support is scoped to
 // (the elected home in merged mode, the default library in single mode). Callers gate on
 // sessionSupportedFor(lib).
+// THE ELECTED HOME IN BOTH MODES (proposal 2026-07-30-session-home-regardless-of-view). `merged`
+// still selects the SCOPE - which row, `session:` or `session:merged:` - and only the HOST is
+// unified. This used to send a focused device's token to whichever library it was focused on,
+// which meant the cross-scope arbitration in #283 only applied when that library happened to BE
+// the elected one: always true with one library, about a coin flip with two. The rig that proved
+// #283 passed because the focused phone was pointed at the elected host.
+//
+// A focused device's queue therefore lands on the elected host rather than the one it is reading.
+// That is already what a merged queue does - the host stores a queue opaquely and never
+// dereferences a trackId - so nothing host-side has to know.
 function sessionTarget () {
-  if (mergedMode()) { const lib = sessionHomeLib(); return { c: lib ? clientFor(lib) : null, merged: true, lib } }
-  return { c: defaultClient(), merged: false, lib: defaultLibraryId || null }
+  const lib = hostList.sessionHost(loadHostsFile(), connectedLibs(), defaultLibraryId)
+  return { c: lib ? clientFor(lib) : null, merged: mergedMode(), lib }
 }
 async function sessionReady () {
-  if (mergedMode()) { await ensureAll().catch(() => {}); return sessionTarget() }
-  await ensureConnected()
-  return { c: defaultClient(), merged: false, lib: defaultLibraryId || null }
+  // Ensure the ELECTED host is up, not merely the focused one - with 2+ libraries they differ, and
+  // ensureConnected only ever wakes the default. One library: identical to before.
+  if (loadHostsFile().hosts.length > 1) await ensureAll().catch(() => {})
+  else await ensureConnected()
+  return sessionTarget()
 }
 
 // We are PLAYING but do not hold the session token: ask the host what the truth is and act on it.
@@ -3118,7 +3130,10 @@ const methods = {
           // merged mode the fallback resume lives on the track's OWNING host, not the home host.
           let positionMs = Number(r.session.positionMs) || 0
           if (!positionMs && cur) {
-            const rc = merged ? (clientFor(trackLib.get(cur.id)) || c) : c
+            // Route by the track's OWNING library, not the session client. Since the token moved to
+            // the elected host, `c` is no longer the host that holds this track in single mode
+            // either - asking it would quietly return 0 and start the track from the top.
+            const rc = clientFor(trackLib.get(cur.id)) || defaultClient() || c
             try { const rp = await rc.resumeGet({ trackId: cur.id }); positionMs = rp?.positionMs || 0 } catch {}
           }
           return { ok: true, items, index: r.session.index || 0, shuffle: !!r.session.shuffle, repeat: r.session.repeat || 0, positionMs }
