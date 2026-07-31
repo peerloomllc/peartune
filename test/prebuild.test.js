@@ -54,6 +54,35 @@ test('MainApplication.kt registers the package EXACTLY once', () => {
   assert.equal(hits, 1, `expected exactly one ${REGISTER_CALL} in MainApplication.kt, found ${hits}`)
 })
 
+// --- with-screenshot-scene: the same guard, for the same reason ------------------
+//
+// Store-screenshot scenes need a native module to read the intent extra the capture script sets.
+// android/ is prebuild-and-COMMIT here, so the committed .kt is the plugin's OUTPUT and can drift
+// from it - and a drifted copy is worse than a missing one, because it builds.
+
+const SHOT = require('../plugins/screenshot-scene-source')
+
+test('the committed ScreenshotModule.kt is byte-identical to what the plugin writes', () => {
+  assert.equal(
+    read('ScreenshotModule.kt'),
+    SHOT.MODULE_KT(pkg),
+    'android/…/ScreenshotModule.kt has drifted from plugins/screenshot-scene-source.js. ' +
+    'The plugin is the source: edit it, run `npx expo prebuild -p android`, and commit the result.'
+  )
+})
+
+test('the committed ScreenshotPackage.kt is byte-identical to what the plugin writes', () => {
+  assert.equal(read('ScreenshotPackage.kt'), SHOT.PACKAGE_KT(pkg),
+    'android/…/ScreenshotPackage.kt has drifted from plugins/screenshot-scene-source.js.')
+})
+
+test('MainApplication.kt registers the screenshot package EXACTLY once', () => {
+  const hits = read('MainApplication.kt').split(SHOT.REGISTER_CALL).length - 1
+  // Zero: every store frame is the same cold-start screen again, silently. Two: RN throws on the
+  // duplicate module name and the app will not launch at all.
+  assert.equal(hits, 1, `expected exactly one ${SHOT.REGISTER_CALL} in MainApplication.kt, found ${hits}`)
+})
+
 // --- with-android-queries: idempotency, the hard way ---------------------------
 //
 // That plugin used to `push()` its <queries> block unconditionally. android/ is committed

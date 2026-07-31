@@ -1139,9 +1139,13 @@ export default function App () {
       // data-theme. A light-theme user never sees a frame of dark.
       const settings: any = await call('settings').catch(() => ({ theme: 'system' }))
       const os = Appearance.getColorScheme() ?? 'dark'
-      const resolved = settings?.theme === 'system' || !settings?.theme
-        ? os
-        : settings.theme
+      // A capture forces the appearance, because the store wants BOTH and the emulator's own
+      // setting is not worth fighting per run. -1 means the script said nothing, which is every
+      // launch that is not a capture - then the user's own preference decides, as always.
+      const shotDarkPref = NativeModules?.PearTuneScreenshot?.dark
+      const resolved = shotDarkPref === 0 || shotDarkPref === 1
+        ? (shotDarkPref === 1 ? 'dark' : 'light')
+        : (settings?.theme === 'system' || !settings?.theme ? os : settings.theme)
       if (!cancelled) setScheme(resolved === 'light' ? 'light' : 'dark')
 
       // The WebView UI, loaded as a string so there is no file:// / MIME dance.
@@ -1151,7 +1155,17 @@ export default function App () {
 
       // Injected BEFORE the bundle (it is the last thing in <body>), so the UI
       // boots already knowing the OS scheme and its own preference.
+      // STORE SCREENSHOT SCENE (plugins/with-screenshot-scene.js). 0 = a normal launch, which is
+      // every launch that is not the capture script - the constants read an intent extra only adb
+      // can set. Injected here rather than pushed later because the UI has to know BEFORE it
+      // mounts: a scene swaps the data layer, and a UI that mounted against the real one first
+      // would flash real content into the frame we are about to capture.
+      const shot = NativeModules?.PearTuneScreenshot?.scene | 0
+      const shotDark = shotDarkPref
       const boot = '<script>' +
+        (shot ? `window.__pearScreenshotScene=${JSON.stringify(shot)};` : '') +
+        (shot && shotDark === 0 ? 'window.__pearScreenshotDark=false;' : '') +
+        (shot && shotDark === 1 ? 'window.__pearScreenshotDark=true;' : '') +
         `window.__pearColorScheme=${JSON.stringify(os)};` +
         `window.__pearTheme=${JSON.stringify(settings?.theme ?? 'system')};` +
         `window.__pearPlatform=${JSON.stringify(Platform.OS)};` +
