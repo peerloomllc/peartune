@@ -13,7 +13,7 @@
 // dies, the loopback stream breaks, and the music stops. That is the product.
 
 import { useEffect, useRef, useState } from 'react'
-import { View, StatusBar, BackHandler, Appearance, AppState, NativeModules, Platform, Share } from 'react-native'
+import { View, StatusBar, BackHandler, Appearance, AppState, NativeModules, Platform, Settings, Share } from 'react-native'
 import { WebView } from 'react-native-webview'
 import * as Linking from 'expo-linking'
 import * as Clipboard from 'expo-clipboard'
@@ -1137,12 +1137,28 @@ export default function App () {
       // read the preference, resolve it against the OS, paint the native chrome
       // correctly, and hand the WebView a document that ALREADY carries the right
       // data-theme. A light-theme user never sees a frame of dark.
+      // WHICH SCENE, if any. Android reads the intent extra through a native module
+      // (plugins/with-screenshot-scene.js). iOS needs no native code at all: a `-key value` launch
+      // argument lands in NSUserDefaults' argument domain, and RN's Settings is a thin wrapper over
+      // that - so `xcrun simctl launch ... -screenshotScene 4` is readable directly. Both are
+      // settable ONLY by whoever launches the app, which is the property that made extras the
+      // right surface in the first place.
+      const shotScene = Platform.OS === 'ios'
+        ? (Number(Settings.get('screenshotScene')) || 0)
+        : (NativeModules?.PearTuneScreenshot?.scene | 0)
+      const shotDarkRaw = Platform.OS === 'ios'
+        ? Settings.get('screenshotDark')
+        : NativeModules?.PearTuneScreenshot?.dark
+      // -1 / undefined both mean "the script said nothing", which must not read as light.
+      const shotDarkPref = shotDarkRaw === undefined || shotDarkRaw === null || shotDarkRaw === -1
+        ? -1
+        : (Number(shotDarkRaw) ? 1 : 0)
+
       const settings: any = await call('settings').catch(() => ({ theme: 'system' }))
       const os = Appearance.getColorScheme() ?? 'dark'
       // A capture forces the appearance, because the store wants BOTH and the emulator's own
       // setting is not worth fighting per run. -1 means the script said nothing, which is every
       // launch that is not a capture - then the user's own preference decides, as always.
-      const shotDarkPref = NativeModules?.PearTuneScreenshot?.dark
       const resolved = shotDarkPref === 0 || shotDarkPref === 1
         ? (shotDarkPref === 1 ? 'dark' : 'light')
         : (settings?.theme === 'system' || !settings?.theme ? os : settings.theme)
@@ -1160,10 +1176,29 @@ export default function App () {
       // can set. Injected here rather than pushed later because the UI has to know BEFORE it
       // mounts: a scene swaps the data layer, and a UI that mounted against the real one first
       // would flash real content into the frame we are about to capture.
-      const shot = NativeModules?.PearTuneScreenshot?.scene | 0
+      const shot = shotScene
       const shotDark = shotDarkPref
+      // THE FIXTURE, read from a file the capture script drops in the app's own document dir.
+      // Not bundled, deliberately: it is real album art out of a real library, fine in a store
+      // listing and not fine inside a shipped binary or a public repo. Only read when a scene is
+      // set, so an ordinary launch never touches the disk for it - and a missing or unreadable
+      // file is not an error: the UI falls through to the real app (test/screenshot-scenes).
+      let shotFixture = ''
+      if (shot) {
+        try {
+          const f = (FileSystem.documentDirectory ?? '') + 'screenshot-fixture.json'
+          const raw = await FileSystem.readAsStringAsync(f)
+          JSON.parse(raw) // parse to VALIDATE; injecting a broken blob would be a syntax error
+                          // in the boot script, which takes the whole UI down rather than one scene
+          shotFixture = `window.__pearScreenshotFixture=${raw};`
+        } catch {
+          console.warn('[screenshot] scene ' + shot + ' has no readable fixture - showing the real app')
+        }
+      }
+
       const boot = '<script>' +
         (shot ? `window.__pearScreenshotScene=${JSON.stringify(shot)};` : '') +
+        shotFixture +
         (shot && shotDark === 0 ? 'window.__pearScreenshotDark=false;' : '') +
         (shot && shotDark === 1 ? 'window.__pearScreenshotDark=true;' : '') +
         `window.__pearColorScheme=${JSON.stringify(os)};` +
