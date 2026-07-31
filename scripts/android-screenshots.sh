@@ -103,10 +103,11 @@ enable_demo_mode() {
   "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command clock -e hhmm 0941 >/dev/null
   "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command battery -e level 100 -e plugged false >/dev/null
   "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command network -e wifi show -e level 4 >/dev/null
-  # Mobile HIDDEN, not shown-with-no-datatype: `-e datatype none` is meant to drop the little
-  # data-type letters and this system image renders them as "3G" regardless, which is a poor look
-  # on a 2026 store listing. Wifi alone is also the honest picture of a phone at home.
-  "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command network -e mobile hide >/dev/null
+  # `-e datatype none` is meant to drop the data-type letters and this system image prints "3G"
+  # anyway - a poor look on a 2026 listing. Left as-is deliberately: `-e mobile hide` was tried and
+  # is WORSE (two wifi glyphs, both with the no-internet "!"). Needs a proper pass over the demo
+  # broadcasts, not a one-word swap. See TODO.md.
+  "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command network -e mobile show -e datatype none -e level 4 >/dev/null
   "$ADB" -s "$serial" shell am broadcast -a com.android.systemui.demo -e command notifications -e visible false >/dev/null
 }
 
