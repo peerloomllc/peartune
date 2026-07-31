@@ -94,8 +94,8 @@ android {
         applicationId 'com.peartune'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 1000001
+        versionName "1.0.0"
         // Release override, injected by plugins/with-android-version-from-env.js.
         // The two lines above are the prebuild-time default: scripts/release.sh bumps
         // app.json without prebuilding (android/ is committed), so it exports these
