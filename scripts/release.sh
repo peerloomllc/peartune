@@ -1786,7 +1786,10 @@ else
     # tee keeps the full log. PIPESTATUS[0] is the builder's real exit (grep/awk
     # after it never mask a build failure); set +e so the pipeline can't abort us.
     set +e
-    ( cd "$REPO_ROOT" && ${HOST_IMAGE_BUILD:-bash host/build-image.sh} "$HOST_IMAGE_BUILT" ) 2>&1 \
+    # STORE_DIR is what makes build-image.sh sync the community store listing from
+    # umbrel/. Without it the builder pins the in-repo files and the store keeps whatever
+    # snapshot it had - which on 2026-07-31 was image 0.1.0 pointed at an empty music path.
+    ( cd "$REPO_ROOT" && STORE_DIR="${UMBREL_STORE_DIR:-}" ${HOST_IMAGE_BUILD:-bash host/build-image.sh} "$HOST_IMAGE_BUILT" ) 2>&1 \
       | tee /tmp/peartune-build-host.log \
       | grep --line-buffered -E '^==|STEP [0-9]+/|Copying (blob|config)|Writing manifest|pinned |WARNING|[Ee]rror' \
       | awk '{ print "      " $0; fflush() }'
