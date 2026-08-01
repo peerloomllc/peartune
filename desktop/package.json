@@ -54,6 +54,8 @@
       "vendor/**/*",
       "build/icon.png",
       "build/tray-icon.png",
+      "build/trayTemplate.png",
+      "build/trayTemplate@2x.png",
       "build/entitlements.mac.plist",
       "package.json",
       "!**/*.test.js",
