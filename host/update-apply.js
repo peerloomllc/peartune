@@ -138,6 +138,30 @@ async function downloadAndVerify (plan, { workDir, fetchImpl } = {}) {
 const UNIT = 'peartune-host.service'
 const WIN_SERVICE = 'PearTuneHost'
 
+// The Apple Developer Team that signs PearTune's macOS build. Verified from the
+// mac-mini's own keychain (2026-08-01): the identity desktop/package.json pins,
+// 22F9540D…, is "Developer ID Application: Timothy Hudgins (G79ALD29NA)". The same
+// team signs the iOS build (scripts/ios-appstore.sh).
+const APPLE_TEAM_ID = 'G79ALD29NA'
+
+// Pull the Team Identifier out of `codesign -dv --verbose=4` output, which prints
+// `TeamIdentifier=XXXXXXXXXX` (or `TeamIdentifier=not set` for an ad-hoc or
+// unsigned bundle - which must NOT be read as a match). Pure.
+function parseCodesignTeam (output) {
+  if (typeof output !== 'string') return null
+  const m = output.match(/TeamIdentifier=([A-Z0-9]{10})\b/i)
+  return m ? m[1].toUpperCase() : null
+}
+
+// Where is PearTune.app? From inside it, process.execPath is
+// /Applications/PearTune.app/Contents/MacOS/PearTune - so the bundle root is three
+// levels up. Returns null when that shape does not hold (an unpackaged dev run),
+// because guessing a path we are about to `rm -rf` around is not acceptable.
+function macAppRoot (execPath) {
+  const m = String(execPath || '').match(/^(.*\.app)\/Contents\/MacOS\/[^/]+$/)
+  return m ? m[1] : null
+}
+
 class NeedsManualError extends Error {
   constructor (why) { super(why); this.code = 'NEEDS_MANUAL' }
 }
@@ -207,10 +231,49 @@ const APPLIERS = {
     return { restarted: true, via: 'installer' }
   },
 
-  // Later slices. They throw rather than silently doing nothing, so the caller can
-  // fall back to the verified download instead of reporting a success it did not have.
-  deb: async () => { throw new NeedsManualError('the .deb update needs a privileged helper (slice 4)') },
-  macapp: async () => { throw new NeedsManualError('the macOS update is not wired yet (slice 3)') }
+  // Mount the verified .dmg, check who signed the .app inside it, and swap it into
+  // place. macOS has no supervisor - it is a login-item tray app, measured - so it
+  // always relaunches itself.
+  //
+  // THE SIGNATURE CHECK IS THE SECOND HALF OF THE TRUST BOUNDARY, and it is here
+  // rather than on the other platforms because it is the only one available to us:
+  // PearTune CANNOT be notarized (hardened runtime silently blocks HyperDHT's raw
+  // UDP, so a notarized build breaks same-network pairing), which means Gatekeeper
+  // will not vouch for this bundle and `spctl` would reject it. A Developer ID team
+  // check DOES work un-notarized, and proves PeerLoom signed what we are about to
+  // run. Gating on spctl instead would reject every legitimate update we ship.
+  macapp: async ({ file, target, exec, mountDir }) => {
+    if (!target) throw new NeedsManualError('could not work out where PearTune.app is installed')
+    const mount = mountDir || `/tmp/peartune-update-${Date.now()}`
+    await exec(['hdiutil', 'attach', '-nobrowse', '-readonly', '-mountpoint', mount, file])
+    try {
+      const src = `${mount}/PearTune.app`
+      // Is the signature intact? --deep --strict, because a bundle whose nested
+      // code was swapped still passes a shallow check.
+      await exec(['codesign', '--verify', '--deep', '--strict', src])
+      const team = parseCodesignTeam(await exec(['codesign', '-dv', '--verbose=4', src]))
+      if (team !== APPLE_TEAM_ID) {
+        throw new VerifyError(`the .app is signed by team ${team || 'nobody'}, expected ${APPLE_TEAM_ID}`)
+      }
+      // Stage beside the target and swap, rather than deleting first: a failure
+      // half-way through a delete leaves no app at all, and this is the only copy
+      // of PearTune the user has.
+      await exec(['ditto', src, `${target}.new`])
+      await exec(['rm', '-rf', `${target}.old`])
+      await exec(['mv', target, `${target}.old`])
+      await exec(['mv', `${target}.new`, target])
+      await exec(['rm', '-rf', `${target}.old`])
+    } finally {
+      // Always unmount, including after a rejected signature - a stray mounted
+      // image is a confusing thing to leave on someone's desktop.
+      await exec(['hdiutil', 'detach', mount, '-quiet']).catch(() => {})
+    }
+    return { restarted: false, needsRelaunch: true, via: 'dmg-swap' }
+  },
+
+  // Slice 4. Throws rather than silently doing nothing, so the caller falls back to
+  // the verified download instead of reporting a success it did not have.
+  deb: async () => { throw new NeedsManualError('the .deb update needs a privileged helper (slice 4)') }
 }
 
 async function applyUpdate (plan, { file, digest, supervisor, target = process.env.APPIMAGE, exec, log = () => {} } = {}) {
@@ -275,7 +338,11 @@ class UpdateApplier {
       this._log('update:verified', { version: plan.version, digest: digest.slice(0, 12) })
 
       const supervisor = await detectSupervisor({ platform: this._platform, exec: this._exec })
-      const r = await applyUpdate(plan, { file, digest, supervisor, target: this._target, exec: this._exec, log: this._log })
+      // The target means different things per platform: the AppImage file to
+      // replace on Linux, the .app bundle to swap on macOS, and nothing at all on
+      // Windows (the installer knows where it lives).
+      const target = this._platform === 'darwin' ? macAppRoot(process.execPath) : this._target
+      const r = await applyUpdate(plan, { file, digest, supervisor, target, exec: this._exec, log: this._log })
 
       if (r.needsRelaunch) {
         this._state = { status: 'restarting', version: plan.version, via: 'self' }
@@ -298,5 +365,6 @@ class UpdateApplier {
 
 module.exports = {
   VerifyError, NeedsManualError, UpdateApplier, defaultExec, selectAsset, planApply, downloadAndVerify,
-  download, sha256File, parseSha256Sidecar, detectSupervisor, applyUpdate, APPLIERS, UNIT, WIN_SERVICE
+  download, sha256File, parseSha256Sidecar, detectSupervisor, applyUpdate, APPLIERS, UNIT, WIN_SERVICE,
+  parseCodesignTeam, macAppRoot, APPLE_TEAM_ID
 }

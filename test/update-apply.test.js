@@ -306,3 +306,77 @@ test('a second click does not start a second 130MB download', async () => {
   applier._state = { status: 'running', version: '1.1.0' }
   assert.equal((await applier.apply()).status, 'running')
 })
+
+// --- slice 3: macOS, where the signature check is the only vouching we can do ----
+
+const { parseCodesignTeam, macAppRoot, APPLE_TEAM_ID } = require('../host/update-apply')
+
+const SIGNED = `Executable=/Volumes/x/PearTune.app/Contents/MacOS/PearTune
+Identifier=com.peartune.desktop
+TeamIdentifier=G79ALD29NA
+Sealed Resources version=2`
+
+test('the signing team is read, and "not set" is NOT a match', () => {
+  // An ad-hoc or unsigned bundle prints `TeamIdentifier=not set`. Reading that as a
+  // pass would accept anything at all - which is the whole check, since PearTune
+  // cannot be notarized and Gatekeeper will never vouch for it.
+  assert.equal(parseCodesignTeam(SIGNED), APPLE_TEAM_ID)
+  assert.equal(parseCodesignTeam('TeamIdentifier=not set'), null)
+  assert.equal(parseCodesignTeam(''), null)
+  assert.equal(parseCodesignTeam(null), null)
+})
+
+test('the .app root is derived, never guessed', () => {
+  // We are about to mv and rm -rf around this path. A wrong guess is catastrophic,
+  // so a shape that does not match returns null and the apply refuses.
+  assert.equal(macAppRoot('/Applications/PearTune.app/Contents/MacOS/PearTune'), '/Applications/PearTune.app')
+  assert.equal(macAppRoot('/Users/tim/Desktop/PearTune.app/Contents/MacOS/PearTune'), '/Users/tim/Desktop/PearTune.app')
+  assert.equal(macAppRoot('/usr/local/bin/node'), null, 'an unpackaged dev run must not resolve to a path we would delete')
+  assert.equal(macAppRoot(''), null)
+})
+
+test('macOS mounts, VERIFIES THE SIGNER, swaps, and always unmounts', async () => {
+  const r = recorder({ 'codesign -dv': SIGNED })
+  const out = await applyUpdate({ applier: 'macapp', version: '1.1.0' },
+    { file: '/tmp/PearTune-1.1.0.dmg', target: '/Applications/PearTune.app', exec: r.exec, mountDir: '/tmp/mnt' })
+
+  const seq = r.calls.join('\n')
+  assert.match(seq, /hdiutil attach -nobrowse -readonly/)
+  // --deep --strict: a bundle whose NESTED code was swapped still passes a shallow check.
+  assert.match(seq, /codesign --verify --deep --strict/)
+  assert.match(seq, /codesign -dv --verbose=4/)
+  // Staged beside the target and swapped, never deleted first - a failure part-way
+  // through a delete would leave the user with no PearTune at all.
+  const ditto = r.calls.findIndex(c => c.startsWith('ditto'))
+  const mv = r.calls.findIndex(c => c.startsWith('mv /Applications/PearTune.app '))
+  assert.ok(ditto >= 0 && mv > ditto, 'the new bundle must be staged before the old one moves')
+  assert.match(r.calls[r.calls.length - 1], /hdiutil detach/)
+  assert.equal(out.needsRelaunch, true, 'macOS has no supervisor - it always relaunches itself')
+})
+
+test('A BUNDLE SIGNED BY SOMEONE ELSE IS REFUSED, and still unmounted', async () => {
+  // A real Team ID is exactly 10 characters - the first draft of this test used a
+  // 9-char one, which the parser correctly refused to read at all. Both cases must
+  // be rejected, so both are asserted.
+  const r = recorder({ 'codesign -dv': 'TeamIdentifier=EVILTEAM99' })
+  await assert.rejects(
+    () => applyUpdate({ applier: 'macapp', version: '1.1.0' },
+      { file: '/tmp/x.dmg', target: '/Applications/PearTune.app', exec: r.exec, mountDir: '/tmp/mnt' }),
+    (e) => e.code === 'VERIFY_FAILED' && /EVILTEAM99/.test(e.message))
+
+  // An unsigned or ad-hoc bundle reports no team at all, and must be refused too.
+  const unsigned = recorder({ 'codesign -dv': 'TeamIdentifier=not set' })
+  await assert.rejects(
+    () => applyUpdate({ applier: 'macapp', version: '1.1.0' },
+      { file: '/tmp/x.dmg', target: '/Applications/PearTune.app', exec: unsigned.exec, mountDir: '/tmp/mnt' }),
+    (e) => e.code === 'VERIFY_FAILED' && /nobody/.test(e.message))
+  assert.ok(!r.calls.some(c => c.startsWith('ditto')), 'nothing may be copied over the installed app')
+  assert.match(r.calls[r.calls.length - 1], /hdiutil detach/,
+    'a rejected image must still be unmounted, not left on the desktop')
+})
+
+test('macOS refuses when it cannot work out where the app lives', async () => {
+  await assert.rejects(
+    () => applyUpdate({ applier: 'macapp', version: '1.1.0' }, { file: '/tmp/x.dmg', target: null, exec: async () => '' }),
+    (e) => e.code === 'NEEDS_MANUAL')
+})
