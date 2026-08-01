@@ -101,6 +101,21 @@ test('the service is POINTED at the existing library, never given a copy', () =>
   }
 })
 
+test('the service is stopped BEFORE any file is deleted, or upgrades do nothing', () => {
+  // electron-builder inserts customUnInstall at the END of the uninstaller section,
+  // after it has already tried to delete the installed files. On an upgrade the old
+  // uninstaller runs first, and a running service holds PearTune.exe open - so the
+  // deletion fails, the new files are never written, and the installer still reports
+  // success. EVERY UPGRADE SILENTLY DID NOTHING; found on hardware 2026-08-01 after an
+  // installer "worked" four times without the app's timestamp ever moving.
+  assert.match(NSH, /!macro customUnInit/,
+    'stopping the service must happen in customUnInit - customUnInstall is too late')
+  const init = NSH.slice(NSH.indexOf('!macro customUnInit'), NSH.indexOf('!macroend', NSH.indexOf('!macro customUnInit')))
+  assert.match(init, /sc\.exe stop \$\{SVC_NAME\}/, 'the service must be stopped there')
+  assert.match(init, /Sleep \d+/,
+    'sc.exe returns when the stop is ACCEPTED, not when the lock is released')
+})
+
 test('UNINSTALL NEVER DELETES THE LIBRARY', () => {
   // host.seed is the identity every paired phone knows; store/ is the grant list.
   // Uninstalling PearTune must not cost someone their library and all their

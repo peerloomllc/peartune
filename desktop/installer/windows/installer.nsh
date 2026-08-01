@@ -118,6 +118,29 @@
 
 !macroend
 
+; THE SERVICE MUST STOP BEFORE ANY FILE IS DELETED, AND customUnInstall IS TOO LATE.
+; electron-builder inserts customUnInstall at the END of the uninstaller section -
+; after it has already tried to delete the installed files. On an UPGRADE the old
+; uninstaller runs first, so with the service still running it holds
+; PearTune.exe open, the deletion fails, the new files are never written, and the
+; installer reports success. EVERY UPGRADE SILENTLY DID NOTHING: the app on disk
+; stayed at the old build while the installer claimed to have finished.
+;
+; Found on hardware 2026-08-01 by an installer that "worked" four times and changed
+; nothing - the app's timestamp never moved. It only ever installed when the service
+; had been stopped by hand first.
+;
+; customUnInit runs in the uninstaller's .onInit, before the section body, which is
+; the first point where anything of ours can run.
+!macro customUnInit
+  nsExec::ExecToLog 'sc.exe stop ${SVC_NAME}'
+  ; sc.exe returns as soon as the STOP is accepted, not when the process is gone,
+  ; and a file lock outlives the request. Give it a moment, then make sure.
+  Sleep 4000
+  nsExec::ExecToLog 'taskkill /F /IM PearTune.exe /T'
+  Sleep 1000
+!macroend
+
 !macro customUnInstall
   DetailPrint "Removing the PearTune host service..."
   ExpandEnvStrings $1 "%ProgramData%"
