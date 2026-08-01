@@ -7,12 +7,25 @@
 #      electron-builder --mac (SIGNS with the Developer ID; NO notarization)
 #   3. rsync the .dmg back to desktop/dist/
 #
-# SIGNED with the existing Developer ID, NOT notarized, and hardenedRuntime is
-# OFF (package.json#build.mac): macOS silently blocks LAN connections from
-# hardened-runtime apps that use raw sockets (HyperDHT's UDP), so a notarized
-# build would break same-network pairing. First launch shows the mild
-# "unidentified developer" prompt; right-click -> Open once. (Same trade-off as
-# PearCal - see its build-mac.sh + feedback_macos_lan_gate_hardened_runtime.)
+# SIGNED, HARDENED AND NOTARIZED as of 2026-08-01.
+#
+# THIS COMMENT USED TO SAY THE OPPOSITE, and it was wrong: "hardenedRuntime is OFF
+# because macOS silently blocks LAN connections from hardened-runtime apps that use
+# raw sockets (HyperDHT's UDP), so a notarized build would break same-network
+# pairing." That claim was inherited from PearCal, repeated into DECISIONS and
+# TODO, and steered the desktop release for weeks. It is FALSE, measured twice:
+#
+#   1. hardened and unhardened hosts side by side - identical, 18 UDP sockets and
+#      10 established outbound peers each, dashboard 200 on both;
+#   2. an Android phone PAIRED with a hardened, current-code PearTune.app over the
+#      LAN - device online, granted by qr-pair, full scope, against a real
+#      209-track library.
+#
+# And build/entitlements.mac.plist already carried everything hardened runtime
+# needs (allow-jit, allow-unsigned-executable-memory,
+# allow-dyld-environment-variables, network.client, network.server). The flag had
+# simply never been flipped. Notarization removes the "unidentified developer"
+# prompt permanently, instead of every Mac user right-clicking to open forever.
 #
 # Usage:  cd desktop && npm run build:mac
 # Requires: SSH access to the mac-mini; its buildkey keychain provisioned.
@@ -40,8 +53,24 @@ rsync -az --checksum \
   ../ \
   "$MAC_HOST:$REMOTE_DIR/"
 
+# Stage the App Store Connect API key on the Mac so notarytool can run there.
+# scripts/.env is the same place release.sh reads these from.
+_ENV="$(cd "$(dirname "$0")/../.." && pwd)/scripts/.env"
+if [ -f "$_ENV" ]; then set -a; . "$_ENV"; set +a; fi
+ASC_TEAM_ID="${ASC_TEAM_ID:-G79ALD29NA}"
+_KEY="${ASC_PRIVATE_KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8}"
+if [ -n "${ASC_KEY_ID:-}" ] && [ -n "${ASC_ISSUER_ID:-}" ] && [ -f "$_KEY" ]; then
+  echo ">> Staging the notarization key on $MAC_HOST"
+  ssh "$MAC_HOST" 'mkdir -p ~/.appstoreconnect/private_keys && chmod 700 ~/.appstoreconnect/private_keys'
+  scp -q "$_KEY" "$MAC_HOST:~/.appstoreconnect/private_keys/notarize.p8"
+  ssh "$MAC_HOST" 'chmod 600 ~/.appstoreconnect/private_keys/notarize.p8'
+else
+  echo ">> No App Store Connect key found - the build will be SIGNED BUT NOT NOTARIZED."
+  echo "   Set ASC_KEY_ID / ASC_ISSUER_ID / ASC_PRIVATE_KEY_PATH in scripts/.env."
+fi
+
 echo ">> Building signed .dmg on $MAC_HOST"
-ssh "$MAC_HOST" '
+ASC_KEY_ID="${ASC_KEY_ID:-}" ASC_ISSUER_ID="${ASC_ISSUER_ID:-}" ASC_TEAM_ID="${ASC_TEAM_ID:-G79ALD29NA}" ssh "$MAC_HOST" '
   set -euo pipefail
   export PATH="/opt/homebrew/bin:$PATH"
   export LANG=en_US.UTF-8
@@ -60,6 +89,18 @@ ssh "$MAC_HOST" '
     export PATH="$SHIM_DIR:$PATH"
   fi
   security unlock-keychain -p "" ~/Library/Keychains/buildkey.keychain
+  # Notarization runs HERE (notarytool is macOS-only), so the App Store Connect API
+  # key has to be on this machine. Staged by the caller below into a 0600 file.
+  if [ -f ~/.appstoreconnect/private_keys/notarize.p8 ]; then
+    export APPLE_API_KEY=~/.appstoreconnect/private_keys/notarize.p8
+    export APPLE_API_KEY_ID="'"$ASC_KEY_ID"'"
+    export APPLE_API_ISSUER="'"$ASC_ISSUER_ID"'"
+    # electron-builder 25 REFUSES notarize.teamId in package.json and wants it here:
+    # "Please specify notarization Team ID in the APPLE_TEAM_ID env var instead".
+    export APPLE_TEAM_ID="'"$ASC_TEAM_ID"'"
+  else
+    echo "WARNING: no notarization key staged - the build will be signed but NOT notarized."
+  fi
   cd ~/peerloomllc/peartune/desktop
   # Always npm install: near-instant when satisfied, and a guard would silently
   # ship a stale tree when a dep is added. postinstall re-vendors host/.

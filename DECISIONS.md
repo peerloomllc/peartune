@@ -8,6 +8,43 @@ Append-only, newest on top. See Constitution §4.
 > maintainer's own scratch, and the pointers are kept as written rather than rewritten after
 > the fact, because this file is append-only.
 
+## 2026-08-01 - macOS is hardened and notarized; the "it breaks LAN pairing" claim was false
+Tier: T2 (packaging/signing; no host-logic or wire change). Branch feat/macos-notarization.
+
+THE CLAIM THAT WAS WRONG, and it had hardened into fact across three files
+(desktop/scripts/build-mac.sh, DECISIONS, TODO): "notarization requires hardened runtime, and
+hardened runtime silently blocks HyperDHT's raw UDP, so a notarized build breaks same-network
+pairing." It was inherited from PearCal and never measured here. It steered the desktop release
+for weeks and was the stated reason Mac users would right-click-to-open forever.
+
+DISPROVEN TWICE, both against the real thing:
+  1. Socket level - a hardened and an unhardened host run side by side on the mac-mini: identical.
+     18 UDP sockets and 10 established outbound DHT peers each, dashboard 200 on both.
+  2. End to end - an Android phone PAIRED with a hardened, current-code PearTune.app over the LAN
+     (device online, granted by qr-pair, full scope, against the real 209-track library), and then
+     again with the fully NOTARIZED build.
+
+AND THE ENTITLEMENTS WERE ALREADY THERE. desktop/build/entitlements.mac.plist already carried
+allow-jit, allow-unsigned-executable-memory, allow-dyld-environment-variables, network.client and
+network.server - the file had been written for hardened runtime from the start. The flag had simply
+never been flipped.
+
+DECISION: hardenedRuntime true, notarize on, credentials staged to the mac from scripts/.env.
+Gatekeeper now reports `accepted / source=Notarized Developer ID` with the ticket stapled, so the
+"unidentified developer" prompt is gone for good.
+
+TWO IMPLEMENTATION NOTES worth keeping:
+  * electron-builder 25 REFUSES `notarize.teamId` in package.json - it wants APPLE_TEAM_ID in the
+    environment, and says so only as an easily-missed info line mid-build.
+  * a failed dmg build leaves its temp image ATTACHED, and every later build then dies with a
+    misleading `hdiutil resize ... Exit code 35`. Detach it before re-running.
+
+THE METHOD LESSON, which is the durable part: this was found by measuring a claim nobody had
+tested, on the day it was finally cheap to test. A comment repeated into two other files is not
+evidence. The same day produced three sibling cases - digests that proved bytes arrived but not
+that a store opened, a service reporting healthy while serving an empty library, and an installer
+reporting success while installing nothing.
+
 ## 2026-07-30 - CORRECTION to the entry below, plus: the token host no longer follows the view
 Tier: T1. Proposal `proposals/2026-07-30-session-home-regardless-of-view.md`. Branch
 fix/session-home-any-view.

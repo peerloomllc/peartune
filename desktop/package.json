@@ -89,12 +89,12 @@
       "extendInfo": {
         "LSUIElement": 1
       },
-      "hardenedRuntime": false,
+      "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "identity": "22F9540D333EBFB4245EE11170F68A61E6E22689",
-      "notarize": false
+      "notarize": true
     },
     "win": {
       "target": "nsis",
