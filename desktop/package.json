@@ -98,14 +98,26 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "extraResources": [
+        {
+          "from": "installer/windows/nssm.exe",
+          "to": "nssm.exe"
+        },
+        {
+          "from": "installer/windows/migrate-data.js",
+          "to": "migrate-data.js"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "PearTune"
+      "shortcutName": "PearTune",
+      "include": "installer/windows/installer.nsh",
+      "perMachine": true
     },
     "linux": {
       "target": [
