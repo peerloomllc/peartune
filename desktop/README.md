@@ -8,18 +8,27 @@ it.)
 
 ## Does it keep running when you log out?
 
-**On Linux, yes. On macOS and Windows, not yet.** This page used to call the app "the
-always-on daemon" on all three, which was not true, so here is what each one actually
-does:
+**On Linux and Windows, yes. On macOS, no — and it cannot.** This page used to call the
+app "the always-on daemon" on all three, which was not true of any of them, so here is
+what each one actually does:
 
 | platform | how it runs | survives logout / reboot with no login |
 | --- | --- | --- |
 | **Linux** | systemd **user** service + `loginctl enable-linger` | **yes** — measured: booted with nobody logged in, host serving 5s later, same library identity |
+| **Windows** | a `LocalSystem` service, registered by the installer | **yes** — measured: rebooted with nobody logged in, service running, same library identity |
 | **macOS** | tray app, started as a login item | **no** — and it cannot without root. See below. |
-| **Windows** | tray app, started as a login item | not yet — a real service is [the next slice](../proposals/2026-07-31-desktop-host-as-a-service.md) |
 
-The `.deb` installs and starts the Linux service for you. For the AppImage — or if the
-install could not tell who to set it up for — run it yourself:
+On **Windows** the installer does it all: it registers the service, points it at the
+library you already have, and starts it. Two things worth knowing:
+
+- The install now needs **admin** (a UAC prompt), because registering a service does.
+- The service is pointed at your existing library rather than given a copy of it. Copying
+  was tried and does not work: the storage stamps itself with the file's identity on
+  disk, so any copy refuses to open. One consequence is that the service reads *your*
+  user profile — so it is tied to the account that installed it.
+
+On **Linux**, the `.deb` installs and starts the service for you. For the AppImage — or if
+the install could not tell who to set it up for — run it yourself:
 
 ```bash
 peartune-desktop --install-service     # writes the unit, enables it, starts it
