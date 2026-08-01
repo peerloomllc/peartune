@@ -43,7 +43,7 @@ So the seeder's macOS trust anchor is unavailable to us. Its root daemon require
 - **Trust boundary: HTTPS to the official repo's releases + the published `.sha256`, re-verified by any privileged helper before it acts.** Not notarization, because PearTune cannot notarize (difference 2). On macOS we additionally check the **Developer ID signing team** via `codesign`/`pkgutil`, which is available un-notarized and is a real check: it proves PeerLoom signed the bundle. Windows and Linux artifacts are unsigned today, exactly as the seeder's are. Signing them is future hardening and is **required before any non-operator-gated automation**.
 - **Operator-gated, always.** One button, one machine, one click. Never a silent auto-apply, so a bad release cannot propagate unattended.
 - **macOS: swap the `.app` bundle from the mounted `.dmg`, do not add a `.pkg` target.** A `.pkg` buys a root install path whose trust anchor we cannot satisfy anyway, and adds a second macOS artifact to build, sign and test. A bundle swap needs no root when PearTune lives in `/Applications` on a machine whose user is an admin (the normal single-user Mac) or anywhere under `~`. When the swap is not permitted, the applier reports `needs-privilege` and the banner falls back to the verified download - the same graceful degradation the seeder uses for a missing helper.
-- **Windows: per-user install, so no UAC.** `nsis.perMachine` is unset today, so electron-builder installs per-user under `%LOCALAPPDATA%`; running the new installer `/S` therefore needs no elevation and no privileged service. This is the one place PearTune is *easier* than the seeder, whose LocalSystem service exists partly to solve this. The installer must still be launched detached, or it will be killed mid-swap when it stops the app that spawned it.
+- ~~**Windows: per-user install, so no UAC.**~~ **SUPERSEDED 2026-08-01 - see the amendment below.** This said `nsis.perMachine` was unset, so the install was per-user and `/S` would need no elevation. That stopped being true the moment Windows grew a service: registering one requires admin, so `perMachine` is now `true` and the install is elevated. PearTune is therefore *not* easier than the seeder here; it lands in the same place, with a LocalSystem service that can drive its own update. The installer must still be launched detached, or it will be killed mid-swap when it stops the app that spawned it.
 - **Linux `.deb`: port the seeder's pkexec helper more or less verbatim**, adapted to relaunch the tray app rather than restart a systemd unit. It is the one path where PearTune and the seeder genuinely match.
 
 ## Scope
@@ -95,6 +95,16 @@ Additive throughout. `PEARTUNE_NO_UPDATE_CHECK` already disables the check entir
 - **The applier must therefore detect a supervisor** rather than assume one, because the same AppImage runs both ways: `systemctl --user is-active peartune-host.service`. Supervised, hand off; unsupervised, fall back to `app.relaunch()`.
 - **macOS is unchanged** and still relaunches itself, because macOS stays a tray app - a LaunchAgent cannot survive logout, measured 2026-07-31.
 - **Windows is unchanged until its own slice lands.** If it becomes a real service, the same hand-off applies via the SCM.
+
+### Amendment addendum, 2026-08-01: Windows is now elevated, and that was my error to correct
+
+The Windows service slice makes `nsis.perMachine` **true**, because registering a service needs admin. So the claim above - "per-user install, so `/S` needs no UAC, the one place PearTune is easier than the seeder" - is **wrong as of that change**, and it was wrong in the optimistic direction, which is the kind worth flagging loudly rather than quietly editing.
+
+What it means for the apply path:
+
+- A Windows update run by a **user** now raises a UAC prompt. That is acceptable for an operator-gated "Update now" click, but it is no longer an unattended path.
+- The better answer, and the seeder's: the **LocalSystem service drives its own update**. It is already elevated, so it can run the new installer `/S` with no prompt at all. That is why the seeder's NSSM service exists, and PearTune now has the same lever.
+- The installer must still be launched **detached** from the service, because the installer stops the very service that spawned it, and NSSM reaps its service's process tree on stop. The seeder solves this with `Win32_Process.Create` via WMI, which re-parents the installer under `WmiPrvSE`.
 
 ## Open questions
 1. **Does the AppImage swap survive the app that is running from it?** The seeder swaps the payload while the service runs and lets systemd re-exec. An Electron app relaunching itself from a file that was just overwritten needs checking on a real AppImage, not reasoning. **Largely answered by the amendment above** - under systemd the swapping process exits and a fresh one starts from the new file, so this only remains open for the unsupervised fallback path.

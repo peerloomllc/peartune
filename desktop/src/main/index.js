@@ -84,6 +84,9 @@ async function main () {
   }
 
   try {
+    // The Windows service reads this SAME directory - it is pointed here at install
+    // time rather than given a copy. See installer/windows/installer.nsh for why a
+    // copy was abandoned: the store refuses to open from a copied path.
     const dataDir = path.join(app.getPath('userData'), 'data')
     // Default the library to the OS Music folder; the operator can point it
     // anywhere (or at a Jellyfin/Subsonic server) from the dashboard.
