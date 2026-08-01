@@ -51,6 +51,25 @@ sed "s|__EXEC__|$BIN $HOST_ENTRY|g" "$UNIT_SRC" > "$UNIT_DIR/$UNIT_NAME"
 chmod 0644 "$UNIT_DIR/$UNIT_NAME"
 chown "$TARGET_USER:$TARGET_USER" "$UNIT_DIR/$UNIT_NAME"
 
+# The privileged .deb updater (apply slice 4). Best-effort in its own subshell with
+# set +e: a missing polkit, an odd filesystem, or a re-run during an unattended
+# update must NEVER fail the package install. Without it, updates simply fall back
+# to "download it yourself", which is a perfectly acceptable outcome.
+( set +e
+  chown root:root "$INSTALL_ROOT/updater-helper.sh" 2>/dev/null
+  chmod 0755 "$INSTALL_ROOT/updater-helper.sh" 2>/dev/null
+  RULE_SRC="$INSTALL_ROOT/peartune-updater.rules.in"
+  RULE_DIR=/etc/polkit-1/rules.d
+  if [ -f "$RULE_SRC" ] && [ -d "$RULE_DIR" ]; then
+    sed "s|__USER__|$TARGET_USER|g" "$RULE_SRC" > "$RULE_DIR/49-peartune-updater.rules" 2>/dev/null
+    chmod 0644 "$RULE_DIR/49-peartune-updater.rules" 2>/dev/null
+    echo "peartune: one-click updates enabled for $TARGET_USER (polkit rule installed)."
+  else
+    echo "peartune: polkit rules.d not found; one-click .deb updates unavailable."
+    echo "  Updates still work via the dashboard's verified-download link."
+  fi
+)
+
 # Linger FIRST: it is what gives the user a systemd instance with no login
 # session, and therefore what makes this an always-on service rather than a
 # login item with extra steps. Enabling the unit before linger would start it

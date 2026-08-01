@@ -47,6 +47,11 @@ cleanup_user () {
   # user manager running for someone who no longer has PearTune installed.
   loginctl disable-linger "$user" 2>/dev/null || true
 
+  # The polkit rule names this user and a program that is now gone. Leaving it
+  # would be inert but untidy, and a stale passwordless-exec rule is exactly the
+  # kind of thing that should not outlive the thing it was for.
+  rm -f /etc/polkit-1/rules.d/49-peartune-updater.rules
+
   echo "peartune: host service removed for $user."
   echo "  Your library data is untouched in $home/.config/peartune-desktop/data"
 }

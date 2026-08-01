@@ -38,6 +38,26 @@ test('a real newer release reports the version and where to get it', () => {
   assert.match(r.htmlUrl, /releases\/tag\/v1\.1\.0$/)
 })
 
+test('the release assets are carried through, trimmed, for "Update now" to plan from', () => {
+  // Without these the applier would have to fetch the release a second time. Trimmed
+  // to name + url because the full asset objects are large and this rides
+  // /api/update, which the dashboard polls.
+  const r = evaluateRelease({
+    tag_name: 'v1.1.0',
+    assets: [
+      { name: 'PearTune-Setup-1.1.0.exe', browser_download_url: 'https://x/exe', size: 1, id: 9 },
+      { name: 'PearTune-Setup-1.1.0.exe.sha256', browser_download_url: 'https://x/sha' },
+      null
+    ]
+  }, '1.0.0')
+  assert.deepEqual(r.assets, [
+    { name: 'PearTune-Setup-1.1.0.exe', browser_download_url: 'https://x/exe' },
+    { name: 'PearTune-Setup-1.1.0.exe.sha256', browser_download_url: 'https://x/sha' }
+  ])
+  // A release with no assets must not become undefined - the applier iterates it.
+  assert.deepEqual(evaluateRelease({ tag_name: 'v1.1.0' }, '1.0.0').assets, [])
+})
+
 test('IN A CONTAINER THE CHECK IS OFF - Umbrel and the image own updates there', () => {
   // The whole point of the /.dockerenv branch. An Umbrel user is shown "update available"
   // by umbrelOS off the store listing's version; a second banner in the dashboard telling

@@ -19,6 +19,7 @@ const { installService, uninstallService, SERVICE_PLATFORMS } = require('./servi
 const { PearTuneHost } = require('../../vendor/host/server')
 const { startDashboard } = require('../../vendor/host/ui/server')
 const { createUpdateChecker } = require('../../vendor/host/update-check')
+const { UpdateApplier } = require('../../vendor/host/update-apply')
 
 const PORT = 8741
 const BIND = '127.0.0.1'
@@ -115,9 +116,24 @@ async function main () {
     })
     updateChecker = upd.checker
 
+    // "Update now". onRelaunch is the UNSUPERVISED path - a tray app someone
+    // double-clicked, with no systemd unit and no Windows service to bring it
+    // back. It is the one case where the process must re-execute a binary that was
+    // just overwritten underneath it, so the host and dashboard are closed first
+    // (before-quit does that) or the new instance finds 8741 held and the data dir
+    // locked. Where a service IS running, none of this fires: the applier hands off
+    // to the supervisor instead.
+    const applier = updateChecker
+      ? new UpdateApplier({
+        getUpdate: () => updateChecker.get(),
+        onRelaunch: () => { app.relaunch(); app.quit() },
+        log: (msg, data) => console.log(msg, data ? JSON.stringify(data) : '')
+      })
+      : null
+
     dashboard = await startDashboard({
       host, bind: BIND, port: PORT, password: '', passwordSource: 'none',
-      version: app.getVersion(), updateChecker
+      version: app.getVersion(), updateChecker, applier
     })
   } catch (e) {
     dialog.showErrorBox('PearTune could not start', String(e && e.message || e))

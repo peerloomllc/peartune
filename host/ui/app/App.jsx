@@ -70,6 +70,18 @@ export default function App () {
     return () => clearInterval(t)
   }, [refresh])
 
+  // Kick off the apply, then poll fast enough to follow it. The host is about to
+  // restart under us, so failures here are expected and must not surface as errors -
+  // the state is re-read from whatever comes back up.
+  const applyUpdate = useCallback(async () => {
+    setUpdate(u => ({ ...u, apply: { status: 'running' } }))
+    await api('/api/update/apply', {}).catch(() => {})
+    const t = setInterval(() => {
+      api('/api/update').then(u => { if (u && u.latest) setUpdate(u) }).catch(() => {})
+    }, 2000)
+    setTimeout(() => clearInterval(t), 120000)
+  }, [])
+
   useEffect(() => {
     const poll = () => api('/api/update').then(setUpdate).catch(() => {})
     poll()
@@ -110,7 +122,9 @@ export default function App () {
 
       <div className='main'>
         {shouldShowUpdate(update, dismissedUpdate) &&
-          <UpdateBanner info={update} onDismiss={() => { dismissUpdate(update.latest); setDismissedUpdate(update.latest) }} />}
+          <UpdateBanner info={update}
+            onDismiss={() => { dismissUpdate(update.latest); setDismissedUpdate(update.latest) }}
+            onApply={applyUpdate} />}
 
         {state.sourceError &&
           <div className='banner'>The music source is not working: {state.sourceError}</div>}
@@ -168,21 +182,39 @@ export default function App () {
 }
 
 /* ---- "a new PearTune is out" ---------------------------------------------- */
-// Notify only FOR NOW: a version, a link and a way to dismiss it. An "Update now"
-// button belongs here next - the PearCircle seeder has one and applies in place - and
-// this is the element it goes in. See host/update-check.js for what PearTune's own
-// packaging needs before that is safe.
-function UpdateBanner ({ info, onDismiss }) {
+// A version, an "Update now" button where the install can apply it, and a link
+// where it cannot. The download link is ALWAYS present - it is what this banner did
+// before there was a button, it is the fallback for every failure, and it is never
+// the wrong answer. `apply` is null on installs with no applier (a container).
+function UpdateBanner ({ info, onDismiss, onApply }) {
+  const st = (info.apply && info.apply.status) || 'idle'
+  const busy = st === 'running'
+  const done = st === 'restarting'
+
+  // Only offer the button where an apply could actually happen. Somewhere it
+  // cannot, a button that always fails is worse than no button.
+  const canApply = !!info.apply && !['needs-manual'].includes(st)
+
   return (
     <div className='banner info'>
       <span>
         <strong>PearTune {info.latest} is out.</strong>{' '}
-        {info.htmlUrl
-          ? <a href={info.htmlUrl} target='_blank' rel='noreferrer'>See what changed and download it</a>
-          : 'Grab it from the PearTune releases page.'}
+        {done
+          ? <>Installing it now - PearTune will restart on {info.latest}.</>
+          : st === 'error'
+            ? <>That update could not be verified, so nothing was installed.{' '}
+                {info.htmlUrl && <a href={info.htmlUrl} target='_blank' rel='noreferrer'>Download it yourself</a>}</>
+            : info.htmlUrl
+              ? <a href={info.htmlUrl} target='_blank' rel='noreferrer'>See what changed</a>
+              : 'Grab it from the PearTune releases page.'}
       </span>
-      <button className='bannerx' onClick={onDismiss} title='Hide until the next release'
-        aria-label='Hide this update notice'>×</button>
+      {canApply && !done &&
+        <button className='btn small' onClick={onApply} disabled={busy}>
+          {busy ? 'Updating…' : 'Update now'}
+        </button>}
+      {!done &&
+        <button className='bannerx' onClick={onDismiss} title='Hide until the next release'
+          aria-label='Hide this update notice'>×</button>}
     </div>
   )
 }

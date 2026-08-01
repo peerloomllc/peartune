@@ -115,7 +115,14 @@ function evaluateRelease (release, currentVersion) {
     current: currentVersion,
     latest: latest.replace(/^v/i, ''),
     htmlUrl: typeof release.html_url === 'string' ? release.html_url : null,
-    publishedAt: typeof release.published_at === 'string' ? release.published_at : null
+    publishedAt: typeof release.published_at === 'string' ? release.published_at : null,
+    // Carried so "Update now" can plan without a second round trip to GitHub -
+    // host/update-apply.js picks this machine's artifact and its .sha256 sidecar
+    // out of this list. Trimmed to the two fields that are used: the full release
+    // JSON is large, and this rides /api/update which the dashboard polls.
+    assets: (Array.isArray(release.assets) ? release.assets : [])
+      .filter(a => a && typeof a.name === 'string')
+      .map(a => ({ name: a.name, browser_download_url: a.browser_download_url || null }))
   }
 }
 

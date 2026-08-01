@@ -1,0 +1,28 @@
+// Passwordless pkexec for the PearTune .deb auto-updater (apply slice 4 of
+// proposals/2026-07-31-desktop-update-apply.md). The .deb postinst templates
+// __USER__ to the install user and writes this to /etc/polkit-1/rules.d/.
+//
+// WHAT THIS GRANTS, stated precisely, because "passwordless root" deserves it:
+// ONE named user may run ONE absolute, root-owned program with no password. Not a
+// shell, not dpkg, not a wildcard - that one script. Three things keep it narrow:
+//
+//   * the program path is absolute, and pkexec refuses a target writable by
+//     anyone but root, so the script cannot be swapped for another;
+//   * the script itself RE-VERIFIES the payload's sha256 as root before installing
+//     anything, because pkexec authorises running it and says nothing about the
+//     argument it is handed;
+//   * the rule is scoped to the single user the package was installed for.
+//
+// Without this, an unattended host could not apply a .deb at all: the systemd USER
+// service is unprivileged and `dpkg -i` needs root, so every update would stop at
+// "download it yourself" - which is exactly what happens if polkit is absent, and
+// is a perfectly acceptable outcome.
+//
+// Requires polkit >= 0.106 (JS rules); modern Debian and Ubuntu ship it.
+polkit.addRule(function (action, subject) {
+  if (action.id === 'org.freedesktop.policykit.exec' &&
+      action.lookup('program') === '/opt/PearTune/updater-helper.sh' &&
+      subject.user === '__USER__') {
+    return polkit.Result.YES
+  }
+})
