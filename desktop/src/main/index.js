@@ -169,7 +169,18 @@ function openDashboard () {
 }
 
 function createTray () {
-  const img = nativeImage.createFromPath(path.join(BUILD, 'tray-icon.png'))
+  // macOS menu bar icons are TEMPLATE images: pure black plus an alpha channel, which
+  // macOS then renders white on a dark bar, black on a light one, and dims correctly
+  // when the menu is open or the display is inactive. The colour icon we ship for
+  // Windows and Linux is a fully opaque 32x32 with a near-black background, so on a Mac
+  // it rendered as a dark tile that looked nothing like the native icons beside it.
+  //
+  // Electron treats a file whose name ends in "Template" as one automatically;
+  // setTemplateImage is set anyway so the behaviour does not depend on the filename
+  // surviving a future rename.
+  const mac = process.platform === 'darwin'
+  const img = nativeImage.createFromPath(path.join(BUILD, mac ? 'trayTemplate.png' : 'tray-icon.png'))
+  if (mac) img.setTemplateImage(true)
   tray = new Tray(img)
   tray.setToolTip('PearTune host')
   refreshMenu()
