@@ -8,6 +8,39 @@ Append-only, newest on top. See Constitution §4.
 > maintainer's own scratch, and the pointers are kept as written rather than rewritten after
 > the fact, because this file is append-only.
 
+## 2026-08-01 - macOS installs by drag, not by installer wizard
+Tier: T1 (packaging; no host-logic, wire or data change). Confirmed by Tim after asking why the
+Mac install had no wizard like the seeders'.
+
+THE COMPARISON THAT PROMPTED IT WAS OFF BY ONE PRODUCT. The wizard is the SEEDERS'
+(PearCircle/PearCal seeder), which ship a .pkg with Distribution.xml and a postinstall script.
+PearCal's DESKTOP app targets `dmg`, exactly like PearTune's - so the two desktop apps already
+agree, and it is the seeders that are the odd ones out.
+
+WHY THE SEEDERS NEED A PKG AND PEARTUNE DOES NOT: a seeder installs things AROUND the system -
+a LaunchAgent, a payload under /usr/local/lib, a root LaunchDaemon for its updater, ownership
+changes, `launchctl bootstrap` to register the service. None of that is possible by dragging an
+icon; it needs a package whose scripts run as root. PearTune's Mac app installs NOTHING outside
+its own bundle: you drag it to /Applications and it registers its own login item from inside the
+app on first launch. There is nothing for a wizard to do.
+
+DECISION: keep the .dmg. It needs no admin prompt, leaves nothing scattered around the system,
+matches PearCal's desktop app, and a wizard would add friction without buying anything macOS can
+actually use - it could not make the host always-on, which is the one thing that would justify it
+(a LaunchAgent dies with its login session; see the 2026-08-01 hardened-runtime entry and the
+measurement behind it).
+
+THE COST, STATED: no install-time setup, and no uninstall path at all until
+desktop/installer/macos/uninstall.sh (PR #313) - which is the gap this question surfaced. The
+uninstaller now ships inside the bundle. Also accepted: PearTune is deliberately INCONSISTENT
+across platforms - Windows shows an installer and asks for admin because it registers a service,
+Linux's .deb sets up a systemd unit, macOS does neither - because each platform's capability
+genuinely differs.
+
+REJECTED: a .pkg wizard (an admin prompt on every install, a second target to build and notarize,
+and still no always-on host), and surfacing "Uninstall PearTune…" in the tray menu (Tim: keep the
+.dmg as-is).
+
 ## 2026-08-01 - macOS is hardened and notarized; the "it breaks LAN pairing" claim was false
 Tier: T2 (packaging/signing; no host-logic or wire change). Branch feat/macos-notarization.
 
