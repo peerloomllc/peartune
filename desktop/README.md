@@ -111,6 +111,13 @@ un-notarized build if the key is missing. `spctl` reports
 The old comment here claimed notarization was impossible because hardened runtime blocks
 HyperDHT's LAN traffic. That was measured and is false - see DECISIONS 2026-08-01.
 
+**Why macOS is drag-to-install and Windows shows a wizard.** The Windows installer needs
+to run as admin because it registers a background service; the Linux `.deb` does the same
+with a systemd unit. The Mac app installs nothing outside its own bundle - it registers its
+own login item on first launch - so there is nothing for an installer to do. (The wizard you
+may remember is the PearCircle/PearCal *seeder*, which does install system files. PearCal's
+desktop app is a `.dmg` like this one.) See DECISIONS 2026-08-01.
+
 ## Uninstalling
 
 | platform | how |
