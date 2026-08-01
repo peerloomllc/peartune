@@ -21,7 +21,7 @@ WIPE="${WIPE:-0}"   # 1 = clear the host data dir before starting (see header). 
 # NB: this is the REGISTRY manifest digest (skopeo inspect docker://… .Digest, or the first
 # RepoDigest after a pull) - NOT `podman inspect --format {{.Digest}}`, which is the local digest
 # and yields "manifest unknown" on pull.
-IMG='ghcr.io/peerloomllc/peartune-host:0.2.41@sha256:47ab391cc042382a1b5c2eee8dddbba936153b1b3b6695ae41765055e3504032'
+IMG='ghcr.io/peerloomllc/peartune-host:0.2.42@sha256:956783a1778131ab306517a470e813ee82aaf3283bf2f4b1a04ac57d50776236'
 
 DATA='/home/umbrel/peartune-data'                     # identity + grants (persisted)
 MUSIC_HOST='/home/umbrel/umbrel/home/Downloads'       # mounted at /library (ro); roots = /library/music,/library/downtify

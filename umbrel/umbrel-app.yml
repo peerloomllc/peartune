@@ -45,10 +45,15 @@ dependencies: []
 repo: https://github.com/peerloomllc/peartune
 support: https://github.com/peerloomllc/peartune/issues
 gallery: []
-releaseNotes: >-
-  First release of the PearTune host for Umbrel. Serves your Navidrome library (or a
-  plain folder) to the PearTune phone app over a peer-to-peer connection, with a
-  dashboard for pairing devices, naming who holds them, and revoking access mid-song.
+releaseNotes: |-
+  Getting started:
+  Your music, wherever it already lives:
+  Staying connected:
+  Keeping it running:
+  Downloads:
+  Good to know:
+  - The phone apps aren't in the app stores yet. iOS is with App Review; on Android, install
+  - On Linux, the `.deb` sets up the background service for you. The AppImage runs when you log
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the
