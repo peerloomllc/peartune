@@ -84,6 +84,21 @@ on a Mac. See [`../desktop/README.md`](../desktop/README.md) for the details.
 
 ---
 
+### Uninstalling (macOS)
+
+Dragging the app to the Trash leaves three things behind: the login item, the Electron
+cache, and your library. The app ships an uninstaller that handles all of it:
+
+```bash
+bash /Applications/PearTune.app/Contents/Resources/uninstall.sh
+```
+
+It stops PearTune, removes the login item and the app, then **asks** before touching your
+library - because `host.seed` in there is the identity every paired phone knows this
+library by. Keeping it means a reinstall picks up the same library and pairings. Add
+`--purge` to remove it too; that takes a verified backup first and tells you how to
+restore it.
+
 ## Native — macOS
 
 Needs **Node 20+** (`brew install node@20`, or from nodejs.org).

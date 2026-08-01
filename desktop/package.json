@@ -93,6 +93,12 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
+      "extraResources": [
+        {
+          "from": "installer/macos/uninstall.sh",
+          "to": "uninstall.sh"
+        }
+      ],
       "identity": "22F9540D333EBFB4245EE11170F68A61E6E22689",
       "notarize": true
     },
