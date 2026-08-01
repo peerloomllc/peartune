@@ -43,25 +43,51 @@
   nsExec::ExecToLog 'sc.exe stop ${SVC_NAME}'
   nsExec::ExecToLog 'sc.exe delete ${SVC_NAME}'
 
-  ; MIGRATE BEFORE THE SERVICE EVER STARTS. host.seed is the library's identity and
-  ; store/ is the grant list; a LocalSystem service started against an empty
-  ; ProgramData directory comes up healthy AS A DIFFERENT LIBRARY and every paired
-  ; phone silently stops recognising it. migrate-data.js verifies every file by
-  ; digest, never deletes the source, and leaves an already-migrated destination
-  ; alone - so this is safe to run on every upgrade, which is what happens here.
+  ; NO MIGRATION. THE SERVICE READS THE LIBRARY WHERE IT ALREADY LIVES.
   ;
-  ; Run through the installed Electron binary in Node mode: there is no guarantee
-  ; node.exe exists on the target machine, and we already ship a Node.
-  DetailPrint "Migrating the library to ProgramData (identity is verified)..."
-  nsExec::ExecToLog '"$INSTDIR\PearTune.exe" "$INSTDIR\resources\migrate-data.js"'
-  Pop $0
-  ${If} $0 != 0
-    ; Non-zero means the copy did not verify. Do NOT register a service pointing at
-    ; a half-migrated directory - that is precisely how a library gets orphaned.
-    DetailPrint "Library migration FAILED to verify - not starting the service."
-    MessageBox MB_ICONEXCLAMATION "PearTune could not safely move your library to a shared location, so the background service was not started.$\n$\nYour existing library has NOT been changed. PearTune still works from the tray."
-    Goto skip_service
-  ${EndIf}
+  ; This slice originally copied the library to ProgramData so a LocalSystem
+  ; service would own it machine-wide. That was built, byte-verified, and DID NOT
+  ; WORK - found by installing it on real Windows (2026-08-01). hypercore-storage
+  ; stamps store\CORESTORE through the `device-file` package, which records the
+  ; file's INODE and re-checks it on open (device-file/index.js:191). Any copy
+  ; changes the inode, so a byte-perfect, digest-verified copy still refuses to
+  ; open: `fatal: Invalid device file, was modified`, forever. That guard is there
+  ; on purpose, to catch stores moved or copied unsafely.
+  ;
+  ; THE LESSON, worth more than the code: verifying a migration by comparing
+  ; digests proves THE BYTES ARRIVED. It does not prove THE STORE OPENS. Those are
+  ; different claims and only the second one matters.
+  ;
+  ; So the service is simply pointed at %APPDATA%\peartune-desktop\data - the same
+  ; directory the tray app uses. Nothing is copied, nothing is moved, and the
+  ; device-file guard never has cause to fire. LocalSystem has access to a user
+  ; profile, which is what makes this possible at all.
+  ;
+  ; DO NOT USE NSIS'S $APPDATA HERE. Under a perMachine install electron-builder
+  ; sets SetShellVarContext all, which makes $APPDATA resolve to C:\ProgramData -
+  ; NOT the user's roaming folder. That pointed the service at
+  ; C:\ProgramData\peartune-desktop\data, where it happily created a BRAND NEW
+  ; EMPTY LIBRARY and served it: running, healthy, zero tracks, zero devices, and
+  ; the real library sitting untouched in the user's profile. Found on hardware
+  ; 2026-08-01 - the same shape as the $%ProgramData% bug, and the same fix.
+  ;
+  ; %APPDATA% read from the ENVIRONMENT is the roaming folder of whoever launched
+  ; the installer, which is the person whose library this is.
+  ;
+  ; This does tie a machine-wide service to one profile - the accepted trade
+  ; (Tim, 2026-08-01) against copying a store that cannot be safely copied.
+  ExpandEnvStrings $3 "%APPDATA%"
+  StrCpy $2 "$3\peartune-desktop\data"
+
+  ; $MUSIC IS THE SAME TRAP, third time: SetShellVarContext all makes it
+  ; C:\Users\Public\Music rather than the person's own Music folder. It shipped
+  ; that way once (2026-08-01) - harmless on a test box where both are empty, and
+  ; wrong for anyone who keeps music where the tray app looks for it, which is
+  ; exactly app.getPath('music') = %USERPROFILE%\Music. Service and tray must agree
+  ; on the library's music folder or the two disagree about what is in it.
+  ExpandEnvStrings $4 "%USERPROFILE%"
+  StrCpy $5 "$4\Music"
+  DetailPrint "The service will use the existing library at $2"
 
   nsExec::ExecToLog '"$INSTDIR\resources\nssm.exe" install ${SVC_NAME} "$INSTDIR\PearTune.exe"'
   nsExec::ExecToLog '"$INSTDIR\resources\nssm.exe" set ${SVC_NAME} AppParameters "\"$INSTDIR\resources\app.asar\vendor\host\index.js\""'
@@ -76,7 +102,7 @@
   ; PEARTUNE_DATA/MUSIC are passed as ENV because LocalSystem has no user profile:
   ; %USERPROFILE% inside the service is the SYSTEM profile, not the person's, so
   ; the host would otherwise look for music in the wrong place entirely.
-  nsExec::ExecToLog '"$INSTDIR\resources\nssm.exe" set ${SVC_NAME} AppEnvironmentExtra "ELECTRON_RUN_AS_NODE=1" "PEARTUNE_DATA=$1\PearTune\data" "PEARTUNE_MUSIC=$MUSIC"'
+  nsExec::ExecToLog '"$INSTDIR\resources\nssm.exe" set ${SVC_NAME} AppEnvironmentExtra "ELECTRON_RUN_AS_NODE=1" "PEARTUNE_DATA=$2" "PEARTUNE_MUSIC=$5"'
 
   nsExec::ExecToLog '"$INSTDIR\resources\nssm.exe" set ${SVC_NAME} AppStdout "$1\PearTune\service.log"'
   nsExec::ExecToLog '"$INSTDIR\resources\nssm.exe" set ${SVC_NAME} AppStderr "$1\PearTune\service.log"'
@@ -90,21 +116,23 @@
   nsExec::ExecToLog '"$INSTDIR\resources\nssm.exe" start ${SVC_NAME}'
   DetailPrint "PearTune host service registered and started."
 
-  skip_service:
 !macroend
 
 !macro customUnInstall
   DetailPrint "Removing the PearTune host service..."
   ExpandEnvStrings $1 "%ProgramData%"
+  ; Same trap as the install path: NSIS's own $APPDATA is C:\ProgramData here.
+  ExpandEnvStrings $3 "%APPDATA%"
   nsExec::ExecToLog '"$INSTDIR\resources\nssm.exe" stop ${SVC_NAME}'
   nsExec::ExecToLog '"$INSTDIR\resources\nssm.exe" remove ${SVC_NAME} confirm'
   nsExec::ExecToLog 'sc.exe stop ${SVC_NAME}'
   nsExec::ExecToLog 'sc.exe delete ${SVC_NAME}'
 
-  ; THE LIBRARY IS NEVER DELETED. %ProgramData%\PearTune\data holds host.seed - the
-  ; identity every paired phone knows this library by - and store/, the grant list.
-  ; Nothing regenerates either, so uninstalling PearTune must not cost someone
-  ; their library and all their pairings. Leaving a few MB behind is the right
-  ; trade every time.
-  DetailPrint "Your library has been left in $1\PearTune\data"
+  ; THE LIBRARY IS NEVER TOUCHED. It lives in %APPDATA%\peartune-desktop\data and
+  ; this installer never copied or moved it - the service was only ever POINTED at
+  ; it. host.seed there is the identity every paired phone knows this library by,
+  ; and store/ is the grant list; nothing regenerates either. Removing the service
+  ; must not cost someone their library, so nothing here deletes anything but the
+  ; service registration and the log directory it wrote.
+  DetailPrint "Your library is untouched in $3\peartune-desktop\data"
 !macroend

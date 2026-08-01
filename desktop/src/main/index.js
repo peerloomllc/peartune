@@ -15,7 +15,6 @@ const { app, Tray, Menu, shell, dialog, nativeImage } = require('electron')
 const path = require('path')
 const net = require('net')
 const { installService, uninstallService, SERVICE_PLATFORMS } = require('./service')
-const { resolveDataDir } = require('./datadir')
 
 const { PearTuneHost } = require('../../vendor/host/server')
 const { startDashboard } = require('../../vendor/host/ui/server')
@@ -85,12 +84,10 @@ async function main () {
   }
 
   try {
-    // On Windows a service-owned library lives machine-wide, and the migrated-from
-    // copy is deliberately left behind - so resolving this wrong means opening a
-    // stale library and showing an out-of-date grant list with no error anywhere.
-    const resolved = resolveDataDir({ userDataDir: app.getPath('userData') })
-    const dataDir = resolved.dir
-    console.log('peartune: library is', resolved.scope, 'at', dataDir)
+    // The Windows service reads this SAME directory - it is pointed here at install
+    // time rather than given a copy. See installer/windows/installer.nsh for why a
+    // copy was abandoned: the store refuses to open from a copied path.
+    const dataDir = path.join(app.getPath('userData'), 'data')
     // Default the library to the OS Music folder; the operator can point it
     // anywhere (or at a Jellyfin/Subsonic server) from the dashboard.
     const musicDir = app.getPath('music')

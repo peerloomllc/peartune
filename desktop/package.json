@@ -103,10 +103,6 @@
         {
           "from": "installer/windows/nssm.exe",
           "to": "nssm.exe"
-        },
-        {
-          "from": "installer/windows/migrate-data.js",
-          "to": "migrate-data.js"
         }
       ]
     },
