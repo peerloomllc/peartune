@@ -131,4 +131,172 @@ async function downloadAndVerify (plan, { workDir, fetchImpl } = {}) {
   return { file, digest: actual, dir }
 }
 
-module.exports = { VerifyError, selectAsset, planApply, downloadAndVerify, download, sha256File, parseSha256Sidecar }
+// ---------------------------------------------------------------------------
+// Applying it (slice 2: the two paths that need no root)
+// ---------------------------------------------------------------------------
+
+const UNIT = 'peartune-host.service'
+const WIN_SERVICE = 'PearTuneHost'
+
+class NeedsManualError extends Error {
+  constructor (why) { super(why); this.code = 'NEEDS_MANUAL' }
+}
+
+// IS SOMETHING SUPERVISING US? This changes the ending, not the middle.
+//
+// Supervised, the process that swapped the payload simply exits and the service
+// manager starts a FRESH one from the new file. Unsupervised, the running process
+// has to relaunch itself from a file it just overwrote - which is the case the
+// proposal listed as an open question, and the case we now mostly avoid.
+//
+// It must be DETECTED rather than assumed, because the same AppImage runs both
+// ways: as a supervised systemd user service, or as a plain tray app someone
+// double-clicked.
+async function detectSupervisor ({ platform = process.platform, exec } = {}) {
+  if (!exec) return null
+  try {
+    if (platform === 'linux') {
+      const out = await exec(['systemctl', '--user', 'is-active', UNIT])
+      return String(out || '').trim() === 'active' ? 'systemd' : null
+    }
+    if (platform === 'win32') {
+      const out = await exec(['sc.exe', 'query', WIN_SERVICE])
+      return /RUNNING/i.test(String(out || '')) ? 'windows-service' : null
+    }
+  } catch {
+    // A non-zero exit just means "no service". Never fatal: an update check that
+    // cannot tell must not take the host down with it.
+  }
+  return null
+}
+
+const APPLIERS = {
+  // Swap the AppImage payload in place, then let the supervisor restart us.
+  //
+  // `install -m 0755` rather than a copy: it replaces the file atomically enough
+  // and keeps the executable bit, which a plain write would drop and leave the
+  // user with an AppImage that will not launch.
+  appimage: async ({ file, target, supervisor, exec }) => {
+    if (!target) throw new NeedsManualError('no AppImage path to replace ($APPIMAGE is unset)')
+    await exec(['install', '-m', '0755', file, target])
+    if (supervisor === 'systemd') {
+      // --no-block IS NOT OPTIONAL. A plain restart tears down this service's
+      // cgroup, which kills the `systemctl` child - and us - before it returns 0.
+      // That surfaces as an error on a SUCCESSFUL update. The seeder hit exactly
+      // this and its comment is why we did not have to.
+      await exec(['systemctl', '--user', 'restart', '--no-block', UNIT])
+      return { restarted: true, via: 'systemd' }
+    }
+    // Unsupervised: the caller relaunches. It is the one case where a process
+    // re-executes a file it just overwrote, so it is handled by the app, not here.
+    return { restarted: false, needsRelaunch: true }
+  },
+
+  // Run the verified NSIS installer silently. Its own upgrade path stops the
+  // service, replaces the payload, re-registers and starts it again - which is
+  // what releases the lock that a plain file copy cannot.
+  //
+  // IT MUST NOT BE A CHILD OF THE SERVICE. NSSM reaps its service's whole process
+  // tree on stop, and the installer STOPS THE SERVICE - so a child would be killed
+  // half-way through replacing files. Win32_Process.Create re-parents it under
+  // WmiPrvSE, which is the seeder's trick and the reason it works there.
+  windows: async ({ file, exec }) => {
+    const cmd = `"${file}" /S`
+    await exec(['powershell', '-NoProfile', '-NonInteractive', '-Command',
+      `Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='${cmd}'} | Out-Null`])
+    return { restarted: true, via: 'installer' }
+  },
+
+  // Later slices. They throw rather than silently doing nothing, so the caller can
+  // fall back to the verified download instead of reporting a success it did not have.
+  deb: async () => { throw new NeedsManualError('the .deb update needs a privileged helper (slice 4)') },
+  macapp: async () => { throw new NeedsManualError('the macOS update is not wired yet (slice 3)') }
+}
+
+async function applyUpdate (plan, { file, digest, supervisor, target = process.env.APPIMAGE, exec, log = () => {} } = {}) {
+  const applier = APPLIERS[plan.applier]
+  if (!applier) throw new NeedsManualError(`no applier for ${plan.applier}`)
+  log('update:applying', { version: plan.version, via: plan.applier })
+  const r = await applier({ file, digest, target, supervisor, exec })
+  return { ...r, applier: plan.applier, version: plan.version }
+}
+
+// Run one command, resolving its stdout. Rejects on a non-zero exit, which is what
+// detectSupervisor reads as "no service" and what an applier reads as a failure.
+// Kept here so the daemon and the tray app cannot drift into different behaviour.
+function defaultExec (argv) {
+  const { execFile } = require('child_process')
+  return new Promise((resolve, reject) => {
+    execFile(argv[0], argv.slice(1), { encoding: 'utf8' }, (err, stdout) => {
+      if (err) reject(err)
+      else resolve(stdout)
+    })
+  })
+}
+
+// The stateful driver behind POST /api/update/apply. One in-flight apply at a
+// time, and every outcome is a state the dashboard can render - including the
+// ones where we did nothing, because "nothing happened" must never look like
+// "it worked".
+class UpdateApplier {
+  constructor ({ getUpdate, platform = process.platform, arch = process.arch, target = process.env.APPIMAGE, exec = defaultExec, fetchImpl, onRelaunch = null, log = () => {} } = {}) {
+    this._getUpdate = getUpdate
+    this._platform = platform
+    this._arch = arch
+    this._target = target
+    this._exec = exec
+    this._fetchImpl = fetchImpl
+    this._onRelaunch = onRelaunch
+    this._log = log
+    this._state = { status: 'idle' }
+  }
+
+  getState () { return { ...this._state } }
+
+  async apply () {
+    const update = typeof this._getUpdate === 'function' ? this._getUpdate() : null
+    if (!update || !update.available) {
+      this._state = { status: 'no-update' }
+      return this.getState()
+    }
+    // One at a time. A second click while a 130MB download is in flight must not
+    // start a second download over the top of the first.
+    if (this._state.status === 'running') return this.getState()
+    this._state = { status: 'running', version: update.latest }
+
+    // Every failure below lands here: the operator is offered the release page,
+    // which is exactly what the banner did before this feature existed. Falling
+    // back to "download it yourself" is always available and never wrong.
+    const manual = { status: 'needs-manual', version: update.latest, htmlUrl: update.htmlUrl || null }
+
+    try {
+      const plan = planApply(update, update.assets, { platform: this._platform, arch: this._arch, appImage: this._target })
+      const { file, digest } = await downloadAndVerify(plan, { fetchImpl: this._fetchImpl })
+      this._log('update:verified', { version: plan.version, digest: digest.slice(0, 12) })
+
+      const supervisor = await detectSupervisor({ platform: this._platform, exec: this._exec })
+      const r = await applyUpdate(plan, { file, digest, supervisor, target: this._target, exec: this._exec, log: this._log })
+
+      if (r.needsRelaunch) {
+        this._state = { status: 'restarting', version: plan.version, via: 'self' }
+        if (this._onRelaunch) this._onRelaunch()
+      } else {
+        this._state = { status: 'restarting', version: plan.version, via: r.via || 'supervisor' }
+      }
+    } catch (e) {
+      // A verification failure is NOT the same as "not wired for this platform",
+      // and the dashboard says so - one means something is wrong with the
+      // download, the other means this platform simply cannot self-apply yet.
+      this._state = e.code === 'NEEDS_MANUAL'
+        ? { ...manual, reason: e.message }
+        : { status: 'error', version: update.latest, error: e.message, htmlUrl: update.htmlUrl || null }
+      this._log('update:apply-failed', { error: e.message })
+    }
+    return this.getState()
+  }
+}
+
+module.exports = {
+  VerifyError, NeedsManualError, UpdateApplier, defaultExec, selectAsset, planApply, downloadAndVerify,
+  download, sha256File, parseSha256Sidecar, detectSupervisor, applyUpdate, APPLIERS, UNIT, WIN_SERVICE
+}

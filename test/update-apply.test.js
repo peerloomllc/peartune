@@ -150,3 +150,159 @@ test('a missing or unreadable sidecar refuses, it does not skip verification', a
     (e) => e.code === 'VERIFY_FAILED' && /unparseable/.test(e.message))
   fs.rmSync(workDir, { recursive: true, force: true })
 })
+
+// --- slice 2: the two appliers that need no root -------------------------------
+
+const { detectSupervisor, applyUpdate, NeedsManualError } = require('../host/update-apply')
+
+// Records every command instead of running it, so the SEQUENCE can be asserted.
+function recorder (answers = {}) {
+  const calls = []
+  const exec = async (argv) => {
+    calls.push(argv.join(' '))
+    for (const [match, out] of Object.entries(answers)) {
+      if (argv.join(' ').includes(match)) return out
+    }
+    return ''
+  }
+  return { calls, exec }
+}
+
+test('a supervisor is DETECTED, never assumed - the same AppImage runs both ways', async () => {
+  const active = recorder({ 'systemctl --user is-active': 'active\n' })
+  assert.equal(await detectSupervisor({ platform: 'linux', exec: active.exec }), 'systemd')
+
+  const inactive = recorder({ 'systemctl --user is-active': 'inactive\n' })
+  assert.equal(await detectSupervisor({ platform: 'linux', exec: inactive.exec }), null)
+
+  const win = recorder({ 'sc.exe query': 'STATE : 4  RUNNING' })
+  assert.equal(await detectSupervisor({ platform: 'win32', exec: win.exec }), 'windows-service')
+
+  // A throwing exec means "no service", never a crash. An update check must not be
+  // able to take the host down.
+  const boom = { exec: async () => { throw new Error('no systemctl') } }
+  assert.equal(await detectSupervisor({ platform: 'linux', exec: boom.exec }), null)
+})
+
+test('the AppImage swap keeps the executable bit, then hands off to systemd', async () => {
+  const r = recorder()
+  const out = await applyUpdate({ applier: 'appimage', version: '1.1.0' },
+    { file: '/tmp/new.AppImage', target: '/home/tim/PearTune.AppImage', supervisor: 'systemd', exec: r.exec })
+
+  assert.match(r.calls[0], /^install -m 0755 \/tmp\/new\.AppImage \/home\/tim\/PearTune\.AppImage$/,
+    'a plain copy would drop the executable bit and leave an AppImage that will not launch')
+  // --no-block or the restart tears down our own cgroup and kills the systemctl
+  // child before it returns 0 - reporting an error on a SUCCESSFUL update.
+  assert.match(r.calls[1], /systemctl --user restart --no-block peartune-host\.service/)
+  assert.equal(out.restarted, true)
+  assert.equal(out.via, 'systemd')
+})
+
+test('unsupervised, the swap happens but the RELAUNCH is left to the app', async () => {
+  // The one case where a process must re-execute a file it just overwrote. It is
+  // the app's problem, not this module's, and it must be reported rather than
+  // silently skipped - otherwise the user is told it updated and it did not.
+  const r = recorder()
+  const out = await applyUpdate({ applier: 'appimage', version: '1.1.0' },
+    { file: '/tmp/new.AppImage', target: '/home/tim/PearTune.AppImage', supervisor: null, exec: r.exec })
+  assert.equal(r.calls.length, 1, 'no restart command when nothing is supervising')
+  assert.equal(out.needsRelaunch, true)
+  assert.equal(out.restarted, false)
+})
+
+test('no AppImage path means REFUSE, not swap something else', async () => {
+  await assert.rejects(
+    () => applyUpdate({ applier: 'appimage', version: '1.1.0' }, { file: '/tmp/new', target: '', exec: async () => '' }),
+    (e) => e.code === 'NEEDS_MANUAL')
+})
+
+test('the Windows installer is launched DETACHED, or it kills itself mid-swap', async () => {
+  // NSSM reaps its service's whole process tree on stop, and the installer stops
+  // the service. A child would be killed part-way through replacing files.
+  // Win32_Process.Create re-parents it under WmiPrvSE.
+  const r = recorder()
+  const out = await applyUpdate({ applier: 'windows', version: '1.1.0' },
+    { file: 'C:\\tmp\\PearTune-Setup-1.1.0.exe', exec: r.exec })
+  assert.match(r.calls[0], /Win32_Process/, 'a plain spawn would be reaped when the installer stops the service')
+  assert.match(r.calls[0], /\/S/, 'silent, or an unattended update waits on a wizard nobody can see')
+  assert.equal(out.restarted, true)
+})
+
+test('the unwired platforms THROW rather than reporting a success they did not have', async () => {
+  for (const applier of ['deb', 'macapp']) {
+    await assert.rejects(
+      () => applyUpdate({ applier, version: '1.1.0' }, { file: '/tmp/x', exec: async () => '' }),
+      (e) => e.code === 'NEEDS_MANUAL', `${applier} must refuse, so the caller can offer the download`)
+  }
+})
+
+// --- the driver behind POST /api/update/apply -----------------------------------
+
+const { UpdateApplier } = require('../host/update-apply')
+
+const RELEASE = { available: true, latest: '1.1.0', current: '1.0.0', htmlUrl: 'https://gh/releases/v1.1.0', assets: ASSETS }
+
+function applierFor (over = {}) {
+  const body = 'installer bytes'
+  const digest = crypto.createHash('sha256').update(body).digest('hex')
+  const urls = {}
+  for (const a of ASSETS) urls[a.browser_download_url] = a.name.endsWith('.sha256') ? `${digest}  x\n` : body
+  const r = recorder({ 'systemctl --user is-active': 'active\n' })
+  return {
+    calls: r.calls,
+    applier: new UpdateApplier({
+      getUpdate: () => RELEASE,
+      platform: 'linux',
+      target: '/home/tim/PearTune.AppImage',
+      exec: r.exec,
+      fetchImpl: stubFetch(urls),
+      ...over
+    })
+  }
+}
+
+test('a full apply verifies, swaps, and reports restarting', async () => {
+  const { applier, calls } = applierFor()
+  assert.equal(applier.getState().status, 'idle')
+  const s = await applier.apply()
+  assert.equal(s.status, 'restarting')
+  assert.equal(s.version, '1.1.0')
+  assert.ok(calls.some(c => c.startsWith('install -m 0755')))
+})
+
+test('NOTHING HAPPENING MUST NEVER LOOK LIKE IT WORKED', async () => {
+  // Every failure lands on a state that offers the release page - the same thing
+  // the banner did before this feature existed. Falling back to "download it
+  // yourself" is always available and never wrong.
+  const { applier } = applierFor({ platform: 'darwin', arch: 'arm64' })
+  const s = await applier.apply()
+  assert.equal(s.status, 'needs-manual', 'macOS is not wired yet and must say so')
+  assert.equal(s.htmlUrl, RELEASE.htmlUrl, 'the operator is always offered the download')
+})
+
+test('a tampered download reports ERROR, distinctly from not-wired', async () => {
+  // These are different problems and the dashboard says so: one means the download
+  // is wrong, the other means this platform cannot self-apply yet.
+  const urls = {}
+  for (const a of ASSETS) urls[a.browser_download_url] = a.name.endsWith('.sha256') ? `${'b'.repeat(64)}  x\n` : 'TAMPERED'
+  const r = recorder({ 'systemctl --user is-active': 'active\n' })
+  const applier = new UpdateApplier({
+    getUpdate: () => RELEASE, platform: 'linux', target: '/home/tim/PearTune.AppImage',
+    exec: r.exec, fetchImpl: stubFetch(urls)
+  })
+  const s = await applier.apply()
+  assert.equal(s.status, 'error')
+  assert.match(s.error, /mismatch/)
+  assert.ok(!r.calls.some(c => c.startsWith('install ')), 'nothing may be installed after a failed verify')
+})
+
+test('with no update there is nothing to apply', async () => {
+  const applier = new UpdateApplier({ getUpdate: () => ({ available: false }) })
+  assert.equal((await applier.apply()).status, 'no-update')
+})
+
+test('a second click does not start a second 130MB download', async () => {
+  const { applier } = applierFor()
+  applier._state = { status: 'running', version: '1.1.0' }
+  assert.equal((await applier.apply()).status, 'running')
+})

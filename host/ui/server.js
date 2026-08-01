@@ -57,7 +57,7 @@ async function readBody (req) {
   }
 }
 
-async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '', passwordSource = 'none', version = null, updateChecker = null }) {
+async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '', passwordSource = 'none', version = null, updateChecker = null, applier = null }) {
   // Before anything listens. A control plane on a LAN with no password is not a
   // configuration we are willing to run, so this throws rather than warns.
   requireSafeBind(bind, password)
@@ -114,7 +114,21 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
       // or PEARTUNE_NO_UPDATE_CHECK) answers `disabled` and the banner never renders.
       if (req.method === 'GET' && url.pathname === '/api/update') {
         if (!updateChecker) return json(res, 200, { disabled: true, current: version })
-        return json(res, 200, updateChecker.get())
+        return json(res, 200, { ...updateChecker.get(), apply: applier ? applier.getState() : null })
+      }
+
+      // OPERATOR-GATED, ALWAYS. One button, one machine, one click - never a
+      // silent auto-apply, so a bad release cannot propagate unattended. The
+      // route exists only when an applier was supplied; a container install or a
+      // host with no update checker answers 404 rather than pretending.
+      if (req.method === 'POST' && url.pathname === '/api/update/apply') {
+        if (!applier) return json(res, 404, { error: 'updates are not applied on this install' })
+        // Deliberately not awaited: applying downloads a ~130MB artifact and then
+        // restarts this very process. Holding the request open would mean the
+        // browser waits on a server that is about to go away, and the operator
+        // would see a network error on a SUCCESSFUL update. State is polled.
+        applier.apply().catch(() => {})
+        return json(res, 202, applier.getState())
       }
 
       // --- state ---

@@ -150,9 +150,18 @@ async function main () {
   const upd = createUpdateChecker({ log })
   if (!upd.checker) log('update:disabled', { reason: upd.reason })
 
+  // "Update now". Only where there is a check to act on - a container has neither,
+  // because the image and the app store own updates there. No onRelaunch: this
+  // process is either supervised (systemd restarts it) or started by hand, and a
+  // plain Node process cannot re-exec a binary it does not own.
+  const { UpdateApplier } = require('./update-apply')
+  const applier = upd.checker
+    ? new UpdateApplier({ getUpdate: () => upd.checker.get(), log })
+    : null
+
   const dashboard = await startDashboard({
     host, bind: args.host, port: args.port, password: args.password, passwordSource: pw.source,
-    version: upd.version, updateChecker: upd.checker
+    version: upd.version, updateChecker: upd.checker, applier
   })
 
   // StartOS Properties: surface the generated dashboard password in the service's
