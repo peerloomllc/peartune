@@ -67,7 +67,7 @@ So the seeder's macOS trust anchor is unavailable to us. Its root daemon require
 
 - **Slice 0 - sidecars.** `release.sh` emits and uploads `.sha256` for every desktop artifact. Independently useful (anyone can verify a manual download today) and blocks everything else. Small.
 - **Slice 1 - the verifiable core, no platform.** `host/update-apply.js` + tests: plan selection per platform, digest mismatch rejects and installs nothing, a missing or unparseable sidecar is a refusal rather than a skip. No privileged code runs in this slice.
-- **Slice 2 - Linux AppImage + Windows.** The two no-root paths. AppImage: `install -m 0755` the new payload over `$APPIMAGE`, then `app.relaunch()`. Windows: run the verified installer `/S`, detached, then exit.
+- **Slice 2 - Linux AppImage + Windows.** The two no-root paths. AppImage: `install -m 0755` the new payload over `$APPIMAGE`, then **let systemd restart it** (see the amendment below). Windows: run the verified installer `/S`, detached, then exit.
 - **Slice 3 - macOS `.app` swap.** Mount the verified `.dmg`, check the Developer ID team with `codesign -dv`, swap the bundle, relaunch. Degrade to `needs-privilege` when the destination is not writable.
 - **Slice 4 - Linux `.deb` via pkexec.** The root-owned helper plus a polkit rule scoped to one user and one absolute path, installed by the `.deb`'s `postinst`, re-verifying the digest before `dpkg -i`.
 
@@ -86,7 +86,17 @@ Slices 2, 3 and 4 are independent; each degrades to the current download link un
 ## Rollback
 Additive throughout. `PEARTUNE_NO_UPDATE_CHECK` already disables the check entirely; the apply route is operator-gated, so nothing self-applies. Reverting a slice restores the download link for that platform with no peer-visible change. A bad release cannot cascade, because every apply is one operator clicking one button on one machine.
 
+## AMENDMENT, 2026-07-31: Linux now has a supervisor
+
+`proposals/2026-07-31-desktop-host-as-a-service.md` slice 1 shipped and is proven on hardware, so the assumption underneath this proposal - "nothing supervises the host, therefore it must relaunch itself" - is **no longer true on Linux**.
+
+- **Slice 2 (Linux) gets simpler and more robust.** Swap the payload, then `systemctl --user restart --no-block peartune-host.service` and let systemd bring it back on the new binary, exactly as the seeder does. `--no-block` for the seeder's own reason: a plain restart tears down the calling process's cgroup, killing the `systemctl` child before it returns, which surfaces as a bogus error on a *successful* update.
+- **This also answers open question 1 below**, which is why it is worth writing down rather than just doing. The awkward case was an Electron app relaunching itself from a file it had just overwritten. Under a supervisor that case does not arise: the process that swaps the payload exits, and a *fresh* process is started from the new file by systemd.
+- **The applier must therefore detect a supervisor** rather than assume one, because the same AppImage runs both ways: `systemctl --user is-active peartune-host.service`. Supervised, hand off; unsupervised, fall back to `app.relaunch()`.
+- **macOS is unchanged** and still relaunches itself, because macOS stays a tray app - a LaunchAgent cannot survive logout, measured 2026-07-31.
+- **Windows is unchanged until its own slice lands.** If it becomes a real service, the same hand-off applies via the SCM.
+
 ## Open questions
-1. **Does the AppImage swap survive the app that is running from it?** The seeder swaps the payload while the service runs and lets systemd re-exec. An Electron app relaunching itself from a file that was just overwritten needs checking on a real AppImage, not reasoning.
+1. **Does the AppImage swap survive the app that is running from it?** The seeder swaps the payload while the service runs and lets systemd re-exec. An Electron app relaunching itself from a file that was just overwritten needs checking on a real AppImage, not reasoning. **Largely answered by the amendment above** - under systemd the swapping process exits and a fresh one starts from the new file, so this only remains open for the unsupervised fallback path.
 2. **Should the tray offer "check now"?** The check is hourly; an operator who has just read a release announcement will want it sooner. Cheap, but it is a new surface and can wait.
 3. **Windows per-user install is an assumption worth confirming** against a real installed instance before slice 2 is built. If any install is per-machine, that path needs UAC and the design changes.

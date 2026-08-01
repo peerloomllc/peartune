@@ -1,17 +1,54 @@
 # PearTune Desktop
 
 The PearTune **host** as a menubar / tray app for macOS, Windows, and Linux — so a
-non-technical user runs the always-on daemon without a terminal. It wraps the same
+non-technical user runs it without a terminal. It wraps the same
 [`host/`](../host/) code the Umbrel and Docker installs run. (Start9 is not a supported
 target — see [`../start9/README.md`](../start9/README.md) for the measurement that tabled
 it.)
 
+## Does it keep running when you log out?
+
+**On Linux, yes. On macOS and Windows, not yet.** This page used to call the app "the
+always-on daemon" on all three, which was not true, so here is what each one actually
+does:
+
+| platform | how it runs | survives logout / reboot with no login |
+| --- | --- | --- |
+| **Linux** | systemd **user** service + `loginctl enable-linger` | **yes** — measured: booted with nobody logged in, host serving 5s later, same library identity |
+| **macOS** | tray app, started as a login item | **no** — and it cannot without root. See below. |
+| **Windows** | tray app, started as a login item | not yet — a real service is [the next slice](../proposals/2026-07-31-desktop-host-as-a-service.md) |
+
+The `.deb` installs and starts the Linux service for you. For the AppImage — or if the
+install could not tell who to set it up for — run it yourself:
+
+```bash
+peartune-desktop --install-service     # writes the unit, enables it, starts it
+peartune-desktop --uninstall-service   # stops and removes it; your library is untouched
+```
+
+Linger is the part that matters and it needs root, so `--install-service` tells you when
+it is missing rather than claiming success: `sudo loginctl enable-linger $USER`. Without
+it the unit still dies at logout, which is the thing this exists to fix.
+
+**Why macOS is different, since it looks like it should work the same way.** A launchd
+LaunchAgent is torn down with its login session. Measured 2026-07-31 with a `KeepAlive`
+agent logging every 10s across one logout: last beat, 48 seconds of silence, then a
+*different* process at the next login. `KeepAlive` restarts a job that exits; it does not
+exempt one from its domain being destroyed. Running with nobody logged in would need a
+root LaunchDaemon, which moves the data dir out of `~/Library/Application Support`, puts
+your Music folder behind permissions, and runs the LAN code with no user session — where
+PearTune already has a scar, because hardened runtime silently blocks HyperDHT's raw UDP.
+So macOS stays a tray app, deliberately.
+
 ## What it does
 
-- Runs the PearTune host in-process — a background service, no app window. Like the
+- Runs the PearTune host — a background service, no app window. Like the
   PearCal/PearCircle seeders, you reach it through your browser.
-- Lives in the tray/menubar (Open dashboard · Quit) and runs at login. "Open
-  dashboard" (and a manual launch) opens `127.0.0.1:8741` in your real browser.
+- Lives in the tray/menubar (Open dashboard · Quit). When a Linux service already owns
+  the host, the tray notices and runs as a **client** instead of starting a second one —
+  two hosts on one data dir is a corruption risk, not a cosmetic clash — and its menu
+  says so, because "Quit" then only closes the icon and leaves the music playing.
+- "Open dashboard" (and a manual launch) opens `127.0.0.1:8741` in your real browser.
 - Binds the dashboard to **loopback** (`127.0.0.1`) — the control plane is only
   reachable from this machine, so there's no password to type. The P2P host
   (HyperDHT) runs regardless, so phones pair and stream from anywhere as usual.
