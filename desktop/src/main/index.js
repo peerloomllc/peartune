@@ -13,6 +13,8 @@
 
 const { app, Tray, Menu, shell, dialog, nativeImage } = require('electron')
 const path = require('path')
+const net = require('net')
+const { installService, uninstallService, SERVICE_PLATFORMS } = require('./service')
 
 const { PearTuneHost } = require('../../vendor/host/server')
 const { startDashboard } = require('../../vendor/host/ui/server')
@@ -29,6 +31,35 @@ let host = null
 let dashboard = null
 let tray = null
 let updateChecker = null
+// True when a systemd user service already owns the host and this tray process is
+// just a client. See adoptOrStart().
+let serviceOwned = false
+
+// Is something already serving the dashboard on this port? A systemd user service
+// (installed by the .deb postinst or --install-service) starts at boot, and the
+// login item then launches this tray app on top of it.
+//
+// WITHOUT THIS GUARD THAT IS NOT A COSMETIC CLASH: both processes open the SAME
+// data dir, which is the library's identity. The second one currently dies with
+// a modal error, which is a poor way to learn that your host was already running.
+function dashboardAlreadyServing (port, timeoutMs = 800) {
+  return new Promise(resolve => {
+    const socket = net.createConnection({ port, host: BIND })
+    const done = (v) => { socket.destroy(); resolve(v) }
+    socket.once('connect', () => done(true))
+    socket.once('error', () => done(false))
+    socket.setTimeout(timeoutMs, () => done(false))
+  })
+}
+
+// CLI actions, handled BEFORE anything asks Electron for a window or a tray.
+// `--install-service` is often run over ssh or on a box with no session, and
+// app.whenReady() needs a display on Linux - so these must never reach it.
+if (process.argv.includes('--install-service')) {
+  process.exit(installService())
+} else if (process.argv.includes('--uninstall-service')) {
+  process.exit(uninstallService())
+}
 
 // One host per data dir / port. A second launch just re-opens the dashboard.
 if (!app.requestSingleInstanceLock()) {
@@ -41,6 +72,16 @@ if (!app.requestSingleInstanceLock()) {
 async function main () {
   // Tray-only (menu-bar) app: no dock icon on macOS.
   if (process.platform === 'darwin') app.dock?.hide()
+
+  // A service already serving means this process is a CLIENT, not a host. Adopting
+  // it rather than racing it is what keeps two processes off one data dir.
+  if (await dashboardAlreadyServing(PORT)) {
+    serviceOwned = true
+    console.log('peartune: a host is already serving on', DASH_URL, '- running as a client.')
+    createTray()
+    if (!openedAtLogin()) openDashboard()
+    return
+  }
 
   try {
     const dataDir = path.join(app.getPath('userData'), 'data')
@@ -129,12 +170,23 @@ function refreshMenu () {
     ? [{ label: `PearTune ${u.latest} is available…`, click: () => shell.openExternal(u.htmlUrl || RELEASES_URL) },
         { type: 'separator' }]
     : []
+  // Say which process owns the host, because "Quit PearTune" means two different
+  // things. Owning it, quitting stops the music; as a client of the service, it
+  // only closes this tray icon and the library keeps serving. A user who cannot
+  // tell those apart will eventually quit expecting one and get the other.
+  const ownership = serviceOwned
+    ? [{ label: 'Host: running as a background service', enabled: false },
+        { label: 'Stop the background service…', click: () => { uninstallService(); app.quit() } },
+        { type: 'separator' }]
+    : []
+
   tray.setContextMenu(Menu.buildFromTemplate([
     ...updateItem,
     { label: 'Open dashboard', click: openDashboard },
     { type: 'separator' },
+    ...ownership,
     { label: `PearTune ${app.getVersion()}`, enabled: false },
-    { label: 'Quit PearTune', click: () => app.quit() }
+    { label: serviceOwned ? 'Quit (leaves the host running)' : 'Quit PearTune', click: () => app.quit() }
   ]))
 }
 

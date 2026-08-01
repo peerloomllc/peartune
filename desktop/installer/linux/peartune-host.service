@@ -1,0 +1,53 @@
+# systemd USER service for the PearTune desktop host.
+#
+# Installed to ~/.config/systemd/user/peartune-host.service by the .deb postinst
+# or by `PearTune.AppImage --install-service`. __EXEC__ is templated at install
+# time, because the two package formats live in different places: the .deb puts
+# the binary under /opt, and an AppImage is wherever the user dropped it.
+#
+# A USER unit, not a system one, for the same reason the seeder's is: the data
+# dir and the music folder both live in $HOME, and a system unit running as root
+# would reach neither without either moving the data or widening permissions.
+# `loginctl enable-linger` is what makes a user unit survive logout and start at
+# boot with nobody logged in - without it this is just a fancier login item, and
+# the whole point of the service is to not be one.
+#
+# %h is systemd's specifier for the user's home, so nothing here is templated
+# with an absolute path that could go stale if the account is ever moved.
+
+[Unit]
+Description=PearTune host (self-hosted music library)
+Documentation=https://peerloomllc.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Run the Electron binary as plain Node. The host is ordinary Node code, so this
+# needs no second runtime and no bundling step - the installed binary already
+# carries Node and every native addon (sodium-native, rocksdb-native, hyperdht),
+# and asar resolves them out of app.asar.unpacked. A service needs no display,
+# which is exactly what this mode gives us.
+Environment=ELECTRON_RUN_AS_NODE=1
+
+# THE DATA DIR IS THE LIBRARY'S IDENTITY. host.seed under here is the key every
+# paired phone knows this library by, and nothing regenerates it. It MUST stay
+# the path the tray app already uses - Electron's userData for "peartune-desktop"
+# - or the service comes up as a brand-new library and every paired phone stops
+# recognising it.
+#
+# Passed as ENV rather than argv because the two package layouts invoke the host
+# differently (the .deb names the entry script directly; an AppImage has to go
+# through -e, since its payload path only exists while the image is mounted), and
+# env is the one channel both share. host/index.js reads these already.
+Environment=PEARTUNE_DATA=%h/.config/peartune-desktop/data
+Environment=PEARTUNE_MUSIC=%h/Music
+
+ExecStart=__EXEC__
+
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
