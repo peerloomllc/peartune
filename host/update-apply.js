@@ -137,6 +137,7 @@ async function downloadAndVerify (plan, { workDir, fetchImpl } = {}) {
 
 const UNIT = 'peartune-host.service'
 const WIN_SERVICE = 'PearTuneHost'
+const DEB_HELPER = '/opt/PearTune/updater-helper.sh'
 
 // The Apple Developer Team that signs PearTune's macOS build. Verified from the
 // mac-mini's own keychain (2026-08-01): the identity desktop/package.json pins,
@@ -271,16 +272,36 @@ const APPLIERS = {
     return { restarted: false, needsRelaunch: true, via: 'dmg-swap' }
   },
 
-  // Slice 4. Throws rather than silently doing nothing, so the caller falls back to
-  // the verified download instead of reporting a success it did not have.
-  deb: async () => { throw new NeedsManualError('the .deb update needs a privileged helper (slice 4)') }
+  // The systemd USER service is unprivileged and `dpkg -i` needs root, so this is
+  // the one path that crosses a privilege line. The .deb installs a root-owned
+  // helper plus a polkit rule letting exactly this user run exactly that program
+  // with no password.
+  //
+  // THE DIGEST IS PASSED ACROSS AND RE-CHECKED THERE. pkexec authorises running the
+  // script; it says nothing about the argument. Without the helper's own check,
+  // anything that could invoke it could hand root an arbitrary .deb. So this is not
+  // "trust the caller" - it is "the caller states a digest, and root verifies it".
+  //
+  // A missing helper is an OLD BUILD, not an error: it throws NEEDS_MANUAL and the
+  // operator gets the verified download, exactly as before this feature existed.
+  deb: async ({ file, digest, user, helperPath, exec, fsImpl }) => {
+    const helper = helperPath || DEB_HELPER
+    const ffs = fsImpl || fs
+    if (!ffs.existsSync(helper)) {
+      throw new NeedsManualError('this install has no privileged updater helper - update from the download instead')
+    }
+    await exec(['pkexec', helper, file, digest, user || os.userInfo().username, ''])
+    // The helper restarts the unit itself, LAST, so the cgroup teardown cannot
+    // interrupt an in-flight dpkg.
+    return { restarted: true, via: 'pkexec' }
+  }
 }
 
-async function applyUpdate (plan, { file, digest, supervisor, target = process.env.APPIMAGE, exec, log = () => {} } = {}) {
+async function applyUpdate (plan, { file, digest, supervisor, target = process.env.APPIMAGE, exec, user, helperPath, mountDir, fsImpl, log = () => {} } = {}) {
   const applier = APPLIERS[plan.applier]
   if (!applier) throw new NeedsManualError(`no applier for ${plan.applier}`)
   log('update:applying', { version: plan.version, via: plan.applier })
-  const r = await applier({ file, digest, target, supervisor, exec })
+  const r = await applier({ file, digest, target, supervisor, exec, user, helperPath, mountDir, fsImpl })
   return { ...r, applier: plan.applier, version: plan.version }
 }
 
@@ -365,6 +386,6 @@ class UpdateApplier {
 
 module.exports = {
   VerifyError, NeedsManualError, UpdateApplier, defaultExec, selectAsset, planApply, downloadAndVerify,
-  download, sha256File, parseSha256Sidecar, detectSupervisor, applyUpdate, APPLIERS, UNIT, WIN_SERVICE,
+  download, sha256File, parseSha256Sidecar, detectSupervisor, applyUpdate, APPLIERS, UNIT, WIN_SERVICE, DEB_HELPER,
   parseCodesignTeam, macAppRoot, APPLE_TEAM_ID
 }

@@ -380,3 +380,67 @@ test('macOS refuses when it cannot work out where the app lives', async () => {
     () => applyUpdate({ applier: 'macapp', version: '1.1.0' }, { file: '/tmp/x.dmg', target: null, exec: async () => '' }),
     (e) => e.code === 'NEEDS_MANUAL')
 })
+
+// --- slice 4: the .deb, the one path that crosses a privilege line ---------------
+
+const { DEB_HELPER } = require('../host/update-apply')
+
+test('the .deb applier hands the DIGEST to the privileged helper', async () => {
+  // pkexec authorises RUNNING the script - it says nothing about the argument it is
+  // handed. So the digest crosses the privilege line and root re-checks it there.
+  // Without that, anything able to invoke the helper could have root install an
+  // arbitrary .deb.
+  const r = recorder()
+  const out = await applyUpdate({ applier: 'deb', version: '1.1.0' }, {
+    file: '/tmp/peartune-desktop_1.1.0_amd64.deb',
+    digest: 'c'.repeat(64),
+    user: 'tim',
+    exec: r.exec,
+    fsImpl: { existsSync: () => true }
+  })
+  assert.match(r.calls[0], /^pkexec \/opt\/PearTune\/updater-helper\.sh /)
+  assert.match(r.calls[0], new RegExp('c'.repeat(64)), 'the digest must be passed for root to re-verify')
+  assert.match(r.calls[0], / tim /, 'the helper needs to know whose user unit to restart')
+  assert.equal(out.restarted, true)
+  assert.equal(out.via, 'pkexec')
+})
+
+test('NO HELPER IS AN OLD BUILD, NOT AN ERROR', async () => {
+  // An install that predates slice 4 has no helper. That must degrade to the
+  // verified download - exactly what the banner did before any of this existed -
+  // rather than reporting a failure the operator can do nothing about.
+  await assert.rejects(
+    () => applyUpdate({ applier: 'deb', version: '1.1.0' }, {
+      file: '/tmp/x.deb', digest: 'd'.repeat(64), exec: async () => '', fsImpl: { existsSync: () => false }
+    }),
+    (e) => e.code === 'NEEDS_MANUAL')
+})
+
+test('the polkit rule grants ONE user ONE absolute root-owned program', () => {
+  // "Passwordless root" deserves a test that says exactly how narrow it is.
+  const rule = fs.readFileSync(
+    path.join(__dirname, '..', 'desktop', 'installer', 'linux', 'peartune-updater.rules.in'), 'utf8')
+  assert.match(rule, /action\.lookup\('program'\) === '\/opt\/PearTune\/updater-helper\.sh'/,
+    'the program must be pinned to one absolute path pkexec can check the ownership of')
+  assert.match(rule, /subject\.user === '__USER__'/, 'and scoped to the install user')
+  assert.equal(DEB_HELPER, '/opt/PearTune/updater-helper.sh',
+    'the path the applier invokes and the path the rule permits must not drift')
+  // A wildcard or a shell here would turn a narrow grant into general root.
+  // STATEMENTS ONLY - the first version of this matched the `*` bullet markers in
+  // the file's own comments, which is the third time that trap has shown up.
+  const code = rule.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.ok(!/\*/.test(code), 'no wildcards in a passwordless-exec rule')
+})
+
+test('the helper RE-VERIFIES as root, and restarts LAST', () => {
+  const h = fs.readFileSync(
+    path.join(__dirname, '..', 'desktop', 'installer', 'linux', 'updater-helper.sh'), 'utf8')
+  const verify = h.indexOf('sha256sum')
+  const install = h.indexOf('dpkg -i')
+  const restart = h.indexOf('systemctl --user restart')
+  assert.ok(verify > 0 && install > verify,
+    'the digest must be checked BEFORE dpkg, or pkexec becomes a way to install anything')
+  assert.ok(restart > install,
+    'restarting tears down the cgroup this helper runs in - any earlier and it could interrupt dpkg')
+  assert.match(h, /--no-block/, 'a blocking restart would have systemd kill the helper mid-call')
+})

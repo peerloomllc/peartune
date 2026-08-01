@@ -132,6 +132,14 @@
         {
           "from": "installer/linux/peartune-host.service",
           "to": "peartune-host.service"
+        },
+        {
+          "from": "installer/linux/updater-helper.sh",
+          "to": "../updater-helper.sh"
+        },
+        {
+          "from": "installer/linux/peartune-updater.rules.in",
+          "to": "../peartune-updater.rules.in"
         }
       ]
     },
