@@ -36,17 +36,24 @@ the host wrapped in a menubar / tray app: it starts at login, has **Open dashboa
 **Quit**, and needs no terminal and no password. A `.dmg` on macOS, an installer `.exe`
 on Windows, an **AppImage** or `.deb` on Linux.
 
-> PearTune has no public release yet, so there is nothing to download today - the
-> installers are built from this repo, and they land on the GitHub releases page when the
-> first release ships. Build instructions are on the two install pages below.
+**[Download it from the releases page.](https://github.com/peerloomllc/peartune/releases/latest)**
+Take the `.dmg` for macOS (`-arm64` for Apple Silicon, the plain one for Intel), the
+`Setup .exe` for Windows, or the `.AppImage` or `.deb` for Linux.
+
+> **Windows will warn you.** The Windows build is not yet signed with a certificate, so
+> SmartScreen says "unknown publisher" - click **More info -> Run anyway**. The macOS
+> build *is* signed and notarized by Apple, so it opens without a fuss.
+
+Prefer to build it yourself? Instructions are on the two install pages below.
 
 Running it on a server, a NAS or a headless box instead? Pick your page:
 
 - **Linux, a NAS, or anything with Docker** - [`host-linux.md`](host-linux.md)
 - **macOS or Windows** - [`host-macos-windows.md`](host-macos-windows.md)
-- **Umbrel** - use the Docker path on [`host-linux.md`](host-linux.md) for now. The
-  community-store listing is written but **not published**, so PearTune does not appear in
-  Umbrel's app store yet
+- **Umbrel** - install it from the **PeerLoom community app store**. Add
+  `https://github.com/peerloomllc/peerloom-umbrel-app-store` in Umbrel's app store
+  settings, then install PearTune from it. (The Docker path on
+  [`host-linux.md`](host-linux.md) also works.)
 - **Start9** - not supported for now. A host runs there, but StartOS's container networking forces every connection through a relay rather than a direct one. See [`../start9/README.md`](../start9/README.md).
 
 Whichever you pick, the host prints something like this when it starts (the desktop app

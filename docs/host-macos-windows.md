@@ -55,25 +55,32 @@ sees a terminal.
 **macOS:** a `.dmg` (Apple Silicon and Intel). **Windows:** a `PearTune Setup x.y.z.exe`
 installer.
 
-> **Not yet on a downloads page.** PearTune has no public release, so there is no
-> installer to download today - the builds are made from this repo. Once the first
-> release ships, these land on the GitHub releases page and this section becomes
-> "download and open it".
+**[Download it from the releases page.](https://github.com/peerloomllc/peartune/releases/latest)**
+Take `PearTune-x.y.z-arm64.dmg` for Apple Silicon, `PearTune-x.y.z.dmg` for Intel, or
+`PearTune-Setup-x.y.z.exe` for Windows.
 
-To build one now:
+**Signing, honestly:**
+
+- **macOS is signed and notarized by Apple**, so it opens normally - no right-click, no
+  "unidentified developer".
+- **Windows is not signed yet**, so SmartScreen warns "unknown publisher" on first run.
+  Choose **More info -> Run anyway**. A signing certificate is on the list; it changes
+  nothing about how the host behaves.
+
+The Windows installer asks for **administrator rights**, because it registers PearTune as
+a background service so your library keeps serving when you are signed out.
+
+<details>
+<summary>Build it yourself instead</summary>
 
 ```bash
 cd desktop && npm install && npm run build:mac       # dist/*.dmg  (run this ON a Mac)
 cd desktop && npm install && npm run build:windows   # dist/*.exe  (cross-builds from Linux via wine)
 ```
 
-`electron-builder` cannot build a macOS target from Linux, so the `.dmg` has to be
-built on a Mac. See [`../desktop/README.md`](../desktop/README.md) for the details.
-
-**Signing, honestly:** the macOS build is signed but **not notarized**, and the Windows
-build is unsigned. So macOS Gatekeeper and Windows SmartScreen will both warn on first
-open until notarization and a Windows cert are wired up. On macOS, right-click the app
-and choose Open to get past it; on Windows, choose "More info" then "Run anyway".
+`electron-builder` cannot build a macOS target from Linux, so the `.dmg` has to be built
+on a Mac. See [`../desktop/README.md`](../desktop/README.md) for the details.
+</details>
 
 ---
 
@@ -203,10 +210,12 @@ machine's music at the same files and you're done.
 The app itself is built and runs; what remains is distribution polish, and it is worth
 being precise about which is which:
 
-- **macOS notarization.** The build is signed but not notarized, so Gatekeeper still
-  warns on first open.
-- **A Windows signing certificate.** The build is unsigned, so SmartScreen warns.
-- **A published release** to download it from, rather than building it yourself.
+- **A Windows signing certificate.** The build is unsigned, so SmartScreen warns
+  "unknown publisher" on first run. This is the last install-friction item.
+- **macOS keeps running only while you are logged in.** Linux and Windows install a real
+  background service; macOS cannot, because a launchd agent is torn down with its login
+  session and running as root would move the library out of your home folder. So on a Mac,
+  stay signed in if you want the library reachable.
 
-None of these change how the host behaves - they change how much friction a stranger
-hits installing it.
+Done since: macOS is now signed **and notarized** (no Gatekeeper warning), and there is a
+published release to download. Neither changes how the host behaves.

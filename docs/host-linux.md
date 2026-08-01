@@ -55,18 +55,29 @@ folder and you change it from the dashboard.
 - **AppImage** - download, `chmod +x`, run. No install, no root, works on any distro.
 - **.deb** - for Debian/Ubuntu, if you would rather it be a package.
 
-> **Not yet on a downloads page.** PearTune has no public release, so there is nothing
-> to download today; the builds are made from this repo. Once the first release ships
-> these land on the GitHub releases page.
+**[Get both from the releases page.](https://github.com/peerloomllc/peartune/releases/latest)**
 
-To build them now:
+```bash
+chmod +x PearTune-*.AppImage && ./PearTune-*.AppImage      # AppImage
+sudo dpkg -i peartune-desktop_*_amd64.deb                  # .deb
+```
+
+**The `.deb` sets it up as a proper background service**, so your library keeps serving
+after you log out and starts again at boot. The AppImage runs as a login-item tray app
+instead; to give it the same treatment, run `peartune-desktop --install-service` once.
+
+<details>
+<summary>Build it yourself instead</summary>
 
 ```bash
 cd desktop && npm install && npm run build:linux   # -> dist/*.AppImage and dist/*.deb
 ```
 
-See [`../desktop/README.md`](../desktop/README.md). Note the AppImage is unsigned, and on
-a Wayland desktop you may need `--disable-gpu` if the tray icon misbehaves.
+See [`../desktop/README.md`](../desktop/README.md).
+</details>
+
+Note the Linux builds are unsigned, and on a Wayland desktop you may need `--disable-gpu`
+if the tray icon misbehaves.
 
 **Not a desktop machine?** Skip to Option B. A tray app needs a desktop session, and
 launching it over SSH does not work - a GUI process started from an SSH session never
@@ -106,7 +117,7 @@ docker run -d --name peartune-host \
   -e PEARTUNE_NAME="My Library" \
   -v "$PWD/data:/data" \
   -v /srv/music:/music:ro \
-  ghcr.io/peerloomllc/peartune-host:0.2.41
+  ghcr.io/peerloomllc/peartune-host:0.2.42
 docker logs peartune-host   # generated password
 ```
 

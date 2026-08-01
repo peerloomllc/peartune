@@ -80,6 +80,19 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   set -a; source "$SCRIPT_DIR/.env"; set +a
 fi
 
+# Which editor opens the release notes and the Nostr draft.
+#
+# DELIBERATELY NOT $EDITOR. That is /usr/bin/nano here (a system-wide default nobody
+# set on purpose), and these two drafts are edited in vim - they are the only
+# interactive editing this script does, and being dropped into the wrong editor
+# mid-release is a bad moment to discover it. Override per-run with
+# RELEASE_EDITOR=..., or set it in scripts/.env to make it stick.
+RELEASE_EDITOR="${RELEASE_EDITOR:-vim}"
+if ! command -v "${RELEASE_EDITOR%% *}" >/dev/null 2>&1; then
+  echo "WARNING: RELEASE_EDITOR '$RELEASE_EDITOR' not found; falling back to vi." >&2
+  RELEASE_EDITOR=vi
+fi
+
 # Required app.conf keys, checked once, up front.
 #
 # Each of these used to carry a hard-coded default copied from whichever
@@ -1562,8 +1575,8 @@ fi
 
 printf "%b" "$NOTES" > release_notes.md
 sed -i 's/\*\*//g' release_notes.md
-echo "    Opening release notes in ${EDITOR:-vi} for review/editing..."
-"${EDITOR:-vi}" release_notes.md
+echo "    Opening release notes in $RELEASE_EDITOR for review/editing..."
+$RELEASE_EDITOR release_notes.md
 echo "--- Release notes ---"
 cat release_notes.md
 echo "---"
@@ -3060,8 +3073,8 @@ sys.stdout.write("\n".join(out))
     # starting point, not a ceiling.
     NOSTR_DRAFT=$(mktemp /tmp/nostr-note-XXXXXX.txt)
     printf '%s' "$NOTE_CONTENT" > "$NOSTR_DRAFT"
-    echo "    Opening note in ${EDITOR:-vi} for review/editing..."
-    "${EDITOR:-vi}" "$NOSTR_DRAFT"
+    echo "    Opening note in $RELEASE_EDITOR for review/editing..."
+    $RELEASE_EDITOR "$NOSTR_DRAFT"
     NOTE_CONTENT=$(cat "$NOSTR_DRAFT")
     rm -f "$NOSTR_DRAFT"
 

@@ -80,10 +80,9 @@ npm start            # or: npm run start:dev-linux
 
 ## Build installers
 
-**macOS is signed but NOT notarized; Windows and the AppImage are unsigned.** So macOS
-Gatekeeper still warns on first open (right-click > Open gets past it) and Windows shows
-a SmartScreen "unknown publisher" warning. Notarization and a Windows cert are the
-remaining distribution work.
+**macOS is signed AND notarized; Windows and the AppImage are unsigned.** So macOS opens
+with no warning at all, while Windows shows a SmartScreen "unknown publisher" prompt on
+first run. A Windows signing certificate is the one remaining distribution item.
 
 ```bash
 npm run build:linux      # AppImage + .deb, native, this box
@@ -103,9 +102,14 @@ PearCal):
 cd desktop && npm install && npm run build:mac    # dist/*.dmg (arm64 + x64)
 ```
 
-`package.json#build.mac` now carries a real signing `identity`, but `notarize` is still
-`false` - so the `.dmg` is signed and not notarized. Wiring notarization there is what
-removes the Gatekeeper warning.
+`package.json#build.mac` carries a real signing `identity`, `hardenedRuntime: true` and
+`notarize: true`. `build-mac.sh` stages the App Store Connect key from `scripts/.env` onto
+the Mac (notarytool is macOS-only) and warns loudly rather than silently shipping an
+un-notarized build if the key is missing. `spctl` reports
+`accepted / source=Notarized Developer ID`.
+
+The old comment here claimed notarization was impossible because hardened runtime blocks
+HyperDHT's LAN traffic. That was measured and is false - see DECISIONS 2026-08-01.
 
 ## Not committed
 
