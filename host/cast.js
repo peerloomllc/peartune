@@ -93,6 +93,70 @@ class CastSessions {
     }
   }
 
+  // --- voice control (proposal 2026-08-02) --------------------------------
+  //
+  // POST /voice/play { token, query, entityId } - Home Assistant's rest_command, forwarding
+  // a sentence someone said in the room.
+  //
+  // ON THE SAME LOOPBACK SERVER AS THE AUDIO, deliberately, and NOT on the dashboard: the
+  // dashboard binds 0.0.0.0 in a container, so a "make the library play" endpoint there
+  // would be published to the LAN.
+  //
+  // THE AUTHORITY QUESTION (proposal, T3). Everything else that plays this library is a
+  // device holding a grant. Voice is not - the person speaking holds no grant. So voice
+  // plays as a REAL grant of its own, minted against a synthetic device key, which means
+  // revoking voice is the SAME revoke as revoking a phone: the audio route's live grant
+  // re-read denies it, and stopFor silences the speaker. No special case in the security
+  // path, which is the whole reason to do it this way.
+  //
+  // The key is a random 32 bytes with NO private half anywhere, so it can never open a
+  // Noise connection. The grant is reachable only from this loopback route.
+  async _voicePlay (req, res, body) {
+    const cfg = this.speakers.config || {}
+    const say = (code, msg) => {
+      res.writeHead(code, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(msg))
+    }
+
+    if (!cfg.voiceEnabled || !cfg.voiceToken) return say(404, { error: 'voice is off' })
+    // Constant-length compare is overkill on loopback, but the token is the whole gate.
+    if (!body?.token || String(body.token) !== cfg.voiceToken) {
+      this.log('voice:denied', { reason: 'token' })
+      return say(403, { error: 'bad token' })
+    }
+
+    const query = String(body.query || '').trim()
+    if (!query) return say(400, { error: 'nothing to search for' })
+    const entityId = String(body.entityId || cfg.voiceEntityId || '').trim()
+    if (!entityId) return say(400, { error: 'no speaker configured' })
+
+    let hit = null
+    try {
+      const r = await this.getAdapter().search({ q: query, limit: 1 })
+      // Adapters return shapes that differ in the wrapper but agree on the rows.
+      const rows = Array.isArray(r) ? r : (r?.tracks || r?.results || [])
+      hit = rows[0] || null
+    } catch (e) {
+      this.log('voice:search-failed', { err: e?.message })
+      return say(500, { error: 'search failed' })
+    }
+    if (!hit) {
+      // A clean miss, so Home Assistant can say "I could not find that" rather than
+      // failing silently. NOT a music request - that is a different feature deliberately.
+      this.log('voice:no-match', { query })
+      return say(404, { error: 'not in the library', query })
+    }
+
+    try {
+      await this.play({ deviceKey: cfg.voiceKey, trackId: hit.id || hit.trackId, entityId })
+    } catch (e) {
+      this.log('voice:play-failed', { err: e?.message })
+      return say(500, { error: e?.message || 'could not play' })
+    }
+    this.log('voice:play', { query, entityId, title: hit.title })
+    return say(200, { ok: true, title: hit.title || null, artist: hit.artist || null })
+  }
+
   // --- the audio route ---------------------------------------------------
   //
   // One route, GET /a/<token>. No Range support: HA's ffmpeg proxy reads straight
@@ -108,6 +172,20 @@ class CastSessions {
 
     try {
       const url = new URL(req.url, 'http://127.0.0.1')
+
+      if (url.pathname === '/voice/play') {
+        if (req.method !== 'POST') return deny(405)
+        const chunks = []
+        for await (const c of req) {
+          chunks.push(c)
+          // A voice command is a short JSON object. Anything larger is not one.
+          if (chunks.reduce((n, b) => n + b.length, 0) > 8192) return deny(413)
+        }
+        let body = null
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { return deny(400) }
+        return this._voicePlay(req, res, body)
+      }
+
       const m = /^\/a\/([A-Za-z0-9_-]+)$/.exec(url.pathname)
       if (!m) return deny(404)
       if (req.method !== 'GET' && req.method !== 'HEAD') return deny(405)

@@ -33,6 +33,7 @@ const Corestore = require('corestore')
 const Hyperbee = require('hyperbee')
 const Protomux = require('protomux')
 const b4a = require('b4a')
+const crypto = require('crypto')
 const z32 = require('z32')
 
 const { createIdentity } = require('./identity')
@@ -695,6 +696,63 @@ class PearTuneHost {
   // hook never runs again for one already open. Killing the live connections is
   // what makes revoke mean "the music stops now" instead of "the music stops
   // whenever they happen to reconnect".
+  // --- voice control (proposal 2026-08-02) ---------------------------------
+  //
+  // Voice plays as a REAL grant rather than a special case in the security path, so
+  // revoking it is the same revoke as revoking a phone - the audio route's live grant
+  // re-read denies it and casts.stopFor silences the speaker, with no new code in either.
+  //
+  // The device key is random bytes with NO private half anywhere, so nothing can ever open
+  // a Noise connection as this device. It exists only to be looked up locally.
+  async enableVoice ({ entityId = '' } = {}) {
+    const cfg = this.speakers.config
+    let voiceKey = cfg.voiceKey
+    if (!voiceKey) {
+      voiceKey = z32.encode(crypto.randomBytes(32))
+      await this.grants.grant({
+        deviceKey: voiceKey,
+        label: 'Home Assistant voice',
+        platform: 'voice',
+        scope: SCOPE.OWNER, // what CAST_SCOPES requires; unusable over Noise regardless
+        grantedBy: 'operator'
+      })
+      this.log('voice:granted', { device: voiceKey.slice(0, 8) })
+    } else {
+      // Re-enabling after a revoke: the row is tombstoned, so mint a fresh one rather
+      // than trying to un-revoke, which grants.js deliberately refuses.
+      const row = await this.grants.get(voiceKey)
+      if (!row || row.revokedAt) {
+        voiceKey = z32.encode(crypto.randomBytes(32))
+        await this.grants.grant({
+          deviceKey: voiceKey,
+          label: 'Home Assistant voice',
+          platform: 'voice',
+          scope: SCOPE.OWNER,
+          grantedBy: 'operator'
+        })
+        this.log('voice:regranted', { device: voiceKey.slice(0, 8) })
+      }
+    }
+    const voiceToken = crypto.randomBytes(32).toString('base64url')
+    this.speakers.save({ voiceEnabled: true, voiceKey, voiceToken, voiceEntityId: entityId })
+    this.notifyOwnersDevicesChanged()
+    return { ok: true, voiceToken, voiceKey }
+  }
+
+  // Off means OFF: the token goes, and the grant is revoked so anything mid-flight dies on
+  // the same path a revoked phone does.
+  async disableVoice () {
+    const key = this.speakers.config.voiceKey
+    if (key) {
+      await this.grants.revoke(key, { by: 'operator' }).catch(() => null)
+      await this.casts.stopFor(Grants.keyOf(key)).catch(() => 0)
+    }
+    this.speakers.save({ voiceEnabled: false, voiceToken: '' })
+    this.log('voice:disabled')
+    this.notifyOwnersDevicesChanged()
+    return { ok: true }
+  }
+
   async revokeDevice (deviceKey) {
     const row = await this.grants.revoke(deviceKey, { by: 'operator' })
     const killed = this.connections.kill(deviceKey)

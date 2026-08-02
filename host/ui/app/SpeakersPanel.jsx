@@ -22,6 +22,8 @@ export function SpeakersPanel ({ toast }) {
   const [token, setToken] = useState('')
   const [busy, setBusy] = useState(null) // 'test' | 'save' | null
   const [dirty, setDirty] = useState(false)
+  // Shown ONCE after minting; publicConfig never carries it back.
+  const [voiceToken, setVoiceToken] = useState('')
   // For load(), which is called from async handlers that closed over an older
   // render. Same guard SourcePanel uses, and for the same reason: without it a
   // refresh silently reverts what the operator has typed but not yet saved.
@@ -59,6 +61,30 @@ export function SpeakersPanel ({ toast }) {
     setDirty(false)
     await load(true)
     if (toast) toast('Speakers saved')
+  }
+
+  const enableVoice = async () => {
+    setBusy('voice')
+    const r = await api('/api/speakers/voice', { enabled: true, entityId: cfg.voiceEntityId || '' })
+    setBusy(null)
+    if (!r.ok) return notify('Could not turn on voice control', r.error || 'unknown error')
+    setVoiceToken(r.voiceToken || '')
+    await load(true)
+  }
+
+  const disableVoice = async () => {
+    setBusy('voice')
+    const r = await api('/api/speakers/voice', { enabled: false })
+    setBusy(null)
+    if (!r.ok) return notify('Could not turn it off', r.error || 'unknown error')
+    setVoiceToken('')
+    await load(true)
+    if (toast) toast('Voice control off')
+  }
+
+  const setVoiceSpeaker = async (entityId) => {
+    setCfg(c => ({ ...c, voiceEntityId: entityId }))
+    await api('/api/speakers', { enabled: cfg.enabled, baseUrl: cfg.baseUrl, voiceEntityId: entityId })
   }
 
   const test = async () => {
@@ -138,6 +164,67 @@ export function SpeakersPanel ({ toast }) {
                 {busy === 'save' ? 'Saving…' : 'Save'}
               </button>
             </div>
+
+            {/* VOICE. Its own block and its own switch, because letting anyone in the room
+                start music is a genuinely different decision from casting off your phone.
+                The disclosure is the point of this section, not decoration (Tim,
+                2026-08-02: "we just have to make sure proper explanations/disclosures are
+                there"), so it says plainly what turning this on means BEFORE the switch. */}
+            {cfg.enabled && cfg.tokenSet && (
+              <div className='foundlist'>
+                <div className='group-h'>Voice control</div>
+                <p className='hint'>
+                  Lets someone say <em>"Okay Nabu, play Led Zeppelin"</em> and hear it start
+                  on a speaker.
+                </p>
+                <div className='banner info'>
+                  <span>
+                    <strong>Anyone who can speak in your home can play your music.</strong>{' '}
+                    There is no password on a spoken request and no way to tell who said it,
+                    so treat this like leaving a record player out: fine at home, worth
+                    thinking about with guests. It cannot browse, download, share or change
+                    anything - only start playback on your own speakers. Turning it off, or
+                    revoking the "Home Assistant voice" device on the People &amp; Devices
+                    tab, stops it at once.
+                  </span>
+                </div>
+
+                {!cfg.voiceEnabled
+                  ? <div className='srcactions center'>
+                    <button onClick={enableVoice} disabled={!!busy}>
+                      {busy === 'voice' ? 'Turning on…' : 'Turn on voice control'}
+                    </button>
+                  </div>
+                  : <>
+                    <label>Speaker to use when the request does not name one</label>
+                    <select
+                      value={cfg.voiceEntityId || ''}
+                      onChange={e => setVoiceSpeaker(e.target.value)}
+                    >
+                      <option value=''>Pick a speaker…</option>
+                      {speakers.map(s => <option key={s.entityId} value={s.entityId}>{s.name}</option>)}
+                    </select>
+                    {voiceToken && (
+                      <>
+                        <p className='hint'>
+                          <strong>Copy this now.</strong> It is shown once. Paste it into the
+                          Home Assistant configuration below; if you lose it, turn voice off
+                          and on again for a new one.
+                        </p>
+                        <input readOnly value={voiceToken} onFocus={e => e.target.select()} />
+                      </>
+                    )}
+                    <div className='srcactions center'>
+                      <button className='ghost' onClick={enableVoice} disabled={!!busy}>
+                        {busy === 'voice' ? 'Working…' : 'New token'}
+                      </button>
+                      <button className='destructive' onClick={disableVoice} disabled={!!busy}>
+                        Turn off
+                      </button>
+                    </div>
+                  </>}
+              </div>
+            )}
 
             {speakers.length > 0 && (
               <div className='foundlist'>

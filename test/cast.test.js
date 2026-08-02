@@ -306,6 +306,127 @@ test('requireLoopback explains itself rather than just failing', () => {
   assert.match(why, /same machine/)
 })
 
+// --- voice control -----------------------------------------------------
+//
+// The token is the whole gate on this route, so every way of getting past it without one
+// gets a test. The route lives on the loopback server, which the bind test above already
+// pins to 127.0.0.1 - that is what stops the LAN reaching it at all.
+
+const VOICE_KEY = 'voice-device-key'
+
+async function buildVoice (over = {}) {
+  const speakers = fakeSpeakers()
+  speakers.config = {
+    enabled: true,
+    voiceEnabled: true,
+    voiceToken: 'the-right-token',
+    voiceKey: VOICE_KEY,
+    voiceEntityId: 'media_player.default',
+    ...over
+  }
+  const grants = fakeGrants({ [VOICE_KEY]: okGrant({ deviceKey: VOICE_KEY }) })
+  const adapter = {
+    async stream () { return Readable.from([Buffer.from('AUDIOBYTES')]) },
+    async search ({ q }) { return q === 'nothing here' ? [] : [{ id: 'trk1', title: 'Rock and Roll', artist: 'Led Zeppelin' }] }
+  }
+  const casts = new CastSessions({ speakers, grants, getAdapter: () => adapter })
+  const port = await casts.start()
+  return { casts, speakers, grants, port }
+}
+
+const voicePost = (port, body) => fetch(`http://127.0.0.1:${port}/voice/play`, {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+})
+
+test('a voice request with the right token plays', async (t) => {
+  const { casts, speakers, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  const res = await voicePost(port, { token: 'the-right-token', query: 'led zeppelin', entityId: 'media_player.x' })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.title, 'Rock and Roll')
+  assert.equal(speakers.calls.find(c => c[0] === 'play')[1], 'media_player.x')
+})
+
+test('a voice request with the WRONG token is refused', async (t) => {
+  const { casts, speakers, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  assert.equal((await voicePost(port, { token: 'guessed', query: 'x', entityId: 'e' })).status, 403)
+  assert.equal(speakers.calls.length, 0, 'nothing may reach the speaker')
+})
+
+test('a voice request with NO token is refused', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+  assert.equal((await voicePost(port, { query: 'x', entityId: 'e' })).status, 403)
+})
+
+test('voice is refused entirely when it is switched off', async (t) => {
+  const { casts, port } = await buildVoice({ voiceEnabled: false })
+  t.after(() => casts.close())
+  // 404, not 403: an off feature should not confirm that a token would have worked.
+  assert.equal((await voicePost(port, { token: 'the-right-token', query: 'x', entityId: 'e' })).status, 404)
+})
+
+test('rotating the token invalidates the old one immediately', async (t) => {
+  const { casts, speakers, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  assert.equal((await voicePost(port, { token: 'the-right-token', query: 'a', entityId: 'e' })).status, 200)
+  speakers.config.voiceToken = 'rotated'
+  assert.equal((await voicePost(port, { token: 'the-right-token', query: 'a', entityId: 'e' })).status, 403)
+  assert.equal((await voicePost(port, { token: 'rotated', query: 'a', entityId: 'e' })).status, 200)
+})
+
+test('a query that matches nothing says so, and plays nothing', async (t) => {
+  const { casts, speakers, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  const res = await voicePost(port, { token: 'the-right-token', query: 'nothing here', entityId: 'e' })
+  assert.equal(res.status, 404)
+  assert.equal((await res.json()).error, 'not in the library')
+  assert.equal(speakers.calls.length, 0)
+})
+
+test('an empty query is refused rather than playing something arbitrary', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+  assert.equal((await voicePost(port, { token: 'the-right-token', query: '   ', entityId: 'e' })).status, 400)
+})
+
+test('with no entityId it falls back to the configured default speaker', async (t) => {
+  const { casts, speakers, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  assert.equal((await voicePost(port, { token: 'the-right-token', query: 'a' })).status, 200)
+  assert.equal(speakers.calls.find(c => c[0] === 'play')[1], 'media_player.default')
+})
+
+test('GET is refused - this route only accepts POST', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+  assert.equal((await fetch(`http://127.0.0.1:${port}/voice/play`)).status, 405)
+})
+
+test('REVOKING the voice grant kills voice playback, same as any device', async (t) => {
+  const { casts, grants, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  const res = await voicePost(port, { token: 'the-right-token', query: 'a', entityId: 'e' })
+  assert.equal(res.status, 200)
+  const url = `http://127.0.0.1:${port}/a/${[...casts.tokens.keys()][0]}`
+  assert.equal((await fetch(url)).status, 200)
+
+  // The operator revokes "Home Assistant voice" on the Devices tab. No voice-specific
+  // code runs here - it is the ordinary grant path, which is the point of giving voice a
+  // real grant instead of a special case.
+  grants.rows[VOICE_KEY].revokedAt = Date.now()
+  assert.equal((await fetch(url)).status, 403)
+})
+
 // --- pause / resume ----------------------------------------------------
 //
 // These exist so the player's play/pause button has something to drive while casting.

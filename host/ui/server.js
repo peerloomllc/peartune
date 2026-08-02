@@ -261,6 +261,20 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         }
       }
 
+      // Voice control (proposal 2026-08-02). Enabling MINTS the token and returns it ONCE -
+      // publicConfig never carries it, so the operator copies it here or rotates for a new
+      // one. Same rule as the HA token, for the same reason.
+      if (req.method === 'POST' && url.pathname === '/api/speakers/voice') {
+        const body = await readBody(req)
+        try {
+          if (body && body.enabled === false) return json(res, 200, await host.disableVoice())
+          const r = await host.enableVoice({ entityId: body?.entityId || '' })
+          return json(res, 200, r)
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/speakers/test') {
         try {
           return json(res, 200, await host.speakers.test())

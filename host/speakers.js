@@ -23,8 +23,10 @@ const VERSION = 1
 
 // Same posture as source.js: a secret is never sent to the browser, and an empty
 // field on save means "leave it alone" rather than "set it to empty".
-const SECRETS = ['token']
-const FIELDS = ['enabled', 'baseUrl', 'token']
+const SECRETS = ['token', 'voiceToken']
+// voiceKey is the synthetic device key voice plays as - not a secret (it is a public key
+// with no private half anywhere), but not something the browser should be able to set.
+const FIELDS = ['enabled', 'baseUrl', 'token', 'voiceEnabled', 'voiceToken', 'voiceKey', 'voiceEntityId']
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8123'
 
@@ -99,14 +101,33 @@ class Speakers {
   }
 
   _blank () {
-    return { version: VERSION, enabled: false, baseUrl: DEFAULT_BASE_URL, token: '' }
+    return {
+      version: VERSION,
+      enabled: false,
+      baseUrl: DEFAULT_BASE_URL,
+      token: '',
+      // Voice control (proposal 2026-08-02). Separate switch from speaker playback: a
+      // person may well want to cast from the app without letting anyone in the room
+      // start music by talking.
+      voiceEnabled: false,
+      voiceToken: '',
+      voiceKey: '',
+      voiceEntityId: ''
+    }
   }
 
   // What the dashboard is allowed to see. Secrets become a boolean - enough to
   // render "configured", never enough to read back.
   publicConfig () {
     const c = this.config
-    const out = { version: VERSION, enabled: c.enabled, baseUrl: c.baseUrl }
+    const out = {
+      version: VERSION,
+      enabled: c.enabled,
+      baseUrl: c.baseUrl,
+      voiceEnabled: c.voiceEnabled,
+      voiceEntityId: c.voiceEntityId,
+      voiceKey: c.voiceKey
+    }
     for (const s of SECRETS) out[s + 'Set'] = !!c[s]
     out.loopbackOnly = true
     out.problem = c.enabled ? requireLoopback(c.baseUrl) : null
