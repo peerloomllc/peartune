@@ -130,7 +130,7 @@ export function SpeakersPanel ({ toast }) {
 
             {cfg.problem && <div className='banner'>{cfg.problem}</div>}
 
-            <div className='srcactions'>
+            <div className='srcactions center'>
               <button className='ghost' onClick={test} disabled={!!busy || !cfg.enabled}>
                 {busy === 'test' ? 'Testing…' : 'Test'}
               </button>

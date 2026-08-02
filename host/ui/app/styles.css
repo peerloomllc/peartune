@@ -303,6 +303,11 @@ label { display: block; margin: 10px 0 4px; color: var(--subtle); font-size: 12p
 .autoscan { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; font-size: 13px; color: var(--muted); }
 .autoscan select { width: auto; min-width: 156px; }
 .srcactions button { width: 100%; }
+/* The Speakers panel has TWO buttons, not the source panel's three, so the 3-column
+   grid left them hugging the left edge with a dead third column. Centre them on
+   their own row instead of stretching them to a grid that no longer fits. */
+.srcactions.center { display: flex; justify-content: center; }
+.srcactions.center button { width: auto; min-width: 116px; }
 .srcmsg { text-align: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
 .srcmsg.ok { color: var(--good); }
 .srcmsg.bad { color: var(--bad); }
