@@ -29,7 +29,7 @@ const MUTATING = new Set([
   // OWNER scope in the handlers as well; listing them here keeps a readonly grant out
   // at the same chokepoint every other mutating method uses, so a future relaxation
   // of the owner gate cannot accidentally let `readonly` through.
-  'speaker.play', 'speaker.stop', 'speaker.volume'
+  'speaker.play', 'speaker.stop', 'speaker.volume', 'speaker.pause', 'speaker.resume'
 ])
 
 // WHO owns the user state on this connection. Derived from the grant the firewall
@@ -666,6 +666,25 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
         await speakers.stop(grant.deviceKey, String(params.entityId))
         log('speaker:stop', { entityId: params.entityId })
+        return send.res.send({ id, body: { ok: true } })
+      }
+
+      // Pause and resume the SPEAKER (proposal 2026-08-02). Without these, the player's
+      // play/pause button had nothing to talk to while casting, so it drove the phone and
+      // put a second copy of the song in the room.
+      case 'speaker.pause': {
+        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
+        await speakers.pause(String(params.entityId))
+        return send.res.send({ id, body: { ok: true } })
+      }
+
+      case 'speaker.resume': {
+        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
+        await speakers.resume(String(params.entityId))
         return send.res.send({ id, body: { ok: true } })
       }
 
