@@ -240,6 +240,35 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         }
       }
 
+      // --- Home Assistant speakers (proposal 2026-08-01) --------------------
+      //
+      // publicConfig() never returns the token - only a `tokenSet` boolean - so the
+      // browser can render "configured" without ever being able to read it back.
+      if (req.method === 'GET' && url.pathname === '/api/speakers') {
+        let speakers = []
+        if (host.speakers.enabled) speakers = await host.speakers.list().catch(() => [])
+        return json(res, 200, { config: host.speakers.publicConfig(), speakers })
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/speakers') {
+        const cfg = await readBody(req)
+        try {
+          return json(res, 200, { ok: true, config: host.speakers.save(cfg) })
+        } catch (e) {
+          // Where the loopback-only refusal surfaces: the operator learns at the moment
+          // they ask, with the reason, rather than at play time.
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/speakers/test') {
+        try {
+          return json(res, 200, await host.speakers.test())
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
       // Change/reset the dashboard password. This handler only runs for an already-
       // authenticated request (auth.handle 401s everyone else), so the session is the
       // authorization - we do NOT re-ask for the current password, which would be

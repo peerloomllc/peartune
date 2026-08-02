@@ -62,6 +62,8 @@ const EXPIRY_SWEEP_MS = 30_000
 // playback; only the phone knows.
 const NOWPLAYING_STALE_MS = 20 * 1000
 const { serveMedia } = require('./media')
+const { Speakers } = require('./speakers')
+const { CastSessions } = require('./cast')
 const { PairSession, tokenEquals } = require('./pair')
 const { SCOPE } = require('../protocol/constants')
 const { SourceStore, buildAdapter } = require('./source')
@@ -186,6 +188,18 @@ class PearTuneHost {
     this._topic = null
     this._reannounce = null
     this._earlyReannounce = null
+
+    // Home Assistant speaker playback (proposal 2026-08-01). Both are inert until
+    // an operator configures HA in the dashboard: `speakers.enabled` is false with
+    // no speakers.json, and CastSessions binds nothing until the first play.
+    this.speakers = new Speakers({ dataDir: this.dataDir, log: this.log })
+    this.casts = new CastSessions({
+      speakers: this.speakers,
+      grants: this.grants,
+      getAdapter: () => this.adapter,
+      presence: this.presence,
+      log: this.log
+    })
   }
 
   get publicKey () {
@@ -394,14 +408,20 @@ class PearTuneHost {
   // Walk the live-connection devices and kill any whose grant decide() now refuses -
   // an expired guest, mostly (a revoke already killed on its own event). Loads each
   // lookup, then delegates the selection to the pure gate.sweepKills.
+  //
+  // CASTING DEVICES ARE SWEPT TOO, even with no live connection. A phone can start a
+  // cast and close the app: the connection goes, the speaker keeps playing, and a
+  // connection-only sweep would never look at that device again - so an expiring
+  // guest grant would leave music playing indefinitely.
   async _sweepExpired () {
-    const keys = this.connections.deviceKeys()
+    const keys = [...new Set([...this.connections.deviceKeys(), ...this.casts.deviceKeys()])]
     if (!keys.length) return
     const lookups = new Map()
     for (const key of keys) lookups.set(key, await this.grants.lookup(key))
     for (const key of sweepKills(keys, lookups)) {
       const killed = this.connections.kill(key)
-      this.log('host:expired', { device: key.slice(0, 8), killed })
+      const silenced = await this.casts.stopFor(key).catch(() => 0)
+      this.log('host:expired', { device: key.slice(0, 8), killed, silenced })
     }
   }
 
@@ -543,6 +563,19 @@ class PearTuneHost {
           requests: () => this.ownerRequestList(),
           resolveRequest: (id, status) => this.resolveRequestAndNotify(id, status)
         },
+        // Home Assistant speaker playback (proposal 2026-08-01). Bound operations only,
+        // never the host - and media.js gates every one on the grant's scope, because
+        // casting makes noise in somebody's house.
+        speakers: {
+          enabled: () => this.speakers.enabled,
+          list: () => this.speakers.list(),
+          state: (entityId) => this.speakers.getState(entityId),
+          setVolume: (entityId, level) => this.speakers.setVolume(entityId, level),
+          // deviceKey is bound from THIS connection's grant by media.js, never a param.
+          play: (deviceKey, entityId, trackId) => this.casts.play({ deviceKey, entityId, trackId }),
+          stop: (deviceKey, entityId) => this.casts.stop(deviceKey, entityId),
+          active: (deviceKey) => this.casts.active(deviceKey)
+        },
         log: (msg, data) => this.log(msg, { device: short, ...data })
       })
     })
@@ -663,9 +696,14 @@ class PearTuneHost {
   async revokeDevice (deviceKey) {
     const row = await this.grants.revoke(deviceKey, { by: 'operator' })
     const killed = this.connections.kill(deviceKey)
+    // A speaker is NOT one of the connections kill() destroys - the audio reaches it
+    // from this process, not from the revoked phone. Without this the music would keep
+    // playing in the room. See host/cast.js.
+    const silenced = await this.casts.stopFor(Grants.keyOf(deviceKey)).catch(() => 0)
     this.log('host:revoked', {
       device: Grants.keyOf(deviceKey).slice(0, 8),
-      killedConnections: killed
+      killedConnections: killed,
+      silencedSpeakers: silenced
     })
     this.notifyOwnersDevicesChanged()
     return { grant: row, killed }
@@ -697,8 +735,10 @@ class PearTuneHost {
   async setDeviceExpiry (deviceKey, expiresAt) {
     const row = await this.grants.setExpiry(deviceKey, expiresAt)
     if (!row) return { grant: null, killed: 0 }
-    const killed = (expiresAt && Date.now() > expiresAt) ? this.connections.kill(deviceKey) : 0
-    this.log('host:expiry-set', { device: Grants.keyOf(deviceKey).slice(0, 8), expiresAt, killed })
+    const past = !!(expiresAt && Date.now() > expiresAt)
+    const killed = past ? this.connections.kill(deviceKey) : 0
+    const silenced = past ? await this.casts.stopFor(Grants.keyOf(deviceKey)).catch(() => 0) : 0
+    this.log('host:expiry-set', { device: Grants.keyOf(deviceKey).slice(0, 8), expiresAt, killed, silenced })
     this.notifyOwnersDevicesChanged()
     return { grant: row, killed }
   }
@@ -706,7 +746,10 @@ class PearTuneHost {
   async revokePerson (personId) {
     const revoked = await this.grants.revokePerson(personId)
     const killed = this.connections.killAll(revoked.map(r => r.deviceKey))
-    this.log('host:revoked-person', { personId, devices: revoked.length, killedConnections: killed })
+    const silenced = await this.casts.stopForAll(revoked.map(r => Grants.keyOf(r.deviceKey))).catch(() => 0)
+    this.log('host:revoked-person', {
+      personId, devices: revoked.length, killedConnections: killed, silencedSpeakers: silenced
+    })
     this.notifyOwnersDevicesChanged()
     return { revoked, killed }
   }
@@ -722,7 +765,8 @@ class PearTuneHost {
     if (!row) return { deleted: null, killed: 0 }
     this.avatars.delete(deviceKey) // don't orphan the photo file
     const killed = this.connections.kill(deviceKey)
-    this.log('host:device-deleted', { device: Grants.keyOf(deviceKey).slice(0, 8), killed })
+    const silenced = await this.casts.stopFor(Grants.keyOf(deviceKey)).catch(() => 0)
+    this.log('host:device-deleted', { device: Grants.keyOf(deviceKey).slice(0, 8), killed, silenced })
     this.notifyOwnersDevicesChanged()
     return { deleted: row, killed }
   }
@@ -838,6 +882,9 @@ class PearTuneHost {
     if (this._topic) {
       try { await this.dht.unannounce(this._topic, this.identity.keyPair) } catch {}
     }
+    // Before the store closes: stopFor() silences speakers, and a speaker left
+    // playing from a URL that has stopped answering is a worse ending than silence.
+    await this.casts.close().catch(() => {})
     if (this.server) await this.server.close()
     await this.bee.close()
     await this.stateBee.close()
