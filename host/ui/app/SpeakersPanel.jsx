@@ -140,13 +140,17 @@ export function SpeakersPanel ({ toast }) {
             </div>
 
             {speakers.length > 0 && (
-              <div className='list'>
-                {speakers.map(s => (
-                  <div className='drow' key={s.entityId}>
-                    <span className='name'>{s.name}</span>
-                    <span className='subtle'>{s.state}</span>
-                  </div>
-                ))}
+              <div className='foundlist'>
+                <div className='group-h'>Speakers found</div>
+                <div className='rootlist'>
+                  {speakers.map(s => (
+                    <div className='rootrow' key={s.entityId}>
+                      <SpeakerHigh size={14} />
+                      <span className='foundname' title={s.entityId}>{s.name}</span>
+                      <span className='subtle'>{s.state}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
             {cfg.enabled && cfg.tokenSet && !cfg.problem && speakers.length === 0 &&

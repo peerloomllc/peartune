@@ -307,6 +307,11 @@ label { display: block; margin: 10px 0 4px; color: var(--subtle); font-size: 12p
    grid left them hugging the left edge with a dead third column. Centre them on
    their own row instead of stretching them to a grid that no longer fits. */
 .srcactions.center { display: flex; justify-content: center; }
+/* The speakers we can see are a RESULT, not another field, so they get their own block
+   under a rule rather than trailing the form as a bare right-aligned list. Rows reuse
+   .rootrow (the folder list's card) so a found speaker looks like a configured thing. */
+.foundlist { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 2px; }
+.foundname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
 .srcactions.center button { width: auto; min-width: 116px; }
 .srcmsg { text-align: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
 .srcmsg.ok { color: var(--good); }
@@ -612,7 +617,10 @@ button.destructive { background: var(--bad); color: #fff; }
      fifth or sixth tab costs nothing rather than needing this decided again.
      `flex: 1 1 auto` + a min-width lets two sit per row and the last stretch to fill. */
   .tabbar { flex-wrap: wrap; }
-  .tabbar > button { flex: 1 1 auto; min-width: 44%; }
+  /* EXACTLY half a row each, so the four sit as an even 2x2 rather than sizing to their
+     labels - "Requests" is a third the width of "People & Devices", and flex:auto made
+     that difference visible as soon as they wrapped. The 4px is half the 8px gap. */
+  .tabbar > button { flex: 0 0 calc(50% - 4px); min-width: 0; }
 
   .stats { gap: 8px; }
   .stat { padding: 12px; }
