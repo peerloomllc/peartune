@@ -62,6 +62,11 @@ function pathOf (dataDir) {
   return path.join(dataDir, FILE)
 }
 
+// ONLY the fields actually present. `enabled` used to be coerced unconditionally
+// (`out.enabled = !!out.enabled`), which meant ANY caller that omitted it silently
+// turned the feature off - a landmine for a partial update, and not something a
+// caller could see going wrong. An absent field now means "leave it alone", the
+// same rule the secrets already followed.
 function pick (cfg) {
   const out = {}
   for (const f of FIELDS) {
@@ -69,7 +74,7 @@ function pick (cfg) {
   }
   if (out.baseUrl != null) out.baseUrl = String(out.baseUrl).trim().replace(/\/+$/, '')
   if (out.token != null) out.token = String(out.token).trim()
-  out.enabled = !!out.enabled
+  if (out.enabled != null) out.enabled = !!out.enabled
   return out
 }
 

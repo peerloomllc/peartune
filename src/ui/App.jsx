@@ -433,6 +433,13 @@ export default function App () {
         loadContinue()
         loadHandoff(); setTimeout(loadHandoff, 2000) // retry: the active device may push its queue just after we connect
         loadPlaylists(true)
+        // Speakers belong here for the same reason as everything above: init connects in the
+        // BACKGROUND, so `connected` is false when init resolves and the load it does there
+        // never runs on a cold start. Found on the TCL 2026-08-01 - the speaker button was
+        // missing on a freshly launched app even though the host was serving the list. It
+        // also covers the operator turning Home Assistant on while the app sits connected,
+        // which nothing else would tell us about until a reconnect.
+        loadSpeakers()
         // REQUESTS TOO, and this is not symmetry for its own sake. A backgrounded phone loses its
         // connection in about 30 seconds (measured on the TCL, 2026-07-30), and a push cannot
         // reach a device that is not there - so anything that happened while it was away is

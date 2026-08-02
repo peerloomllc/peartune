@@ -13,9 +13,10 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { Readable } = require('stream')
+const path = require('path')
 
 const { CastSessions } = require('../host/cast')
-const { isLoopbackUrl, requireLoopback } = require('../host/speakers')
+const { Speakers, isLoopbackUrl, requireLoopback } = require('../host/speakers')
 
 const DEVICE = 'device-key-aaa'
 const OTHER = 'device-key-bbb'
@@ -301,4 +302,80 @@ test('requireLoopback explains itself rather than just failing', () => {
   assert.equal(requireLoopback('http://127.0.0.1:8123'), null)
   const why = requireLoopback('http://192.168.1.50:8123')
   assert.match(why, /same machine/)
+})
+
+// --- config persistence ------------------------------------------------
+//
+// Found on the first hardware run: the dashboard showed a ticked box while the
+// phone was told the feature was off, because a partial save had silently written
+// enabled:false. An absent field must mean "leave it alone".
+
+const os = require('os')
+const fspromises = require('fs')
+
+function tmpSpeakers () {
+  const dir = fspromises.mkdtempSync(path.join(os.tmpdir(), 'pt-speakers-'))
+  return { dir, make: () => new Speakers({ dataDir: dir }) }
+}
+
+test('an absent `enabled` on save does NOT turn the feature off', () => {
+  const { make } = tmpSpeakers()
+  const s = make()
+  s.save({ enabled: true, baseUrl: 'http://127.0.0.1:8123', token: 'tok' })
+  assert.equal(s.enabled, true)
+
+  // A partial update - say a future caller that only means to move the address.
+  s.save({ baseUrl: 'http://127.0.0.1:9999' })
+  assert.equal(s.config.enabled, true, 'enabled must survive a save that omits it')
+  assert.equal(s.config.baseUrl, 'http://127.0.0.1:9999')
+})
+
+test('an explicit enabled:false still turns it off', () => {
+  const { make } = tmpSpeakers()
+  const s = make()
+  s.save({ enabled: true, baseUrl: 'http://127.0.0.1:8123', token: 'tok' })
+  s.save({ enabled: false })
+  assert.equal(s.enabled, false)
+})
+
+test('an empty token means keep the stored one, not erase it', () => {
+  const { make } = tmpSpeakers()
+  const s = make()
+  s.save({ enabled: true, baseUrl: 'http://127.0.0.1:8123', token: 'secret' })
+  s.save({ enabled: true, baseUrl: 'http://127.0.0.1:8123', token: '' })
+  assert.equal(s.config.token, 'secret')
+  assert.equal(s.enabled, true)
+})
+
+test('the config survives a reload from disk', () => {
+  const { make } = tmpSpeakers()
+  make().save({ enabled: true, baseUrl: 'http://127.0.0.1:8123', token: 'tok' })
+  const fresh = make()
+  assert.equal(fresh.enabled, true, 'a restart must not lose the operator setting')
+})
+
+test('enabling with a non-loopback address is refused, with the reason', () => {
+  const { make } = tmpSpeakers()
+  const s = make()
+  assert.throws(
+    () => s.save({ enabled: true, baseUrl: 'http://192.168.1.50:8123', token: 'tok' }),
+    /same machine/
+  )
+  assert.equal(s.enabled, false)
+})
+
+test('enabling with no token is refused', () => {
+  const { make } = tmpSpeakers()
+  const s = make()
+  assert.throws(() => s.save({ enabled: true, baseUrl: 'http://127.0.0.1:8123' }), /token/)
+})
+
+test('publicConfig never leaks the token, only whether one is set', () => {
+  const { make } = tmpSpeakers()
+  const s = make()
+  s.save({ enabled: true, baseUrl: 'http://127.0.0.1:8123', token: 'super-secret' })
+  const pub = s.publicConfig()
+  assert.equal(pub.tokenSet, true)
+  assert.equal(pub.token, undefined)
+  assert.equal(JSON.stringify(pub).includes('super-secret'), false)
 })

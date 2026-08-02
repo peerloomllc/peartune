@@ -11,7 +11,7 @@
 // words, because an operator typing their real HA address deserves the reason rather
 // than "invalid address".
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { SpeakerHigh } from '@phosphor-icons/react'
 import { api } from './api'
 import { notify } from './ui'
@@ -22,15 +22,27 @@ export function SpeakersPanel ({ toast }) {
   const [token, setToken] = useState('')
   const [busy, setBusy] = useState(null) // 'test' | 'save' | null
   const [dirty, setDirty] = useState(false)
+  // For load(), which is called from async handlers that closed over an older
+  // render. Same guard SourcePanel uses, and for the same reason: without it a
+  // refresh silently reverts what the operator has typed but not yet saved.
+  const dirtyRef = useRef(false)
+  dirtyRef.current = dirty
 
-  const load = async () => {
+  // `force` = we just saved, so what is on disk IS what the operator wanted and it
+  // is safe to adopt. Otherwise an unsaved edit wins over the stored config.
+  //
+  // THIS BIT THE FIRST HARDWARE RUN. Test called load() unconditionally, so
+  // "tick the box -> Test -> Save" fed the SAVED (unticked) value back into the
+  // form, and Save then wrote enabled:false while the operator was looking at a
+  // ticked box. The speaker list refreshed; the config must not.
+  const load = async (force = false) => {
     const r = await api('/api/speakers')
     if (!r || !r.config) return
-    setCfg(r.config)
+    if (force || !dirtyRef.current) setCfg(r.config)
     setSpeakers(r.speakers || [])
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load(true) }, [])
 
   const set = (patch) => { setCfg(c => ({ ...c, ...patch })); setDirty(true) }
 
@@ -45,7 +57,7 @@ export function SpeakersPanel ({ toast }) {
     if (!r.ok) return notify('Could not save', r.error || 'unknown error')
     setToken('')
     setDirty(false)
-    await load()
+    await load(true)
     if (toast) toast('Speakers saved')
   }
 
