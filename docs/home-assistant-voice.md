@@ -73,10 +73,40 @@ intent is offered to it as a tool automatically, and the description is what the
 decide when to use it. Without one, Home Assistant generates a generic fallback and the model
 guesses.
 
+## Say "put on", not "play"
+
+**"Play Led Zeppelin" will not work, and cannot be made to.** Home Assistant's built-in
+`HassMediaSearchAndPlay` intent claims that phrasing and every variation of it:
+
+```
+"play {search_query}"                    "play {search_query} in [the] {area}"
+"play {search_query} on [the] {name}"    "play [the] {media_class} {search_query}"
+```
+
+It wins, and then it fails, because it only matches speakers that advertise the
+`SEARCH_MEDIA` feature - which no ordinary smart speaker does. That is the
+**"Sorry, no devices supports the required features"** you get.
+
+So PearTune uses the phrasings Home Assistant leaves free:
+
+- **"put on Led Zeppelin"**
+- **"listen to Led Zeppelin"**
+- **"play Led Zeppelin from PearTune"**
+
+Making plain "play X" work needs PearTune to register a `media_player` entity of its own
+inside Home Assistant, which is a proper integration rather than a config block. It is on the
+list.
+
 ## 3. Sentences, if you use the default agent
 
-An LLM agent needs no sentences: it decides from the description above. The **default** agent
-does, so add `custom_sentences/en/peartune.yaml`:
+The block the dashboard generates already includes these, as a **conversation trigger
+automation** rather than a `custom_sentences` file - sentences in their own directory would
+make this a two-file setup for no gain, and a conversation trigger carries its own.
+
+An LLM agent needs no sentences at all: it is offered the `intent_script` as a tool and decides
+from its description. That is why the generated block contains both halves.
+
+If you would rather use `custom_sentences/en/peartune.yaml` by hand:
 
 ```yaml
 language: "en"

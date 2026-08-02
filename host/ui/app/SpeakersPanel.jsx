@@ -67,26 +67,56 @@ export function SpeakersPanel ({ toast }) {
 
   // Generated from what the host actually reports, so the port and token can never drift
   // from what is running. Kept in one place rather than split across the docs and the UI.
+  // ONE PASTE, ONE FILE. The first cut emitted rest_command + intent_script and left the
+  // SENTENCES out - so Home Assistant knew how to play music and never knew when to. It
+  // needs both, and custom_sentences lives in its own directory, which would have made this
+  // a two-file setup.
+  //
+  // A conversation-trigger automation avoids that: it carries its own sentences, lives in
+  // configuration.yaml like everything else here, and exposes wildcards as trigger.slots.
+  // The intent_script stays because an LLM voice agent never sees sentences at all - it is
+  // offered intents as tools - so the two halves cover the two kinds of assistant.
+  //
+  // NOTE THE PHRASINGS. "play X" is NOT ours to take: Home Assistant's built-in
+  // HassMediaSearchAndPlay claims "play {search_query}" and every variation of it, and it
+  // wins - which is exactly the "no devices supports the required features" Tim heard,
+  // because no speaker in a normal house advertises SEARCH_MEDIA. Until PearTune ships a
+  // media_player entity of its own, "put on" and "listen to" are the phrases that are free.
   const haYaml = `rest_command:
   peartune_play:
     url: "http://127.0.0.1:${castPort || 8742}/voice/play"
     method: POST
     content_type: "application/json"
-    payload: '{"token":"${voiceToken}","query":"{{ query }}","entityId":"{{ entity_id }}"}'
+    payload: '{"token":"${voiceToken}","query":"{{ query }}","entityId":""}'
+
+automation:
+  - alias: PearTune voice
+    mode: queued
+    triggers:
+      - trigger: conversation
+        command:
+          - "put on [some] {query}"
+          - "listen to [some] {query}"
+          - "I want to listen to [some] {query}"
+          - "play [some] {query} from peartune"
+    actions:
+      - action: rest_command.peartune_play
+        data:
+          query: "{{ trigger.slots.query }}"
 
 intent_script:
   PearTunePlayMusic:
     description: >-
-      Play music from the user's personal PearTune library on a speaker. Use this for
-      any request to play a specific artist, album or song.
+      Play music from the user's personal PearTune music library on a speaker in
+      their home. Use this for any request to play a specific artist, album or
+      song. The search_query is what the user asked for, such as "Led Zeppelin".
     parameters:
       search_query:
         description: The artist, album or song to play
     action:
-      - service: rest_command.peartune_play
+      - action: rest_command.peartune_play
         data:
           query: "{{ search_query }}"
-          entity_id: ""
     speech:
       text: "Playing {{ search_query }}"`
 
@@ -254,7 +284,11 @@ intent_script:
                           }}>Copy configuration</button>
                         </div>
                         <p className='hint'>
-                          Then say <em>"Okay Nabu, play Led Zeppelin"</em>. The token above is
+                          Then say <em>"Okay Nabu, put on Led Zeppelin"</em>.{' '}
+                          <strong>"Put on" and "listen to", not "play".</strong> Home
+                          Assistant reserves "play something" for its own music search, which
+                          cannot see your library and answers <em>"no devices supports the
+                          required features"</em>. The token above is
                           shown once - if you lose it, press New token and paste the new
                           block over the old one. Full notes, including what to do if you use
                           an AI voice assistant, are in <code>docs/home-assistant-voice.md</code>.
