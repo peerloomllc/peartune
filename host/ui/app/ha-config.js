@@ -12,11 +12,13 @@
 //
 // WHY EACH PIECE IS HERE:
 //   rest_command   - the two calls into PearTune. Loopback only; HA must be on this machine.
-//   media_player   - a `universal` player that DECLARES next/previous/stop. Home Assistant
-//                    routes media commands by FEATURE, and a speaker handed one track at a
-//                    time does not advertise skipping, so without this "next" fails the way
-//                    "play" does. YAML-only, which keeps this a one-paste setup.
-//   automation     - the sentences. "play X" belongs to HA's built-in search intent (which
+//   automation     - the sentences, including next/previous. There WAS a `universal`
+//                    media_player here to satisfy Home Assistant's built-in skip intents,
+//                    which match on FEATURES and a PLAYING state and then require the entity
+//                    to be EXPOSED to Assist - a UI step we could not generate. Measured
+//                    2026-08-02: our own conversation sentences beat the built-ins outright
+//                    ("next" -> OK), so the entity, the exposure step and the state rule all
+//                    went away with it. "play X" belongs to HA's built-in search intent (which
 //                    cannot see this library), so ours are "put on" / "listen to". Shuffle
 //                    and a true stop have no built-in intent at all, hence their own block.
 //   intent_script  - for LLM voice agents, which never see sentences and are offered intents
@@ -35,17 +37,10 @@ export const PACKAGE_INCLUDE = `homeassistant:
 
 export const PACKAGE_PATH = 'packages/peartune.yaml'
 
+// speakerEntity is accepted and unused: it was needed by a `universal` media_player that no
+// longer exists (see the note above about our sentences winning outright). Kept in the
+// signature so callers do not have to change, and so this comment explains its absence.
 export function haConfig ({ port = 8742, token = '', speakerEntity = '' } = {}) {
-  // `children` is LOAD-BEARING, not decoration. A universal player with no children has no
-  // state to mirror and sits at `off` - and HassMediaNext / HassMediaPrevious carry
-  // `required_states={MediaPlayerState.PLAYING}`, so "next" answers "no device supports the
-  // required features" no matter what the entity advertises. Pointing it at the speaker it
-  // drives makes it read `playing` when the speaker is, and the intents match.
-  //
-  // It also means play/pause on this entity forward to the real speaker, which is right.
-  const children = speakerEntity
-    ? `    children:\n      - ${speakerEntity}\n`
-    : ''
   return `rest_command:
   peartune_play:
     url: "http://127.0.0.1:${port}/voice/play"
@@ -57,24 +52,6 @@ export function haConfig ({ port = 8742, token = '', speakerEntity = '' } = {}) 
     method: POST
     content_type: "application/json"
     payload: '{"token":"${token}","action":"{{ action }}"}'
-
-media_player:
-  - platform: universal
-    name: PearTune
-    unique_id: peartune_voice_player
-${children}    commands:
-      media_next_track:
-        action: rest_command.peartune_control
-        data:
-          action: next
-      media_previous_track:
-        action: rest_command.peartune_control
-        data:
-          action: previous
-      media_stop:
-        action: rest_command.peartune_control
-        data:
-          action: stop
 
 automation:
   - alias: PearTune voice
@@ -99,6 +76,21 @@ automation:
     triggers:
       - trigger: conversation
         command:
+          - "next"
+          - "next song"
+          - "next track"
+          - "skip"
+          - "skip this song"
+        id: next
+      - trigger: conversation
+        command:
+          - "go back"
+          - "previous"
+          - "previous song"
+          - "previous track"
+        id: previous
+      - trigger: conversation
+        command:
           - "shuffle"
           - "shuffle [the] (music|queue|songs)"
         id: shuffle
@@ -117,7 +109,7 @@ automation:
           action: "{{ trigger.id }}"
         response_variable: result
       - set_conversation_response: >-
-          {% if result.status == 200 %}OK{% else %}Nothing is playing{% endif %}
+          {% if result.status != 200 %}Nothing is playing{% elif trigger.id == 'shuffle' %}Shuffling{% if result.content.label %} {{ result.content.label }}{% endif %}{% elif trigger.id == 'stop' %}Stopped{% elif trigger.id == 'previous' %}Going back{% else %}Skipping{% endif %}
 
 intent_script:
   PearTunePlayMusic:

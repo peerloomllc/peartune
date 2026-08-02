@@ -186,7 +186,9 @@ class CastSessions {
         deviceKey: cfg.voiceKey,
         trackId: picked.tracks[0],
         entityId,
-        queue: picked.tracks
+        queue: picked.tracks,
+        // What to call this later. "Shuffling Led Zeppelin" beats "OK" (Tim, 2026-08-02).
+        label: picked.artist || picked.title || null
       })
     } catch (e) {
       this.log('voice:play-failed', { err: e?.message })
@@ -241,7 +243,7 @@ class CastSessions {
       q.index = at
       await this.play({ deviceKey: key, trackId: q.items[at], entityId })
       this.log('voice:' + action, { at, of: q.items.length })
-      return say(200, { ok: true, action, at, of: q.items.length })
+      return say(200, { ok: true, action, at, of: q.items.length, label: q.label || null })
     }
 
     if (action === 'shuffle') {
@@ -255,7 +257,7 @@ class CastSessions {
       }
       q.items = [...q.items.slice(0, q.index + 1), ...tail]
       this.log('voice:shuffle', { remaining: tail.length })
-      return say(200, { ok: true, action, remaining: tail.length })
+      return say(200, { ok: true, action, remaining: tail.length, label: q.label || null })
     }
 
     return say(400, { error: 'unknown action', action })
@@ -431,13 +433,13 @@ class CastSessions {
     return !!grant && !grant.revokedAt && CAST_SCOPES.has(grant.scope)
   }
 
-  async play ({ deviceKey, trackId, entityId, queue = null }) {
+  async play ({ deviceKey, trackId, entityId, queue = null, label = null }) {
     if (!this.speakers.enabled) throw new Error('Home Assistant is not configured')
     await this.start()
 
     // A queue means "and keep going" - see this.queues. Replaces any previous one for this
     // device, so a second voice request abandons the first rather than interleaving.
-    if (queue && queue.length) this.queues.set(deviceKey, { items: queue, index: 0 })
+    if (queue && queue.length) this.queues.set(deviceKey, { items: queue, index: 0, label })
     else if (queue !== null) this.queues.delete(deviceKey)
 
     // Replace whatever this device had on this entity, rather than stacking
@@ -595,6 +597,7 @@ class CastSessions {
           q.index++
           try {
             await this.play({ deviceKey, trackId: q.items[q.index], entityId })
+            // play() with no queue leaves this.queues alone, so the label survives.
             this.log('cast:queue-advance', { at: q.index, of: q.items.length })
             continue
           } catch (e) {

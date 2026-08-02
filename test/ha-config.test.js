@@ -38,10 +38,7 @@ test('every block is TOP LEVEL, not nested inside its neighbour', () => {
   const doc = yaml.load(CFG())
   // The exact failure: peartune_control ended up inside automation, and the second
   // automation inside media_player. Asserting the top-level keys pins both.
-  assert.deepEqual(
-    Object.keys(doc).sort(),
-    ['automation', 'intent_script', 'media_player', 'rest_command']
-  )
+  assert.deepEqual(Object.keys(doc).sort(), ['automation', 'intent_script', 'rest_command'])
 })
 
 test('both rest_commands are under rest_command, with the right ports and token', () => {
@@ -56,17 +53,14 @@ test('both rest_commands are under rest_command, with the right ports and token'
   }
 })
 
-test('the universal player has CHILDREN, or "next" can never match', () => {
+test('there is NO media_player block - our sentences beat the built-in intents', () => {
   const doc = yaml.load(CFG())
-  // HassMediaNext requires required_states={PLAYING}. A universal player with no children
-  // has no state to mirror and sits at `off`, so it is skipped however many features it
-  // advertises - which is exactly what "no device supports the required features" was.
-  assert.deepEqual(doc.media_player[0].children, ['media_player.spk'])
-})
-
-test('with no speaker chosen it simply omits children rather than emitting a broken key', () => {
-  const doc = yaml.load(haConfig({ port: 1, token: 't' }))
-  assert.equal('children' in doc.media_player[0], false)
+  // A `universal` player was here to satisfy HassMediaNext/HassMediaPrevious, which match
+  // on features AND a PLAYING state AND require the entity to be exposed to Assist - the
+  // last of which is a UI toggle we cannot generate ("Sorry, PearTune is not exposed").
+  // Measured 2026-08-02: a conversation trigger on "next" wins outright, so all of that
+  // went away. Putting it back would reintroduce the exposure step.
+  assert.equal('media_player' in doc, false)
 })
 
 test('the stop sentences avoid the built-in pause intent\'s name matching', () => {
@@ -78,21 +72,14 @@ test('the stop sentences avoid the built-in pause intent\'s name matching', () =
   assert.ok(stop.command.includes('stop the music'))
 })
 
-test('the universal player declares the features that make "next" work', () => {
+test('next and previous are OUR sentences, on the words people actually use', () => {
   const doc = yaml.load(CFG())
-  const mp = doc.media_player
-  assert.equal(Array.isArray(mp), true)
-  assert.equal(mp[0].platform, 'universal')
-  // These three command names are LOAD-BEARING: homeassistant/components/universal derives
-  // NEXT_TRACK / PREVIOUS_TRACK / STOP from their presence, and the built-in voice intents
-  // match on those features. Rename one and "next" silently stops working.
-  assert.deepEqual(
-    Object.keys(mp[0].commands).sort(),
-    ['media_next_track', 'media_previous_track', 'media_stop']
-  )
-  for (const c of Object.values(mp[0].commands)) {
-    assert.equal(c.action, 'rest_command.peartune_control')
-  }
+  const t = doc.automation[1].triggers
+  const next = t.find(x => x.id === 'next')
+  const prev = t.find(x => x.id === 'previous')
+  assert.ok(next.command.includes('next'))
+  assert.ok(next.command.includes('skip'))
+  assert.ok(prev.command.includes('go back'))
 })
 
 test('both automations are present and each carries its own sentences', () => {
@@ -107,8 +94,17 @@ test('both automations are present and each carries its own sentences', () => {
     play.triggers[0].command.some(c => /^play \[some\] \{query\}$/.test(c)), false,
     'plain "play X" belongs to the built-in intent - taking it breaks voice'
   )
-  assert.equal(controls.triggers.length, 2)
-  assert.deepEqual(controls.triggers.map(t => t.id).sort(), ['shuffle', 'stop'])
+  assert.equal(controls.triggers.length, 4)
+  assert.deepEqual(controls.triggers.map(t => t.id).sort(), ['next', 'previous', 'shuffle', 'stop'])
+})
+
+test('the spoken replies name what is happening, not just "OK"', () => {
+  const doc = yaml.load(CFG())
+  const said = String(doc.automation[1].actions.find(x => 'set_conversation_response' in x).set_conversation_response)
+  // "OK" told Tim nothing about whether shuffle had done anything (2026-08-02).
+  assert.match(said, /Shuffling/)
+  assert.match(said, /result\.content\.label/, 'and it names the artist when the host knows one')
+  assert.match(said, /Skipping/)
 })
 
 test('every automation speaks its outcome, including failure', () => {
