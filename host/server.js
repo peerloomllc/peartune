@@ -571,6 +571,8 @@ class PearTuneHost {
           list: () => this.speakers.list(),
           state: (entityId) => this.speakers.getState(entityId),
           setVolume: (entityId, level) => this.speakers.setVolume(entityId, level),
+          pause: (entityId) => this.speakers.pause(entityId),
+          resume: (entityId) => this.speakers.resume(entityId),
           // deviceKey is bound from THIS connection's grant by media.js, never a param.
           play: (deviceKey, entityId, trackId) => this.casts.play({ deviceKey, entityId, trackId }),
           stop: (deviceKey, entityId) => this.casts.stop(deviceKey, entityId),

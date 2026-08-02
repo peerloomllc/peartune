@@ -3615,6 +3615,26 @@ const methods = {
     }
   },
 
+  // Pause and resume the SPEAKER, so the player's play/pause button has something to
+  // drive while casting instead of falling through to the phone.
+  async speakerPause ({ libraryId, entityId }) {
+    try {
+      await (await ownerClient(libraryId)).speakerPause({ entityId })
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e?.message || 'could not pause that speaker' }
+    }
+  },
+
+  async speakerResume ({ libraryId, entityId }) {
+    try {
+      await (await ownerClient(libraryId)).speakerResume({ entityId })
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e?.message || 'could not resume that speaker' }
+    }
+  },
+
   async speakerVolume ({ libraryId, entityId, level }) {
     try {
       await (await ownerClient(libraryId)).speakerVolume({ entityId, level })

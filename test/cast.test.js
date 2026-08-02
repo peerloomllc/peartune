@@ -46,7 +46,9 @@ function fakeSpeakers () {
     async play (entityId, url) { this.calls.push(['play', entityId, url]) },
     async stop (entityId) { this.calls.push(['stop', entityId]) },
     async getState (entityId) { return this.states.get(entityId) || null },
-    async setVolume () {}
+    async setVolume () {},
+    async pause (entityId) { this.calls.push(['pause', entityId]) },
+    async resume (entityId) { this.calls.push(['resume', entityId]) }
   }
 }
 
@@ -302,6 +304,27 @@ test('requireLoopback explains itself rather than just failing', () => {
   assert.equal(requireLoopback('http://127.0.0.1:8123'), null)
   const why = requireLoopback('http://192.168.1.50:8123')
   assert.match(why, /same machine/)
+})
+
+// --- pause / resume ----------------------------------------------------
+//
+// These exist so the player's play/pause button has something to drive while casting.
+// Before them it fell through to the phone and started a second copy of the song.
+
+test('pause and resume reach the speaker, and do not disturb the token', async (t) => {
+  const { casts, speakers } = await build({ [DEVICE]: okGrant() })
+  t.after(() => casts.close())
+
+  await casts.play({ deviceKey: DEVICE, trackId: 't1', entityId: 'media_player.x' })
+  const url = urlOf(speakers)
+  speakers.calls.length = 0
+
+  await speakers.pause('media_player.x')
+  await speakers.resume('media_player.x')
+  assert.deepEqual(speakers.calls, [['pause', 'media_player.x'], ['resume', 'media_player.x']])
+  // A pause is not a revoke: the cast is still live and still fetchable.
+  assert.equal((await fetch(url)).status, 200)
+  assert.equal(casts.active(DEVICE).length, 1)
 })
 
 // --- config persistence ------------------------------------------------

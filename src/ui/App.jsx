@@ -229,6 +229,12 @@ export default function App () {
   // these rather than the state values. Same trick as youViewRef below.
   const castingToRef = useRef(null)
   castingToRef.current = castingTo
+  // Whether the SPEAKER is paused. Tracked here because the speaker has no position and
+  // the phone's own `status.playing` is false throughout a cast (it is held paused), so
+  // neither one can answer "is the music going" while casting.
+  const [castPaused, setCastPaused] = useState(false)
+  const castPausedRef = useRef(false)
+  castPausedRef.current = castPaused
   const [themePref, setThemePref] = useState(() => loadThemePref())
   // Favorited ids, grouped by kind (track / album / artist). Sets for O(1) heart checks.
   const [favs, setFavs] = useState(() => ({ track: new Set(), album: new Set(), artist: new Set() }))
@@ -339,6 +345,14 @@ export default function App () {
         setNow(d); setError(null)
         setHandoff(null) // we are the active player now - hide any "Playing on <other>" card
         countedRef.current = { trackId: d?.trackId, counted: false } // a fresh play to count
+        // THE ONE PATH THAT FEEDS THE SPEAKER (proposal 2026-08-02). The shell announces
+        // every track change here - a queue tap, Next, Previous, an automatic advance, a
+        // shuffled pick - so forwarding from this single point is what makes shuffle and
+        // repeat work on a speaker without any of this code knowing they exist.
+        if (castingToRef.current && d?.trackId) {
+          setCastPaused(false)
+          castCurrent(d.trackId)
+        }
       }),
       on('play:status', setStatus),
       // Session handoff: another device took the token, so we paused. Say so, then refresh the
@@ -2191,79 +2205,94 @@ export default function App () {
     try {
       const r = await call('speakerList')
       setSpeakers(r?.enabled ? (r.speakers || []) : [])
-      // Re-attach to a cast this device already had running: the app can be closed
-      // and reopened while a speaker plays, and the host still knows about it.
+      // Re-attach to a cast this device already had running: the app can be closed and
+      // reopened while a speaker plays, and the host still knows about it. And CLEAR one
+      // that has since ended - this used to only ever set, so the cast icon could stay
+      // lit over nothing after a reconnect (review finding 5). The host is the authority
+      // on what is playing; do not second-guess it from local state.
       const mine = (r?.active || [])[0]
-      if (mine) setCastingTo(mine.entityId)
+      setCastingTo(mine ? mine.entityId : null)
+      if (!mine) setCastPaused(false)
     } catch {
       setSpeakers([])
     }
   }
 
-  // WHILE CASTING, THE PHONE IS A REMOTE CONTROL AND ITS QUEUE IS THE QUEUE. The
-  // speaker has none of its own, so we walk the shell's list ourselves: castIndexRef
-  // is the cursor, and `speaker:ended` moves it. That does mean shuffle and repeat are
-  // not honoured on a speaker yet - stated in the sheet rather than left to be
-  // discovered, and noted in TODO.md as the first follow-up.
-  const castIndexRef = useRef(0)
-
-  async function castTrackAt (index, items) {
-    const list = items || queue?.items || []
-    const track = list[index]
-    if (!track) { await castHere(); return false }
-    const r = await call('speakerPlay', { entityId: castingToRef.current, trackId: track.trackId || track.id })
+  // CASTING IS A MODE OF THE PLAYER, NOT A SECOND PLAYER (proposal 2026-08-02).
+  //
+  // The shell's ExoPlayer stays the brain: it owns the queue, the shuffle ORDER, the
+  // repeat mode and what "next" means. Cast mode only takes away its voice. So every
+  // track change - a tap in the queue, Next, Previous, an automatic advance, a shuffled
+  // pick - arrives here the same way, as `play:started`, and we forward THAT to the
+  // speaker.
+  //
+  // Phase 1 walked the queue with its own integer cursor instead, which is why a
+  // shuffled queue cast in file order. That cursor is gone; this is less code.
+  async function castCurrent (trackId) {
+    if (!castingToRef.current || !trackId) return
+    const r = await call('speakerPlay', { entityId: castingToRef.current, trackId })
     if (!r?.ok) {
       setError(r?.error || 'could not play on that speaker')
       await castHere()
-      return false
     }
-    castIndexRef.current = index
-    return true
   }
 
   async function castTo (entityId) {
     setSpeakerBusy(true)
     try {
-      // Pause the phone first. Two things playing the same song a room apart is the
-      // worst possible outcome, so it happens BEFORE the speaker is asked to start.
-      if (status?.playing) await call('toggle').catch(() => {})
-      const q = await call('queue').catch(() => null)
-      if (q) setQueue(q)
-      const items = q?.items || queue?.items || []
-      const start = q?.index ?? queue?.index ?? 0
+      // Mute and hold the phone BEFORE the speaker starts. Two copies of the same song a
+      // room apart is the worst outcome here, so it must not depend on ordering luck.
+      await call('castMode', { on: true }).catch(() => {})
       setCastingTo(entityId)
       castingToRef.current = entityId
-      const ok = await castTrackAt(start, items)
-      if (ok) setSpeakerOpen(false)
+      // Whatever is loaded right now is what the speaker should pick up. `now` is the
+      // shell's own announcement of the current track, so it already reflects shuffle.
+      const trackId = nowRef.current?.trackId
+      if (trackId) await castCurrent(trackId)
+      setSpeakerOpen(false)
     } finally {
       setSpeakerBusy(false)
     }
   }
 
-  // Back to the phone. Silences the speaker first, for the same reason as above.
+  // Back to the phone: silence the speaker, then give this player its voice back. The
+  // track RESTARTS rather than resuming mid-song - the speaker reports no position of
+  // its own, so there is no honest place to resume from (proposal, open question 3).
   async function castHere () {
     const entityId = castingToRef.current
     setCastingTo(null)
     castingToRef.current = null
     setSpeakerOpen(false)
     if (entityId) await call('speakerStop', { entityId }).catch(() => {})
+    await call('castMode', { on: false }).catch(() => {})
   }
 
-  // The host saw the track finish. Only reached for the speaker we are actually on
-  // (the push handler checks), so this just walks the cursor forward.
+  // The host saw the track finish. Ask the SHELL for the next one rather than working it
+  // out here: it honours shuffle and repeat, and its play:started brings us back to
+  // castCurrent. Nothing in this path knows what shuffle is, which is the point.
   async function castNext () {
-    const q = await call('queue').catch(() => null)
-    if (q) setQueue(q)
-    const items = q?.items || queue?.items || []
-    const next = castIndexRef.current + 1
-    if (next >= items.length) { await castHere(); return }
-    await castTrackAt(next, items)
+    await call('next').catch(() => {})
+  }
+
+  // Play/pause while casting drives the SPEAKER. Without this the button fell through to
+  // the phone and started a second stream (the review's worst finding).
+  async function castToggle () {
+    const entityId = castingToRef.current
+    if (!entityId) return
+    const method = castPausedRef.current ? 'speakerResume' : 'speakerPause'
+    setCastPaused(!castPausedRef.current)
+    const r = await call(method, { entityId })
+    if (!r?.ok) setCastPaused(castPausedRef.current) // put the icon back if it did not take
   }
 
   // The player's X: stop PLAYBACK only, and KEEP the queue. The bar hides (play:stopped),
   // the queue stays in the Queue tab, and tapping a track there resumes it.
   function stopPlayback () {
     haptic('light')
+    // While casting, the X has to stop the SPEAKER as well. Without this it stopped a
+    // phone that was already silent and left the room playing, with nothing left in the
+    // app that would ever stop it (review finding 3).
+    if (castingToRef.current) castHere()
     call('stopKeepQueue')
   }
 
@@ -2638,6 +2667,7 @@ export default function App () {
             onCollapse={() => { haptic('light'); setExpanded(false) }}
             onViewArt={() => viewArt(now.artFull || now.art, now.album || now.title)}
             canCast={!!(speakers && speakers.length)} castingTo={castingTo}
+            castPaused={castPaused} onCastToggle={castToggle}
             onSpeakers={() => { loadSpeakers(); setSpeakerOpen(true) }}
           />
         )}
@@ -5246,8 +5276,19 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
 function Player ({
   now, status, expanded, skin, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
   onViewArt, onQueue, onStop, queueItems, queueIndex, onJump, sleep, onSleep,
-  canCast, castingTo, onSpeakers
+  canCast, castingTo, castPaused, onCastToggle, onSpeakers
 }) {
+  // While casting, play/pause drives the SPEAKER and the icon reflects the SPEAKER. The
+  // phone is muted and held paused throughout, so `status.playing` is false the whole
+  // time and reading it would show a play icon over music that is playing (proposal
+  // 2026-08-02). One helper, used by both the mini bar and the expanded transport, so
+  // the two can never disagree.
+  const playing = castingTo ? !castPaused : !!status?.playing
+  const onPlayPause = () => {
+    haptic('light')
+    if (castingTo) onCastToggle()
+    else call('toggle')
+  }
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
@@ -5284,7 +5325,9 @@ function Player ({
   // Tap anywhere on the bar to seek. The seek goes out over P2P as a byte-range
   // request, which is why range support had to be right from day one.
   const scrub = (e) => {
-    if (!dur) return
+    // No seeking while casting: the speaker cannot seek (the Voice PE reports no SEEK)
+    // and the phone this would move is muted, so a tap here would silently do nothing.
+    if (!dur || castingTo) return
     const r = e.currentTarget.getBoundingClientRect()
     const ratio = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
     call('seekTo', { ms: Math.round(ratio * dur) })
@@ -5329,10 +5372,10 @@ function Player ({
             // looking. stopPropagation, or play/pause would also expand the player.
             <button
               className='icon big'
-              onClick={(e) => { e.stopPropagation(); haptic('light'); call('toggle') }}
+              onClick={(e) => { e.stopPropagation(); onPlayPause() }}
               aria-label='Play/pause'
             >
-              {status?.playing ? <Pause size={22} weight='fill' /> : <Play size={22} weight='fill' />}
+              {playing ? <Pause size={22} weight='fill' /> : <Play size={22} weight='fill' />}
             </button>
             )}
       </div>
@@ -5369,8 +5412,8 @@ function Player ({
           <button className='icon' onClick={() => { haptic('light'); call('prev') }} aria-label='Previous'>
             <SkipBack size={22} weight='fill' />
           </button>
-          <button className='icon big' onClick={() => { haptic('light'); call('toggle') }} aria-label='Play/pause'>
-            {status?.playing ? <Pause size={26} weight='fill' /> : <Play size={26} weight='fill' />}
+          <button className='icon big' onClick={onPlayPause} aria-label='Play/pause'>
+            {playing ? <Pause size={26} weight='fill' /> : <Play size={26} weight='fill' />}
           </button>
           <button className='icon' onClick={() => { haptic('light'); call('next') }} aria-label='Next'>
             <SkipForward size={22} weight='fill' />
@@ -5383,7 +5426,7 @@ function Player ({
         </div>
 
         <div className='transport sub-transport'>
-          <button className='icon' onClick={() => call('seekBy', { seconds: -15 })} aria-label='Back 15 seconds'>
+          <button className='icon' onClick={() => call('seekBy', { seconds: -15 })} aria-label='Back 15 seconds' disabled={!!castingTo}>
             <ArrowCounterClockwise size={15} /> 15
           </button>
           <button
@@ -5394,7 +5437,7 @@ function Player ({
             <Moon size={16} weight={sleep?.active ? 'fill' : 'regular'} />
             {sleep?.active && <SleepCountdown sleep={sleep} />}
           </button>
-          <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds'>
+          <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds' disabled={!!castingTo}>
             15 <ArrowClockwise size={15} />
           </button>
           {/* Only when the host actually offers speakers AND this device may use them.
@@ -5499,8 +5542,8 @@ function SpeakerSheet ({ speakers, castingTo, onClose, onPick, onHere, busy }) {
           {!speakers.length && <p className='muted sm'>No speakers found.</p>}
           {castingTo &&
             <p className='muted sm'>
-              On a speaker there is a short gap between tracks, and you cannot scrub
-              through a song.
+              There is a short gap between tracks on a speaker, and you cannot scrub
+              through a song. Everything else works as usual.
             </p>}
           <button className='wide' onClick={onClose}>Cancel</button>
         </div>

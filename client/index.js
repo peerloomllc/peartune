@@ -524,6 +524,8 @@ class PearTuneClient {
   speakerPlay (params) { return this._request('speaker.play', params) }
   speakerStop (params) { return this._request('speaker.stop', params) }
   speakerVolume (params) { return this._request('speaker.volume', params) }
+  speakerPause (params) { return this._request('speaker.pause', params) }
+  speakerResume (params) { return this._request('speaker.resume', params) }
   speakerState (params) { return this._request('speaker.state', params) }
 
   // Play session (cross-device handoff, proposal 2026-07-17). The host takes the owner +

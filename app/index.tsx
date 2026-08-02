@@ -179,6 +179,14 @@ export default function App () {
   // Set by next/prev/playIndex so the status listener can tell a user skip from a
   // track ending on its own - only the latter should trip end-of-track sleep.
   const manualNav = useRef(false)
+  // CAST MODE (proposal 2026-08-02). A Home Assistant speaker is the output, so this
+  // player is the BRAIN but not the voice: it still owns the queue, the shuffle order,
+  // the repeat mode and what "next" means, and every track change still announces itself
+  // to the UI - which forwards it to the speaker. It just makes no sound while muted and
+  // held paused. Nothing here re-hands the playlist, so gapless and the shuffle order
+  // survive a round trip through casting (the reason setShuffle delegates to ExoPlayer
+  // in the first place - see its comment).
+  const castMode = useRef(false)
   // A pending queue swap after a LIBRARY SWITCH while a track is playing (multi-host). Holds
   // the NEW library's saved queue snapshot; the current track is left to play out (drain),
   // and when it ends we load + play this snapshot. Null when not draining. While set,
@@ -639,6 +647,32 @@ export default function App () {
     persistQueue(true)
   }
 
+  // --- cast mode (proposal 2026-08-02) --------------------------------------
+  //
+  // Entering mutes and holds this player paused; leaving unmutes and resumes. The queue
+  // is NOT touched, so skipToNext, skipToPrevious, the shuffle order, the repeat mode,
+  // queue taps and the lock-screen buttons all keep working - they simply make no sound
+  // here, and the UI forwards each resulting play:started to the speaker.
+  //
+  // Resuming on the way out restarts the CURRENT track rather than seeking into it: the
+  // speaker reports no position of its own (the Voice PE has no media_position), so
+  // there is no honest place to resume from. Proposal open question 3.
+  function setCastMode (on: boolean) {
+    const p = player.current as any
+    castMode.current = !!on
+    if (!p) return
+    try {
+      if (on) {
+        p.volume = 0
+        p.pause()
+      } else {
+        p.volume = 1
+        p.play()
+      }
+    } catch {}
+    persistQueue(true)
+  }
+
   // --- sleep timer ---------------------------------------------------------
 
   // Cancel any armed timer / mid-flight fade and restore full volume (a fade may have
@@ -649,7 +683,10 @@ export default function App () {
     sleepDeadline.current = 0
     sleepMinutes.current = 0
     sleepEndOfTrack.current = false
-    try { if (player.current) player.current.volume = 1 } catch {}
+    // ...but NOT while casting, where 0 is the deliberate volume. Restoring it here would
+    // un-mute the phone behind the user's back and put a second copy of the song in the
+    // room the moment anything cleared a sleep timer.
+    try { if (player.current && !castMode.current) player.current.volume = 1 } catch {}
   }
 
   // Push the current sleep state so the UI can light the moon and count down. `fired`
@@ -681,7 +718,8 @@ export default function App () {
       if (v <= 0) {
         clearInterval(sleepFade.current); sleepFade.current = null
         try { p.pause() } catch {}
-        try { p.volume = 1 } catch {}
+        // Same reason as clearSleep: while casting, 0 is deliberate.
+        try { if (!castMode.current) p.volume = 1 } catch {}
         persistQueue(true)
         pushSleep(true)
       }
@@ -1358,6 +1396,9 @@ export default function App () {
       seekTo: () => seekTo(msg.args.ms ?? 0),
       shuffle: () => setShuffle(!!msg.args.on),
       repeat: () => setRepeat(Number(msg.args.mode) || 0),
+      // A Home Assistant speaker is the output now (proposal 2026-08-02). This player
+      // keeps the queue and the order; it just stops making sound.
+      castMode: () => setCastMode(!!msg.args?.on),
       sleep: () => setSleep(msg.args || {}),
 
       // The UI resolved its theme ('system' against the OS scheme we pushed it)
