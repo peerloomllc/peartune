@@ -154,24 +154,24 @@ picks, in order of preference:
 
 | Say | What handles it |
 |---|---|
-| **"next"**, "skip", "skip this song" | Built-in, via the PearTune player in the generated config |
-| **"go back"**, "previous track", "replay" | Built-in, same |
-| **"pause"**, "resume", "stop playing" | Built-in, straight to the speaker. "Stop playing" PAUSES |
-| **"set volume to 30%"**, "mute" | Built-in, straight to the speaker |
+| **"next"**, "skip", "skip this song" | PearTune |
+| **"go back"**, "previous", "previous song" | PearTune |
 | **"shuffle"** | PearTune. Reorders what is coming; the current song keeps playing |
-| **"stop peartune"**, "stop the music" | PearTune. Ends the cast properly, unlike "stop playing" |
+| **"stop the music"**, "stop my music" | PearTune. Ends it properly |
+| **"pause"**, "resume", "stop playing" | Home Assistant, straight to the speaker. "Stop playing" PAUSES |
+| **"set volume to 30%"**, "mute" | Home Assistant, straight to the speaker |
 
-Two things worth knowing about why it is split like that.
+Skipping has to come to PearTune rather than the speaker, because **the speaker has no queue**
+- it is handed one track at a time. Home Assistant's own skip commands would tell the speaker
+to skip within a playlist it does not have.
 
-**Next and previous only work because of the `media_player` block in the generated config.**
-Home Assistant matches those commands to speakers that advertise a skip feature, and a speaker
-being handed one track at a time does not. That block declares a PearTune player which does,
-so the built-in command finds it and lands on the queue - which is where skipping has to
-happen, because the speaker has no queue to skip within.
+There was briefly a `media_player` block here to satisfy those built-in commands. It is gone:
+they also require the entity to be **exposed to Assist**, which is a toggle in a settings
+screen that nothing we generate can set, and the answer is a baffling *"Sorry, PearTune is not
+exposed"*. PearTune's own sentences beat the built-ins outright, so none of that is needed.
 
-**Shuffle and stop have no built-in command at all**, so no amount of declaring features would
-unlock them. They get their own sentences, which is also why "stop peartune" is worded oddly:
-plain "stop playing" already belongs to the built-in pause command.
+**Do not say "stop peartune".** Home Assistant reads it as stop + a device NAME and answers
+"not aware of any device called PearTune". Say "stop the music".
 
 ## Which speaker
 

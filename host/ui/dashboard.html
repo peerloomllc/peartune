@@ -64,7 +64,7 @@ automation:
           query: "{{ trigger.slots.query }}"
         response_variable: result
       - set_conversation_response: >-
-          {% if result.status == 200 %}Playing {{ result.content.artist or result.content.title }}{% else %}I could not find {{ trigger.slots.query }} in your library{% endif %}
+          {% if result.status != 200 %}I could not find {{ trigger.slots.query }} in your library{% elif result.content.kind == 'artist' %}Playing {{ result.content.artist }}{% elif result.content.kind == 'album' %}Playing the album {{ result.content.title }}{% elif result.content.artist %}Playing {{ result.content.title }} by {{ result.content.artist }}{% else %}Playing {{ result.content.title }}{% endif %}
 
   - alias: PearTune voice controls
     mode: queued

@@ -98,6 +98,16 @@ test('both automations are present and each carries its own sentences', () => {
   assert.deepEqual(controls.triggers.map(t => t.id).sort(), ['next', 'previous', 'shuffle', 'stop'])
 })
 
+test('a named song is answered with the song AND who it is by', () => {
+  const doc = yaml.load(CFG())
+  const said = String(doc.automation[0].actions.find(x => 'set_conversation_response' in x).set_conversation_response)
+  // "put on rock and roll" answered "Playing KISS" - true, but it hid WHICH Rock and Roll
+  // it had picked, and several artists have one. Naming both is how the person finds out
+  // they got a different band's song.
+  assert.match(said, /by \{\{ result\.content\.artist \}\}/)
+  assert.match(said, /the album/)
+})
+
 test('the spoken replies name what is happening, not just "OK"', () => {
   const doc = yaml.load(CFG())
   const said = String(doc.automation[1].actions.find(x => 'set_conversation_response' in x).set_conversation_response)
