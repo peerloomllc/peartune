@@ -606,6 +606,14 @@ button.destructive { background: var(--bad); color: #fff; }
      the bottom-sheet taller than the screen, so cap it to the viewport. */
   .fb-list { height: auto; max-height: 40vh; min-height: 160px; }
 
+  /* FOUR TABS DO NOT FIT ON A PHONE. Each button is flex:1 with an ellipsis, which was
+     invisible at three tabs and clipped "People & Devices" and "Music Source" the moment
+     Speakers made it four. Wrap instead of shrinking: every label stays readable, and a
+     fifth or sixth tab costs nothing rather than needing this decided again.
+     `flex: 1 1 auto` + a min-width lets two sit per row and the last stretch to fill. */
+  .tabbar { flex-wrap: wrap; }
+  .tabbar > button { flex: 1 1 auto; min-width: 44%; }
+
   .stats { gap: 8px; }
   .stat { padding: 12px; }
   .stat .num { font-size: 22px; }
