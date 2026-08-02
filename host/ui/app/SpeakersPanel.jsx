@@ -71,7 +71,7 @@ export function SpeakersPanel ({ toast }) {
   // Generated from what the host actually reports, so the port and token can never drift
   // from what is running. Lives in its own module because a test parses it - see
   // test/ha-config.test.js and the note at the top of ha-config.js.
-  const haYaml = haConfig({ port: castPort || 8742, token: voiceToken })
+  const haYaml = haConfig({ port: castPort || 8742, token: voiceToken, speakerEntity: cfg?.voiceEntityId || '' })
 
   const enableVoice = async () => {
     setBusy('voice')

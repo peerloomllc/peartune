@@ -35,7 +35,17 @@ export const PACKAGE_INCLUDE = `homeassistant:
 
 export const PACKAGE_PATH = 'packages/peartune.yaml'
 
-export function haConfig ({ port = 8742, token = '' } = {}) {
+export function haConfig ({ port = 8742, token = '', speakerEntity = '' } = {}) {
+  // `children` is LOAD-BEARING, not decoration. A universal player with no children has no
+  // state to mirror and sits at `off` - and HassMediaNext / HassMediaPrevious carry
+  // `required_states={MediaPlayerState.PLAYING}`, so "next" answers "no device supports the
+  // required features" no matter what the entity advertises. Pointing it at the speaker it
+  // drives makes it read `playing` when the speaker is, and the intents match.
+  //
+  // It also means play/pause on this entity forward to the real speaker, which is right.
+  const children = speakerEntity
+    ? `    children:\n      - ${speakerEntity}\n`
+    : ''
   return `rest_command:
   peartune_play:
     url: "http://127.0.0.1:${port}/voice/play"
@@ -52,7 +62,7 @@ media_player:
   - platform: universal
     name: PearTune
     unique_id: peartune_voice_player
-    commands:
+${children}    commands:
       media_next_track:
         action: rest_command.peartune_control
         data:
@@ -94,8 +104,12 @@ automation:
         id: shuffle
       - trigger: conversation
         command:
-          - "stop peartune"
+          # NOT "stop peartune": Home Assistant's built-in pause intent parses that as
+          # stop + a device NAME, then answers "not aware of any device called PearTune".
+          # These phrasings are unclaimed. Plain "stop playing" still reaches the built-in
+          # pause, which pauses the speaker - a reasonable thing for it to do.
           - "stop the music"
+          - "stop my music"
         id: stop
     actions:
       - action: rest_command.peartune_control

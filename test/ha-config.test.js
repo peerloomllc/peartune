@@ -20,7 +20,7 @@ const yaml = require('js-yaml')
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'host', 'ui', 'app', 'ha-config.js'), 'utf8')
 const haConfig = new Function('opts', SRC.replace(/^export /gm, '') + '\nreturn haConfig(opts)')
 
-const CFG = () => haConfig({ port: 8742, token: 'test-token' })
+const CFG = () => haConfig({ port: 8742, token: 'test-token', speakerEntity: 'media_player.spk' })
 
 test('the one-time include is valid YAML and turns on package loading', () => {
   const inc = /export const PACKAGE_INCLUDE = `([^`]*)`/.exec(SRC)[1]
@@ -54,6 +54,28 @@ test('both rest_commands are under rest_command, with the right ports and token'
     assert.match(cmd.payload, /test-token/, 'the token has to actually reach the payload')
     assert.equal(cmd.method, 'POST')
   }
+})
+
+test('the universal player has CHILDREN, or "next" can never match', () => {
+  const doc = yaml.load(CFG())
+  // HassMediaNext requires required_states={PLAYING}. A universal player with no children
+  // has no state to mirror and sits at `off`, so it is skipped however many features it
+  // advertises - which is exactly what "no device supports the required features" was.
+  assert.deepEqual(doc.media_player[0].children, ['media_player.spk'])
+})
+
+test('with no speaker chosen it simply omits children rather than emitting a broken key', () => {
+  const doc = yaml.load(haConfig({ port: 1, token: 't' }))
+  assert.equal('children' in doc.media_player[0], false)
+})
+
+test('the stop sentences avoid the built-in pause intent\'s name matching', () => {
+  const doc = yaml.load(CFG())
+  const stop = doc.automation[1].triggers.find(t => t.id === 'stop')
+  // "stop peartune" parses as stop + device NAME for the built-in, which then answers
+  // "not aware of any device called PearTune".
+  assert.equal(stop.command.includes('stop peartune'), false)
+  assert.ok(stop.command.includes('stop the music'))
 })
 
 test('the universal player declares the features that make "next" work', () => {
