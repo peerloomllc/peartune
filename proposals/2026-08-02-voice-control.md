@@ -85,6 +85,31 @@ Proposed answer, and it wants Tim's agreement rather than my assumption:
   smart speaker already has, but it is worth saying out loud: this is not authentication, it
   is physical presence.
 
+### LLM voice agents (Tim, 2026-08-02)
+
+Some people wire Home Assistant to an LLM as the conversation agent. That matters here,
+because **an LLM agent never sees `custom_sentences`** - it decides for itself what to call.
+A sentence-only design would silently stop working for those users.
+
+Checked in `helpers/llm.py` (2026.7.4) rather than assumed. `AssistAPI._async_get_tools`
+builds its tool list from `intent.async_get(hass)` with no filter on where the intent came
+from, so **an `intent_script` intent is offered to the LLM automatically**, with its
+`slot_schema` becoming the tool parameters:
+
+```python
+intent_handlers = [h for h in intent.async_get(self.hass) if h.intent_type not in ignore_intents]
+tools = [IntentTool(self.cached_slugify(h.intent_type), h) for h in intent_handlers]
+```
+
+A `description` is optional (`h.description or f"Execute Home Assistant {name} intent"`) but
+is what the model reads to decide when to use the tool, so the documented config always
+writes one.
+
+So the design holds for both, and an LLM agent is arguably the BETTER fit: it passes a
+free-form query, which suits a search endpoint far more than fixed sentence templates do.
+Untested against a real LLM agent - Tim raised it as worth testing at some point, and it is
+in TODO.
+
 ### Not in scope
 
 - **Requesting music that is not in the library.** "Play X" when X is absent should say so, not
