@@ -15,6 +15,10 @@ const assert = require('node:assert/strict')
 const { Readable } = require('stream')
 const path = require('path')
 
+// Ephemeral ports here: every test stands up its own server, and they would otherwise all
+// contend for the one fixed port the host prefers. The preference itself is tested below.
+process.env.PEARTUNE_CAST_PORT = '0'
+
 const { CastSessions } = require('../host/cast')
 const { Speakers, isLoopbackUrl, requireLoopback } = require('../host/speakers')
 
@@ -66,6 +70,33 @@ async function build (grantRows) {
 
 // The URL cast.js handed HA, which is the only way a real fetch could happen.
 const urlOf = (speakers) => speakers.calls.find(c => c[0] === 'play')[2]
+
+test('the preferred port is used when free, and a busy one falls back cleanly', async (t) => {
+  // Directly, because the suite as a whole runs on ephemeral ports (see the top of file).
+  const http = require('http')
+  const PORT = 18742
+  const blocker = http.createServer(() => {})
+  await new Promise(r => blocker.listen(PORT, '127.0.0.1', r))
+  t.after(() => new Promise(r => blocker.close(r)))
+
+  process.env.PEARTUNE_CAST_PORT = String(PORT)
+  delete require.cache[require.resolve('../host/cast')]
+  const { CastSessions: Fresh } = require('../host/cast')
+
+  const speakers = fakeSpeakers()
+  const casts = new Fresh({ speakers, grants: fakeGrants({}), getAdapter: fakeAdapter })
+  const port = await casts.start()
+  t.after(() => casts.close())
+
+  // The preferred port was taken, so it fell back - and the fallback must actually WORK,
+  // which is the half that broke: a server whose listen() failed cannot be relisted.
+  assert.notEqual(port, PORT)
+  assert.equal(casts.server.address().address, '127.0.0.1')
+  assert.equal((await fetch(`http://127.0.0.1:${port}/a/nope`)).status, 404)
+
+  process.env.PEARTUNE_CAST_PORT = '0'
+  delete require.cache[require.resolve('../host/cast')]
+})
 
 test('the audio listener binds loopback only', async (t) => {
   const { casts, port } = await build({ [DEVICE]: okGrant() })

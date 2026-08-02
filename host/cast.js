@@ -38,6 +38,10 @@ const TOKEN_TTL_MS = 60 * 60 * 1000
 // while at least one cast exists, so an idle host makes no HA traffic at all.
 const POLL_MS = 2000
 
+// The loopback port the audio and voice routes listen on. Fixed so the voice endpoint has a
+// stable address to put in a configuration file; overridable for the rare collision.
+const PREFERRED_PORT = Number(process.env.PEARTUNE_CAST_PORT || 8742)
+
 // Who may make noise in someone else's house. OWNER only in phase 1 (proposal,
 // Open question 1): a guest streaming to their own headphones is one thing, a
 // guest starting the kitchen speaker is another. Easy to relax, painful to tighten.
@@ -65,15 +69,36 @@ class CastSessions {
     this.timer = null
   }
 
-  // Binds an ephemeral port on loopback. Ephemeral because nothing outside this
-  // process ever needs to guess it - the URL is handed to HA directly.
+  // A STABLE port on loopback, not an ephemeral one.
+  //
+  // It used to be ephemeral, on the reasoning that nothing outside the process needs to
+  // guess it - the audio URL is handed to Home Assistant directly. Voice control broke
+  // that: its endpoint goes in the operator's configuration.yaml BY HAND, and a port that
+  // changed on every host restart would silently break that file every time. Tim hit the
+  // first half of this immediately ("I see a token generated, but nothing about a port").
+  //
+  // Falls back to ephemeral if the port is taken, rather than refusing to start - a
+  // library that will not serve music because a port is busy would be a bad trade. The
+  // dashboard shows whichever port was actually taken, so the config can be regenerated.
   async start () {
     if (this.server) return this.port
     this.server = http.createServer((req, res) => this._serve(req, res))
-    await new Promise((resolve, reject) => {
-      this.server.once('error', reject)
-      this.server.listen(0, '127.0.0.1', resolve)
+    const listen = (srv, port) => new Promise((resolve, reject) => {
+      const onErr = (e) => { srv.removeListener('error', onErr); reject(e) }
+      srv.once('error', onErr)
+      srv.listen(port, '127.0.0.1', () => { srv.removeListener('error', onErr); resolve() })
     })
+    try {
+      await listen(this.server, PREFERRED_PORT)
+    } catch (e) {
+      // A FRESH server for the retry. An http.Server whose listen() failed cannot simply
+      // be listened on again - it comes back bound to nothing and every request to it
+      // fails, which is exactly how this showed up in the suite.
+      this.log('cast:port-busy', { port: PREFERRED_PORT, err: e?.code })
+      try { this.server.close() } catch {}
+      this.server = http.createServer((req, res) => this._serve(req, res))
+      await listen(this.server, 0)
+    }
     this.port = this.server.address().port
     this.log('cast:listening', { port: this.port, bind: '127.0.0.1' })
     return this.port

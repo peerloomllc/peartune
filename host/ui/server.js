@@ -247,7 +247,14 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
       if (req.method === 'GET' && url.pathname === '/api/speakers') {
         let speakers = []
         if (host.speakers.enabled) speakers = await host.speakers.list().catch(() => [])
-        return json(res, 200, { config: host.speakers.publicConfig(), speakers })
+        // castPort is what the operator's configuration.yaml has to name, so it belongs in
+        // the same payload as the rest of the setup rather than being something they have
+        // to find. 0 = not listening yet.
+        return json(res, 200, {
+          config: host.speakers.publicConfig(),
+          speakers,
+          castPort: host.casts.port || 0
+        })
       }
 
       if (req.method === 'POST' && url.pathname === '/api/speakers') {

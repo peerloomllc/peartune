@@ -15,20 +15,31 @@ play your music.** A spoken request carries no password and there is no way to t
 it. It cannot browse, download, share or change anything, only start playback on your own
 speakers, and turning it off stops it at once - but it is presence, not permission.
 
-## 1. The connection to PearTune
+## The short way
 
-`configuration.yaml`:
+**The dashboard writes this for you.** When you turn voice control on, it shows a complete
+configuration block with your token and port already filled in, and a **Copy configuration**
+button. Paste that at the end of your Home Assistant `configuration.yaml`, restart Home
+Assistant, and skip to the end of this page.
+
+You still have to edit a file, and there is no way around that: Home Assistant has no API for
+adding a `rest_command`. But you should never have to transcribe or look anything up.
+
+The rest of this page explains what that block does and how to change it.
+
+## 1. The connection to PearTune
 
 ```yaml
 rest_command:
   peartune_play:
-    url: "http://127.0.0.1:PORT/voice/play"
+    url: "http://127.0.0.1:8742/voice/play"
     method: POST
     content_type: "application/json"
     payload: '{"token":"YOUR_TOKEN","query":"{{ query }}","entityId":"{{ entity_id }}"}'
 ```
 
-Replace `PORT` and `YOUR_TOKEN` with the values from the dashboard.
+`8742` is the host's usual loopback port; the dashboard shows the real one, which differs only
+if something else had taken it.
 
 `127.0.0.1` is not a placeholder. The endpoint listens on loopback only, so **Home Assistant
 has to be on the same machine as the PearTune host.** That is the same requirement speaker
@@ -99,7 +110,8 @@ dashboard. Naming one in the sentence overrides that.
 - **403 in the Home Assistant log:** the token is wrong, or it was rotated in the dashboard.
   Turn voice off and on again for a fresh one and update `configuration.yaml`.
 - **Connection refused:** Home Assistant is not on the same machine as the PearTune host, or
-  the port changed. The port is assigned at host start; check the Speakers tab.
+  the port in your file is not the one the host took. The dashboard's Speakers tab shows the
+  real one.
 
 ## Turning it off
 

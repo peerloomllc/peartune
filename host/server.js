@@ -338,6 +338,18 @@ class PearTuneHost {
       this.log('host:source-failed', { source: this.adapter.kind, err: e.message })
     }
 
+    // Voice control listens on the cast server, so it has to be up from the start rather
+    // than lazily on the first cast - otherwise a spoken request after a restart hits a
+    // closed port. Only when voice is actually on; casting alone still starts it lazily.
+    if (this.speakers.config?.voiceEnabled) {
+      try {
+        const port = await this.casts.start()
+        this.log('voice:listening', { port })
+      } catch (e) {
+        this.log('voice:listen-failed', { err: e?.message })
+      }
+    }
+
     // Arm the scheduled auto-rescan from the persisted setting (a no-op when off).
     this._armRescan()
 
@@ -735,8 +747,12 @@ class PearTuneHost {
     }
     const voiceToken = crypto.randomBytes(32).toString('base64url')
     this.speakers.save({ voiceEnabled: true, voiceKey, voiceToken, voiceEntityId: entityId })
+    // The route has to be LISTENING before we hand out a URL for it. The cast server is
+    // otherwise lazy (it starts on the first cast), which would have meant the address in
+    // someone's configuration.yaml refused connections until they happened to cast first.
+    const port = await this.casts.start()
     this.notifyOwnersDevicesChanged()
-    return { ok: true, voiceToken, voiceKey }
+    return { ok: true, voiceToken, voiceKey, port }
   }
 
   // Off means OFF: the token goes, and the grant is revoked so anything mid-flight dies on
