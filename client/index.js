@@ -513,6 +513,19 @@ class PearTuneClient {
   ownerRequests () { return this._request('owner.requests') }
   ownerResolveRequest (params) { return this._request('owner.requestResolve', params) }
 
+  // Home Assistant speakers (proposal 2026-08-01). Owner-scoped: any other grant gets
+  // FORBIDDEN and an old host answers ENOMETHOD, so a caller must treat both as "no
+  // speakers here" rather than as a failure. speakerList also reports `enabled: false`
+  // when the operator has not set Home Assistant up, which is the ordinary case.
+  //
+  // The speaker has no queue of its own, so speakerPlay is ONE track: the app stays the
+  // queue and sends the next one when the host pushes `speaker:ended`.
+  speakerList () { return this._request('speaker.list') }
+  speakerPlay (params) { return this._request('speaker.play', params) }
+  speakerStop (params) { return this._request('speaker.stop', params) }
+  speakerVolume (params) { return this._request('speaker.volume', params) }
+  speakerState (params) { return this._request('speaker.state', params) }
+
   // Play session (cross-device handoff, proposal 2026-07-17). The host takes the owner +
   // acting device from the connection; claim/set are gated by the generation CAS host-side.
   sessionGet (params) { return this._request('session.get', params) }

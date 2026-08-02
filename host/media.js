@@ -24,7 +24,12 @@ const MUTATING = new Set([
   'request.add',
   // Removing your OWN request (You > Requests). Ownership is checked in the handler;
   // MUTATING just keeps a readonly grant out (it has no requests to remove anyway).
-  'request.delete'
+  'request.delete',
+  // Casting to a Home Assistant speaker (proposal 2026-08-01). These are gated on
+  // OWNER scope in the handlers as well; listing them here keeps a readonly grant out
+  // at the same chokepoint every other mutating method uses, so a future relaxation
+  // of the owner gate cannot accidentally let `readonly` through.
+  'speaker.play', 'speaker.stop', 'speaker.volume'
 ])
 
 // WHO owns the user state on this connection. Derived from the grant the firewall
@@ -36,7 +41,7 @@ function ownerOf (grant) {
   return grant.personId ? 'p:' + grant.personId : 'd:' + grant.deviceKey
 }
 
-function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, onStream = null, onNowPlaying = null, log = () => {} }) {
+function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, speakers = null, onStream = null, onNowPlaying = null, log = () => {} }) {
   const mux = Protomux.from(conn)
 
   // Set once the channel is open (below). Called on close to drop this connection's push
@@ -621,6 +626,67 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         // here that it lost the token (lazy presence) and pauses.
         const row = await state.setSession(ownerOf(grant), grant.deviceKey, params || {}, !!params?.merged)
         return send.res.send({ id, body: { ok: !!row, session: row } })
+      }
+
+      // --- Home Assistant speakers (proposal 2026-08-01) ---------------------
+      //
+      // OWNER only in phase 1. A guest streaming to their own headphones is one thing;
+      // a guest starting the kitchen speaker in someone else's house is another. The
+      // rule is asserted here AND in host/cast.js (which re-checks it on every audio
+      // fetch, long after this connection's `grant` was captured).
+      //
+      // An unconfigured host answers `enabled: false` rather than an error, so the app
+      // can hide the button without treating a normal state as a failure.
+      case 'speaker.list': {
+        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!speakers.enabled()) return send.res.send({ id, body: { enabled: false, speakers: [] } })
+        const list = await speakers.list()
+        return send.res.send({
+          id,
+          body: { enabled: true, speakers: list, active: speakers.active(grant.deviceKey) }
+        })
+      }
+
+      case 'speaker.play': {
+        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId || !params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'entityId and trackId required')
+        if (!speakers.enabled()) return safeErr(id, ERR.FORBIDDEN, 'Home Assistant is not set up')
+        // deviceKey comes from the Noise-authenticated grant, never from params - a
+        // device can only ever cast as itself, which is what makes revoke able to find it.
+        await speakers.play(grant.deviceKey, String(params.entityId), String(params.trackId))
+        log('speaker:play', { entityId: params.entityId })
+        return send.res.send({ id, body: { ok: true } })
+      }
+
+      case 'speaker.stop': {
+        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
+        await speakers.stop(grant.deviceKey, String(params.entityId))
+        log('speaker:stop', { entityId: params.entityId })
+        return send.res.send({ id, body: { ok: true } })
+      }
+
+      case 'speaker.volume': {
+        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
+        const level = Number(params.level)
+        if (!Number.isFinite(level)) return safeErr(id, ERR.BAD_PARAMS, 'level required')
+        await speakers.setVolume(String(params.entityId), level)
+        return send.res.send({ id, body: { ok: true } })
+      }
+
+      // Read-only, so it is not in MUTATING - but still owner-gated, because the
+      // entity list itself is information about someone's house.
+      case 'speaker.state': {
+        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
+        if (!speakers.enabled()) return safeErr(id, ERR.FORBIDDEN, 'Home Assistant is not set up')
+        return send.res.send({ id, body: await speakers.state(String(params.entityId)) })
       }
 
       case 'art.get': {

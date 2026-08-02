@@ -943,6 +943,14 @@ function makeClient () {
       // the UI is about to make. The host does not send us our own writes.
       log('favorites:changed', { kind: m.data?.kind ?? null, on: m.data?.on ?? null })
       emit('favorites:changed', m.data || {})
+    } else if (m?.kind === 'speaker:ended') {
+      // A track we sent to a Home Assistant speaker finished (proposal 2026-08-01). The
+      // speaker has no queue of its own, so THIS is the only signal that it is time to
+      // send the next one - the app owns the queue and acts on this. Carries the entity
+      // and the track that ended so a stale push (a speaker the user already moved off)
+      // can be ignored rather than skipping the wrong track.
+      log('speaker:ended', { entityId: m.data?.entityId ?? null })
+      emit('speaker:ended', m.data || {})
     }
   }
   return c
@@ -3561,6 +3569,58 @@ const methods = {
       if (e?.code === 'ENOMETHOD') return { devices: [], supported: false }
       if (e?.code === 'EFORBIDDEN') return { devices: [], forbidden: true }
       return { devices: [], offline: true }
+    }
+  },
+
+  // --- Home Assistant speakers (proposal 2026-08-01) ------------------------
+  //
+  // Same degradation contract as the owner.* methods above, and for the same reason:
+  // an old host answers ENOMETHOD and a non-owner grant answers EFORBIDDEN, and the UI
+  // must treat BOTH as "there are no speakers here" rather than as an error worth
+  // showing. `enabled: false` is the third ordinary case - the host is new enough and
+  // this device is an owner, but nobody has set Home Assistant up.
+  //
+  // Speakers belong to a LIBRARY (the host that talks to Home Assistant), so these
+  // target the active host unless a libraryId says otherwise, exactly like owner.*.
+  async speakerList ({ libraryId } = {}) {
+    try {
+      const r = await (await ownerClient(libraryId)).speakerList()
+      return { speakers: r?.speakers || [], active: r?.active || [], enabled: !!r?.enabled, supported: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { speakers: [], active: [], enabled: false, supported: false }
+      if (e?.code === 'EFORBIDDEN') return { speakers: [], active: [], enabled: false, forbidden: true }
+      return { speakers: [], active: [], enabled: false, offline: true }
+    }
+  },
+
+  // ONE track. The speaker has no queue of its own (no MEDIA_ENQUEUE on either the
+  // ESPHome or the Cast platform), so the app stays the queue and sends the next track
+  // when the host pushes `speaker:ended`.
+  async speakerPlay ({ libraryId, entityId, trackId }) {
+    try {
+      await (await ownerClient(libraryId)).speakerPlay({ entityId, trackId })
+      return { ok: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { ok: false, supported: false }
+      return { ok: false, error: e?.message || 'could not play on that speaker' }
+    }
+  },
+
+  async speakerStop ({ libraryId, entityId }) {
+    try {
+      await (await ownerClient(libraryId)).speakerStop({ entityId })
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e?.message || 'could not stop that speaker' }
+    }
+  },
+
+  async speakerVolume ({ libraryId, entityId, level }) {
+    try {
+      await (await ownerClient(libraryId)).speakerVolume({ entityId, level })
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e?.message || 'could not change the volume' }
     }
   },
 

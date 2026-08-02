@@ -10,6 +10,7 @@ import { loadThemePref, applyThemePref, resolveTheme } from './theme'
 import { PEAR_MARK } from './icon'
 import { Collapse, ConfirmHost, Modal, askConfirm } from './ui'
 import { SourcePanel } from './SourcePanel'
+import { SpeakersPanel } from './SpeakersPanel'
 import { PairModal, DAY_MS } from './Pair'
 import { MaintenanceModal } from './Maintenance'
 import SetupWizard from './Wizard'
@@ -148,6 +149,10 @@ export default function App () {
             className={tab === 'requests' ? 'on' : ''} onClick={() => setTab('requests')}>
             Requests{pendingRequests > 0 && <span className='tabbadge'>{pendingRequests}</span>}
           </button>
+          <button role='tab' id='tab-speakers' aria-controls='pane-speakers' aria-selected={tab === 'speakers'}
+            className={tab === 'speakers' ? 'on' : ''} onClick={() => setTab('speakers')}>
+            Speakers
+          </button>
         </div>
 
         {/* Both panels stay mounted (hidden, not unmounted) so in-flight edits -
@@ -161,6 +166,9 @@ export default function App () {
           </div>
           <div className='tabpane' id='pane-requests' role='tabpanel' aria-labelledby='tab-requests' hidden={tab !== 'requests'}>
             <RequestsPanel state={state} refresh={refresh} toast={toast} />
+          </div>
+          <div className='tabpane' id='pane-speakers' role='tabpanel' aria-labelledby='tab-speakers' hidden={tab !== 'speakers'}>
+            <SpeakersPanel toast={toast} />
           </div>
         </div>
       </div>

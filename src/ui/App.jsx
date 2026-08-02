@@ -218,6 +218,17 @@ export default function App () {
   const [repeat, setRepeat] = useState(0) // 0 off, 1 one, 2 all
   const [sleep, setSleep] = useState(null) // sleep timer: { active, endOfTrack, deadline } from the shell
   const [sleepOpen, setSleepOpen] = useState(false) // the sleep-timer picker sheet
+  // Home Assistant speakers (proposal 2026-08-01). `speakers` is null until we have asked;
+  // an empty list, an old host, a non-owner grant and an unconfigured host all collapse to
+  // "no button", which is why only ONE flag drives the UI.
+  const [speakers, setSpeakers] = useState(null) // [{ entityId, name, state }] or null
+  const [castingTo, setCastingTo] = useState(null) // entityId we are currently playing on
+  const [speakerOpen, setSpeakerOpen] = useState(false) // the "Play on" sheet
+  const [speakerBusy, setSpeakerBusy] = useState(false)
+  // The once-registered speaker:ended handler closes over the first render, so it reads
+  // these rather than the state values. Same trick as youViewRef below.
+  const castingToRef = useRef(null)
+  castingToRef.current = castingTo
   const [themePref, setThemePref] = useState(() => loadThemePref())
   // Favorited ids, grouped by kind (track / album / artist). Sets for O(1) heart checks.
   const [favs, setFavs] = useState(() => ({ track: new Set(), album: new Set(), artist: new Set() }))
@@ -308,7 +319,7 @@ export default function App () {
         if (s.merged?.merged && showAlbums) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
         if (s.connected) {
           if (showAlbums) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
-          loadRecent(); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists()
+          loadRecent(); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists(); loadSpeakers()
         }
         // Paired but not connected YET: the background connect is in flight, so show
         // a spinner rather than a verdict until it lands or fails.
@@ -422,6 +433,13 @@ export default function App () {
         loadContinue()
         loadHandoff(); setTimeout(loadHandoff, 2000) // retry: the active device may push its queue just after we connect
         loadPlaylists(true)
+        // Speakers belong here for the same reason as everything above: init connects in the
+        // BACKGROUND, so `connected` is false when init resolves and the load it does there
+        // never runs on a cold start. Found on the TCL 2026-08-01 - the speaker button was
+        // missing on a freshly launched app even though the host was serving the list. It
+        // also covers the operator turning Home Assistant on while the app sits connected,
+        // which nothing else would tell us about until a reconnect.
+        loadSpeakers()
         // REQUESTS TOO, and this is not symmetry for its own sake. A backgrounded phone loses its
         // connection in about 30 seconds (measured on the TCL, 2026-07-30), and a push cannot
         // reach a device that is not there - so anything that happened while it was away is
@@ -509,7 +527,7 @@ export default function App () {
         call('setLibraryFilter', { libraryId: '_all' }).catch(() => {})
         setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery(''); setError(null)
         if (liveRef.current?.connected) {
-          loadAlbums(0); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadPlaylists(true)
+          loadAlbums(0); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadPlaylists(true); loadSpeakers()
         }
         // Swap the play queue to the new library: if a track is playing it drains first, then
         // the new library's queue takes over; if nothing is playing it swaps straight over
@@ -582,6 +600,14 @@ export default function App () {
       on('playlists:changed', () => {
         loadPlaylists(true)
         setPlRefresh((n) => n + 1)
+      }),
+      // A track we sent to a Home Assistant speaker finished (proposal 2026-08-01). The
+      // speaker has NO QUEUE of its own, so this push is the only thing that can advance
+      // one - the app owns the queue and sends the next track here. Ignore a push for a
+      // speaker we have since moved off, or it would skip a track on the phone.
+      on('speaker:ended', (d) => {
+        if (!castingToRef.current || d?.entityId !== castingToRef.current) return
+        castNext()
       }),
       // A pear:// pairing link was opened while the app was already running. The shell parks
       // it and nudges; we take it below. See takePendingLink.
@@ -2155,6 +2181,85 @@ export default function App () {
     else call('playIndex', { index })
   }
 
+  // --- Home Assistant speakers (proposal 2026-08-01) ------------------------
+  //
+  // Asked once per connect, and only ever answered for an OWNER of a host that has
+  // Home Assistant set up. Every other case (old host, non-owner, unconfigured,
+  // offline) collapses to an empty list, which is what hides the button - so there
+  // is no state in which a speaker control appears and then fails when tapped.
+  async function loadSpeakers () {
+    try {
+      const r = await call('speakerList')
+      setSpeakers(r?.enabled ? (r.speakers || []) : [])
+      // Re-attach to a cast this device already had running: the app can be closed
+      // and reopened while a speaker plays, and the host still knows about it.
+      const mine = (r?.active || [])[0]
+      if (mine) setCastingTo(mine.entityId)
+    } catch {
+      setSpeakers([])
+    }
+  }
+
+  // WHILE CASTING, THE PHONE IS A REMOTE CONTROL AND ITS QUEUE IS THE QUEUE. The
+  // speaker has none of its own, so we walk the shell's list ourselves: castIndexRef
+  // is the cursor, and `speaker:ended` moves it. That does mean shuffle and repeat are
+  // not honoured on a speaker yet - stated in the sheet rather than left to be
+  // discovered, and noted in TODO.md as the first follow-up.
+  const castIndexRef = useRef(0)
+
+  async function castTrackAt (index, items) {
+    const list = items || queue?.items || []
+    const track = list[index]
+    if (!track) { await castHere(); return false }
+    const r = await call('speakerPlay', { entityId: castingToRef.current, trackId: track.trackId || track.id })
+    if (!r?.ok) {
+      setError(r?.error || 'could not play on that speaker')
+      await castHere()
+      return false
+    }
+    castIndexRef.current = index
+    return true
+  }
+
+  async function castTo (entityId) {
+    setSpeakerBusy(true)
+    try {
+      // Pause the phone first. Two things playing the same song a room apart is the
+      // worst possible outcome, so it happens BEFORE the speaker is asked to start.
+      if (status?.playing) await call('toggle').catch(() => {})
+      const q = await call('queue').catch(() => null)
+      if (q) setQueue(q)
+      const items = q?.items || queue?.items || []
+      const start = q?.index ?? queue?.index ?? 0
+      setCastingTo(entityId)
+      castingToRef.current = entityId
+      const ok = await castTrackAt(start, items)
+      if (ok) setSpeakerOpen(false)
+    } finally {
+      setSpeakerBusy(false)
+    }
+  }
+
+  // Back to the phone. Silences the speaker first, for the same reason as above.
+  async function castHere () {
+    const entityId = castingToRef.current
+    setCastingTo(null)
+    castingToRef.current = null
+    setSpeakerOpen(false)
+    if (entityId) await call('speakerStop', { entityId }).catch(() => {})
+  }
+
+  // The host saw the track finish. Only reached for the speaker we are actually on
+  // (the push handler checks), so this just walks the cursor forward.
+  async function castNext () {
+    const q = await call('queue').catch(() => null)
+    if (q) setQueue(q)
+    const items = q?.items || queue?.items || []
+    const next = castIndexRef.current + 1
+    if (next >= items.length) { await castHere(); return }
+    await castTrackAt(next, items)
+  }
+
   // The player's X: stop PLAYBACK only, and KEEP the queue. The bar hides (play:stopped),
   // the queue stays in the Queue tab, and tapping a track there resumes it.
   function stopPlayback () {
@@ -2532,6 +2637,8 @@ export default function App () {
             onExpand={() => { haptic('light'); setExpanded(true) }}
             onCollapse={() => { haptic('light'); setExpanded(false) }}
             onViewArt={() => viewArt(now.artFull || now.art, now.album || now.title)}
+            canCast={!!(speakers && speakers.length)} castingTo={castingTo}
+            onSpeakers={() => { loadSpeakers(); setSpeakerOpen(true) }}
           />
         )}
         {/* The navbar stays put during a drill-down, unlike PearList's (which
@@ -2580,6 +2687,16 @@ export default function App () {
         />
       )}
       {viewing && <ArtViewer {...viewing} onClose={() => setViewing(null)} />}
+      {speakerOpen && (
+        <SpeakerSheet
+          speakers={speakers || []}
+          castingTo={castingTo}
+          busy={speakerBusy}
+          onClose={() => setSpeakerOpen(false)}
+          onPick={castTo}
+          onHere={castHere}
+        />
+      )}
       {sleepOpen && (
         <SleepSheet
           sleep={sleep}
@@ -5128,7 +5245,8 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
 // content padding along with it.
 function Player ({
   now, status, expanded, skin, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
-  onViewArt, onQueue, onStop, queueItems, queueIndex, onJump, sleep, onSleep
+  onViewArt, onQueue, onStop, queueItems, queueIndex, onJump, sleep, onSleep,
+  canCast, castingTo, onSpeakers
 }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
@@ -5279,6 +5397,18 @@ function Player ({
           <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds'>
             15 <ArrowClockwise size={15} />
           </button>
+          {/* Only when the host actually offers speakers AND this device may use them.
+              An unconfigured host, an old host or a non-owner grant all mean canCast
+              is false, and then there is no button at all rather than one that
+              explains itself when tapped. */}
+          {canCast &&
+            <button
+              className={'icon' + (castingTo ? ' on' : '')}
+              onClick={() => { haptic('light'); onSpeakers() }}
+              aria-label='Play on a speaker'
+            >
+              <SpeakerHigh size={16} weight={castingTo ? 'fill' : 'regular'} />
+            </button>}
         </div>
       </div>
     </div>
@@ -5330,6 +5460,48 @@ function SleepSheet ({ sleep, onClose, onPick }) {
               Turn off timer
             </button>
           )}
+          <button className='wide' onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Where the music comes out: this phone, or a Home Assistant speaker in the house
+// (proposal 2026-08-01).
+//
+// The list is deliberately flat and short. Anything clever - which speakers exist,
+// whether this device may use them - was decided by the host before we got here; a
+// non-owner or an unconfigured host simply never sees the button that opens this.
+//
+// The honest limits are stated in the sheet rather than discovered: a speaker has no
+// queue of its own, so there is a small gap between tracks, and the Nabu Casa speaker
+// cannot scrub at all. Better said here than reported as a bug.
+function SpeakerSheet ({ speakers, castingTo, onClose, onPick, onHere, busy }) {
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Play on</h1>
+        <div className='acts'>
+          <button className={'wide' + (castingTo ? '' : ' on')} onClick={onHere} disabled={busy}>
+            <DeviceMobile size={16} weight='regular' /> This phone
+          </button>
+          {speakers.map(s => (
+            <button
+              key={s.entityId}
+              className={'wide' + (castingTo === s.entityId ? ' on' : '')}
+              onClick={() => onPick(s.entityId)}
+              disabled={busy}
+            >
+              <SpeakerHigh size={16} weight='regular' /> {s.name}
+            </button>
+          ))}
+          {!speakers.length && <p className='muted sm'>No speakers found.</p>}
+          {castingTo &&
+            <p className='muted sm'>
+              On a speaker there is a short gap between tracks, and you cannot scrub
+              through a song.
+            </p>}
           <button className='wide' onClick={onClose}>Cancel</button>
         </div>
       </div>
