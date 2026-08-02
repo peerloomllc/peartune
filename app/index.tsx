@@ -638,6 +638,12 @@ export default function App () {
   function toggle () {
     const p = player.current
     if (!p) return
+    // While casting, this player is a silent placeholder queue - playing it would race
+    // through a track a second and cast each one. The UI routes its own play/pause to the
+    // SPEAKER; this guard is for the lock screen and headset buttons, which reach here
+    // directly and cannot be intercepted upstream. They do nothing during a cast, which is
+    // a known gap rather than a good answer (TODO).
+    if (castMode.current) return
     if (p.playing) p.pause()
     else p.play()
     // Flush the new play/pause state (and exact position) to the host session at once. A pause
@@ -663,7 +669,29 @@ export default function App () {
 
     if (on) {
       if (p) {
-        try { p.volume = 0; p.pause() } catch {}
+        try {
+          p.volume = 0
+          p.pause()
+          // AND POINT EVERY QUEUE SLOT AT SILENCE. The player has to stay loaded - it is
+          // what owns the order, shuffle and repeat - but a loaded player buffers whatever
+          // track it sits on whether or not anyone can hear it. Measured on the TCL
+          // 2026-08-02: casting four tracks pulled 7 MB the phone never played, about
+          // 1.75 MB a track, which on cellular is close to the cost of just listening.
+          //
+          // Same length, same indices, so skipToNext/skipToPrevious/the shuffle order are
+          // untouched; only the bytes behind each slot change. The real URLs come back on
+          // the way out, where the player is rebuilt anyway.
+          const n = queueRef.current.length
+          if (n) {
+            const r: any = await call('silenceUrl')
+            const at = indexRef.current
+            p.setQueueSources(new Array(n).fill({ uri: r.url }))
+            p.seekToQueueIndex(at)
+            px()?.setShuffle(shuffleRef.current)
+            px()?.setRepeatMode(repeatRef.current)
+            p.pause() // seekToQueueIndex can resume it; a silent 1s queue must never run
+          }
+        } catch {}
       }
       persistQueue(true)
       return
@@ -1397,7 +1425,10 @@ export default function App () {
         if (!p) return
         manualNav.current = true
         p.seekToQueueIndex(i)
-        p.play()
+        // While casting, every slot is one second of silence, so playing would race the
+        // whole queue in under a minute and fire a cast per second. The seek alone is what
+        // is wanted: it announces the track, and the UI sends THAT to the speaker.
+        if (!castMode.current) p.play()
       },
 
       toggle,

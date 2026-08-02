@@ -3831,6 +3831,13 @@ const methods = {
 
   // The URL the RN player hands to ExoPlayer. The audio never touches RN: the
   // player pulls it from the worklet's loopback server, which pulls it over P2P.
+  // Where cast mode points the player's queue instead of at real audio (see the note in
+  // worklet/shim.js). Needs the shim up, because the URL carries its port.
+  async silenceUrl () {
+    await ensureShim()
+    return { url: 'http://127.0.0.1:' + shimPort + '/silence.wav', port: shimPort }
+  },
+
   async urlFor ({ trackId, libraryId, copies }) {
     await ensureShim()
     // DEMO MODE needs no serving code of its own: the bundled tracks were installed as PINNED
