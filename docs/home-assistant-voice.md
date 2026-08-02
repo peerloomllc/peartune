@@ -124,6 +124,17 @@ lists:
 
 Restart Home Assistant, then try it: **"Okay Nabu, play Led Zeppelin."**
 
+## What it plays
+
+A request queues up to 50 tracks, so an artist is an evening rather than one song. What it
+picks, in order of preference:
+
+1. **A song whose title matches.** "Put on Rock and Roll" gets that song, then keeps going
+   with whatever else matched.
+2. **An artist whose name matches.** Their tracks become the queue.
+3. **An album whose name matches.** Its tracks, in album order.
+4. Otherwise, whatever the search turned up, in the order your library's search ranked it.
+
 ## Which speaker
 
 If the request does not name one, PearTune uses the default speaker you picked in the
@@ -131,8 +142,12 @@ dashboard. Naming one in the sentence overrides that.
 
 ## If it does not work
 
-- **"I could not find that"** and nothing plays: the search found nothing in your library.
-  Voice deliberately does **not** file a music request; that is a separate feature in the app.
+- **"I could not find X in your library"**: exactly what it says. Voice deliberately does
+  **not** file a music request; that is a separate feature in the app.
+- **It says nothing at all when it fails:** your automation is missing the
+  `response_variable` / `set_conversation_response` pair. Regenerate the block from the
+  dashboard - the first version of it did not speak failures, so an unknown artist was just
+  silence.
 - **Nothing happens at all with an LLM agent:** check the intent has a `description`. Without
   one the model rarely picks it.
 - **Nothing happens with the default agent:** the sentence did not match. Custom sentences are

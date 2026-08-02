@@ -55,6 +55,15 @@ automation:
       - action: rest_command.peartune_play
         data:
           query: "{{ trigger.slots.query }}"
+        response_variable: result
+      - set_conversation_response: >-
+          {% if result.status == 200 %}
+            {% if result.content.kind == 'artist' %}Playing {{ result.content.artist }}
+            {% elif result.content.kind == 'album' %}Playing {{ result.content.title }}
+            {% else %}Playing {{ result.content.title }}{% endif %}
+          {% else %}
+            I could not find {{ trigger.slots.query }} in your library
+          {% endif %}
 
 intent_script:
   PearTunePlayMusic:

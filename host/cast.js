@@ -42,6 +42,10 @@ const POLL_MS = 2000
 // stable address to put in a configuration file; overridable for the rare collision.
 const PREFERRED_PORT = Number(process.env.PEARTUNE_CAST_PORT || 8742)
 
+// How many tracks a spoken request queues up. Long enough that "put on Led Zeppelin" is an
+// evening rather than a song, short enough that resolving it is not a library scan.
+const VOICE_QUEUE_MAX = 50
+
 // Who may make noise in someone else's house. OWNER only in phase 1 (proposal,
 // Open question 1): a guest streaming to their own headphones is one thing, a
 // guest starting the kitchen speaker is another. Easy to relax, painful to tighten.
@@ -63,6 +67,11 @@ class CastSessions {
     this.tokens = new Map()
     // deviceKey -> Map<entityId, { token, trackId, startedAt, sawPlaying }>
     this.byDevice = new Map()
+    // deviceKey -> { items: [trackId], index }. A HOST-HELD queue, for casts that have no
+    // phone behind them. An app-driven cast advances because the app hears speaker:ended and
+    // sends the next track; a VOICE cast has nobody to hear that, so it played exactly one
+    // song and stopped - which is what Tim saw as "always the same song".
+    this.queues = new Map()
 
     this.server = null
     this.port = 0
@@ -155,31 +164,131 @@ class CastSessions {
     const entityId = String(body.entityId || cfg.voiceEntityId || '').trim()
     if (!entityId) return say(400, { error: 'no speaker configured' })
 
-    let hit = null
+    let picked = null
     try {
-      const r = await this.getAdapter().search({ q: query, limit: 1 })
-      // Adapters return shapes that differ in the wrapper but agree on the rows.
-      const rows = Array.isArray(r) ? r : (r?.tracks || r?.results || [])
-      hit = rows[0] || null
+      picked = await this._resolveVoiceQuery(query)
     } catch (e) {
       this.log('voice:search-failed', { err: e?.message })
       return say(500, { error: 'search failed' })
     }
-    if (!hit) {
-      // A clean miss, so Home Assistant can say "I could not find that" rather than
-      // failing silently. NOT a music request - that is a different feature deliberately.
+    if (!picked) {
+      // A clean miss, so Home Assistant can SAY "I could not find that". The first cut
+      // returned this and the automation ignored it, so an unknown artist was silence -
+      // which is the worst possible answer to a spoken request (Tim, 2026-08-02: "it
+      // silently fails when it can't figure out what to play"). NOT a music request:
+      // that is a different feature, deliberately.
       this.log('voice:no-match', { query })
       return say(404, { error: 'not in the library', query })
     }
 
     try {
-      await this.play({ deviceKey: cfg.voiceKey, trackId: hit.id || hit.trackId, entityId })
+      await this.play({
+        deviceKey: cfg.voiceKey,
+        trackId: picked.tracks[0],
+        entityId,
+        queue: picked.tracks
+      })
     } catch (e) {
       this.log('voice:play-failed', { err: e?.message })
       return say(500, { error: e?.message || 'could not play' })
     }
-    this.log('voice:play', { query, entityId, title: hit.title })
-    return say(200, { ok: true, title: hit.title || null, artist: hit.artist || null })
+    this.log('voice:play', { query, entityId, kind: picked.kind, tracks: picked.tracks.length })
+    return say(200, {
+      ok: true,
+      kind: picked.kind,
+      title: picked.title || null,
+      artist: picked.artist || null,
+      count: picked.tracks.length
+    })
+  }
+
+  // Turn a spoken phrase into something to play, and something to play AFTER it.
+  //
+  // The first cut took `search().tracks[0]` and nothing else, which is why "put on Led
+  // Zeppelin" always got the same song and an artist we hold no track titles for came back
+  // empty. `search()` returns `{ artists, albums, tracks }` and all three are useful:
+  //
+  //   - a TRACK whose title really matches wins, because asking for a song by name should
+  //     get that song and not the first thing by that artist,
+  //   - otherwise an ARTIST or ALBUM whose NAME matches becomes a queue of their music,
+  //   - otherwise the loose track matches (which include matches on artist and album) are
+  //     the queue, in the order the adapter ranked them.
+  async _resolveVoiceQuery (query) {
+    const adapter = this.getAdapter()
+    const r = await adapter.search({ q: query, limit: VOICE_QUEUE_MAX })
+    const artists = r?.artists || []
+    const albums = r?.albums || []
+    const tracks = r?.tracks || []
+    const norm = (x) => String(x || '').toLowerCase().trim()
+    const want = norm(query)
+
+    // 1. An exact-ish TRACK title. "put on rock and roll" means that song.
+    const titled = tracks.find(t => norm(t.title) === want) ||
+      tracks.find(t => norm(t.title).startsWith(want))
+    if (titled) {
+      // ...and then KEEP GOING with more by the same artist. A named song that stops dead
+      // after three minutes is the same silence Tim complained about, just delayed - a
+      // music player plays the song you asked for and then carries on.
+      const id = titled.id || titled.trackId
+      let rest = tracks.filter(t => (t.id || t.trackId) !== id)
+      if (!rest.length && titled.artist) {
+        const more = await adapter.search({ q: titled.artist, limit: VOICE_QUEUE_MAX }).catch(() => null)
+        rest = (more?.tracks || []).filter(t => (t.id || t.trackId) !== id)
+      }
+      return {
+        kind: 'track',
+        title: titled.title,
+        artist: titled.artist,
+        tracks: [id, ...rest.map(t => t.id || t.trackId)].filter(Boolean).slice(0, VOICE_QUEUE_MAX)
+      }
+    }
+
+    // 2. An ARTIST by name. Their tracks are usually already in `tracks` (the adapters match
+    //    on artist too), so prefer that over walking albums - one call instead of many.
+    const artist = artists.find(a => norm(a.name) === want) ||
+      artists.find(a => norm(a.name).startsWith(want)) || artists[0]
+    if (artist) {
+      const theirs = tracks.filter(t => norm(t.artist) === norm(artist.name))
+      const ids = (theirs.length ? theirs : tracks).map(t => t.id || t.trackId).filter(Boolean)
+      if (ids.length) {
+        return { kind: 'artist', artist: artist.name, tracks: ids.slice(0, VOICE_QUEUE_MAX) }
+      }
+      // An artist we matched but hold no loose track rows for: walk their albums.
+      const ids2 = await this._tracksOfArtist(adapter, artist.id)
+      if (ids2.length) return { kind: 'artist', artist: artist.name, tracks: ids2 }
+    }
+
+    // 3. An ALBUM by name.
+    const album = albums.find(a => norm(a.name) === want) || albums.find(a => norm(a.name).startsWith(want))
+    if (album) {
+      const full = await adapter.get({ id: album.id, type: 'album' }).catch(() => null)
+      const ids = (full?.tracks || []).map(t => t.id || t.trackId).filter(Boolean)
+      if (ids.length) return { kind: 'album', title: album.name, artist: album.artist, tracks: ids.slice(0, VOICE_QUEUE_MAX) }
+    }
+
+    // 4. Whatever the search turned up, in its own order.
+    const loose = tracks.map(t => t.id || t.trackId).filter(Boolean)
+    if (loose.length) {
+      return { kind: 'search', title: tracks[0].title, artist: tracks[0].artist, tracks: loose.slice(0, VOICE_QUEUE_MAX) }
+    }
+    return null
+  }
+
+  // Every track on every album an artist has. Only reached when the loose search rows did
+  // not already carry them, because it is several calls where that was one.
+  async _tracksOfArtist (adapter, artistId) {
+    const a = await adapter.get({ id: artistId, type: 'artist' }).catch(() => null)
+    if (!a) return []
+    const ids = (a.tracks || []).map(t => t.id || t.trackId).filter(Boolean)
+    for (const al of (a.albums || [])) {
+      if (ids.length >= VOICE_QUEUE_MAX) break
+      const full = await adapter.get({ id: al.id, type: 'album' }).catch(() => null)
+      for (const t of (full?.tracks || [])) {
+        const id = t.id || t.trackId
+        if (id) ids.push(id)
+      }
+    }
+    return ids.slice(0, VOICE_QUEUE_MAX)
   }
 
   // --- the audio route ---------------------------------------------------
@@ -261,9 +370,14 @@ class CastSessions {
     return !!grant && !grant.revokedAt && CAST_SCOPES.has(grant.scope)
   }
 
-  async play ({ deviceKey, trackId, entityId }) {
+  async play ({ deviceKey, trackId, entityId, queue = null }) {
     if (!this.speakers.enabled) throw new Error('Home Assistant is not configured')
     await this.start()
+
+    // A queue means "and keep going" - see this.queues. Replaces any previous one for this
+    // device, so a second voice request abandons the first rather than interleaving.
+    if (queue && queue.length) this.queues.set(deviceKey, { items: queue, index: 0 })
+    else if (queue !== null) this.queues.delete(deviceKey)
 
     // Replace whatever this device had on this entity, rather than stacking
     // tokens: one device plays one thing on one speaker.
@@ -323,6 +437,7 @@ class CastSessions {
     const entities = [...set.keys()]
     for (const row of set.values()) this.tokens.delete(row.token)
     this.byDevice.delete(deviceKey)
+    this.queues.delete(deviceKey)
 
     let stopped = 0
     for (const entityId of entities) {
@@ -410,6 +525,26 @@ class CastSessions {
         set.delete(entityId)
         if (!set.size) this.byDevice.delete(deviceKey)
         this.log('cast:ended', { device: String(deviceKey).slice(0, 8), entityId, state: state.state })
+
+        // A HOST-HELD queue advances here, because nothing else can: there is no app on the
+        // other end of a voice cast. An app-driven cast has no queue here and falls through
+        // to the push, which is what it has always done.
+        const q = this.queues.get(deviceKey)
+        if (q && q.index + 1 < q.items.length) {
+          q.index++
+          try {
+            await this.play({ deviceKey, trackId: q.items[q.index], entityId })
+            this.log('cast:queue-advance', { at: q.index, of: q.items.length })
+            continue
+          } catch (e) {
+            this.log('cast:queue-advance-failed', { err: e?.message })
+            this.queues.delete(deviceKey)
+          }
+        } else if (q) {
+          this.log('cast:queue-done', { of: q.items.length })
+          this.queues.delete(deviceKey)
+        }
+
         if (this.presence) {
           this.presence.notify(deviceKey, 'speaker:ended', { entityId, trackId: row.trackId })
         }

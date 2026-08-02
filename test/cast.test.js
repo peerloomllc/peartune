@@ -356,9 +356,33 @@ async function buildVoice (over = {}) {
     ...over
   }
   const grants = fakeGrants({ [VOICE_KEY]: okGrant({ deviceKey: VOICE_KEY }) })
+  // The real shape: search() answers { artists, albums, tracks }, which the first cut of
+  // the voice code ignored in favour of tracks[0] - the reason "put on Led Zeppelin"
+  // always got the same song.
+  const LIB = {
+    artists: [{ id: 'art1', name: 'Led Zeppelin' }],
+    albums: [{ id: 'alb1', name: 'Physical Graffiti', artist: 'Led Zeppelin' }],
+    tracks: [
+      { id: 'trk1', title: 'Kashmir', artist: 'Led Zeppelin' },
+      { id: 'trk2', title: 'Rock and Roll', artist: 'Led Zeppelin' },
+      { id: 'trk3', title: 'Houses of the Holy', artist: 'Led Zeppelin' }
+    ]
+  }
   const adapter = {
     async stream () { return Readable.from([Buffer.from('AUDIOBYTES')]) },
-    async search ({ q }) { return q === 'nothing here' ? [] : [{ id: 'trk1', title: 'Rock and Roll', artist: 'Led Zeppelin' }] }
+    async get ({ id, type }) {
+      if (type === 'album' && id === 'alb1') return { id, tracks: LIB.tracks }
+      return null
+    },
+    async search ({ q }) {
+      const want = q.toLowerCase()
+      if (want.includes('metallica') || want === 'nothing here') return { artists: [], albums: [], tracks: [] }
+      return {
+        artists: LIB.artists.filter(a => a.name.toLowerCase().includes(want)),
+        albums: LIB.albums.filter(a => a.name.toLowerCase().includes(want)),
+        tracks: LIB.tracks.filter(t => t.title.toLowerCase().includes(want) || t.artist.toLowerCase().includes(want))
+      }
+    }
   }
   const casts = new CastSessions({ speakers, grants, getAdapter: () => adapter })
   const port = await casts.start()
@@ -369,16 +393,71 @@ const voicePost = (port, body) => fetch(`http://127.0.0.1:${port}/voice/play`, {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
 })
 
-test('a voice request with the right token plays', async (t) => {
+test('an ARTIST request queues their music, not one song', async (t) => {
   const { casts, speakers, port } = await buildVoice()
   t.after(() => casts.close())
 
   const res = await voicePost(port, { token: 'the-right-token', query: 'led zeppelin', entityId: 'media_player.x' })
   assert.equal(res.status, 200)
   const body = await res.json()
-  assert.equal(body.ok, true)
-  assert.equal(body.title, 'Rock and Roll')
+  assert.equal(body.kind, 'artist')
+  assert.equal(body.artist, 'Led Zeppelin')
+  // THE BUG THIS PINS: the first cut played tracks[0] and stopped, so an artist was one
+  // song on repeat-nothing. A queue is the whole point of asking for an artist.
+  assert.equal(body.count, 3)
+  assert.equal(casts.queues.get(VOICE_KEY).items.length, 3)
   assert.equal(speakers.calls.find(c => c[0] === 'play')[1], 'media_player.x')
+})
+
+test('a TRACK request plays THAT track first, not the artist\'s first song', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  const body = await (await voicePost(port, { token: 'the-right-token', query: 'rock and roll', entityId: 'e' })).json()
+  assert.equal(body.kind, 'track')
+  assert.equal(body.title, 'Rock and Roll')
+  assert.equal(casts.queues.get(VOICE_KEY).items[0], 'trk2', 'the asked-for track leads')
+  assert.ok(casts.queues.get(VOICE_KEY).items.length > 1, 'and it keeps going afterwards')
+})
+
+test('an ALBUM request plays the album', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  const body = await (await voicePost(port, { token: 'the-right-token', query: 'physical graffiti', entityId: 'e' })).json()
+  assert.equal(body.kind, 'album')
+  assert.equal(body.title, 'Physical Graffiti')
+})
+
+test('an artist we do NOT have is a clean, speakable miss', async (t) => {
+  const { casts, speakers, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  // Tim's exact report: asking for Metallica did nothing at all, and worse, left whatever
+  // was already playing alone so it looked like the request had been ignored.
+  const res = await voicePost(port, { token: 'the-right-token', query: 'metallica', entityId: 'e' })
+  assert.equal(res.status, 404)
+  const body = await res.json()
+  assert.equal(body.error, 'not in the library')
+  assert.equal(body.query, 'metallica', 'the query comes back so the response can name it')
+  assert.equal(speakers.calls.length, 0)
+})
+
+test('the queue advances on its own when a track ends - nothing else can advance it', async (t) => {
+  const { casts, speakers, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  await voicePost(port, { token: 'the-right-token', query: 'led zeppelin', entityId: 'media_player.x' })
+  assert.equal(casts.queues.get(VOICE_KEY).index, 0)
+
+  // The speaker reports playing, then idle: exactly what a finished track looks like.
+  speakers.states.set('media_player.x', { state: 'playing' })
+  await casts._poll()
+  speakers.states.set('media_player.x', { state: 'idle' })
+  await casts._poll()
+
+  assert.equal(casts.queues.get(VOICE_KEY).index, 1, 'moved to the next track by itself')
+  assert.equal(speakers.calls.filter(c => c[0] === 'play').length, 2)
 })
 
 test('a voice request with the WRONG token is refused', async (t) => {
