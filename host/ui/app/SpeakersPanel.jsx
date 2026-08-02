@@ -14,6 +14,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { SpeakerHigh } from '@phosphor-icons/react'
 import { api, copyText } from './api'
+import { haConfig, PACKAGE_INCLUDE, PACKAGE_PATH } from './ha-config'
 import { notify } from './ui'
 
 export function SpeakersPanel ({ toast }) {
@@ -67,121 +68,10 @@ export function SpeakersPanel ({ toast }) {
 
   // Generated from what the host actually reports, so the port and token can never drift
   // from what is running. Kept in one place rather than split across the docs and the UI.
-  // ONE PASTE, ONE FILE. The first cut emitted rest_command + intent_script and left the
-  // SENTENCES out - so Home Assistant knew how to play music and never knew when to. It
-  // needs both, and custom_sentences lives in its own directory, which would have made this
-  // a two-file setup.
-  //
-  // A conversation-trigger automation avoids that: it carries its own sentences, lives in
-  // configuration.yaml like everything else here, and exposes wildcards as trigger.slots.
-  // The intent_script stays because an LLM voice agent never sees sentences at all - it is
-  // offered intents as tools - so the two halves cover the two kinds of assistant.
-  //
-  // NOTE THE PHRASINGS. "play X" is NOT ours to take: Home Assistant's built-in
-  // HassMediaSearchAndPlay claims "play {search_query}" and every variation of it, and it
-  // wins - which is exactly the "no devices supports the required features" Tim heard,
-  // because no speaker in a normal house advertises SEARCH_MEDIA. Until PearTune ships a
-  // media_player entity of its own, "put on" and "listen to" are the phrases that are free.
-  const haYaml = `rest_command:
-  peartune_play:
-    url: "http://127.0.0.1:${castPort || 8742}/voice/play"
-    method: POST
-    content_type: "application/json"
-    payload: '{"token":"${voiceToken}","query":"{{ query }}","entityId":""}'
-
-automation:
-  - alias: PearTune voice
-    mode: queued
-    triggers:
-      - trigger: conversation
-        command:
-          - "put on [some] {query}"
-          - "listen to [some] {query}"
-          - "I want to listen to [some] {query}"
-          - "play [some] {query} from peartune"
-    actions:
-      - action: rest_command.peartune_play
-        data:
-          query: "{{ trigger.slots.query }}"
-        response_variable: result
-      - set_conversation_response: >-
-          {% if result.status == 200 %}
-            {% if result.content.kind == 'artist' %}Playing {{ result.content.artist }}
-            {% elif result.content.kind == 'album' %}Playing {{ result.content.title }}
-            {% else %}Playing {{ result.content.title }}{% endif %}
-          {% else %}
-            I could not find {{ trigger.slots.query }} in your library
-          {% endif %}
-
-  peartune_control:
-    url: "http://127.0.0.1:${castPort || 8742}/voice/control"
-    method: POST
-    content_type: "application/json"
-    payload: '{"token":"${voiceToken}","action":"{{ action }}"}'
-
-# A universal media player exists ONLY to make "next" and "go back" work with the words
-# people actually use. Home Assistant's built-in intents match on FEATURES, and a speaker
-# that cannot skip does not advertise NEXT_TRACK - so "next" would fail on your speaker.
-# Declaring the commands here makes this entity advertise them, and the built-in intent
-# finds it. The commands land on PearTune, which is where the queue actually lives.
-media_player:
-  - platform: universal
-    name: PearTune
-    unique_id: peartune_voice_player
-    commands:
-      media_next_track:
-        action: rest_command.peartune_control
-        data:
-          action: next
-      media_previous_track:
-        action: rest_command.peartune_control
-        data:
-          action: previous
-      media_stop:
-        action: rest_command.peartune_control
-        data:
-          action: stop
-
-  - alias: PearTune voice controls
-    mode: queued
-    triggers:
-      # Home Assistant has no shuffle or stop intent AT ALL, so unlike next and previous
-      # these cannot be unlocked by declaring a feature - they need their own sentences.
-      # "shuffle" is unclaimed; "stop playing" belongs to the built-in pause intent, which
-      # pauses the speaker rather than ending the cast, so ours says "stop peartune".
-      - trigger: conversation
-        command:
-          - "shuffle"
-          - "shuffle [the] (music|queue|songs)"
-        id: shuffle
-      - trigger: conversation
-        command:
-          - "stop peartune"
-          - "stop the music"
-        id: stop
-    actions:
-      - action: rest_command.peartune_control
-        data:
-          action: "{{ trigger.id }}"
-        response_variable: result
-      - set_conversation_response: >-
-          {% if result.status == 200 %}OK{% else %}Nothing is playing{% endif %}
-
-intent_script:
-  PearTunePlayMusic:
-    description: >-
-      Play music from the user's personal PearTune music library on a speaker in
-      their home. Use this for any request to play a specific artist, album or
-      song. The search_query is what the user asked for, such as "Led Zeppelin".
-    parameters:
-      search_query:
-        description: The artist, album or song to play
-    action:
-      - action: rest_command.peartune_play
-        data:
-          query: "{{ search_query }}"
-    speech:
-      text: "Playing {{ search_query }}"`
+  // Generated from what the host actually reports, so the port and token can never drift
+  // from what is running. Lives in its own module because a test parses it - see
+  // test/ha-config.test.js and the note at the top of ha-config.js.
+  const haYaml = haConfig({ port: castPort || 8742, token: voiceToken })
 
   const enableVoice = async () => {
     setBusy('voice')
@@ -335,9 +225,22 @@ intent_script:
                             They still have to edit a file, which there is no way around,
                             but they should never have to transcribe or look anything up. */}
                         <p className='hint'>
-                          <strong>Almost done.</strong> Copy this and paste it at the end of
-                          your Home Assistant <code>configuration.yaml</code>, then restart
-                          Home Assistant. Everything is filled in already.
+                          <strong>Almost done.</strong> Two steps, and the first is only ever
+                          needed once.
+                        </p>
+                        <p className='hint'>
+                          <strong>1.</strong> If your Home Assistant{' '}
+                          <code>configuration.yaml</code> does not already load packages, add
+                          this to it once:
+                        </p>
+                        <textarea readOnly rows={2} className='mono setupyaml' value={PACKAGE_INCLUDE} onFocus={e => e.target.select()} />
+                        <p className='hint'>
+                          <strong>2.</strong> Save the block below as{' '}
+                          <code>{PACKAGE_PATH}</code> next to your{' '}
+                          <code>configuration.yaml</code>. Everything is filled in already.
+                          PearTune lives entirely in that one file, so an update replaces it
+                          rather than editing your main configuration again. Then restart Home
+                          Assistant.
                         </p>
                         <textarea readOnly rows={16} className='mono setupyaml' value={haYaml} onFocus={e => e.target.select()} />
                         <div className='srcactions center'>

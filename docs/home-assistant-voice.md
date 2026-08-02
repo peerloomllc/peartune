@@ -17,15 +17,30 @@ speakers, and turning it off stops it at once - but it is presence, not permissi
 
 ## The short way
 
-**The dashboard writes this for you.** When you turn voice control on, it shows a complete
-configuration block with your token and port already filled in, and a **Copy configuration**
-button. Paste that at the end of your Home Assistant `configuration.yaml`, restart Home
-Assistant, and skip to the end of this page.
+**The dashboard writes this for you.** Turn voice control on and it shows both pieces, with
+your token and port already filled in.
 
-You still have to edit a file, and there is no way around that: Home Assistant has no API for
-adding a `rest_command`. But you should never have to transcribe or look anything up.
+**Once, in `configuration.yaml`:**
 
-The rest of this page explains what that block does and how to change it.
+```yaml
+homeassistant:
+  packages: !include_dir_named packages
+```
+
+**Then save the generated block as `packages/peartune.yaml`**, next to your
+`configuration.yaml`, and restart Home Assistant.
+
+PearTune living in its own file is deliberate, and not only tidiness. Home Assistant MERGES
+packages, where a second top-level `automation:` pasted into `configuration.yaml` would
+COLLIDE with the `automation: !include automations.yaml` most installs already have - and the
+later one wins, so your existing automations would quietly stop loading. A package cannot do
+that. It also means an update replaces one self-contained file instead of editing your main
+configuration again.
+
+You still have to put a file in place, and there is no way around that: Home Assistant has no
+API for adding a `rest_command`. But you should never have to transcribe or look anything up.
+
+The rest of this page explains what that file does and how to change it.
 
 ## 1. The connection to PearTune
 
