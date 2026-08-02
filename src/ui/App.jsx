@@ -2204,7 +2204,11 @@ export default function App () {
   async function loadSpeakers () {
     try {
       const r = await call('speakerList')
-      setSpeakers(r?.enabled ? (r.speakers || []) : [])
+      // Drop speakers Home Assistant reports as `unavailable` - it cannot reach them, so
+      // offering one is offering a tap that fails. `off` is deliberately kept: play_media
+      // wakes a Cast device that is merely off, and hiding those would hide most of a house.
+      const list = (r?.speakers || []).filter(s => s.state !== 'unavailable')
+      setSpeakers(r?.enabled ? list : [])
       // Re-attach to a cast this device already had running: the app can be closed and
       // reopened while a speaker plays, and the host still knows about it. And CLEAR one
       // that has since ended - this used to only ever set, so the cast icon could stay
@@ -5446,7 +5450,10 @@ function Player ({
               explains itself when tapped. */}
           {canCast &&
             <button
-              className={'icon' + (castingTo ? ' on' : '')}
+              // `mode` matters: only button.icon.mode.on carries the highlight colour, so
+              // without it the "actively casting" state rendered as nothing at all. Same
+              // class the shuffle and repeat toggles use, which is what this is.
+              className={'icon mode' + (castingTo ? ' on' : '')}
               onClick={() => { haptic('light'); onSpeakers() }}
               aria-label='Play on a speaker'
             >
