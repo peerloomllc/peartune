@@ -537,6 +537,86 @@ test('REVOKING the voice grant kills voice playback, same as any device', async 
   assert.equal((await fetch(url)).status, 403)
 })
 
+// --- voice controls: next / previous / stop / shuffle -------------------
+
+const voiceCtl = (port, body) => fetch(`http://127.0.0.1:${port}/voice/control`, {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+})
+
+test('voice next and previous walk the HOST queue, not the speaker', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  await voicePost(port, { token: 'the-right-token', query: 'led zeppelin', entityId: 'media_player.x' })
+  assert.equal(casts.queues.get(VOICE_KEY).index, 0)
+
+  assert.equal((await voiceCtl(port, { token: 'the-right-token', action: 'next' })).status, 200)
+  assert.equal(casts.queues.get(VOICE_KEY).index, 1)
+  assert.equal((await voiceCtl(port, { token: 'the-right-token', action: 'previous' })).status, 200)
+  assert.equal(casts.queues.get(VOICE_KEY).index, 0)
+})
+
+test('previous at the start and next at the end refuse rather than wrap', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  await voicePost(port, { token: 'the-right-token', query: 'led zeppelin', entityId: 'media_player.x' })
+  assert.equal((await voiceCtl(port, { token: 'the-right-token', action: 'previous' })).status, 409)
+
+  const q = casts.queues.get(VOICE_KEY)
+  q.index = q.items.length - 1
+  assert.equal((await voiceCtl(port, { token: 'the-right-token', action: 'next' })).status, 409)
+})
+
+test('voice stop ends the cast for real - token gone, speaker silenced', async (t) => {
+  const { casts, speakers, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  await voicePost(port, { token: 'the-right-token', query: 'led zeppelin', entityId: 'media_player.x' })
+  const url = `http://127.0.0.1:${port}/a/${[...casts.tokens.keys()][0]}`
+  speakers.calls.length = 0
+
+  assert.equal((await voiceCtl(port, { token: 'the-right-token', action: 'stop' })).status, 200)
+  assert.deepEqual(speakers.calls, [['stop', 'media_player.x']])
+  assert.equal((await fetch(url)).status, 404, 'and nothing can be fetched afterwards')
+  assert.equal(casts.queues.has(VOICE_KEY), false)
+})
+
+test('voice shuffle reorders what is COMING, and leaves the current track playing', async (t) => {
+  const { casts, speakers, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  await voicePost(port, { token: 'the-right-token', query: 'led zeppelin', entityId: 'media_player.x' })
+  const q = casts.queues.get(VOICE_KEY)
+  const playing = q.items[q.index]
+  speakers.calls.length = 0
+
+  assert.equal((await voiceCtl(port, { token: 'the-right-token', action: 'shuffle' })).status, 200)
+  assert.equal(casts.queues.get(VOICE_KEY).items[q.index], playing, 'the current track is untouched')
+  assert.equal(casts.queues.get(VOICE_KEY).items.length, 3, 'and nothing is lost')
+  assert.equal(speakers.calls.length, 0, 'shuffling must not restart the music')
+})
+
+test('the controls are behind the same token as everything else', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+  assert.equal((await voiceCtl(port, { token: 'guessed', action: 'next' })).status, 403)
+  assert.equal((await voiceCtl(port, { action: 'stop' })).status, 403)
+})
+
+test('a control with nothing playing says so rather than erroring', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+  assert.equal((await voiceCtl(port, { token: 'the-right-token', action: 'next' })).status, 409)
+})
+
+test('an unknown action is refused', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+  await voicePost(port, { token: 'the-right-token', query: 'led zeppelin', entityId: 'e' })
+  assert.equal((await voiceCtl(port, { token: 'the-right-token', action: 'rm -rf' })).status, 400)
+})
+
 // --- pause / resume ----------------------------------------------------
 //
 // These exist so the player's play/pause button has something to drive while casting.

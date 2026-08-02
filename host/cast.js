@@ -202,6 +202,65 @@ class CastSessions {
     })
   }
 
+  // POST /voice/control { token, action } - next / previous / stop / shuffle.
+  //
+  // These act on the HOST-HELD QUEUE, not on the speaker, because the speaker has no queue:
+  // it is handed one track at a time. Telling it to "skip" would do nothing even on a device
+  // that claimed the feature.
+  async _voiceControl (req, res, body) {
+    const cfg = this.speakers.config || {}
+    const say = (code, msg) => {
+      res.writeHead(code, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(msg))
+    }
+    if (!cfg.voiceEnabled || !cfg.voiceToken) return say(404, { error: 'voice is off' })
+    if (!body?.token || String(body.token) !== cfg.voiceToken) {
+      this.log('voice:denied', { reason: 'token' })
+      return say(403, { error: 'bad token' })
+    }
+
+    const action = String(body.action || '').trim()
+    const key = cfg.voiceKey
+    const q = this.queues.get(key)
+    const entityId = [...(this.byDevice.get(key)?.keys() || [])][0] || cfg.voiceEntityId
+
+    if (action === 'stop') {
+      // A real stop, not the pause that "stop playing" gets from Home Assistant's built-in
+      // intent: the cast ends, the token dies and the queue is forgotten.
+      const n = await this.stopFor(key)
+      this.log('voice:stop', { silenced: n })
+      return say(200, { ok: true, action })
+    }
+
+    if (!q || !entityId) return say(409, { error: 'nothing is playing' })
+
+    if (action === 'next' || action === 'previous') {
+      const at = action === 'next' ? q.index + 1 : q.index - 1
+      if (at < 0) return say(409, { error: 'at the start' })
+      if (at >= q.items.length) return say(409, { error: 'at the end' })
+      q.index = at
+      await this.play({ deviceKey: key, trackId: q.items[at], entityId })
+      this.log('voice:' + action, { at, of: q.items.length })
+      return say(200, { ok: true, action, at, of: q.items.length })
+    }
+
+    if (action === 'shuffle') {
+      // Shuffle what is STILL TO COME and leave the current track alone - reordering
+      // something already playing would mean restarting it, which is not what anyone means
+      // by "shuffle". Fisher-Yates over the tail.
+      const tail = q.items.slice(q.index + 1)
+      for (let i = tail.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[tail[i], tail[j]] = [tail[j], tail[i]]
+      }
+      q.items = [...q.items.slice(0, q.index + 1), ...tail]
+      this.log('voice:shuffle', { remaining: tail.length })
+      return say(200, { ok: true, action, remaining: tail.length })
+    }
+
+    return say(400, { error: 'unknown action', action })
+  }
+
   // Turn a spoken phrase into something to play, and something to play AFTER it.
   //
   // The first cut took `search().tracks[0]` and nothing else, which is why "put on Led
@@ -307,7 +366,7 @@ class CastSessions {
     try {
       const url = new URL(req.url, 'http://127.0.0.1')
 
-      if (url.pathname === '/voice/play') {
+      if (url.pathname === '/voice/play' || url.pathname === '/voice/control') {
         if (req.method !== 'POST') return deny(405)
         const chunks = []
         for await (const c of req) {
@@ -317,7 +376,9 @@ class CastSessions {
         }
         let body = null
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { return deny(400) }
-        return this._voicePlay(req, res, body)
+        return url.pathname === '/voice/play'
+          ? this._voicePlay(req, res, body)
+          : this._voiceControl(req, res, body)
       }
 
       const m = /^\/a\/([A-Za-z0-9_-]+)$/.exec(url.pathname)

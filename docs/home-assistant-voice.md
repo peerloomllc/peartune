@@ -135,6 +135,29 @@ picks, in order of preference:
 3. **An album whose name matches.** Its tracks, in album order.
 4. Otherwise, whatever the search turned up, in the order your library's search ranked it.
 
+## The other commands
+
+| Say | What handles it |
+|---|---|
+| **"next"**, "skip", "skip this song" | Built-in, via the PearTune player in the generated config |
+| **"go back"**, "previous track", "replay" | Built-in, same |
+| **"pause"**, "resume", "stop playing" | Built-in, straight to the speaker. "Stop playing" PAUSES |
+| **"set volume to 30%"**, "mute" | Built-in, straight to the speaker |
+| **"shuffle"** | PearTune. Reorders what is coming; the current song keeps playing |
+| **"stop peartune"**, "stop the music" | PearTune. Ends the cast properly, unlike "stop playing" |
+
+Two things worth knowing about why it is split like that.
+
+**Next and previous only work because of the `media_player` block in the generated config.**
+Home Assistant matches those commands to speakers that advertise a skip feature, and a speaker
+being handed one track at a time does not. That block declares a PearTune player which does,
+so the built-in command finds it and lands on the queue - which is where skipping has to
+happen, because the speaker has no queue to skip within.
+
+**Shuffle and stop have no built-in command at all**, so no amount of declaring features would
+unlock them. They get their own sentences, which is also why "stop peartune" is worded oddly:
+plain "stop playing" already belongs to the built-in pause command.
+
 ## Which speaker
 
 If the request does not name one, PearTune uses the default speaker you picked in the

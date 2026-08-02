@@ -113,6 +113,60 @@ automation:
             I could not find {{ trigger.slots.query }} in your library
           {% endif %}
 
+  peartune_control:
+    url: "http://127.0.0.1:${castPort || 8742}/voice/control"
+    method: POST
+    content_type: "application/json"
+    payload: '{"token":"${voiceToken}","action":"{{ action }}"}'
+
+# A universal media player exists ONLY to make "next" and "go back" work with the words
+# people actually use. Home Assistant's built-in intents match on FEATURES, and a speaker
+# that cannot skip does not advertise NEXT_TRACK - so "next" would fail on your speaker.
+# Declaring the commands here makes this entity advertise them, and the built-in intent
+# finds it. The commands land on PearTune, which is where the queue actually lives.
+media_player:
+  - platform: universal
+    name: PearTune
+    unique_id: peartune_voice_player
+    commands:
+      media_next_track:
+        action: rest_command.peartune_control
+        data:
+          action: next
+      media_previous_track:
+        action: rest_command.peartune_control
+        data:
+          action: previous
+      media_stop:
+        action: rest_command.peartune_control
+        data:
+          action: stop
+
+  - alias: PearTune voice controls
+    mode: queued
+    triggers:
+      # Home Assistant has no shuffle or stop intent AT ALL, so unlike next and previous
+      # these cannot be unlocked by declaring a feature - they need their own sentences.
+      # "shuffle" is unclaimed; "stop playing" belongs to the built-in pause intent, which
+      # pauses the speaker rather than ending the cast, so ours says "stop peartune".
+      - trigger: conversation
+        command:
+          - "shuffle"
+          - "shuffle [the] (music|queue|songs)"
+        id: shuffle
+      - trigger: conversation
+        command:
+          - "stop peartune"
+          - "stop the music"
+        id: stop
+    actions:
+      - action: rest_command.peartune_control
+        data:
+          action: "{{ trigger.id }}"
+        response_variable: result
+      - set_conversation_response: >-
+          {% if result.status == 200 %}OK{% else %}Nothing is playing{% endif %}
+
 intent_script:
   PearTunePlayMusic:
     description: >-
