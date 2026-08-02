@@ -657,20 +657,38 @@ export default function App () {
   // Resuming on the way out restarts the CURRENT track rather than seeking into it: the
   // speaker reports no position of its own (the Voice PE has no media_position), so
   // there is no honest place to resume from. Proposal open question 3.
-  function setCastMode (on: boolean) {
+  async function setCastMode (on: boolean) {
     const p = player.current as any
     castMode.current = !!on
-    if (!p) return
-    try {
-      if (on) {
-        p.volume = 0
-        p.pause()
-      } else {
-        p.volume = 1
-        p.play()
+
+    if (on) {
+      if (p) {
+        try { p.volume = 0; p.pause() } catch {}
       }
-    } catch {}
-    persistQueue(true)
+      persistQueue(true)
+      return
+    }
+
+    // LEAVING. p.play() is NOT enough, and this cost a hardware round to learn: after a
+    // spell muted and paused across several skipToNext calls, the player comes back with
+    // `state=NONE` in Android's media session - no playback state at all, not merely
+    // paused. play(), toggle() and even playIndex() all failed to revive it, and only an
+    // app restart did. So rebuild rather than resume: tear the player down and load the
+    // queue onto a fresh one, which is the same path a relaunch takes and is therefore
+    // already the well-tested way back.
+    const snap = {
+      items: queueRef.current,
+      index: indexRef.current,
+      shuffle: shuffleRef.current,
+      repeat: repeatRef.current,
+      // Deliberately no positionMs: the speaker reports no position of its own, so the
+      // track restarts. Seeking to where the PHONE was paused would be a guess at a
+      // place the music has long since passed.
+      positionMs: 0
+    }
+    stopPlayer() // releases and nulls it, so ensurePlayer builds a new one
+    if (!snap.items.length) return
+    await loadQueueOnPlayer(snap, true)
   }
 
   // --- sleep timer ---------------------------------------------------------
@@ -1398,7 +1416,11 @@ export default function App () {
       repeat: () => setRepeat(Number(msg.args.mode) || 0),
       // A Home Assistant speaker is the output now (proposal 2026-08-02). This player
       // keeps the queue and the order; it just stops making sound.
-      castMode: () => setCastMode(!!msg.args?.on),
+      // Fire-and-forget: leaving cast mode rebuilds the player (see setCastMode), which
+      // resolves a URL per queued track and can take a moment on a long queue. The UI has
+      // nothing to do with the result, and holding the IPC reply open would just make the
+      // sheet feel stuck.
+      castMode: () => { setCastMode(!!msg.args?.on); return { ok: true } },
       sleep: () => setSleep(msg.args || {}),
 
       // The UI resolved its theme ('system' against the OS scheme we pushed it)
