@@ -288,10 +288,41 @@ export default function App () {
     setPairNames(p => ({ deviceName: p.deviceName || d, userName: p.userName || u }))
   }, [state.settings?.deviceName, state.settings?.userName])
 
+  // A SECOND LOOK, when the first one said there is no library.
+  //
+  // Seen on the TCL after a reboot (2026-08-02): the app sat on the ONBOARDING screen while
+  // fully paired. init from the same page a minute later returned host:true, connected:true
+  // and the right library name, and identity() said owner:true - so the pairing was there the
+  // whole time and the UI simply held what its own first init had returned, which was null.
+  // It never recovered, across several relaunches and a 60s wait. Somebody hitting that would
+  // reasonably decide their library was gone and re-pair or reinstall.
+  //
+  // The cause is not established - init reads the hosts file synchronously, so there is no
+  // obvious window - which is exactly why this is a RETRY rather than a fix to init. It costs
+  // one extra call in the genuinely-unpaired case and turns a permanent wrong screen into a
+  // few seconds of one. If the cause is ever found, this can go.
+  const recheckedHost = useRef(false)
+  async function recheckHostOnce () {
+    if (recheckedHost.current) return
+    recheckedHost.current = true
+    for (const wait of [2500, 8000]) {
+      await new Promise(r => setTimeout(r, wait))
+      let s = null
+      try { s = await call('init') } catch { continue }
+      if (s?.host) {
+        setState(prev => (prev.host ? prev : { ...s, loading: false }))
+        return
+      }
+    }
+  }
+
   useEffect(() => {
     call('init')
       .then((s) => {
         setState({ ...s, loading: false })
+        // Paired according to the worklet a moment later, but not according to the answer we
+        // just got. Look again rather than showing onboarding forever.
+        if (!s.host) recheckHostOnce()
         if (s.settings?.density) setDensity(String(s.settings.density))
         if (s.settings?.skin) setSkin(String(s.settings.skin))
         // Default true, so only an explicit false hides it - a missing key must not read as "off".
