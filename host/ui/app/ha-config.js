@@ -116,7 +116,10 @@ intent_script:
     description: >-
       Play music from the user's personal PearTune music library on a speaker in
       their home. Use this for any request to play a specific artist, album or
-      song. The search_query is what the user asked for, such as "Led Zeppelin".
+      song. The search_query is what the user asked for, such as "Led Zeppelin"
+      or "Rock and Roll by Led Zeppelin" - pass the phrase as spoken, including
+      the "by <artist>" part, which PearTune uses to pick the right version when
+      several artists have a song by the same name.
     parameters:
       search_query:
         description: The artist, album or song to play
