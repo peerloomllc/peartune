@@ -73,6 +73,26 @@ export function SpeakersPanel ({ toast }) {
   // test/ha-config.test.js and the note at the top of ha-config.js.
   const haYaml = haConfig({ port: castPort || 8742, token: voiceToken, speakerEntity: cfg?.voiceEntityId || '' })
 
+  // A real file, so it can be uploaded straight into a file browser - the Umbrel route.
+  const downloadYaml = () => {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([haYaml], { type: 'text/yaml' }))
+    a.download = 'peartune.yaml'
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const writeHaConfig = async () => {
+    setBusy('write')
+    // Send the YAML the operator is looking at, so what lands on disk is what was shown.
+    const r = await api('/api/speakers/ha-config', { yaml: haYaml, include: PACKAGE_INCLUDE })
+    setBusy(null)
+    if (!r.ok) return notify('Could not write it', r.error || 'unknown error')
+    notify('Home Assistant is set up',
+      (r.addedInclude ? 'Wrote the file and added the packages line to configuration.yaml. ' : 'Wrote the file. ') +
+      'Restart Home Assistant, then say "Okay Nabu, put on Led Zeppelin".')
+  }
+
   const enableVoice = async () => {
     setBusy('voice')
     const r = await api('/api/speakers/voice', { enabled: true, entityId: cfg.voiceEntityId || '' })
@@ -225,30 +245,76 @@ export function SpeakersPanel ({ toast }) {
                             They still have to edit a file, which there is no way around,
                             but they should never have to transcribe or look anything up. */}
                         <p className='hint'>
-                          <strong>Almost done.</strong> Two steps, and the first is only ever
-                          needed once.
+                          <strong>Almost done.</strong> Home Assistant needs one file, saved
+                          as <code>{PACKAGE_PATH}</code> beside its{' '}
+                          <code>configuration.yaml</code>. Everything in it is filled in
+                          already. PearTune lives entirely in that file, so an update replaces
+                          it rather than editing your main configuration again.
                         </p>
+
+                        {/* THE STEP THAT WAS MISSING. The panel used to say "save this as
+                            packages/peartune.yaml" and give no way to do it - and on the
+                            platform PearTune actually targets that is a wall: Umbrel runs the
+                            CONTAINER install of Home Assistant, with no Supervisor, so there
+                            is no File Editor add-on and no way to create a file from inside
+                            Home Assistant at all. Three routes now, best first. */}
+                        {cfg.haConfigWritable
+                          ? <>
+                            <p className='hint'>
+                              PearTune can see your Home Assistant config folder, so it can
+                              put the file there itself.
+                            </p>
+                            <div className='srcactions center'>
+                              <button onClick={writeHaConfig} disabled={!!busy}>
+                                {busy === 'write' ? 'Writing…' : 'Set up Home Assistant for me'}
+                              </button>
+                            </div>
+                          </>
+                          : <>
+                            <div className='srcactions center'>
+                              <button onClick={downloadYaml}>Download peartune.yaml</button>
+                              <button className='ghost' onClick={async () => {
+                                const ok = await copyText(haYaml)
+                                if (toast) toast(ok ? 'Copied' : 'Could not copy - select it and copy by hand')
+                              }}>Copy instead</button>
+                            </div>
+                            <div className='foundlist'>
+                              <div className='group-h'>Where to put it</div>
+                              <p className='hint'>
+                                <strong>Umbrel:</strong> open the Files app, go to{' '}
+                                <code>app-data/home-assistant/data</code>, make a{' '}
+                                <code>packages</code> folder and upload the file into it.
+                              </p>
+                              <p className='hint'>
+                                <strong>Home Assistant OS or Supervised:</strong> install the
+                                File editor or Studio Code Server add-on and create it there.
+                              </p>
+                              <p className='hint'>
+                                <strong>Anywhere else:</strong> copy it into the config folder
+                                however you normally reach that machine. If PearTune runs on
+                                the same machine, put that folder's path below and it will do
+                                this for you next time.
+                              </p>
+                            </div>
+                            <label>
+                              Home Assistant config folder{' '}
+                              <span className='subtle'>- optional; lets PearTune write the file itself</span>
+                            </label>
+                            <input
+                              value={cfg.haConfigDir || ''}
+                              placeholder='/config'
+                              onChange={e => set({ haConfigDir: e.target.value })}
+                            />
+                            {cfg.haConfigProblem && <div className='banner'>{cfg.haConfigProblem}</div>}
+                          </>}
+
                         <p className='hint'>
-                          <strong>1.</strong> If your Home Assistant{' '}
-                          <code>configuration.yaml</code> does not already load packages, add
-                          this to it once:
+                          And if your <code>configuration.yaml</code> does not already load
+                          packages, it needs this line once (PearTune adds it for you if it is
+                          writing the file):
                         </p>
                         <textarea readOnly rows={2} className='mono setupyaml' value={PACKAGE_INCLUDE} onFocus={e => e.target.select()} />
-                        <p className='hint'>
-                          <strong>2.</strong> Save the block below as{' '}
-                          <code>{PACKAGE_PATH}</code> next to your{' '}
-                          <code>configuration.yaml</code>. Everything is filled in already.
-                          PearTune lives entirely in that one file, so an update replaces it
-                          rather than editing your main configuration again. Then restart Home
-                          Assistant.
-                        </p>
-                        <textarea readOnly rows={16} className='mono setupyaml' value={haYaml} onFocus={e => e.target.select()} />
-                        <div className='srcactions center'>
-                          <button onClick={async () => {
-                            const ok = await copyText(haYaml)
-                            if (toast) toast(ok ? 'Configuration copied' : 'Could not copy - select it and copy by hand')
-                          }}>Copy configuration</button>
-                        </div>
+                        <textarea readOnly rows={12} className='mono setupyaml' value={haYaml} onFocus={e => e.target.select()} />
                         <p className='hint'>
                           Then say <em>"Okay Nabu, put on Led Zeppelin"</em>.{' '}
                           <strong>"Put on" and "listen to", not "play".</strong> Home

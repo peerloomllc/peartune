@@ -26,7 +26,7 @@ const VERSION = 1
 const SECRETS = ['token', 'voiceToken']
 // voiceKey is the synthetic device key voice plays as - not a secret (it is a public key
 // with no private half anywhere), but not something the browser should be able to set.
-const FIELDS = ['enabled', 'baseUrl', 'token', 'voiceEnabled', 'voiceToken', 'voiceKey', 'voiceEntityId']
+const FIELDS = ['enabled', 'baseUrl', 'token', 'voiceEnabled', 'voiceToken', 'voiceKey', 'voiceEntityId', 'haConfigDir']
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8123'
 
@@ -58,6 +58,32 @@ function requireLoopback (baseUrl) {
   return 'Home Assistant must be on this same machine for now (a loopback address ' +
     'like http://127.0.0.1:8123). A Home Assistant somewhere else on the network ' +
     'would mean publishing your library to the network, which PearTune will not do yet.'
+}
+
+// CAN WE WRITE HOME ASSISTANT'S CONFIG, and should we?
+//
+// Deliberately strict. This is the one place PearTune touches a file outside its own data
+// directory, so it proves the target really is a Home Assistant config directory (it has a
+// configuration.yaml) before it will write anything, and it only ever writes two known
+// filenames. A wrong path should fail here, visibly, rather than scatter YAML somewhere.
+function canWriteHaConfig (dir) {
+  if (!dir) return { ok: false, why: null } // not opted in; not a problem, just off
+  let st
+  try {
+    st = fs.statSync(dir)
+  } catch {
+    return { ok: false, why: 'That folder does not exist, or PearTune cannot see it.' }
+  }
+  if (!st.isDirectory()) return { ok: false, why: 'That is a file, not a folder.' }
+  if (!fs.existsSync(path.join(dir, 'configuration.yaml'))) {
+    return { ok: false, why: 'No configuration.yaml there, so that is not a Home Assistant config folder.' }
+  }
+  try {
+    fs.accessSync(dir, fs.constants.W_OK)
+  } catch {
+    return { ok: false, why: 'PearTune can see that folder but cannot write to it.' }
+  }
+  return { ok: true, why: null }
 }
 
 function pathOf (dataDir) {
@@ -112,7 +138,11 @@ class Speakers {
       voiceEnabled: false,
       voiceToken: '',
       voiceKey: '',
-      voiceEntityId: ''
+      voiceEntityId: '',
+      // Where Home Assistant keeps configuration.yaml, IF the operator has opted in to
+      // PearTune writing its own config file there. Empty means "we do not touch their
+      // files", which is the default and the only behaviour before this existed.
+      haConfigDir: ''
     }
   }
 
@@ -126,7 +156,12 @@ class Speakers {
       baseUrl: c.baseUrl,
       voiceEnabled: c.voiceEnabled,
       voiceEntityId: c.voiceEntityId,
-      voiceKey: c.voiceKey
+      voiceKey: c.voiceKey,
+      haConfigDir: c.haConfigDir,
+      // Whether we could actually write there right now, so the dashboard can offer the
+      // button only when it would work rather than after it fails.
+      haConfigWritable: canWriteHaConfig(c.haConfigDir).ok,
+      haConfigProblem: canWriteHaConfig(c.haConfigDir).why
     }
     for (const s of SECRETS) out[s + 'Set'] = !!c[s]
     out.loopbackOnly = true
@@ -261,4 +296,4 @@ class Speakers {
   }
 }
 
-module.exports = { Speakers, isLoopbackUrl, requireLoopback, DEFAULT_BASE_URL, SPEAKERS_FILE: FILE }
+module.exports = { Speakers, isLoopbackUrl, requireLoopback, canWriteHaConfig, DEFAULT_BASE_URL, SPEAKERS_FILE: FILE }

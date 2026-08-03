@@ -27,8 +27,22 @@ homeassistant:
   packages: !include_dir_named packages
 ```
 
-**Then save the generated block as `packages/peartune.yaml`**, next to your
-`configuration.yaml`, and restart Home Assistant.
+**Then get the generated block into `packages/peartune.yaml`**, next to your
+`configuration.yaml`, and restart Home Assistant. The dashboard offers three ways, and shows
+whichever applies:
+
+- **PearTune writes it.** If PearTune can see your Home Assistant config folder, put its path
+  in the Speakers tab and press *Set up Home Assistant for me*. It writes exactly one file
+  and, if packages are not already loaded, appends the one line above to `configuration.yaml`
+  (keeping a `.peartune-backup` beside it). It touches nothing else.
+- **Download and upload.** *Download peartune.yaml*, then on **Umbrel** open the Files app, go
+  to `app-data/home-assistant/data`, create a `packages` folder and upload it there.
+- **An add-on.** On **Home Assistant OS or Supervised**, the File editor or Studio Code Server
+  add-on can create it directly.
+
+**Umbrel note.** Umbrel runs the *Container* install of Home Assistant, which has no
+Supervisor - so there is no add-on store and no File editor. Use the Files app or let PearTune
+write it.
 
 PearTune living in its own file is deliberate, and not only tidiness. Home Assistant MERGES
 packages, where a second top-level `automation:` pasted into `configuration.yaml` would
