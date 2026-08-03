@@ -43,6 +43,30 @@ test('a path that does not exist is refused, with a reason', () => {
   assert.match(r.why, /does not exist|cannot see/)
 })
 
+test('PEARTUNE_HA_CONFIG pre-fills the path, and a typed one still wins', () => {
+  const { Speakers } = require('../host/speakers')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pt-data-'))
+  const envDir = haDir()
+
+  process.env.PEARTUNE_HA_CONFIG = envDir
+  const s = new Speakers({ dataDir: dir })
+  // How the Umbrel listing hands over /ha-config without anyone typing it.
+  assert.equal(s.haConfigDir, envDir)
+
+  const typed = haDir()
+  s.save({ haConfigDir: typed })
+  assert.equal(s.haConfigDir, typed, 'what the operator typed beats the platform default')
+  delete process.env.PEARTUNE_HA_CONFIG
+})
+
+test('with no env and nothing typed, it is simply off', () => {
+  const { Speakers } = require('../host/speakers')
+  delete process.env.PEARTUNE_HA_CONFIG
+  const s = new Speakers({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'pt-data-')) })
+  assert.equal(s.haConfigDir, '')
+  assert.equal(s.publicConfig().haConfigWritable, false)
+})
+
 test('a file rather than a folder is refused', () => {
   const d = haDir()
   const r = canWriteHaConfig(path.join(d, 'configuration.yaml'))
