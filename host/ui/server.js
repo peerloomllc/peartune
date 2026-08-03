@@ -282,6 +282,18 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         }
       }
 
+      // Write the Home Assistant config for them (opt-in; see host.writeHaConfig). The
+      // dashboard sends the exact YAML it is showing, so what lands on disk is what the
+      // operator was looking at.
+      if (req.method === 'POST' && url.pathname === '/api/speakers/ha-config') {
+        const body = await readBody(req)
+        try {
+          return json(res, 200, await host.writeHaConfig({ yaml: body?.yaml, include: body?.include }))
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/speakers/test') {
         try {
           return json(res, 200, await host.speakers.test())

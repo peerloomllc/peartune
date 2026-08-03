@@ -63,7 +63,7 @@ const EXPIRY_SWEEP_MS = 30_000
 // playback; only the phone knows.
 const NOWPLAYING_STALE_MS = 20 * 1000
 const { serveMedia } = require('./media')
-const { Speakers } = require('./speakers')
+const { Speakers, canWriteHaConfig } = require('./speakers')
 const { CastSessions } = require('./cast')
 const { PairSession, tokenEquals } = require('./pair')
 const { SCOPE } = require('../protocol/constants')
@@ -753,6 +753,41 @@ class PearTuneHost {
     const port = await this.casts.start()
     this.notifyOwnersDevicesChanged()
     return { ok: true, voiceToken, voiceKey, port }
+  }
+
+  // WRITE THE HOME ASSISTANT CONFIG FOR THEM, when they have opted in by giving us the path.
+  //
+  // Only ever two files, both named here rather than derived from anything the browser sends:
+  // <dir>/packages/peartune.yaml, and the one-time packages include appended to
+  // configuration.yaml if it is not already loading them. Nothing else in that directory is
+  // read, written or listed. The path itself is checked by canWriteHaConfig, which refuses
+  // anything without a configuration.yaml in it.
+  //
+  // The alternative was asking people to place a file by hand, and on Umbrel - which runs the
+  // CONTAINER install of Home Assistant, with no Supervisor and so no File Editor add-on -
+  // there is no way to do that from inside Home Assistant at all.
+  async writeHaConfig ({ yaml, include }) {
+    const dir = this.speakers.config.haConfigDir
+    const check = canWriteHaConfig(dir)
+    if (!check.ok) throw new Error(check.why || 'no Home Assistant config folder is set')
+    if (!yaml || typeof yaml !== 'string') throw new Error('nothing to write')
+
+    const pkgDir = path.join(dir, 'packages')
+    fs.mkdirSync(pkgDir, { recursive: true })
+    fs.writeFileSync(path.join(pkgDir, 'peartune.yaml'), yaml)
+
+    // The include is APPENDED only when packages are not already being loaded - never
+    // rewritten, never reordered. Somebody else's configuration.yaml is not ours to tidy.
+    const cfgPath = path.join(dir, 'configuration.yaml')
+    let addedInclude = false
+    const cfg = fs.readFileSync(cfgPath, 'utf8')
+    if (!/^\s*packages:\s*!include_dir_named/m.test(cfg)) {
+      fs.copyFileSync(cfgPath, cfgPath + '.peartune-backup')
+      fs.appendFileSync(cfgPath, '\n' + (include || '') + '\n')
+      addedInclude = true
+    }
+    this.log('speakers:ha-config-written', { dir, addedInclude })
+    return { ok: true, addedInclude, path: path.join(pkgDir, 'peartune.yaml') }
   }
 
   // Off means OFF: the token goes, and the grant is revoked so anything mid-flight dies on
