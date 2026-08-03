@@ -2246,7 +2246,8 @@ export default function App () {
     try {
       // Mute and hold the phone BEFORE the speaker starts. Two copies of the same song a
       // room apart is the worst outcome here, so it must not depend on ordering luck.
-      await call('castMode', { on: true }).catch(() => {})
+      // The shell needs the entity: a lock-screen press arrives there, not here.
+      await call('castMode', { on: true, entityId }).catch(() => {})
       setCastingTo(entityId)
       castingToRef.current = entityId
       // Whatever is loaded right now is what the speaker should pick up. `now` is the
