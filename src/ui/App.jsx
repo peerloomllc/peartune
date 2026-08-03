@@ -345,14 +345,11 @@ export default function App () {
         setNow(d); setError(null)
         setHandoff(null) // we are the active player now - hide any "Playing on <other>" card
         countedRef.current = { trackId: d?.trackId, counted: false } // a fresh play to count
-        // THE ONE PATH THAT FEEDS THE SPEAKER (proposal 2026-08-02). The shell announces
-        // every track change here - a queue tap, Next, Previous, an automatic advance, a
-        // shuffled pick - so forwarding from this single point is what makes shuffle and
-        // repeat work on a speaker without any of this code knowing they exist.
-        if (castingToRef.current && d?.trackId) {
-          setCastPaused(false)
-          castCurrent(d.trackId)
-        }
+        // NOT forwarded to the speaker from here any more: the SHELL does it, on the same
+        // index change, because this handler does not run while the screen is off (proposal
+        // 2026-08-02-cast-control-lives-in-the-shell). Doing it in both places would send
+        // every track twice.
+        if (castingToRef.current && d?.trackId) setCastPaused(false)
       }),
       on('play:status', setStatus),
       // Session handoff: another device took the token, so we paused. Say so, then refresh the
@@ -619,10 +616,10 @@ export default function App () {
       // speaker has NO QUEUE of its own, so this push is the only thing that can advance
       // one - the app owns the queue and sends the next track here. Ignore a push for a
       // speaker we have since moved off, or it would skip a track on the phone.
-      on('speaker:ended', (d) => {
-        if (!castingToRef.current || d?.entityId !== castingToRef.current) return
-        castNext()
-      }),
+      // speaker:ended is handled by the SHELL now (it calls next() directly), for the same
+      // reason: this handler is asleep whenever the screen is. Kept only to refresh the
+      // display when the UI happens to be awake.
+      on('speaker:ended', () => {}),
       // A pear:// pairing link was opened while the app was already running. The shell parks
       // it and nudges; we take it below. See takePendingLink.
       on('link:pending', () => { takePendingLink() })

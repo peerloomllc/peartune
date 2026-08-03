@@ -352,6 +352,19 @@ export default function App () {
           announce(i)
           persistQueue(true) // a track advanced - save the new index right away
 
+          // AND SEND IT TO THE SPEAKER FROM HERE (proposal 2026-08-02-cast-control-lives-
+          // in-the-shell). This used to be the UI's job, off the back of play:started - but
+          // Android freezes the WebView with the screen, so a lock-screen next queued up and
+          // only fired when the app was reopened. Tim saw exactly that. Every other link in
+          // this chain already runs in the shell; this was the one that did not.
+          if (castMode.current && castEntity.current) {
+            const t = queueRef.current[i]
+            if (t) {
+              castSpeakerPaused.current = false
+              call('speakerPlay', { entityId: castEntity.current, trackId: t.id }).catch(() => {})
+            }
+          }
+
           // Sleep timer, end-of-track mode: the previous song finished ON ITS OWN
           // (not a user skip), so pause at the top of this next track - the natural
           // "stop after the song ends". The index is the trustworthy signal here
@@ -1211,6 +1224,11 @@ export default function App () {
             // RECONNECT (a switch succeeds, a revoke is denied), so we keep the buffer
             // playing and let the reconnect decide (proposal 2026-07-14).
             if (msg.event === 'host:disconnected') onHostDropped()
+            // The host saw the cast track finish. Advancing is the shell's job now, not the
+            // UI's: the speaker has no queue of its own, and the renderer that used to do
+            // this is asleep whenever the screen is. next() moves ExoPlayer, whose index
+            // change sends the new track to the speaker just above.
+            else if (msg.event === 'speaker:ended') { if (castMode.current) next() }
             else if (msg.event === 'host:connected') dropped.current = false
             else if (msg.event === 'play:rehost') {
               // MID-SONG FAILOVER, the half the shim cannot do (proposal 2026-07-27). The library
