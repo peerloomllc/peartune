@@ -1851,6 +1851,13 @@ function libForTrack (trackId) { return mergedMode() ? (trackLib.get(trackId) ||
 const nowPlayingUnsupported = new Set()
 let lastNowPlayingLib = null
 
+// WHAT THE SPEAKER IS DOING, when a cast is on. The phone's own snapshot says `playing:
+// false` for the whole of a cast - it is deliberately muted and paused - so the dashboard
+// showed "Paused" while music filled the room (Tim, 2026-08-02). Tracked here because every
+// speaker call already passes through this module, so nothing else has to be told.
+let castingOn = false
+let castingPaused = false
+
 async function reportNowPlaying (snapshot) {
   const cur = snapshot && Array.isArray(snapshot.items) ? snapshot.items[snapshot.index || 0] : null
   // WHICH COPY IS ACTUALLY PLAYING, not which one owns the merged id. `libForTrack` answers the
@@ -1876,7 +1883,9 @@ async function reportNowPlaying (snapshot) {
       trackId: cur.id,
       title: cur.title || null,
       artist: cur.artist || null,
-      playing: !!snapshot.playing
+      // While casting, report the SPEAKER. The phone is muted and paused throughout, and
+      // saying so would be true of the phone and false of the music.
+      playing: castingOn ? !castingPaused : !!snapshot.playing
     })
   } catch (e) {
     if (e?.code === 'ENOMETHOD') nowPlayingUnsupported.add(lib)
@@ -3599,6 +3608,8 @@ const methods = {
   async speakerPlay ({ libraryId, entityId, trackId }) {
     try {
       await (await ownerClient(libraryId)).speakerPlay({ entityId, trackId })
+      castingOn = true
+      castingPaused = false
       return { ok: true }
     } catch (e) {
       if (e?.code === 'ENOMETHOD') return { ok: false, supported: false }
@@ -3609,6 +3620,8 @@ const methods = {
   async speakerStop ({ libraryId, entityId }) {
     try {
       await (await ownerClient(libraryId)).speakerStop({ entityId })
+      castingOn = false
+      castingPaused = false
       return { ok: true }
     } catch (e) {
       return { ok: false, error: e?.message || 'could not stop that speaker' }
@@ -3620,6 +3633,7 @@ const methods = {
   async speakerPause ({ libraryId, entityId }) {
     try {
       await (await ownerClient(libraryId)).speakerPause({ entityId })
+      castingPaused = true
       return { ok: true }
     } catch (e) {
       return { ok: false, error: e?.message || 'could not pause that speaker' }
@@ -3629,6 +3643,7 @@ const methods = {
   async speakerResume ({ libraryId, entityId }) {
     try {
       await (await ownerClient(libraryId)).speakerResume({ entityId })
+      castingPaused = false
       return { ok: true }
     } catch (e) {
       return { ok: false, error: e?.message || 'could not resume that speaker' }
