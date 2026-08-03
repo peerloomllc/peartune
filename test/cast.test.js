@@ -360,12 +360,19 @@ async function buildVoice (over = {}) {
   // the voice code ignored in favour of tracks[0] - the reason "put on Led Zeppelin"
   // always got the same song.
   const LIB = {
-    artists: [{ id: 'art1', name: 'Led Zeppelin' }],
+    artists: [{ id: 'art1', name: 'Led Zeppelin' }, { id: 'art2', name: 'KISS' }],
     albums: [{ id: 'alb1', name: 'Physical Graffiti', artist: 'Led Zeppelin' }],
     tracks: [
       { id: 'trk1', title: 'Kashmir', artist: 'Led Zeppelin' },
-      { id: 'trk2', title: 'Rock and Roll', artist: 'Led Zeppelin' },
-      { id: 'trk3', title: 'Houses of the Holy', artist: 'Led Zeppelin' }
+      // TWO bands with a "Rock and Roll" - the exact ambiguity that made "put on rock and
+      // roll" answer "Playing Rock And Roll All Nite by KISS". KISS is listed FIRST so a
+      // test that passes by luck of ordering cannot.
+      { id: 'trk9', title: 'Rock and Roll', artist: 'KISS' },
+      { id: 'trk7', title: 'Rock and Roll - Live: O2 Arena, London - December 10, 2007', artist: 'Led Zeppelin' },
+      { id: 'trk2', title: 'Rock and Roll - Remaster', artist: 'Led Zeppelin' },
+      { id: 'trk3', title: 'Houses of the Holy', artist: 'Led Zeppelin' },
+      // A title that CONTAINS "by", so the split cannot be applied blindly.
+      { id: 'trk8', title: 'Cry by Night', artist: 'Psychic Type' }
     ]
   }
   const adapter = {
@@ -404,8 +411,8 @@ test('an ARTIST request queues their music, not one song', async (t) => {
   assert.equal(body.artist, 'Led Zeppelin')
   // THE BUG THIS PINS: the first cut played tracks[0] and stopped, so an artist was one
   // song on repeat-nothing. A queue is the whole point of asking for an artist.
-  assert.equal(body.count, 3)
-  assert.equal(casts.queues.get(VOICE_KEY).items.length, 3)
+  assert.equal(body.count, 4, 'Led Zeppelin has four tracks in the fixture')
+  assert.equal(casts.queues.get(VOICE_KEY).items.length, 4)
   assert.equal(speakers.calls.find(c => c[0] === 'play')[1], 'media_player.x')
 })
 
@@ -416,8 +423,64 @@ test('a TRACK request plays THAT track first, not the artist\'s first song', asy
   const body = await (await voicePost(port, { token: 'the-right-token', query: 'rock and roll', entityId: 'e' })).json()
   assert.equal(body.kind, 'track')
   assert.equal(body.title, 'Rock and Roll')
-  assert.equal(casts.queues.get(VOICE_KEY).items[0], 'trk2', 'the asked-for track leads')
+  // WITHOUT an artist this is genuinely ambiguous - two bands here have one - so the
+  // assertion is that a track BY THAT NAME leads, not which band's. Saying which is what
+  // "put on rock and roll by led zeppelin" is for, and has its own test.
+  assert.ok(['trk2', 'trk9'].includes(casts.queues.get(VOICE_KEY).items[0]), 'the asked-for title leads')
   assert.ok(casts.queues.get(VOICE_KEY).items.length > 1, 'and it keeps going afterwards')
+})
+
+test('"X by Y" picks the artist you named, not whoever the search ranked first', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  const body = await (await voicePost(port, {
+    token: 'the-right-token', query: 'rock and roll by led zeppelin', entityId: 'e'
+  })).json()
+  assert.equal(body.kind, 'track')
+  assert.equal(body.artist, 'Led Zeppelin', 'KISS also has one, and is ranked first')
+  // And the REMASTER, not the live cut listed before it: extra words in a title are always
+  // a qualifier, so the shortest match is the canonical version. Asked on the real library,
+  // the naive pick was "Rock and Roll - Live: O2 Arena, London - December 10, 2007".
+  assert.equal(casts.queues.get(VOICE_KEY).items[0], 'trk2')
+  assert.match(body.title, /Remaster/)
+})
+
+test('"X by Y" the other way round picks the other band', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  const body = await (await voicePost(port, {
+    token: 'the-right-token', query: 'rock and roll by kiss', entityId: 'e'
+  })).json()
+  assert.equal(body.artist, 'KISS')
+  assert.equal(casts.queues.get(VOICE_KEY).items[0], 'trk9')
+})
+
+test('a title that CONTAINS "by" still resolves as itself', async (t) => {
+  const { casts, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  // The split is tried, not assumed: "night" matches no artist, so it falls through to
+  // treating the whole phrase as a title.
+  const body = await (await voicePost(port, {
+    token: 'the-right-token', query: 'cry by night', entityId: 'e'
+  })).json()
+  assert.equal(body.title, 'Cry by Night')
+  assert.equal(body.artist, 'Psychic Type')
+})
+
+test('"X by Y" with an artist we do not have is a clean miss', async (t) => {
+  const { casts, speakers, port } = await buildVoice()
+  t.after(() => casts.close())
+
+  const res = await voicePost(port, {
+    token: 'the-right-token', query: 'kashmir by taylor swift', entityId: 'e'
+  })
+  // Falls through to the whole phrase, which matches nothing, rather than silently
+  // playing Kashmir by somebody else.
+  assert.equal(res.status, 404)
+  assert.equal(speakers.calls.length, 0)
 })
 
 test('an ALBUM request plays the album', async (t) => {
@@ -593,7 +656,7 @@ test('voice shuffle reorders what is COMING, and leaves the current track playin
 
   assert.equal((await voiceCtl(port, { token: 'the-right-token', action: 'shuffle' })).status, 200)
   assert.equal(casts.queues.get(VOICE_KEY).items[q.index], playing, 'the current track is untouched')
-  assert.equal(casts.queues.get(VOICE_KEY).items.length, 3, 'and nothing is lost')
+  assert.equal(casts.queues.get(VOICE_KEY).items.length, 4, 'and nothing is lost')
   assert.equal(speakers.calls.length, 0, 'shuffling must not restart the music')
 })
 

@@ -144,11 +144,16 @@ Restart Home Assistant, then try it: **"Okay Nabu, play Led Zeppelin."**
 A request queues up to 50 tracks, so an artist is an evening rather than one song. What it
 picks, in order of preference:
 
-1. **A song whose title matches.** "Put on Rock and Roll" gets that song, then keeps going
-   with whatever else matched.
-2. **An artist whose name matches.** Their tracks become the queue.
-3. **An album whose name matches.** Its tracks, in album order.
-4. Otherwise, whatever the search turned up, in the order your library's search ranked it.
+1. **"<song> by <artist>".** "Put on Rock and Roll by Led Zeppelin" gets *that* band's
+   version, then keeps going with more of theirs. Worth using whenever several artists have a
+   song by the same name, which is more often than you would think. A song whose title really
+   does contain the word "by" still resolves as itself.
+2. **A song whose title matches.** "Put on Rock and Roll" gets a song by that name, then
+   keeps going with whatever else matched. Which band it picks when several qualify is
+   whatever your library's search ranked first - name the artist if you care.
+3. **An artist whose name matches.** Their tracks become the queue.
+4. **An album whose name matches.** Its tracks, in album order.
+5. Otherwise, whatever the search turned up, in the order your library's search ranked it.
 
 ## The other commands
 

@@ -42,6 +42,22 @@ const POLL_MS = 2000
 // stable address to put in a configuration file; overridable for the rare collision.
 const PREFERRED_PORT = Number(process.env.PEARTUNE_CAST_PORT || 8742)
 
+// The best title match, preferring the SHORTEST one that starts with what was asked.
+//
+// A library holds "Rock and Roll - Remaster", "Rock and Roll - Live: O2 Arena, London -
+// December 10, 2007" and often several more, all of which start with "rock and roll" - and
+// taking the first left it to whatever order the adapter happened to return. Asked on real
+// hardware, that was the 2007 live recording. Shortest wins because the extra words are
+// always a qualifier (Remaster, Live, Remix, Radio Edit); the canonical version is the one
+// carrying the fewest of them.
+function pickClosestTitle (tracks, want) {
+  const norm = (x) => String(x || '').toLowerCase().trim()
+  const exact = tracks.filter(t => norm(t.title) === want)
+  const pool = exact.length ? exact : tracks.filter(t => norm(t.title).startsWith(want))
+  if (!pool.length) return null
+  return pool.reduce((best, t) => (String(t.title).length < String(best.title).length ? t : best))
+}
+
 // How many tracks a spoken request queues up. Long enough that "put on Led Zeppelin" is an
 // evening rather than a song, short enough that resolving it is not a library scan.
 const VOICE_QUEUE_MAX = 50
@@ -275,6 +291,26 @@ class CastSessions {
   //   - otherwise the loose track matches (which include matches on artist and album) are
   //     the queue, in the order the adapter ranked them.
   async _resolveVoiceQuery (query) {
+    // "X BY Y" FIRST, because "put on rock and roll" is genuinely ambiguous - several bands
+    // have one, and it picked KISS over Led Zeppelin (Tim, 2026-08-02). Naming the artist is
+    // how a person resolves that, so it has to mean something.
+    //
+    // Handled HERE rather than as its own sentence, deliberately. A separate
+    // "put on {query} by {artist}" template competes with the plain "put on {query}" one,
+    // which happily matches the whole phrase with query="rock and roll by kiss" - and which
+    // of the two hassil prefers is not something to bet a feature on. Splitting on the host
+    // is one place, works for an LLM agent handing over a whole phrase too, and cannot be
+    // beaten to the match.
+    //
+    // The split is TRIED, not assumed: a song really called "Cry by Night" resolves as
+    // itself when the artist half matches nothing, because we fall through to the whole
+    // string below.
+    const by = /^(.+?)\s+by\s+(.+)$/i.exec(String(query).trim())
+    if (by) {
+      const hit = await this._resolveByArtist(by[1].trim(), by[2].trim())
+      if (hit) return hit
+    }
+
     const adapter = this.getAdapter()
     const r = await adapter.search({ q: query, limit: VOICE_QUEUE_MAX })
     const artists = r?.artists || []
@@ -284,8 +320,7 @@ class CastSessions {
     const want = norm(query)
 
     // 1. An exact-ish TRACK title. "put on rock and roll" means that song.
-    const titled = tracks.find(t => norm(t.title) === want) ||
-      tracks.find(t => norm(t.title).startsWith(want))
+    const titled = pickClosestTitle(tracks, want)
     if (titled) {
       // ...and then KEEP GOING with more by the same artist. A named song that stops dead
       // after three minutes is the same silence Tim complained about, just delayed - a
@@ -333,6 +368,41 @@ class CastSessions {
       return { kind: 'search', title: tracks[0].title, artist: tracks[0].artist, tracks: loose.slice(0, VOICE_QUEUE_MAX) }
     }
     return null
+  }
+
+  // "<title> by <artist>". Searches the TITLE, keeps only what that artist did, and follows
+  // it with the rest of their music so it does not stop after one song. Returns null when the
+  // artist half matches nothing, so the caller can treat the whole phrase as a title.
+  async _resolveByArtist (title, artist) {
+    const adapter = this.getAdapter()
+    const norm = (x) => String(x || '').toLowerCase().trim()
+    const wantT = norm(title)
+    const wantA = norm(artist)
+
+    const r = await adapter.search({ q: title, limit: VOICE_QUEUE_MAX }).catch(() => null)
+    const tracks = (r?.tracks || []).filter(t => {
+      const a = norm(t.artist)
+      // `includes` both ways, so "kiss" finds "KISS" and "led zeppelin" finds
+      // "Led Zeppelin & Friends" - a library's artist strings are not clean.
+      return a && (a.includes(wantA) || wantA.includes(a))
+    })
+    if (!tracks.length) return null
+
+    const exact = pickClosestTitle(tracks, wantT) || tracks[0]
+    const id = exact.id || exact.trackId
+
+    // Then the rest of that artist, so "put on rock and roll by led zeppelin" is an evening.
+    const more = await adapter.search({ q: exact.artist || artist, limit: VOICE_QUEUE_MAX }).catch(() => null)
+    const rest = (more?.tracks || [])
+      .filter(t => norm(t.artist).includes(wantA) || wantA.includes(norm(t.artist)))
+      .filter(t => (t.id || t.trackId) !== id)
+
+    return {
+      kind: 'track',
+      title: exact.title,
+      artist: exact.artist,
+      tracks: [id, ...rest.map(t => t.id || t.trackId)].filter(Boolean).slice(0, VOICE_QUEUE_MAX)
+    }
   }
 
   // Every track on every album an artist has. Only reached when the loose search rows did
