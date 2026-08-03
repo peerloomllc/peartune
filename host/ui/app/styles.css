@@ -307,6 +307,9 @@ label { display: block; margin: 10px 0 4px; color: var(--subtle); font-size: 12p
    grid left them hugging the left edge with a dead third column. Centre them on
    their own row instead of stretching them to a grid that no longer fits. */
 .srcactions.center { display: flex; justify-content: center; }
+/* The generated Home Assistant config. Monospace and scrollable rather than wrapped:
+   YAML is whitespace-significant and a soft-wrapped copy is a broken copy. */
+.setupyaml { width: 100%; font-size: 12px; line-height: 1.45; white-space: pre; overflow-x: auto; resize: vertical; }
 /* The speakers we can see are a RESULT, not another field, so they get their own block
    under a rule rather than trailing the form as a bare right-aligned list. Rows reuse
    .rootrow (the folder list's card) so a found speaker looks like a configured thing. */
