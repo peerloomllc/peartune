@@ -187,6 +187,11 @@ export default function App () {
   // survive a round trip through casting (the reason setShuffle delegates to ExoPlayer
   // in the first place - see its comment).
   const castMode = useRef(false)
+  // Which speaker the cast is on, and whether we believe it is paused. The shell needs
+  // both to answer a lock-screen press, and it cannot ask the UI - the WebView may be
+  // asleep or gone while the lock screen is very much awake.
+  const castEntity = useRef<string | null>(null)
+  const castSpeakerPaused = useRef(false)
   // A pending queue swap after a LIBRARY SWITCH while a track is playing (multi-host). Holds
   // the NEW library's saved queue snapshot; the current track is left to play out (drain),
   // and when it ends we load + play this snapshot. Null when not draining. While set,
@@ -315,6 +320,28 @@ export default function App () {
       player.current = p
 
       p.addListener('playbackStatusUpdate', (s: any) => {
+        // A STRAY PLAY WHILE CASTING, and this is the one that bites hardest.
+        //
+        // The lock screen and headset buttons reach ExoPlayer through its MediaSession,
+        // NOT through our toggle() - so the guard there never saw them. Measured on the
+        // TCL 2026-08-02: pressing play during a cast raced the queue at roughly a track
+        // every few seconds (each slot is one second of silence) and then killed the
+        // player outright. It destroyed the cast rather than doing nothing.
+        //
+        // So catch it here, where every play arrives whatever pressed it: pause again at
+        // once, and treat the press as what the person meant - pause or resume THE
+        // SPEAKER, alternating, since one button is all the lock screen gives them.
+        if (castMode.current && p.playing) {
+          try { p.pause() } catch {}
+          const entityId = castEntity.current
+          if (entityId) {
+            const paused = !castSpeakerPaused.current
+            castSpeakerPaused.current = paused
+            call(paused ? 'speakerPause' : 'speakerResume', { entityId }).catch(() => {})
+          }
+          return
+        }
+
         // ExoPlayer owns the queue now, so IT decides when we crossed into the
         // next track. Trust its index rather than counting didJustFinish events.
         const i = p.currentQueueIndex ?? indexRef.current
@@ -663,9 +690,11 @@ export default function App () {
   // Resuming on the way out restarts the CURRENT track rather than seeking into it: the
   // speaker reports no position of its own (the Voice PE has no media_position), so
   // there is no honest place to resume from. Proposal open question 3.
-  async function setCastMode (on: boolean) {
+  async function setCastMode (on: boolean, entityId: string | null = null) {
     const p = player.current as any
     castMode.current = !!on
+    castEntity.current = on ? entityId : null
+    castSpeakerPaused.current = false
 
     if (on) {
       if (p) {
@@ -1451,7 +1480,7 @@ export default function App () {
       // resolves a URL per queued track and can take a moment on a long queue. The UI has
       // nothing to do with the result, and holding the IPC reply open would just make the
       // sheet feel stuck.
-      castMode: () => { setCastMode(!!msg.args?.on); return { ok: true } },
+      castMode: () => { setCastMode(!!msg.args?.on, msg.args?.entityId ?? null); return { ok: true } },
       sleep: () => setSleep(msg.args || {}),
 
       // The UI resolved its theme ('system' against the OS scheme we pushed it)
