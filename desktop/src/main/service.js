@@ -61,9 +61,74 @@ function realHome (user = realUser()) {
   return path.join('/Users', user)
 }
 
-function renderPlist (template, { bin, entry, data, music }) {
-  for (const [k, v] of [['__BIN__', bin], ['__ENTRY__', entry], ['__DATA__', data], ['__MUSIC__', music]]) {
+const DAEMON_LOG = '/var/log/peartune-host.log'
+
+// Is this label still known to launchd? `launchctl print` exits non-zero once it is
+// genuinely gone, which is the only reliable signal - bootout's own exit code says
+// only that the request was accepted.
+function daemonLoaded (label) {
+  try {
+    run(['launchctl', 'print', `system/${label}`])
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Poll rather than sleep a fixed amount: a daemon holding open sockets can take a
+// moment to go, and a fixed sleep is either too short (flaky) or wastes time on every
+// ordinary install. execFileSync blocks, so this is a synchronous spin by design -
+// installService is a CLI action that exits, not something on a UI thread.
+function waitUntilGone (label, tries = 50, everyMs = 100) {
+  for (let i = 0; i < tries; i++) {
+    if (!daemonLoaded(label)) return true
+    try { execFileSync('/bin/sleep', [String(everyMs / 1000)]) } catch {}
+  }
+  return !daemonLoaded(label)
+}
+
+// uid/gid for a macOS account name. dscl rather than /etc/passwd, which does not list
+// directory-service accounts at all.
+function userIds (user) {
+  try {
+    const uid = Number(run(['id', '-u', user]).trim())
+    const gid = Number(run(['id', '-g', user]).trim())
+    if (Number.isFinite(uid) && Number.isFinite(gid)) return { uid, gid }
+  } catch {}
+  return { uid: null, gid: null }
+}
+
+// Hand a tree back to its owner. Returns how many entries actually needed it, so the
+// caller can say something true rather than claiming a repair that did nothing.
+function chownTree (dir, user) {
+  const { uid, gid } = userIds(user)
+  if (uid == null) return 0
+  let changed = 0
+  const walk = (p) => {
+    let st
+    try { st = fs.lstatSync(p) } catch { return }
+    if (st.uid !== uid) {
+      try { fs.chownSync(p, uid, gid); changed++ } catch {}
+    }
+    if (st.isDirectory()) {
+      let entries = []
+      try { entries = fs.readdirSync(p) } catch { return }
+      for (const e of entries) walk(path.join(p, e))
+    }
+  }
+  walk(dir)
+  return changed
+}
+
+function renderPlist (template, { bin, entry, data, music, user, group = 'staff' }) {
+  for (const [k, v] of [
+    ['__BIN__', bin], ['__ENTRY__', entry], ['__DATA__', data], ['__MUSIC__', music],
+    ['__USER__', user], ['__GROUP__', group]
+  ]) {
     if (!template.includes(k)) throw new Error(`plist template has no ${k} placeholder`)
+    // An empty value would substitute cleanly and produce a plist that looks fine and
+    // runs as the wrong thing - the exact failure mode this whole file is guarding.
+    if (!v) throw new Error(`nothing to put in ${k}`)
     template = template.split(k).join(v)
   }
   return template
@@ -114,7 +179,8 @@ function installDaemon ({
     bin: execPath,
     entry: path.join(resources || '', 'app.asar', 'vendor', 'host', 'index.js'),
     data,
-    music
+    music,
+    user
   })
 
   // launchd REFUSES a system plist that is not root-owned and 0644, and the
@@ -124,7 +190,35 @@ function installDaemon ({
   log(`PearTune: wrote ${DAEMON_PLIST}`)
   log(`  serving ${user}'s library at ${data}`)
 
+  // REPAIR ANY ROOT-OWNED FILES LEFT BY AN EARLIER INSTALL. The first cut of this
+  // daemon ran as root and left root-owned CURRENT/LOG/MANIFEST inside the user's
+  // own store within minutes (caught on hardware 2026-08-08). Now that the daemon
+  // runs AS the user, those files would be unwritable by the very process meant to
+  // own them - so hand them back rather than leaving a box that upgraded into a
+  // half-broken state. Cheap, and a no-op on a machine that never ran the root one.
+  const restored = chownTree(data, user)
+  if (restored > 0) log(`  handed ${restored} file(s) back to ${user} from an earlier root-owned install`)
+
+  // The daemon writes its log as the user now, so the log file has to be reachable
+  // by that user. Left root-owned it simply gets no output, silently.
+  try {
+    fs.writeFileSync(DAEMON_LOG, '', { flag: 'a' })
+    const { uid, gid } = userIds(user)
+    if (uid != null) fs.chownSync(DAEMON_LOG, uid, gid)
+  } catch {}
+
+  // BOOTOUT RETURNS BEFORE THE JOB IS ACTUALLY GONE, and bootstrapping into a label
+  // that is still present fails with the famously unhelpful "Bootstrap failed: 5:
+  // Input/output error". Caught on hardware 2026-08-08 reinstalling over the earlier
+  // root-running version. So wait for the label to really disappear rather than
+  // assuming a successful bootout means unloaded.
   try { run(['launchctl', 'bootout', `system/${DAEMON_LABEL}`]) } catch {}
+  if (!waitUntilGone(DAEMON_LABEL)) {
+    log(`PearTune: ${DAEMON_LABEL} is still loaded after asking it to stop.`)
+    log(`  Try:  sudo launchctl bootout system/${DAEMON_LABEL}`)
+    return 1
+  }
+
   try {
     run(['launchctl', 'bootstrap', 'system', DAEMON_PLIST])
     run(['launchctl', 'enable', `system/${DAEMON_LABEL}`])
@@ -151,7 +245,20 @@ function uninstallDaemon ({ log = console.log } = {}) {
     return 1
   }
   try { run(['launchctl', 'bootout', `system/${DAEMON_LABEL}`]) } catch {}
+  waitUntilGone(DAEMON_LABEL)
   try { fs.unlinkSync(DAEMON_PLIST) } catch {}
+
+  // Leave the library usable by the person going back to the tray app. Rollback is
+  // the moment this matters most, and a rollback that hands back a store the user
+  // cannot write is worse than no rollback at all.
+  const user = realUser()
+  if (user) {
+    const home = realHome(user)
+    const data = path.join(home, 'Library', 'Application Support', 'peartune-desktop', 'data')
+    const restored = chownTree(data, user)
+    if (restored > 0) log(`PearTune: handed ${restored} file(s) back to ${user}.`)
+  }
+
   log('PearTune: host daemon removed. Your library data is untouched.')
   log('  Open PearTune normally and it goes back to running the host itself.')
   return 0

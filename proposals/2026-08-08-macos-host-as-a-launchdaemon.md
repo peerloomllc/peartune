@@ -99,11 +99,19 @@ migration rather than a copy-and-hope.
   This ties a machine-wide daemon to one user's profile - the same accepted trade Tim made for
   Windows on 2026-08-01, for the same reason.
 
-- **Watch file OWNERSHIP, which Windows did not have to.** A root daemon writing into a user's
-  `Application Support` will create root-owned files in a directory the user owns. The tray app
-  becoming a client means it no longer opens that store, so nothing should break - but "should"
-  is doing work in that sentence and it needs checking on hardware, including the case of going
-  BACK to the tray app after removing the daemon.
+- **RUN AS THE USER, NOT AS ROOT.** The draft said only to "watch file ownership", with the note
+  that "should" was doing a lot of work in that sentence. It was: the first cut ran as root and
+  within minutes had left root-owned `CURRENT`, `LOG` and `MANIFEST` inside the user's own store
+  (hardware, 2026-08-08). Nothing broke while the daemon was up, which is exactly why it would
+  have gone unnoticed - the damage only lands on ROLLBACK, when the tray app comes back as the
+  user and cannot write files it supposedly owns. A rollback that corrupts the thing it is
+  rolling back is worse than no rollback.
+
+  The fix is one plist key. `UserName` decides which credentials the job runs with; living in
+  the SYSTEM domain rather than `gui/501` is what makes it survive logout. Those are independent,
+  so we keep everything slice 1 measured and drop the ownership churn entirely. Install also
+  repairs any root-owned files a previous version left, so a machine that ran the root cut is put
+  right rather than left half-changed.
 - **The tray app becomes a CLIENT**, exactly as Linux slice 1 had to absorb slice 2. A daemon at
   boot plus the existing login item would put two hosts on one data dir, which is the one
   outcome worse than no daemon at all.
@@ -156,7 +164,37 @@ would be the same mistake with a fresh coat of paint.
 
 1. **Prove the premise. DONE 2026-08-08 - see the result above.** No product code, as intended.
 2. **The daemon + the tray-as-client change**, together, for the two-hosts-on-one-data-dir
-   reason above.
+   reason above. **BUILT, and verified on the mac-mini 2026-08-08:**
+
+   ```
+   $ launchctl print system/com.peerloom.peartune   ->  state = running, pid 2117
+   $ ps -Ao user,pid,command | grep PearTune
+   tim  2117  /Applications/PearTune.app/Contents/MacOS/PearTune .../vendor/host/index.js
+   $ curl -o /dev/null -w '%{http_code}' http://127.0.0.1:8741/            -> 200
+   $ find "~/Library/Application Support/peartune-desktop/data" ! -user tim   -> (nothing)
+
+   host key   ydxww4kk4qirg4f7xzpgdwzzfk87bhoxwf4yoosrcw5rxjn6rppo
+   source     folder @ /Users/tim/Music  (209 tracks)
+   host.seed sha256 56dfd609a1f2f4f5   <- unchanged since 2026-08-01, before any of this
+   ```
+
+   Running **as tim**, serving the **real** library with its **original identity**, announcing
+   on the DHT, and **no root-owned files left anywhere** - the repair cleaned up all five the
+   root cut had created.
+
+   The tray-as-client half needed no work: `adoptOrStart` keys off whether the port is already
+   served, not off the platform, so macOS inherited it. Confirmed by reading it.
+
+   **Two defects found by running it, both invisible to the tests:** the root-ownership one
+   above, and `launchctl bootout` returning BEFORE the job is actually gone - so bootstrapping
+   the replacement failed with the famously unhelpful `Bootstrap failed: 5: Input/output error`.
+   Install now waits for the label to genuinely disappear instead of trusting bootout's exit
+   code.
+
+   **STILL TO PROVE: reboot survival with `UserName` set.** Slice 1 proved a root daemon comes
+   back after a reboot with nobody logged in. That is not automatically the same claim now that
+   the job runs as a user, and it is the whole point of the feature, so it gets its own check
+   rather than an assumption.
 3. ~~**The data-dir migration**, ported from Windows.~~ **CUT.** There is no migration, on
    either platform, and there should not be - see the design note above. What remains of this
    slice is the ownership check, which folds into slice 2's hardware verification.

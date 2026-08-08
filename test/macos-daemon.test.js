@@ -30,6 +30,7 @@ function render (over = {}) {
     entry: '/Applications/PearTune.app/Contents/Resources/app.asar/vendor/host/index.js',
     data: '/Users/tim/Library/Application Support/peartune-desktop/data',
     music: '/Users/tim/Music',
+    user: 'tim',
     ...over
   })
 }
@@ -57,8 +58,28 @@ test('every placeholder is substituted, and a missing one is an error', () => {
   const out = render()
   assert.ok(!/__[A-Z]+__/.test(out), `unsubstituted placeholder in:\n${out.match(/__[A-Z]+__/g)}`)
   assert.throws(() => svc.renderPlist('<plist>no placeholders</plist>', {
-    bin: 'a', entry: 'b', data: 'c', music: 'd'
+    bin: 'a', entry: 'b', data: 'c', music: 'd', user: 'e'
   }), /placeholder/)
+})
+
+test('an EMPTY value is refused rather than substituted', () => {
+  // An empty user would render a structurally valid plist that runs as the wrong
+  // thing - a plausible-looking file is the dangerous outcome here, not a crash.
+  assert.throws(() => render({ user: '' }), /nothing to put in __USER__/)
+  assert.throws(() => render({ data: '' }), /nothing to put in __DATA__/)
+})
+
+test('the daemon runs AS THE USER, not as root', () => {
+  // A system-domain daemon is what survives logout; UserName only picks the
+  // credentials. Those are independent, so we get the survival AND avoid root.
+  //
+  // The first cut ran as root and was caught on hardware within minutes: it had
+  // left root-owned CURRENT, LOG and MANIFEST inside the user's OWN store, which
+  // would leave the tray app unable to write files it supposedly owns the moment
+  // anyone rolled the daemon back.
+  const out = render()
+  assert.match(out, /<key>UserName<\/key>\s*<string>tim<\/string>/)
+  assert.match(out, /<key>GroupName<\/key>\s*<string>staff<\/string>/)
 })
 
 test('the daemon plist goes in the SYSTEM LaunchDaemons directory', () => {
