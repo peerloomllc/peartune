@@ -2445,6 +2445,27 @@ export default function App () {
 
   if (state.loading) return <div className='center'><p className='muted'>Starting…</p></div>
 
+  // INIT FAILED. Not "you have no library" - we do not KNOW what you have, because the thing
+  // that would tell us could not be read. Those are different sentences and the app used to
+  // show the wrong one: the catch on init writes `error` into state, nothing rendered it, and
+  // with no host in state the render fell straight through to the onboarding wall. Someone
+  // whose storage hiccuped was told, in effect, that their library was gone - and the obvious
+  // response to that screen is to re-pair or reinstall, which is how a recoverable glitch
+  // turns into real loss. Say what happened instead, and offer the one action that helps.
+  if (state.error) {
+    return (
+      <div className='center'>
+        <p><strong>PearTune could not start up properly.</strong></p>
+        <p className='muted'>{state.error}</p>
+        <p className='muted'>
+          Your libraries and pairings have not been touched. Closing PearTune and opening it
+          again usually clears this.
+        </p>
+        <button onClick={() => window.location.reload()}>Try again</button>
+      </div>
+    )
+  }
+
   // Adding ANOTHER library over the running app (Settings > Libraries > Add). Same flow as
   // the pairing wall, but cancellable back into the app rather than a dead end.
   if (addingLibrary) {
