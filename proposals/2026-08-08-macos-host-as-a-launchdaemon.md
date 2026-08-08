@@ -109,11 +109,17 @@ plist; the tray app then works exactly as it does today. The migration never del
 so the previous data dir is still sitting there and pointing the tray app back at it restores
 the old world without touching the grant store.
 
-## Open questions for Tim
+## Open questions for Tim - ANSWERED 2026-08-08, before any measurement
 
-1. **Is an admin password prompt at install acceptable on macOS?** Installing a LaunchDaemon
-   requires it. Windows already went this way (`perMachine`, elevated) on 2026-08-01, so this
-   would make the two consistent - but macOS users are less used to it from a music app.
+Both were put to Tim before slice 1 ran, deliberately, so neither answer could be shaped by
+having already done the work.
+
+1. **Is an admin password prompt at install acceptable on macOS?** **YES.** Windows already went
+   this way (`perMachine`, elevated) on 2026-08-01, so the two platforms end up consistent.
 2. **If TCC blocks the read, is "open System Settings and grant Full Disk Access" an acceptable
-   setup step**, or does that kill it? Worth deciding BEFORE slice 1 measures it, so the answer
-   is not shaped by having already done the work.
+   setup step?** **YES, provided it is documented clearly** - and only if the measurement shows
+   macOS actually blocks it, which it may not.
+
+So slice 1 is unblocked on both counts, and neither possible outcome kills the proposal. What
+slice 1 can still kill it on is the premise itself: a daemon that will not load or will not
+survive a reboot.
