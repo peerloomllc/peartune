@@ -767,7 +767,7 @@ class PearTuneHost {
   // CONTAINER install of Home Assistant, with no Supervisor and so no File Editor add-on -
   // there is no way to do that from inside Home Assistant at all.
   async writeHaConfig ({ yaml, include }) {
-    const dir = this.speakers.config.haConfigDir
+    const dir = this.speakers.haConfigDir
     const check = canWriteHaConfig(dir)
     if (!check.ok) throw new Error(check.why || 'no Home Assistant config folder is set')
     if (!yaml || typeof yaml !== 'string') throw new Error('nothing to write')

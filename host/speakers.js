@@ -157,11 +157,11 @@ class Speakers {
       voiceEnabled: c.voiceEnabled,
       voiceEntityId: c.voiceEntityId,
       voiceKey: c.voiceKey,
-      haConfigDir: c.haConfigDir,
+      haConfigDir: this.haConfigDir,
       // Whether we could actually write there right now, so the dashboard can offer the
       // button only when it would work rather than after it fails.
-      haConfigWritable: canWriteHaConfig(c.haConfigDir).ok,
-      haConfigProblem: canWriteHaConfig(c.haConfigDir).why
+      haConfigWritable: canWriteHaConfig(this.haConfigDir).ok,
+      haConfigProblem: canWriteHaConfig(this.haConfigDir).why
     }
     for (const s of SECRETS) out[s + 'Set'] = !!c[s]
     out.loopbackOnly = true
@@ -188,6 +188,14 @@ class Speakers {
     this.config = next
     this.log('speakers:config-saved', { enabled: next.enabled, baseUrl: next.baseUrl })
     return this.publicConfig()
+  }
+
+  // The config folder to offer, preferring what the operator typed over what the platform
+  // handed us. The env var is how the Umbrel listing pre-fills the path (PEARTUNE_HA_CONFIG
+  // -> /ha-config), so nobody has to know it - pressing the button is still what consents to
+  // a write, not the mount existing.
+  get haConfigDir () {
+    return this.config.haConfigDir || process.env.PEARTUNE_HA_CONFIG || ''
   }
 
   get enabled () {
