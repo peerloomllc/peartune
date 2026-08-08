@@ -18,8 +18,144 @@ const os = require('os')
 const path = require('path')
 const { execFileSync } = require('child_process')
 
-const SERVICE_PLATFORMS = ['linux']
+const SERVICE_PLATFORMS = ['linux', 'darwin']
 const UNIT_NAME = 'peartune-host.service'
+
+// --- macOS ------------------------------------------------------------------
+//
+// A SYSTEM LaunchDaemon, not a LaunchAgent. An agent lives in gui/501, a domain
+// loginwindow tears down at logout, so KeepAlive cannot save it (measured
+// 2026-07-31). Proven 2026-08-08: bootstrapped into the system domain, survived
+// a real reboot with nobody logged in, ran as root, read ~/Music with no Full
+// Disk Access grant, and announced on the DHT.
+const DAEMON_LABEL = 'com.peerloom.peartune'
+const DAEMON_PLIST = `/Library/LaunchDaemons/${DAEMON_LABEL}.plist`
+
+// WHOSE HOME IS THE LIBRARY IN? Not root's, even though this runs under sudo.
+//
+// This is the Windows $APPDATA trap wearing a different hat. There, a perMachine
+// install made NSIS resolve $APPDATA to C:\ProgramData instead of the user's
+// roaming folder, so the service was pointed at an empty directory, created a
+// BRAND NEW EMPTY LIBRARY and served it - healthy, zero tracks, and the real
+// library sitting untouched a few directories away. It took a hardware run to
+// find. Under sudo, os.homedir() is /var/root and would do exactly the same
+// thing here.
+//
+// SUDO_USER is who actually invoked us, and their home is where the library is.
+function realUser () {
+  const name = process.env.SUDO_USER || os.userInfo().username
+  if (name === 'root') return null
+  return name
+}
+
+function realHome (user = realUser()) {
+  if (!user) return null
+  // Ask the directory service rather than assuming /Users/<name>: the two differ
+  // for network and mobile accounts, which is precisely the setup where guessing
+  // wrong points a daemon at a path that does not exist.
+  try {
+    const line = run(['dscl', '.', '-read', `/Users/${user}`, 'NFSHomeDirectory']).trim()
+    const home = line.replace(/^NFSHomeDirectory:\s*/, '').trim()
+    if (home && home !== '/var/empty') return home
+  } catch {}
+  return path.join('/Users', user)
+}
+
+function renderPlist (template, { bin, entry, data, music }) {
+  for (const [k, v] of [['__BIN__', bin], ['__ENTRY__', entry], ['__DATA__', data], ['__MUSIC__', music]]) {
+    if (!template.includes(k)) throw new Error(`plist template has no ${k} placeholder`)
+    template = template.split(k).join(v)
+  }
+  return template
+}
+
+// `resources` and `template` are injectable for the same reason execLine's are: the
+// hardware check has to exercise THIS function against the real installed app without
+// first shipping a whole new build of it. Defaults are the production values.
+function installDaemon ({
+  log = console.log,
+  execPath = process.execPath,
+  resources = process.resourcesPath,
+  template = null
+} = {}) {
+  if (process.getuid && process.getuid() !== 0) {
+    log('PearTune: installing the host daemon needs root, because it registers a LaunchDaemon.')
+    log(`  Try:  sudo "${process.execPath}" --install-service`)
+    return 1
+  }
+
+  const user = realUser()
+  if (!user) {
+    // Refusing beats guessing. With no SUDO_USER we cannot tell whose library this
+    // is, and picking wrong means serving an empty one - see the note above.
+    log('PearTune: cannot tell which user\'s library to serve (no SUDO_USER).')
+    log('  Run this with sudo from your own account rather than as root directly.')
+    return 1
+  }
+
+  const home = realHome(user)
+  const data = path.join(home, 'Library', 'Application Support', 'peartune-desktop', 'data')
+  const music = path.join(home, 'Music')
+  if (!fs.existsSync(data)) {
+    // The tray app creates this on first run. If it is absent we would be
+    // registering a daemon that mints a NEW library - the Windows failure exactly.
+    log(`PearTune: no library found at ${data}.`)
+    log('  Open PearTune normally once first, then install the daemon.')
+    return 1
+  }
+
+  const tpl = template || path.join(resources || '', `${DAEMON_LABEL}.plist`)
+  if (!fs.existsSync(tpl)) {
+    log(`PearTune: could not find the daemon template at ${tpl}.`)
+    return 1
+  }
+
+  const plist = renderPlist(fs.readFileSync(tpl, 'utf8'), {
+    bin: execPath,
+    entry: path.join(resources || '', 'app.asar', 'vendor', 'host', 'index.js'),
+    data,
+    music
+  })
+
+  // launchd REFUSES a system plist that is not root-owned and 0644, and the
+  // refusal is silent - it simply never loads. Set both rather than inherit.
+  fs.writeFileSync(DAEMON_PLIST, plist, { mode: 0o644 })
+  try { fs.chownSync(DAEMON_PLIST, 0, 0) } catch {}
+  log(`PearTune: wrote ${DAEMON_PLIST}`)
+  log(`  serving ${user}'s library at ${data}`)
+
+  try { run(['launchctl', 'bootout', `system/${DAEMON_LABEL}`]) } catch {}
+  try {
+    run(['launchctl', 'bootstrap', 'system', DAEMON_PLIST])
+    run(['launchctl', 'enable', `system/${DAEMON_LABEL}`])
+    log('PearTune: host daemon loaded. Dashboard: http://127.0.0.1:8741')
+  } catch (e) {
+    log(`PearTune: plist written but launchd refused it: ${e.message}`)
+    return 1
+  }
+
+  // SAY WHAT THIS DOES NOT DO. "Always-on" is the overclaim desktop/README.md was
+  // corrected for in #306, and FileVault is where it stops being true: the machine
+  // halts at the pre-boot unlock screen and NOTHING runs until a person unlocks the
+  // disk. Measured on the mac-mini, 2026-08-08. Equally true of an encrypted Linux
+  // root, which the Linux slice shipped without saying.
+  log('')
+  log('  The host now keeps running when you log out, and starts at boot.')
+  log('  With FileVault on, a reboot still waits for someone to unlock the disk first.')
+  return 0
+}
+
+function uninstallDaemon ({ log = console.log } = {}) {
+  if (process.getuid && process.getuid() !== 0) {
+    log(`PearTune: removing the host daemon needs root. Try:  sudo "${process.execPath}" --uninstall-service`)
+    return 1
+  }
+  try { run(['launchctl', 'bootout', `system/${DAEMON_LABEL}`]) } catch {}
+  try { fs.unlinkSync(DAEMON_PLIST) } catch {}
+  log('PearTune: host daemon removed. Your library data is untouched.')
+  log('  Open PearTune normally and it goes back to running the host itself.')
+  return 0
+}
 
 function unitDir () { return path.join(os.homedir(), '.config', 'systemd', 'user') }
 function unitPath () { return path.join(unitDir(), UNIT_NAME) }
@@ -60,12 +196,10 @@ function run (argv) {
 }
 
 function installService ({ log = console.log } = {}) {
+  if (process.platform === 'darwin') return installDaemon({ log })
   if (!SERVICE_PLATFORMS.includes(process.platform)) {
-    log(`PearTune: --install-service is Linux-only for now (this is ${process.platform}).`)
-    if (process.platform === 'darwin') {
-      log('  macOS cannot run this without root: a LaunchAgent is torn down when you log out,')
-      log('  measured 2026-07-31. The tray app remains the supported macOS setup.')
-    }
+    log(`PearTune: --install-service is Linux and macOS only (this is ${process.platform}).`)
+    log('  On Windows the installer registers the service for you.')
     return 1
   }
 
@@ -108,6 +242,7 @@ function installService ({ log = console.log } = {}) {
 }
 
 function uninstallService ({ log = console.log } = {}) {
+  if (process.platform === 'darwin') return uninstallDaemon({ log })
   if (!SERVICE_PLATFORMS.includes(process.platform)) return 1
   try { run(['systemctl', '--user', 'disable', '--now', UNIT_NAME]) } catch {}
   try { fs.unlinkSync(unitPath()) } catch {}
@@ -117,4 +252,20 @@ function uninstallService ({ log = console.log } = {}) {
   return 0
 }
 
-module.exports = { installService, uninstallService, execLine, renderUnit, unitPath, SERVICE_PLATFORMS, UNIT_NAME }
+module.exports = {
+  installService,
+  uninstallService,
+  execLine,
+  renderUnit,
+  unitPath,
+  SERVICE_PLATFORMS,
+  UNIT_NAME,
+  // macOS
+  renderPlist,
+  realUser,
+  realHome,
+  DAEMON_LABEL,
+  DAEMON_PLIST,
+  installDaemon,
+  uninstallDaemon
+}

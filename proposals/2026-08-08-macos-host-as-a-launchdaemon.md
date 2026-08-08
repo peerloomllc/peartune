@@ -79,11 +79,31 @@ migration rather than a copy-and-hope.
 
 - **The daemon.** `/Library/LaunchDaemons/com.peerloom.peartune.plist`, root-owned, mode 0644,
   `RunAtLoad` + `KeepAlive`, running the `ELECTRON_RUN_AS_NODE` line measured above.
-- **The data dir moves** from `~/Library/Application Support/peartune-desktop` to
-  `/Library/Application Support/PearTune`. Reuse the Windows migration wholesale: per-file
-  digest verification, the source never deleted, idempotent so an upgrade cannot roll a live
-  grant store back to a stale snapshot. That migration already exists and is already proven on
-  hardware.
+- **THE DATA DIR DOES NOT MOVE.** This is a correction to the first draft of this proposal,
+  which said to "reuse the Windows migration wholesale". There is no Windows migration to
+  reuse. It was built, byte-verified, and **abandoned on hardware** (2026-08-01): hypercore-
+  storage stamps `store/CORESTORE` through the `device-file` package, which records the file's
+  **inode** and re-checks it on open, so a byte-perfect digest-verified copy still refuses to
+  open with `fatal: Invalid device file, was modified`, permanently. The guard is deliberate,
+  and it exists to catch exactly this.
+
+  The lesson recorded there is worth repeating because it is what my draft got wrong: verifying
+  a migration by comparing digests proves **the bytes arrived**; it does not prove **the store
+  opens**, and only the second claim matters.
+
+  So macOS does what Windows does: the daemon is pointed at
+  `~/Library/Application Support/peartune-desktop`, the directory the tray app already uses.
+  Nothing is copied, nothing is moved, and `device-file` never has cause to fire. Running as
+  root means access to that path is not in question.
+
+  This ties a machine-wide daemon to one user's profile - the same accepted trade Tim made for
+  Windows on 2026-08-01, for the same reason.
+
+- **Watch file OWNERSHIP, which Windows did not have to.** A root daemon writing into a user's
+  `Application Support` will create root-owned files in a directory the user owns. The tray app
+  becoming a client means it no longer opens that store, so nothing should break - but "should"
+  is doing work in that sentence and it needs checking on hardware, including the case of going
+  BACK to the tray app after removing the daemon.
 - **The tray app becomes a CLIENT**, exactly as Linux slice 1 had to absorb slice 2. A daemon at
   boot plus the existing login item would put two hosts on one data dir, which is the one
   outcome worse than no daemon at all.
@@ -137,17 +157,20 @@ would be the same mistake with a fresh coat of paint.
 1. **Prove the premise. DONE 2026-08-08 - see the result above.** No product code, as intended.
 2. **The daemon + the tray-as-client change**, together, for the two-hosts-on-one-data-dir
    reason above.
-3. **The data-dir migration**, ported from Windows.
+3. ~~**The data-dir migration**, ported from Windows.~~ **CUT.** There is no migration, on
+   either platform, and there should not be - see the design note above. What remains of this
+   slice is the ownership check, which folds into slice 2's hardware verification.
 4. **Docs**, and an amendment to the 2026-07-31 proposal recording that macOS came back into
    scope and why. Must include the FileVault limit for **all three** platforms, not just macOS -
    the Linux slice shipped with the same limit and did not say so.
 
 ## Rollback
 
-Uninstalling the daemon is `launchctl bootout system/com.peerloom.peartune` plus deleting the
-plist; the tray app then works exactly as it does today. The migration never deletes its source,
-so the previous data dir is still sitting there and pointing the tray app back at it restores
-the old world without touching the grant store.
+`launchctl bootout system/com.peerloom.peartune` plus deleting the plist, and the tray app works
+exactly as it does today. Rollback is genuinely cheap here **because nothing moves**: the daemon
+and the tray app read the same directory, so removing the daemon leaves the library exactly
+where the tray app has always expected to find it. The only thing to check on the way back is
+file ownership, per the design note above.
 
 ## Open questions for Tim - ANSWERED 2026-08-08, before any measurement
 
