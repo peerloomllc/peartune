@@ -90,17 +90,57 @@ migration rather than a copy-and-hope.
 - **The music folder stays where it is.** Do not move a user's music. If TCC blocks the read,
   that is a documented Full Disk Access step, not a reason to relocate their library.
 
+## SLICE 1 RESULT, 2026-08-08: the premise holds, and all three risks cleared
+
+Run with `desktop/scripts/macos-daemon-probe.sh` on the mac-mini (macOS 26.2), then a real
+reboot with nobody logging in afterwards. Four minutes after that reboot:
+
+```
+$ uptime
+15:16  up 4 mins, 0 users, load averages: 1.35 0.91 0.43
+$ who
+                                    <- no console session at all
+$ ps -Ao user,pid,command | grep PearTune
+root  592  /Applications/PearTune.app/Contents/MacOS/PearTune .../vendor/host/index.js
+$ curl -o /dev/null -w '%{http_code}' http://127.0.0.1:8752/     -> 200
+
+probe.log, from this boot:
+[20:11:20] folder:scanned {"tracks":209,"albums":26,"artists":6}
+[20:11:22] host:announced {"topic":"upui34ok"}
+```
+
+- **Risk 1, the system domain: CLEARED.** It bootstrapped, and it came back by itself after a
+  reboot, running **as root** with **zero users logged in**.
+- **Risk 2, TCC and the music folder: CLEARED, no Full Disk Access needed.** The daemon read
+  `/Users/tim/Music` and scanned all 209 tracks. Tim's "yes if documented" answer turns out not
+  to be needed.
+- **Risk 3, signing and load: CLEARED.** The shipped hardened-runtime binary loaded in the
+  system domain unmodified.
+
+**And the same boot demonstrated the bug, side by side.** With nobody logged in, the REAL tray
+host on 8741 answered `000` - not running, because a login item needs a login - while the probe
+daemon on 8752 answered 200 and was announcing on the DHT. That is the entire case for this
+proposal, observed on one machine at one moment, rather than argued.
+
+**ONE LIMIT FOUND, and it is not a blocker.** The mac-mini has **FileVault on**, so the reboot
+stopped at the pre-boot unlock screen and nothing ran at all until Tim unlocked it (over ssh, as
+it happens). So on a FileVault Mac the honest claim is "survives logout, and survives reboot
+once the disk is unlocked" - **not** "comes back unattended after a power cut". This is not
+macOS-specific and not a reason to stop: it is exactly the same on any Linux box with an
+encrypted root, and the Linux slice already shipped under that same limit without noticing.
+**It must be documented rather than glossed**, because "always-on" is precisely the kind of
+overclaim `desktop/README.md` was corrected for in #306, and repeating it here in a new place
+would be the same mistake with a fresh coat of paint.
+
 ## Slices
 
-1. **Prove the premise.** A hand-installed LaunchDaemon on the mac-mini, real library, real
-   reboot with nobody logging in. Answers risks 1-3 above. **No product code.** If this fails,
-   the proposal dies here having cost one afternoon, and macOS stays a tray app with a better
-   footnote than it has now.
+1. **Prove the premise. DONE 2026-08-08 - see the result above.** No product code, as intended.
 2. **The daemon + the tray-as-client change**, together, for the two-hosts-on-one-data-dir
    reason above.
 3. **The data-dir migration**, ported from Windows.
 4. **Docs**, and an amendment to the 2026-07-31 proposal recording that macOS came back into
-   scope and why.
+   scope and why. Must include the FileVault limit for **all three** platforms, not just macOS -
+   the Linux slice shipped with the same limit and did not say so.
 
 ## Rollback
 
