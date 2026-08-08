@@ -12,14 +12,17 @@
 # `docker inspect` will lie about what is running until the next real redeploy.
 #
 # Usage on the Umbrel:
-#   sudo bash ha-speakers-to-umbrel.sh
+#   bash ha-speakers-to-umbrel.sh
 set -euo pipefail
 
 STAGE="${STAGE:-/tmp/pt-ha}"          # where the files were scp'd to
 CONTAINER="${CONTAINER:-}"            # auto-detected below if empty
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "run me with sudo: sudo bash $0" >&2
+# What this actually needs is DOCKER, not root. On this Umbrel the umbrel user is in the
+# docker group, so the sudo was pure friction - and friction on a deploy step is how a
+# deploy gets skipped. Ask docker directly and only complain if it says no.
+if ! docker info >/dev/null 2>&1; then
+  echo "cannot talk to docker. If this box needs root for it: sudo bash $0" >&2
   exit 1
 fi
 

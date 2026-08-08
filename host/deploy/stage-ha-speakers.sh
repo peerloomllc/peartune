@@ -13,7 +13,9 @@
 #   bash host/deploy/stage-ha-speakers.sh
 set -euo pipefail
 
-TARGET="${TARGET:-umbrel@umbrel.local}"
+# umbrel, not umbrel.local: the first is Tailscale MagicDNS and resolves from anywhere, the
+# second is mDNS and only works while we happen to be on the same LAN.
+TARGET="${TARGET:-umbrel@umbrel}"
 STAGE="${STAGE:-/tmp/pt-ha}"
 
 # Every file the deploy script copies. Keep in step with the loop in
@@ -52,5 +54,5 @@ done
 [ "$fail" -eq 0 ] || { echo "staging did not match - do NOT deploy" >&2; exit 1; }
 
 echo
-echo "Staged. Now run this on the Umbrel (needs sudo for docker):"
-echo "  ssh -t $TARGET 'sudo bash $STAGE/ha-speakers-to-umbrel.sh'"
+echo "Staged. Now run this:"
+echo "  ssh $TARGET 'bash $STAGE/ha-speakers-to-umbrel.sh'"
