@@ -13,7 +13,7 @@
 // dies, the loopback stream breaks, and the music stops. That is the product.
 
 import { useEffect, useRef, useState } from 'react'
-import { View, StatusBar, BackHandler, Appearance, AppState, NativeModules, Platform, Settings, Share } from 'react-native'
+import { View, Text, StatusBar, BackHandler, Appearance, AppState, NativeModules, Platform, Settings, Share } from 'react-native'
 import { WebView } from 'react-native-webview'
 import * as Linking from 'expo-linking'
 import * as Clipboard from 'expo-clipboard'
@@ -212,6 +212,9 @@ export default function App () {
   // library" rather than freeze.
   const drainStall = useRef({ pos: -1, at: 0 })
   const [uiHtml, setUiHtml] = useState<string | null>(null)
+  // Set only when the boot sequence threw. There is no WebView in that case, so this is the
+  // one message the app is still able to show.
+  const [bootError, setBootError] = useState<string | null>(null)
   const [scheme, setScheme] = useState<'light' | 'dark'>('dark')
   // Whether the UI has a screen or overlay to pop. Suite convention
   // (shell:navState): when it is false we let the press fall through and Android
@@ -1166,7 +1169,15 @@ export default function App () {
     ;(async () => {
       // The worklet's data dir. The device identity lives here, and it IS the
       // grant the host holds - wiping it means re-pairing.
-      const dataDir = (FileSystem.documentDirectory ?? '').replace('file://', '') + 'peartune'
+      // `?? ''` used to turn a missing documentDirectory into the RELATIVE path "peartune",
+      // which is not a failure the worklet can see: Bare.argv[0] is truthy, so its own
+      // fallback never fires and it happily resolves "peartune" against whatever its cwd is.
+      // The result is a phantom data directory - no identity, no hosts - on a phone that is
+      // perfectly paired, which presents as the onboarding screen and a device key nobody has
+      // granted. Refuse to start rather than start somewhere else.
+      const docs = FileSystem.documentDirectory
+      if (!docs) throw new Error('no documentDirectory - refusing to start the worklet on a relative data path')
+      const dataDir = docs.replace('file://', '') + 'peartune'
 
       const worklet = new Worklet()
       const asset = Asset.fromModule(bundle)
@@ -1342,7 +1353,14 @@ export default function App () {
         '</script>'
 
       if (!cancelled) setUiHtml(html.replace('<body>', '<body>' + boot))
-    })().catch(() => {})
+    })().catch((e) => {
+      // NOT `() => {}`. Boot failing silently is indistinguishable from boot being slow: the
+      // WebView never gets mounted, so the app sits on its blank shell forever with nothing
+      // written anywhere saying why. Every failure in here is fatal to the whole app, which
+      // makes it exactly the wrong thing to swallow.
+      console.error('[peartune] boot failed', e)
+      if (!cancelled) setBootError(e?.message ?? String(e))
+    })
 
     // Back belongs to the UI, which owns the nav stack. Suite convention: the UI
     // tells us whether it has anything to pop (shell:navState), and we only
@@ -1603,6 +1621,19 @@ export default function App () {
   return (
     <View style={{ flex: 1, paddingTop: insets.top, backgroundColor: bg }}>
       <StatusBar barStyle={scheme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={bg} />
+      {bootError && (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <Text style={{ color: scheme === 'dark' ? '#fff' : '#000', fontSize: 17, marginBottom: 10 }}>
+            PearTune could not start.
+          </Text>
+          <Text style={{ color: scheme === 'dark' ? '#aaa' : '#555', fontSize: 14, textAlign: 'center' }}>
+            {bootError}
+          </Text>
+          <Text style={{ color: scheme === 'dark' ? '#aaa' : '#555', fontSize: 14, textAlign: 'center', marginTop: 10 }}>
+            Your libraries and pairings have not been touched. Close PearTune and open it again.
+          </Text>
+        </View>
+      )}
       {uiHtml && (
         <WebView
           ref={webRef}
