@@ -91,3 +91,31 @@ Per platform and independent. Removing the unit or deregistering the service ret
 1. **Windows: LocalSystem plus a data-dir migration, or a service running as the installing user?** The security and UX trade-off above. Needs a call before slice 3.
 2. **Should the Linux tray app remain at all**, or is "service plus open the dashboard in a browser" enough, as it is for the seeder? Keeping it is friendlier; dropping it removes a whole class of two-hosts-one-data-dir bugs.
 3. **What starts the host on a Linux box with no desktop session at all** - a headless NAS or home server? A systemd *system* unit would suit that better than a user unit, which is a third packaging shape and probably its own proposal.
+
+## AMENDMENT, 2026-08-08: macOS came back into scope, and this proposal's reason for dropping it was stale
+
+This proposal put macOS out of scope, and the measurement it did that on - a LaunchAgent is
+torn down with its login session - **still stands and is still correct**. What did not stand
+was the second half of the argument. It said a root LaunchDaemon would mean running "the LAN
+code with no user session - the exact area where PearTune already has a scar, since hardened
+runtime silently blocks HyperDHT's raw UDP". **That inherited claim was disproven end to end
+on 2026-08-01**, one day after this was written: identical socket profiles hardened vs not,
+and the TCL actually paired with a hardened, current-code build.
+
+With that gone, macOS was re-measured and it works. See
+`proposals/2026-08-08-macos-host-as-a-launchdaemon.md`. All three platforms now survive logout
+and a reboot with nobody logged in.
+
+Two corrections that land on THIS proposal, not just the new one:
+
+1. **There is no data-dir migration on Windows, and this proposal's slice 3 language implies
+   there is.** The copy approach was built, digest-verified, and abandoned on hardware because
+   `device-file` stamps the store with its inode, so even a byte-perfect copy never opens. The
+   service is pointed at the existing library instead. The new proposal's first draft repeated
+   the mistake by planning to "reuse the Windows migration", which is how this was caught.
+
+2. **The FileVault limit applies to the LINUX slice too, and shipped unstated.** On any machine
+   with an encrypted disk, a reboot halts at the unlock screen and nothing runs until a person
+   unlocks it. "Survives a reboot with nobody logged in" is true only once the disk is unlocked.
+   `desktop/README.md` now says so for all three platforms, which is the same overclaim it was
+   corrected for in #306 - caught the second time by measuring rather than by review.

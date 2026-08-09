@@ -8,15 +8,31 @@ it.)
 
 ## Does it keep running when you log out?
 
-**On Linux and Windows, yes. On macOS, no — and it cannot.** This page used to call the
-app "the always-on daemon" on all three, which was not true of any of them, so here is
-what each one actually does:
+**On all three, yes — once the disk is unlocked.** This page used to call the app "the
+always-on daemon" on all three when it was true of none of them; then it said macOS could
+never do it. Both have been corrected, so here is what each one actually does:
 
 | platform | how it runs | survives logout / reboot with no login |
 | --- | --- | --- |
 | **Linux** | systemd **user** service + `loginctl enable-linger` | **yes** — measured: booted with nobody logged in, host serving 5s later, same library identity |
 | **Windows** | a `LocalSystem` service, registered by the installer | **yes** — measured: rebooted with nobody logged in, service running, same library identity |
-| **macOS** | tray app, started as a login item | **no** — and it cannot without root. See below. |
+| **macOS** | a **system LaunchDaemon**, running as you | **yes** — measured: rebooted with nobody logged in, 0 console sessions, same library identity |
+
+### The one thing "always-on" does not mean: an encrypted disk
+
+If the machine's disk is encrypted — **FileVault** on macOS, LUKS on Linux, BitLocker with
+a PIN on Windows — then a **reboot stops at the unlock screen and nothing runs at all**
+until a person unlocks it. No service on any of these platforms can get around that: the
+files it needs are not readable yet.
+
+So the honest claim is: **it survives logging out, and it survives a restart once the disk
+is unlocked.** It does not come back unattended after a power cut on an encrypted machine.
+Measured on the mac-mini with FileVault on, 2026-08-08 — and it is equally true of the
+Linux and Windows setups above, which were written before anyone checked.
+
+If you want a machine that genuinely comes back on its own, that means an unencrypted disk
+(or an unattended-unlock setup), which is a security trade to make deliberately rather than
+by accident.
 
 On **Windows** the installer does it all: it registers the service, points it at the
 library you already have, and starts it. Two things worth knowing:
@@ -39,15 +55,35 @@ Linger is the part that matters and it needs root, so `--install-service` tells 
 it is missing rather than claiming success: `sudo loginctl enable-linger $USER`. Without
 it the unit still dies at logout, which is the thing this exists to fix.
 
-**Why macOS is different, since it looks like it should work the same way.** A launchd
-LaunchAgent is torn down with its login session. Measured 2026-07-31 with a `KeepAlive`
-agent logging every 10s across one logout: last beat, 48 seconds of silence, then a
-*different* process at the next login. `KeepAlive` restarts a job that exits; it does not
-exempt one from its domain being destroyed. Running with nobody logged in would need a
-root LaunchDaemon, which moves the data dir out of `~/Library/Application Support`, puts
-your Music folder behind permissions, and runs the LAN code with no user session — where
-PearTune already has a scar, because hardened runtime silently blocks HyperDHT's raw UDP.
-So macOS stays a tray app, deliberately.
+On **macOS**, install it yourself with `sudo` — registering a system daemon needs it, the
+same as the Windows UAC prompt above:
+
+```bash
+sudo "/Applications/PearTune.app/Contents/MacOS/PearTune" --install-service
+sudo "/Applications/PearTune.app/Contents/MacOS/PearTune" --uninstall-service
+```
+
+It installs a **LaunchDaemon**, not a LaunchAgent, and that distinction is the whole
+feature. A LaunchAgent is torn down with its login session — measured 2026-07-31 with a
+`KeepAlive` agent logging every 10s across one logout: last beat, 48 seconds of silence,
+then a *different* process at the next login. `KeepAlive` restarts a job that exits; it
+does not exempt one from its domain being destroyed. A daemon lives in the system domain
+instead, which no logout touches.
+
+Two things it deliberately does **not** do:
+
+- **It does not run as root.** It runs as you. Living in the system domain is what survives
+  logout; who it runs as is a separate setting. An earlier version did run as root and left
+  root-owned files inside your own library folder, which would have left the ordinary app
+  unable to write them if you ever removed the daemon. (If you ran that version, installing
+  again hands those files back to you.)
+- **It does not move or copy your library.** It is pointed at the one you already have, in
+  `~/Library/Application Support`. Copying it does not work — the storage stamps itself with
+  its identity on disk, so any copy refuses to open — and not moving it is also what makes
+  removing the daemon safe.
+
+Because it runs as you and reads your own `~/Music`, no Full Disk Access grant is needed;
+that was checked rather than assumed.
 
 ## What it does
 
@@ -113,16 +149,21 @@ HyperDHT's LAN traffic. That was measured and is false - see DECISIONS 2026-08-0
 
 **Why macOS is drag-to-install and Windows shows a wizard.** The Windows installer needs
 to run as admin because it registers a background service; the Linux `.deb` does the same
-with a systemd unit. The Mac app installs nothing outside its own bundle - it registers its
-own login item on first launch - so there is nothing for an installer to do. (The wizard you
-may remember is the PearCircle/PearCal *seeder*, which does install system files. PearCal's
-desktop app is a `.dmg` like this one.) See DECISIONS 2026-08-01.
+with a systemd unit. The Mac app installs nothing outside its own bundle by default - it
+registers its own login item on first launch - so there is nothing for an installer to do.
+(The wizard you may remember is the PearCircle/PearCal *seeder*, which does install system
+files. PearCal's desktop app is a `.dmg` like this one.) See DECISIONS 2026-08-01.
+
+The macOS daemon is therefore **opt-in**, unlike the other two: drag-to-install stays as
+simple as it is, and anyone who wants the host to outlive their login runs the one `sudo`
+command above. Making the `.dmg` prompt for admin on every install, to give a background
+service to people who may not want one, is the worse trade.
 
 ## Uninstalling
 
 | platform | how |
 | --- | --- |
-| **macOS** | `bash /Applications/PearTune.app/Contents/Resources/uninstall.sh` |
+| **macOS** | `bash /Applications/PearTune.app/Contents/Resources/uninstall.sh` (run `--uninstall-service` first if you installed the daemon) |
 | **Windows** | the usual Add/Remove Programs entry (its uninstaller removes the service) |
 | **Linux** | `sudo apt remove peartune-desktop`, or `peartune-desktop --uninstall-service` for the AppImage |
 
