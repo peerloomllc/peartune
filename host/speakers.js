@@ -26,7 +26,10 @@ const VERSION = 1
 const SECRETS = ['token', 'voiceToken']
 // voiceKey is the synthetic device key voice plays as - not a secret (it is a public key
 // with no private half anywhere), but not something the browser should be able to set.
-const FIELDS = ['enabled', 'baseUrl', 'token', 'voiceEnabled', 'voiceToken', 'voiceKey', 'voiceEntityId', 'haConfigDir']
+// ledStyle is 'off' | 'solid' | 'pulse' - the Voice PE light ring indicator. Host-local
+// display config with no cross-peer effect: it changes one optional block in the Home
+// Assistant package we generate and nothing else.
+const FIELDS = ['enabled', 'baseUrl', 'token', 'voiceEnabled', 'voiceToken', 'voiceKey', 'voiceEntityId', 'haConfigDir', 'ledStyle']
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8123'
 
@@ -157,6 +160,9 @@ class Speakers {
       voiceEnabled: c.voiceEnabled,
       voiceEntityId: c.voiceEntityId,
       voiceKey: c.voiceKey,
+      // 'off' when unset, so the dashboard's select always has a value to show rather
+      // than falling to an empty option the operator never chose.
+      ledStyle: c.ledStyle || 'off',
       haConfigDir: this.haConfigDir,
       // Whether we could actually write there right now, so the dashboard can offer the
       // button only when it would work rather than after it fails.

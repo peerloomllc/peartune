@@ -144,3 +144,85 @@ test('the port and token are substituted, never left as placeholders', () => {
   assert.match(out, /abc123/)
   assert.equal(/PORT|YOUR_TOKEN|undefined|\$\{/.test(out), false, 'nothing unsubstituted may reach a config file')
 })
+
+// --- the optional light ring indicator (2026-08-08) --------------------------
+//
+// Tim asked for a twinkle. The Voice PE ring is one RGB light with no named effects and no
+// per-LED control (measured: supported_features 40 = TRANSITION + FLASH, EFFECT unset,
+// effect_list empty even when lit, and no `esphome.` services at all), so what is buildable
+// is a breathing PULSE. The firmware's own twinkle is not reachable from Home Assistant.
+//
+// The trap these guard is the one this whole module exists for: the LED automation must JOIN
+// the existing `automation:` list, not add a second top-level `automation:` key. A duplicate
+// key does not error - the later one silently wins, and the voice sentences vanish.
+
+const LED = { light: 'light.ring', player: 'media_player.spk', style: 'solid' }
+const cfgLed = (over = {}) =>
+  haConfig({ port: 8742, token: 'test-token', led: { ...LED, ...over } })
+
+test('the LED block is OFF unless asked for, and the file is unchanged without it', () => {
+  assert.equal(CFG(), haConfig({ port: 8742, token: 'test-token', speakerEntity: 'media_player.spk', led: null }))
+  assert.ok(!CFG().includes('peartune_led'), 'no LED automation when it was not requested')
+})
+
+test('the LED automation JOINS the automation list - no duplicate top-level key', () => {
+  const src = cfgLed()
+  // The bug, stated as an assertion: exactly one `automation:` at column 0.
+  assert.equal((src.match(/^automation:/gm) || []).length, 1, 'a second automation: key silently eats the first')
+  const doc = yaml.load(src)
+  assert.deepEqual(Object.keys(doc).sort(), ['automation', 'intent_script', 'rest_command'])
+  const ids = doc.automation.map(a => a.id).filter(Boolean)
+  assert.ok(ids.includes('peartune_led'), 'the LED automation is in the list')
+  // And the voice sentences must still be there beside it - what a duplicate key destroys.
+  assert.ok(doc.automation.some(a => a.alias === 'PearTune voice'), 'the voice automation survived')
+})
+
+test('solid sets a colour once; pulse loops with a transition', () => {
+  const solid = yaml.load(cfgLed({ style: 'solid' })).automation.find(a => a.id === 'peartune_led')
+  const play = solid.actions[0].choose[0].sequence
+  assert.equal(play.length, 1, 'solid is one call')
+  assert.equal(play[0].action, 'light.turn_on')
+  assert.ok(!JSON.stringify(play).includes('repeat'), 'solid does not loop')
+
+  const pulse = yaml.load(cfgLed({ style: 'pulse' })).automation.find(a => a.id === 'peartune_led')
+  const loop = pulse.actions[0].choose[0].sequence[0].repeat
+  assert.ok(loop, 'pulse is a repeat loop')
+  assert.equal(loop.while[0].state, 'playing', 'and it ends by itself when the music does')
+  assert.ok(JSON.stringify(loop.sequence).includes('"transition":2'), 'it fades rather than steps')
+})
+
+test('mode is restart, which is what cancels the pulse when the music stops', () => {
+  // Without it, pausing leaves the loop running and it keeps writing to the ring forever.
+  const a = yaml.load(cfgLed({ style: 'pulse' })).automation.find(a => a.id === 'peartune_led')
+  assert.equal(a.mode, 'restart')
+})
+
+test('there is NO paused branch, because the firmware blanks the ring there', () => {
+  // Written after the first version shipped one. HA accepted an amber "paused" colour and
+  // reported it set; the device stayed dark, because the firmware takes the ring back the
+  // moment playback stops. Tim saw the pulse work while playing and saw nothing at all on
+  // pause, which is what gives the rule.
+  //
+  // Commanding a colour that never renders is exactly how that version looked verified, so
+  // the branch is gone rather than left in as a hopeful no-op.
+  const a = yaml.load(cfgLed({ style: 'pulse' })).automation.find(a => a.id === 'peartune_led')
+  const branches = a.actions[0].choose
+  assert.equal(branches.length, 1, 'playing is the only state that is ours to drive')
+  assert.equal(branches[0].conditions[0].state, 'playing')
+  assert.ok(!JSON.stringify(a).includes('200, 120, 0'), 'no amber anywhere')
+  // Not playing: turn ours off and hand the ring back, rather than set some colour of ours.
+  assert.equal(a.actions[0].default[0].action, 'light.turn_off')
+})
+
+test('it re-asserts on a timer, because the assistant takes the ring back', () => {
+  // The assistant animates the ring whenever it listens or replies, below the light entity.
+  // A colour set once can simply vanish; without this trigger it stays vanished.
+  const a = yaml.load(cfgLed()).automation.find(a => a.id === 'peartune_led')
+  assert.ok(a.triggers.some(t => t.trigger === 'time_pattern'), 'no recovery trigger')
+  assert.ok(a.triggers.some(t => t.trigger === 'state' && t.entity_id === 'media_player.spk'))
+})
+
+test('a half-configured LED request is ignored rather than half-written', () => {
+  assert.ok(!haConfig({ led: { light: '', player: 'media_player.spk' } }).includes('peartune_led'))
+  assert.ok(!haConfig({ led: { light: 'light.ring', player: '' } }).includes('peartune_led'))
+})
