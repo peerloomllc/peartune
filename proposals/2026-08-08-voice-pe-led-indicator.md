@@ -24,8 +24,35 @@ supported_color_modes: ['rgb']      effect_list: None      resting state: off
    state: off                           -> restored exactly as found
 ```
 
-So: **an ordinary RGB light, settable and it holds.** No effects list, so pulsing or twinkling is
-not available through this entity - a solid colour, or nothing.
+So: **an ordinary RGB light, settable and it holds.**
+
+## Twinkling: half yes, half no, and the no is hard
+
+Tim asked for a twinkling effect. Checked properly rather than inferred from the `effect_list`
+being empty, which could have meant "only reported while on":
+
+```
+with the ring ON:  effect_list: None   effect: None
+supported_features: 40  =  TRANSITION (32) + FLASH (8),  and EFFECT (4) is NOT set
+```
+
+Two separate limits fall out of that, and only one of them is workable around:
+
+- **No built-in effects.** The firmware exposes none through HA, so there is no "twinkle" to ask
+  for by name. But **TRANSITION is supported**, which means a smooth **breathing pulse** can be
+  built from ordinary `light.turn_on` calls with a transition time, looped. That looks like the
+  thing people mean by "it's alive", and it is genuinely achievable.
+- **The ring is ONE light, not twelve.** A real twinkle - individual LEDs sparkling
+  independently - needs per-LED addressing, and HA sees a single RGB entity for the whole ring.
+  **That is not a limitation we can work around from Home Assistant at all.** It would need
+  custom ESPHome firmware flashed onto the device, which means giving up the official firmware
+  and its updates on a device Tim relies on for voice. Not worth it for an indicator light, and
+  not proposed here.
+
+**The cost of a pulse, stated up front:** it is a loop, so it sends a command to the device every
+couple of seconds for as long as music plays, and it competes with the assistant for the ring far
+more often than a static colour would. A solid colour costs two commands per track. That is a
+real trade and the reason the design below offers both, with solid as the default.
 
 ## The thing that makes this not-quite-trivial
 
@@ -53,10 +80,16 @@ An **optional** block in the generated `packages/peartune.yaml`, off unless the 
 on in the Speakers tab. Off by default because a music player quietly taking over a light in
 someone's house is not a reasonable default, however nice it looks.
 
-- **playing** - solid, low brightness. Green reads as "go" and is what the measurement used.
-- **paused** - solid, dimmer, a different hue. Amber.
+- **playing** - green. Two styles, because the trade above is real and it is not mine to make:
+  - `solid` (default) - one `light.turn_on` and done. Two commands per track.
+  - `pulse` (Tim asked for this) - a `repeat` loop alternating brightness with a ~2s
+    `transition`, so it breathes. Costs a command every couple of seconds while music plays,
+    and collides with the assistant far more often.
+- **paused** - solid amber, dimmer. Always solid: a pulsing "paused" is a contradiction, and it
+  is the state most likely to sit there for an hour.
 - **anything else** (idle, off, stopped) - `light.turn_off`, returning the ring to its resting
-  state rather than to some colour we picked.
+  state rather than to some colour we picked. The pulse loop must be cancellable here, or it
+  keeps writing to the ring after the music stops - which is the obvious way to get this wrong.
 
 It watches the **Voice PE's own** `media_player`, not whatever PearTune happens to be playing
 anywhere. A ring in the man cave glowing because the kitchen speaker is playing is a worse
