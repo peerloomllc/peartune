@@ -55,8 +55,24 @@ export const PACKAGE_PATH = 'packages/peartune.yaml'
 // (the Voice PE firmware is open source) but means self-managing updates on the box the
 // house's voice control depends on. Out of scope for an indicator light.
 //
-// What IS available is TRANSITION, so a pulse is a loop of turn_on calls that fade. It
-// breathes rather than sparkles, and it is honest about which of the two it is.
+// What IS available is TRANSITION, so a pulse is a loop of turn_on calls that fade.
+//
+// !!! DOES NOT ACTUALLY LIGHT THE RING - DO NOT SHIP (2026-08-08) !!!
+//
+// Everything below generates correct YAML and Home Assistant runs it happily: the entity
+// reports `on`, the right rgb_color, and the brightness oscillating between 110 and 20
+// exactly as designed. THE PHYSICAL RING STAYS DARK THE WHOLE TIME. Confirmed by asking
+// Tim to look at the device while it was commanded to full-brightness red (255,0,0 at
+// brightness 255): "Nothing, still dark", while HA reported `on 255 [255,0,0]`.
+//
+// So `light.<device>_led_ring` is reported by the firmware but not rendered by it, at
+// least in the assistant's idle state (mute was off, satellite idle - neither explains it).
+// The API readback is NOT evidence the LEDs lit, and I treated it as though it were. Every
+// "verified" claim in the first version of this was measuring the wrong thing.
+//
+// Until that is understood, this stays off and unshipped. The generator, the tests and the
+// UI are kept because they are correct as far as they go and because throwing them away
+// would lose the finding.
 //
 // STATE-DRIVEN, NOT EDGE-DRIVEN, and that is not a style preference. The assistant
 // interrupts the ring whenever it listens or replies, so an automation that fires only on
