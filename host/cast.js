@@ -25,6 +25,7 @@
 
 const crypto = require('crypto')
 const http = require('http')
+const os = require('os')
 
 const { decide } = require('./gate')
 const { SCOPE } = require('../protocol/constants')
@@ -41,6 +42,39 @@ const POLL_MS = 2000
 // The loopback port the audio and voice routes listen on. Fixed so the voice endpoint has a
 // stable address to put in a configuration file; overridable for the rare collision.
 const PREFERRED_PORT = Number(process.env.PEARTUNE_CAST_PORT || 8742)
+
+// WHY THIS CAN NO LONGER BE LOOPBACK-ONLY, measured on Tim's speakers 2026-08-08.
+//
+// There are two kinds of Home Assistant media_player and they need opposite things:
+//
+//   ESPHome (the Voice PE)  HA's ffmpeg proxy FETCHES the URL ITSELF and re-serves it to
+//                           the device. HA runs on this host, so 127.0.0.1 is reachable
+//                           to it and loopback is exactly right.
+//   Google Cast             HA hands the URL STRAIGHT TO THE CHROMECAST, which fetches it
+//                           itself. 127.0.0.1 then means the CHROMECAST, so it fails:
+//
+//     ERROR [cast.media_player] Failed to cast media http://127.0.0.1:8742/a/8BT19Zmo...
+//     Please make sure the URL is: Reachable from the cast device and either a publicly
+//     resolvable hostname or an IP address
+//
+// No amount of Home Assistant configuration fixes that; it is what "push a URL" means.
+// So a Cast speaker needs a URL on an address it can reach, which means this listener
+// answers the LAN. See proposals/2026-08-08-chromecast-from-the-host.md.
+//
+// WHAT PROTECTS IT, since the dashboard-password argument below no longer applies:
+//   - the path IS the capability - 32 random bytes, and there is no listing route;
+//   - every fetch RE-READS THE LIVE GRANT, so revoking cuts the next byte;
+//   - revoke also actively stops the speaker (stopFor), which is what silences the room;
+//   - tokens expire, and a play that fails to start deletes its token immediately.
+//
+// AND WHAT DOES NOT. Audio crosses the LAN in CLEARTEXT - a Chromecast speaks plain HTTP
+// to an IP and there is no version of this where it does not. Accepted deliberately (Tim,
+// 2026-08-08): anyone already on the wifi can hear the speaker anyway, it is the same
+// exposure as any ordinary streaming box. Everything LEAVING the house stays encrypted.
+// This is a LAN-only exception and the UI has to say so rather than let someone find it.
+//
+// Opt-out for anyone who wants the old behaviour: PEARTUNE_CAST_BIND=127.0.0.1.
+const BIND = process.env.PEARTUNE_CAST_BIND || '0.0.0.0'
 
 // The best title match, preferring the SHORTEST one that starts with what was asked.
 //
@@ -66,6 +100,29 @@ const VOICE_QUEUE_MAX = 50
 // Open question 1): a guest streaming to their own headphones is one thing, a
 // guest starting the kitchen speaker is another. Easy to relax, painful to tighten.
 const CAST_SCOPES = new Set([SCOPE.OWNER])
+
+// THE ADDRESS WE TELL THE SPEAKER TO FETCH FROM, which is a different question from what
+// we bind. Binding 0.0.0.0 makes us reachable; the URL still has to name an address the
+// SPEAKER can resolve, and "127.0.0.1" resolves for a Chromecast to the Chromecast.
+//
+// Picks the first non-internal IPv4 on this machine. IPv4 deliberately: a Chromecast will
+// accept a v6 literal in a URL only sometimes, and a v4 address on a home LAN is the case
+// that always works. `PEARTUNE_CAST_HOST` overrides it for anyone whose box has several
+// interfaces and cares which one - a NAS with a management NIC, say - or who wants a name
+// rather than an address.
+//
+// Falls back to 127.0.0.1 when there is no LAN address at all, which keeps a loopback-only
+// machine working exactly as it did instead of minting URLs pointing at nothing.
+function castHost () {
+  if (process.env.PEARTUNE_CAST_HOST) return process.env.PEARTUNE_CAST_HOST
+  if (BIND !== '0.0.0.0' && BIND !== '::') return BIND
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      if (a.family === 'IPv4' && !a.internal) return a.address
+    }
+  }
+  return '127.0.0.1'
+}
 
 function newToken () {
   return crypto.randomBytes(32).toString('base64url')
@@ -111,7 +168,7 @@ class CastSessions {
     const listen = (srv, port) => new Promise((resolve, reject) => {
       const onErr = (e) => { srv.removeListener('error', onErr); reject(e) }
       srv.once('error', onErr)
-      srv.listen(port, '127.0.0.1', () => { srv.removeListener('error', onErr); resolve() })
+      srv.listen(port, BIND, () => { srv.removeListener('error', onErr); resolve() })
     })
     try {
       await listen(this.server, PREFERRED_PORT)
@@ -125,7 +182,7 @@ class CastSessions {
       await listen(this.server, 0)
     }
     this.port = this.server.address().port
-    this.log('cast:listening', { port: this.port, bind: '127.0.0.1' })
+    this.log('cast:listening', { port: this.port, bind: BIND, advertise: castHost() })
     return this.port
   }
 
@@ -532,7 +589,9 @@ class CastSessions {
     }
     set.set(entityId, { token, trackId, startedAt: Date.now(), sawPlaying: false })
 
-    const url = `http://127.0.0.1:${this.port}/a/${token}`
+    // castHost(), not 127.0.0.1: a Cast speaker fetches this URL ITSELF, so loopback names
+    // the speaker rather than us. See the note on BIND above and the hardware error there.
+    const url = `http://${castHost()}:${this.port}/a/${token}`
     try {
       await this.speakers.play(entityId, url)
     } catch (e) {
@@ -688,4 +747,4 @@ class CastSessions {
   }
 }
 
-module.exports = { CastSessions, CAST_SCOPES, TOKEN_TTL_MS }
+module.exports = { CastSessions, CAST_SCOPES, TOKEN_TTL_MS, castHost, BIND }

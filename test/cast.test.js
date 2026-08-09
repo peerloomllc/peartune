@@ -91,19 +91,58 @@ test('the preferred port is used when free, and a busy one falls back cleanly', 
   // The preferred port was taken, so it fell back - and the fallback must actually WORK,
   // which is the half that broke: a server whose listen() failed cannot be relisted.
   assert.notEqual(port, PORT)
-  assert.equal(casts.server.address().address, '127.0.0.1')
+  // 0.0.0.0 now, not 127.0.0.1 - see the note on the LAN-bind test below. Loopback still
+  // reaches it, which is what the fetch checks, and is what keeps the ESPHome proxy path
+  // working unchanged.
+  assert.equal(casts.server.address().address, '0.0.0.0')
   assert.equal((await fetch(`http://127.0.0.1:${port}/a/nope`)).status, 404)
 
   process.env.PEARTUNE_CAST_PORT = '0'
   delete require.cache[require.resolve('../host/cast')]
 })
 
-test('the audio listener binds loopback only', async (t) => {
+// THIS TEST USED TO ASSERT LOOPBACK ONLY, and that invariant is deliberately gone.
+//
+// Measured on real speakers 2026-08-08: HA's two kinds of media_player want opposite
+// things. ESPHome's ffmpeg proxy FETCHES the URL itself, so loopback is perfect. A Google
+// Cast device is handed the URL and fetches it ITSELF, so 127.0.0.1 names the Chromecast
+// and it fails outright - "Failed to cast media http://127.0.0.1:8742/a/... Please make
+// sure the URL is: Reachable from the cast device". No configuration fixes that.
+//
+// What replaced the bind as the protection is unchanged and tested below: the path IS the
+// capability, every fetch re-reads the live grant, and revoke actively stops the speaker.
+// See proposals/2026-08-08-chromecast-from-the-host.md.
+test('the audio listener answers the LAN, so a Cast device can actually fetch', async (t) => {
   const { casts, port } = await build({ [DEVICE]: okGrant() })
   t.after(() => casts.close())
   const addr = casts.server.address()
-  assert.equal(addr.address, '127.0.0.1')
+  assert.equal(addr.address, '0.0.0.0')
   assert.ok(port > 0)
+})
+
+test('the URL handed to a speaker is NOT loopback', async (t) => {
+  // The bind and the advertised address are different questions, and getting the bind
+  // right while still minting a 127.0.0.1 URL would fail in exactly the same way.
+  const { casts, speakers } = await build({ [DEVICE]: okGrant() })
+  t.after(() => casts.close())
+  await casts.play({ deviceKey: DEVICE, trackId: 't1', entityId: 'media_player.x' })
+  const url = urlOf(speakers)
+  assert.ok(!url.includes('127.0.0.1'), `still loopback: ${url}`)
+  assert.match(url, /^http:\/\/[^/]+\/a\/[A-Za-z0-9_-]{20,}$/)
+})
+
+test('PEARTUNE_CAST_HOST overrides the guessed address', () => {
+  // For a box with several interfaces where the guess picks the wrong one - a NAS with a
+  // management NIC - or an operator who would rather use a name than an address.
+  const { castHost } = require('../host/cast')
+  const prev = process.env.PEARTUNE_CAST_HOST
+  try {
+    process.env.PEARTUNE_CAST_HOST = 'music.lan'
+    assert.equal(castHost(), 'music.lan')
+  } finally {
+    if (prev === undefined) delete process.env.PEARTUNE_CAST_HOST
+    else process.env.PEARTUNE_CAST_HOST = prev
+  }
 })
 
 test('a live owner grant can fetch its own cast audio', async (t) => {
