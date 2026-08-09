@@ -71,7 +71,24 @@ export function SpeakersPanel ({ toast }) {
   // Generated from what the host actually reports, so the port and token can never drift
   // from what is running. Lives in its own module because a test parses it - see
   // test/ha-config.test.js and the note at the top of ha-config.js.
-  const haYaml = haConfig({ port: castPort || 8742, token: voiceToken, speakerEntity: cfg?.voiceEntityId || '' })
+  // THE RING IS DERIVED, NOT CHOSEN FROM A LIST, because only one device has one. A Voice PE
+  // exposes `media_player.<device>_media_player` and `light.<device>_led_ring` as a pair, so
+  // the ring follows from the speaker already picked. Any other speaker yields no ring and
+  // the option is simply not offered, which is the honest answer rather than an empty menu.
+  const ledLight = (() => {
+    const m = /^media_player\.(.+)_media_player$/.exec(cfg?.voiceEntityId || '')
+    return m ? `light.${m[1]}_led_ring` : ''
+  })()
+  const ledStyle = cfg?.ledStyle || 'off'
+
+  const haYaml = haConfig({
+    port: castPort || 8742,
+    token: voiceToken,
+    speakerEntity: cfg?.voiceEntityId || '',
+    led: ledLight && ledStyle !== 'off'
+      ? { light: ledLight, player: cfg.voiceEntityId, style: ledStyle }
+      : null
+  })
 
   // A real file, so it can be uploaded straight into a file browser - the Umbrel route.
   const downloadYaml = () => {
@@ -235,6 +252,32 @@ export function SpeakersPanel ({ toast }) {
                       <option value=''>Pick a speaker…</option>
                       {speakers.map(s => <option key={s.entityId} value={s.entityId}>{s.name}</option>)}
                     </select>
+
+                    {/* THE LIGHT RING. Offered only when the chosen speaker actually has one -
+                        a Voice PE - rather than showing a dead menu on a Google speaker.
+                        Default OFF: a music player quietly taking over a light in someone's
+                        house is not a reasonable default however good it looks. */}
+                    {ledLight && (
+                      <>
+                        <label>Light ring while music is playing</label>
+                        <select
+                          value={ledStyle}
+                          onChange={e => set({ ledStyle: e.target.value })}
+                        >
+                          <option value='off'>Off - leave the ring alone</option>
+                          <option value='solid'>Solid green</option>
+                          <option value='pulse'>Slow pulse</option>
+                        </select>
+                        <p className='hint'>
+                          Green while playing, amber while paused, and the ring goes back to
+                          Home Assistant when nothing is on. The ring is one light rather than
+                          twelve separate ones, so it breathes rather than sparkles - the
+                          twinkle you see at setup is the speaker's own firmware, which it does
+                          not offer to Home Assistant. Re-write the file below after changing
+                          this.
+                        </p>
+                      </>
+                    )}
                     {voiceToken
                       ? <>
                         {/* THE WHOLE CONFIG, FILLED IN, WITH A COPY BUTTON. The first cut
