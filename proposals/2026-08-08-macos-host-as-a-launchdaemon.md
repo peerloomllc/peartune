@@ -1,0 +1,237 @@
+# The macOS host becomes a root LaunchDaemon
+
+## Goal
+A Mac running PearTune keeps serving music when nobody is logged in, closing the one platform
+gap left by `2026-07-31-desktop-host-as-a-service.md`, which shipped Linux and Windows and
+deliberately left macOS as a tray app.
+
+## Tier
+T2. It moves the data dir - and a data dir that moves without a migration destroys the library
+identity every paired phone knows it by - and it changes who the host runs as. No wire-protocol,
+pairing, grant or crypto change. Same tier, and for the same reason, as the Linux/Windows
+proposal it follows.
+
+It is worth saying plainly why this is not T3 even though "runs as root" appears in it: the
+privilege change is in the LAUNCHER, not in the security model. The firewall, the grant store
+and the revoke path are untouched, and the host's authority over who gets in is exactly what it
+was. What root buys is a domain that survives logout, and nothing else.
+
+## Background
+
+macOS was scoped out on 2026-07-31 with a measurement, not a shrug. A LaunchAgent in
+`~/Library/LaunchAgents` loads into `gui/501`, a domain `loginwindow` builds at login and tears
+down at logout, so `KeepAlive` cannot save it - proven with a heartbeat agent across one real
+logout/login (killed at 21:58:04, a DIFFERENT pid at 21:58:52). macOS also refuses to bootstrap
+an arbitrary job into `user/501` (error 5), so there is no middle ground. It is the GUI session
+or a root LaunchDaemon.
+
+Tim's call at the time was "macOS stays a tray app". This proposal revisits that, because the
+single biggest reason it was unattractive has since been disproven.
+
+## What was measured, not assumed
+
+**The hardened-runtime scar is gone, and that is what unblocks this.** The 2026-07-31 proposal
+listed "runs the LAN code with no user session - the exact area where PearTune already has a
+scar, since hardened runtime silently blocks HyperDHT's raw UDP" as a reason to stay away. That
+inherited claim was **disproven end to end on 2026-08-01**: hardened and unhardened hosts had
+identical socket profiles (18 UDP sockets, 10 established outbound peers), and the TCL paired
+successfully with a hardened, current-code PearTune.app against the real 209-track library.
+
+**The launch mechanism works on macOS, off the installed app, headless.** Measured on the
+mac-mini (macOS 26.2) on 2026-08-08, against the shipped `/Applications/PearTune.app`, which is
+signed with the hardened runtime already (`flags=0x10000(runtime)`, `TeamIdentifier=G79ALD29NA`):
+
+```
+ELECTRON_RUN_AS_NODE=1 PEARTUNE_DATA=... PEARTUNE_HTTP_PORT=8752 \
+  /Applications/PearTune.app/Contents/MacOS/PearTune \
+  /Applications/PearTune.app/Contents/Resources/app.asar/vendor/host/index.js
+
+[..] folder:scanned {"tracks":209,"albums":26,"artists":6}
+[..] host:announced {"topic":"b6i8ftod"}
+[..] host:listening {"hostKey":"qzz316anf4wpf8mhr8bzbn5epd4owuoosfipjti8fk716ampmeio"}
+```
+
+It scanned, it listened and **it announced on the DHT** - so the same
+`ELECTRON_RUN_AS_NODE` trick that made Linux and Windows cheap works here too. No second
+runtime, no bundling of sodium-native / rocksdb-native / hyperdht, no display. Run as the
+logged-in user with a scratch data dir on a spare port, so the live host was untouched
+(confirmed still answering 200 afterwards).
+
+**Still NOT measured, and each one can sink a slice.** These are the actual risks and none of
+them should be guessed at:
+
+1. **The system domain itself.** Everything above ran as `tim` in a GUI session. That the same
+   command works under `launchd`'s `system` domain as root, with nobody logged in, is the whole
+   premise and is untested. Needs an admin password on the mac-mini.
+2. **TCC and the music folder.** The library lives in `/Users/tim/Music`. `~/Music` is not in
+   the default TCC-protected set the way Desktop/Documents/Downloads are, but a root daemon
+   reading another user's home is exactly the shape macOS has been tightening for years. If it
+   needs Full Disk Access, that is a checkbox in System Settings that no installer can tick, and
+   it changes the setup story enough to be worth knowing before any code is written.
+3. **Whether a daemon can be signed and still load.** `launchd` in the system domain is fussier
+   than a user agent about ownership and permissions of the plist and the executable.
+
+## Design
+
+Mirror the Windows slice, which is the closer sibling: it already solved "the service runs as a
+system account, so the data dir must leave the user's profile", and it solved it with a verified
+migration rather than a copy-and-hope.
+
+- **The daemon.** `/Library/LaunchDaemons/com.peerloom.peartune.plist`, root-owned, mode 0644,
+  `RunAtLoad` + `KeepAlive`, running the `ELECTRON_RUN_AS_NODE` line measured above.
+- **THE DATA DIR DOES NOT MOVE.** This is a correction to the first draft of this proposal,
+  which said to "reuse the Windows migration wholesale". There is no Windows migration to
+  reuse. It was built, byte-verified, and **abandoned on hardware** (2026-08-01): hypercore-
+  storage stamps `store/CORESTORE` through the `device-file` package, which records the file's
+  **inode** and re-checks it on open, so a byte-perfect digest-verified copy still refuses to
+  open with `fatal: Invalid device file, was modified`, permanently. The guard is deliberate,
+  and it exists to catch exactly this.
+
+  The lesson recorded there is worth repeating because it is what my draft got wrong: verifying
+  a migration by comparing digests proves **the bytes arrived**; it does not prove **the store
+  opens**, and only the second claim matters.
+
+  So macOS does what Windows does: the daemon is pointed at
+  `~/Library/Application Support/peartune-desktop`, the directory the tray app already uses.
+  Nothing is copied, nothing is moved, and `device-file` never has cause to fire. Running as
+  root means access to that path is not in question.
+
+  This ties a machine-wide daemon to one user's profile - the same accepted trade Tim made for
+  Windows on 2026-08-01, for the same reason.
+
+- **RUN AS THE USER, NOT AS ROOT.** The draft said only to "watch file ownership", with the note
+  that "should" was doing a lot of work in that sentence. It was: the first cut ran as root and
+  within minutes had left root-owned `CURRENT`, `LOG` and `MANIFEST` inside the user's own store
+  (hardware, 2026-08-08). Nothing broke while the daemon was up, which is exactly why it would
+  have gone unnoticed - the damage only lands on ROLLBACK, when the tray app comes back as the
+  user and cannot write files it supposedly owns. A rollback that corrupts the thing it is
+  rolling back is worse than no rollback.
+
+  The fix is one plist key. `UserName` decides which credentials the job runs with; living in
+  the SYSTEM domain rather than `gui/501` is what makes it survive logout. Those are independent,
+  so we keep everything slice 1 measured and drop the ownership churn entirely. Install also
+  repairs any root-owned files a previous version left, so a machine that ran the root cut is put
+  right rather than left half-changed.
+- **The tray app becomes a CLIENT**, exactly as Linux slice 1 had to absorb slice 2. A daemon at
+  boot plus the existing login item would put two hosts on one data dir, which is the one
+  outcome worse than no daemon at all.
+- **The music folder stays where it is.** Do not move a user's music. If TCC blocks the read,
+  that is a documented Full Disk Access step, not a reason to relocate their library.
+
+## SLICE 1 RESULT, 2026-08-08: the premise holds, and all three risks cleared
+
+Run with `desktop/scripts/macos-daemon-probe.sh` on the mac-mini (macOS 26.2), then a real
+reboot with nobody logging in afterwards. Four minutes after that reboot:
+
+```
+$ uptime
+15:16  up 4 mins, 0 users, load averages: 1.35 0.91 0.43
+$ who
+                                    <- no console session at all
+$ ps -Ao user,pid,command | grep PearTune
+root  592  /Applications/PearTune.app/Contents/MacOS/PearTune .../vendor/host/index.js
+$ curl -o /dev/null -w '%{http_code}' http://127.0.0.1:8752/     -> 200
+
+probe.log, from this boot:
+[20:11:20] folder:scanned {"tracks":209,"albums":26,"artists":6}
+[20:11:22] host:announced {"topic":"upui34ok"}
+```
+
+- **Risk 1, the system domain: CLEARED.** It bootstrapped, and it came back by itself after a
+  reboot, running **as root** with **zero users logged in**.
+- **Risk 2, TCC and the music folder: CLEARED, no Full Disk Access needed.** The daemon read
+  `/Users/tim/Music` and scanned all 209 tracks. Tim's "yes if documented" answer turns out not
+  to be needed.
+- **Risk 3, signing and load: CLEARED.** The shipped hardened-runtime binary loaded in the
+  system domain unmodified.
+
+**And the same boot demonstrated the bug, side by side.** With nobody logged in, the REAL tray
+host on 8741 answered `000` - not running, because a login item needs a login - while the probe
+daemon on 8752 answered 200 and was announcing on the DHT. That is the entire case for this
+proposal, observed on one machine at one moment, rather than argued.
+
+**ONE LIMIT FOUND, and it is not a blocker.** The mac-mini has **FileVault on**, so the reboot
+stopped at the pre-boot unlock screen and nothing ran at all until Tim unlocked it (over ssh, as
+it happens). So on a FileVault Mac the honest claim is "survives logout, and survives reboot
+once the disk is unlocked" - **not** "comes back unattended after a power cut". This is not
+macOS-specific and not a reason to stop: it is exactly the same on any Linux box with an
+encrypted root, and the Linux slice already shipped under that same limit without noticing.
+**It must be documented rather than glossed**, because "always-on" is precisely the kind of
+overclaim `desktop/README.md` was corrected for in #306, and repeating it here in a new place
+would be the same mistake with a fresh coat of paint.
+
+## Slices
+
+1. **Prove the premise. DONE 2026-08-08 - see the result above.** No product code, as intended.
+2. **The daemon + the tray-as-client change**, together, for the two-hosts-on-one-data-dir
+   reason above. **BUILT, and verified on the mac-mini 2026-08-08:**
+
+   ```
+   $ launchctl print system/com.peerloom.peartune   ->  state = running, pid 2117
+   $ ps -Ao user,pid,command | grep PearTune
+   tim  2117  /Applications/PearTune.app/Contents/MacOS/PearTune .../vendor/host/index.js
+   $ curl -o /dev/null -w '%{http_code}' http://127.0.0.1:8741/            -> 200
+   $ find "~/Library/Application Support/peartune-desktop/data" ! -user tim   -> (nothing)
+
+   host key   ydxww4kk4qirg4f7xzpgdwzzfk87bhoxwf4yoosrcw5rxjn6rppo
+   source     folder @ /Users/tim/Music  (209 tracks)
+   host.seed sha256 56dfd609a1f2f4f5   <- unchanged since 2026-08-01, before any of this
+   ```
+
+   Running **as tim**, serving the **real** library with its **original identity**, announcing
+   on the DHT, and **no root-owned files left anywhere** - the repair cleaned up all five the
+   root cut had created.
+
+   The tray-as-client half needed no work: `adoptOrStart` keys off whether the port is already
+   served, not off the platform, so macOS inherited it. Confirmed by reading it.
+
+   **Two defects found by running it, both invisible to the tests:** the root-ownership one
+   above, and `launchctl bootout` returning BEFORE the job is actually gone - so bootstrapping
+   the replacement failed with the famously unhelpful `Bootstrap failed: 5: Input/output error`.
+   Install now waits for the label to genuinely disappear instead of trusting bootout's exit
+   code.
+
+   **REBOOT SURVIVAL WITH `UserName` SET: PROVEN, 2026-08-08.** Slice 1 proved it for a ROOT
+   daemon, and swapping to a user is not automatically the same claim, so it got its own reboot
+   rather than an assumption. After a real reboot with nobody logging in:
+
+   ```
+   20:01  up 44 mins, 0 users        who | grep -c console  ->  0
+   tim  1001  /Applications/PearTune.app/Contents/MacOS/PearTune .../vendor/host/index.js
+   8741 -> 200
+   host:listening {"hostKey":"ydxww4kk4qirg4f7xzpgdwzzfk87bhoxwf4yoosrcw5rxjn6rppo"}
+   host:announced {"topic":"y5uxur99"}          host.seed sha256 56dfd609a1f2f4f5 (unchanged)
+   find ... ! -user tim   ->  (nothing)
+   ```
+
+   Zero console sessions, running as `tim`, serving the original library, announcing, and still
+   no root-owned files. **Every claim this proposal makes is now measured on hardware.**
+3. ~~**The data-dir migration**, ported from Windows.~~ **CUT.** There is no migration, on
+   either platform, and there should not be - see the design note above. What remains of this
+   slice is the ownership check, which folds into slice 2's hardware verification.
+4. **Docs**, and an amendment to the 2026-07-31 proposal recording that macOS came back into
+   scope and why. Must include the FileVault limit for **all three** platforms, not just macOS -
+   the Linux slice shipped with the same limit and did not say so.
+
+## Rollback
+
+`launchctl bootout system/com.peerloom.peartune` plus deleting the plist, and the tray app works
+exactly as it does today. Rollback is genuinely cheap here **because nothing moves**: the daemon
+and the tray app read the same directory, so removing the daemon leaves the library exactly
+where the tray app has always expected to find it. The only thing to check on the way back is
+file ownership, per the design note above.
+
+## Open questions for Tim - ANSWERED 2026-08-08, before any measurement
+
+Both were put to Tim before slice 1 ran, deliberately, so neither answer could be shaped by
+having already done the work.
+
+1. **Is an admin password prompt at install acceptable on macOS?** **YES.** Windows already went
+   this way (`perMachine`, elevated) on 2026-08-01, so the two platforms end up consistent.
+2. **If TCC blocks the read, is "open System Settings and grant Full Disk Access" an acceptable
+   setup step?** **YES, provided it is documented clearly** - and only if the measurement shows
+   macOS actually blocks it, which it may not.
+
+So slice 1 is unblocked on both counts, and neither possible outcome kills the proposal. What
+slice 1 can still kill it on is the premise itself: a daemon that will not load or will not
+survive a reboot.
