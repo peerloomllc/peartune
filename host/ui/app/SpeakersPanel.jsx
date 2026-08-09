@@ -269,12 +269,12 @@ export function SpeakersPanel ({ toast }) {
                           <option value='pulse'>Slow pulse</option>
                         </select>
                         <p className='hint'>
-                          Green while playing, amber while paused, and the ring goes back to
-                          Home Assistant when nothing is on. The ring is one light rather than
-                          twelve separate ones, so it breathes rather than sparkles - the
-                          twinkle you see at setup is the speaker's own firmware, which it does
-                          not offer to Home Assistant. Re-write the file below after changing
-                          this.
+                          Lights up while music is playing, and goes dark when it stops - the
+                          speaker takes its ring back the moment playback ends, so there is no
+                          paused colour to offer. It breathes rather than sparkles: the ring is
+                          one light rather than twelve separate ones, and the twinkle you see
+                          at setup is the speaker's own firmware, which it does not offer to
+                          Home Assistant at all. Re-write the file below after changing this.
                         </p>
                       </>
                     )}

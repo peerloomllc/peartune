@@ -197,13 +197,20 @@ test('mode is restart, which is what cancels the pulse when the music stops', ()
   assert.equal(a.mode, 'restart')
 })
 
-test('paused is SOLID even in pulse mode, and idle hands the ring back', () => {
+test('there is NO paused branch, because the firmware blanks the ring there', () => {
+  // Written after the first version shipped one. HA accepted an amber "paused" colour and
+  // reported it set; the device stayed dark, because the firmware takes the ring back the
+  // moment playback stops. Tim saw the pulse work while playing and saw nothing at all on
+  // pause, which is what gives the rule.
+  //
+  // Commanding a colour that never renders is exactly how that version looked verified, so
+  // the branch is gone rather than left in as a hopeful no-op.
   const a = yaml.load(cfgLed({ style: 'pulse' })).automation.find(a => a.id === 'peartune_led')
-  const paused = a.actions[0].choose[1]
-  assert.equal(paused.conditions[0].state, 'paused')
-  assert.ok(!JSON.stringify(paused.sequence).includes('repeat'), 'a pulsing "paused" is a contradiction')
-  // The default branch must turn the light OFF, not set some colour of ours - the ring
-  // belongs to the assistant when we are not using it.
+  const branches = a.actions[0].choose
+  assert.equal(branches.length, 1, 'playing is the only state that is ours to drive')
+  assert.equal(branches[0].conditions[0].state, 'playing')
+  assert.ok(!JSON.stringify(a).includes('200, 120, 0'), 'no amber anywhere')
+  // Not playing: turn ours off and hand the ring back, rather than set some colour of ours.
   assert.equal(a.actions[0].default[0].action, 'light.turn_off')
 })
 

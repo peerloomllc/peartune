@@ -57,28 +57,27 @@ export const PACKAGE_PATH = 'packages/peartune.yaml'
 //
 // What IS available is TRANSITION, so a pulse is a loop of turn_on calls that fade.
 //
-// !!! DOES NOT ACTUALLY LIGHT THE RING - DO NOT SHIP (2026-08-08) !!!
+// THE FIRMWARE ONLY LETS GO OF THE RING WHILE MEDIA IS PLAYING, and that is the whole
+// shape of this feature. Found the hard way on 2026-08-08: I first reported all three
+// states "verified" on the strength of API READBACK - HA said on/[0,180,60]/brightness
+// oscillating, exactly as commanded. Tim was looking at the actual device. Commanded to
+// full-brightness red with nothing playing, HA reported `on 255 [255,0,0]` and the ring
+// was DARK. The readback was never the claim; "a light comes on" was, and only a person
+// looking could settle it.
 //
-// Everything below generates correct YAML and Home Assistant runs it happily: the entity
-// reports `on`, the right rgb_color, and the brightness oscillating between 110 and 20
-// exactly as designed. THE PHYSICAL RING STAYS DARK THE WHOLE TIME. Confirmed by asking
-// Tim to look at the device while it was commanded to full-brightness red (255,0,0 at
-// brightness 255): "Nothing, still dark", while HA reported `on 255 [255,0,0]`.
+// But he also saw the PULSE work while music played. Both observations together give the
+// rule: the ring renders Home Assistant's light DURING PLAYBACK and the firmware blanks it
+// otherwise. So:
 //
-// So `light.<device>_led_ring` is reported by the firmware but not rendered by it, at
-// least in the assistant's idle state (mute was off, satellite idle - neither explains it).
-// The API readback is NOT evidence the LEDs lit, and I treated it as though it were. Every
-// "verified" claim in the first version of this was measuring the wrong thing.
+//   playing   ours. Pulse or solid, and it genuinely lights.
+//   paused    NOT ours. An amber "paused" colour was written and never appeared, because
+//             the firmware has already taken the ring back. Do not pretend otherwise -
+//             sending a colour nothing renders is how the first version looked verified.
+//   idle/off  not ours either, and nothing to do.
 //
-// Until that is understood, this stays off and unshipped. The generator, the tests and the
-// UI are kept because they are correct as far as they go and because throwing them away
-// would lose the finding.
-//
-// STATE-DRIVEN, NOT EDGE-DRIVEN, and that is not a style preference. The assistant
-// interrupts the ring whenever it listens or replies, so an automation that fires only on
-// the play/pause TRANSITION loses the ring for the rest of the track. Triggering on every
-// state report means the next one puts it back.
-//
+// So there is no paused branch. The ring goes dark when the music stops, which is the
+// firmware's behaviour rather than ours, and the UI says so plainly.
+
 // IT IS A LIST ITEM, NOT A SECOND `automation:` KEY. Appending another top-level
 // `automation:` to this file would be a DUPLICATE YAML KEY - the second one silently wins
 // and the voice sentences vanish. That is the same shape as the bug this module was split
@@ -153,22 +152,10 @@ function ledConfig ({ light, player, style }) {
                 entity_id: ${player}
                 state: "playing"
             sequence:${playing}
-          - conditions:
-              - condition: state
-                entity_id: ${player}
-                state: "paused"
-            sequence:
-              # Paused is always SOLID, whatever the style. A pulsing "paused" is a
-              # contradiction, and it is the state most likely to sit for an hour.
-              - action: light.turn_on
-                target:
-                  entity_id: ${light}
-                data:
-                  rgb_color: [200, 120, 0]
-                  brightness: 35
         default:
-          # idle, off, stopped, unavailable - hand the ring back to the firmware rather
-          # than leaving it on a colour we chose.
+          # NOT PLAYING. Turn ours off and hand the ring back. The firmware has almost
+          # certainly blanked it already - a colour commanded here never appears on the
+          # device - so this is tidiness rather than something the eye will notice.
           - action: light.turn_off
             target:
               entity_id: ${light}
