@@ -127,6 +127,11 @@ not.
    DLNA renderer, and his Google speakers fail with a specific, reproducible error that slice 1
    fixes. Chromecast-through-Home-Assistant first.
 2. ~~**May a GUEST cast?**~~ **ANSWERED 2026-08-08: owners only.**
-3. **STILL OPEN: is audio in the clear on your own LAN acceptable, given it arrived encrypted?**
-   There is no version of this where it is not - a Chromecast speaks plain HTTP to an IP. This is
-   the one that genuinely decides whether slice 1 ships.
+3. ~~**Is audio in the clear on your own LAN acceptable, given it arrived encrypted?**~~
+   **ANSWERED 2026-08-08: yes, on your own network.** Tim's reasoning, worth recording because it
+   is the reasoning and not just the verdict: anyone already on the wifi could hear the speaker
+   anyway, it is the same exposure as any ordinary streaming box, and it is the only way these
+   devices work at all. **Everything leaving the house stays encrypted** - this is a LAN-only
+   exception, and it must be described that way in the UI rather than left for someone to find.
+
+All three questions are now closed. Slice 1 is unblocked.
