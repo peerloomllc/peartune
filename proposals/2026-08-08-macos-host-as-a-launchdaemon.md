@@ -191,10 +191,21 @@ would be the same mistake with a fresh coat of paint.
    Install now waits for the label to genuinely disappear instead of trusting bootout's exit
    code.
 
-   **STILL TO PROVE: reboot survival with `UserName` set.** Slice 1 proved a root daemon comes
-   back after a reboot with nobody logged in. That is not automatically the same claim now that
-   the job runs as a user, and it is the whole point of the feature, so it gets its own check
-   rather than an assumption.
+   **REBOOT SURVIVAL WITH `UserName` SET: PROVEN, 2026-08-08.** Slice 1 proved it for a ROOT
+   daemon, and swapping to a user is not automatically the same claim, so it got its own reboot
+   rather than an assumption. After a real reboot with nobody logging in:
+
+   ```
+   20:01  up 44 mins, 0 users        who | grep -c console  ->  0
+   tim  1001  /Applications/PearTune.app/Contents/MacOS/PearTune .../vendor/host/index.js
+   8741 -> 200
+   host:listening {"hostKey":"ydxww4kk4qirg4f7xzpgdwzzfk87bhoxwf4yoosrcw5rxjn6rppo"}
+   host:announced {"topic":"y5uxur99"}          host.seed sha256 56dfd609a1f2f4f5 (unchanged)
+   find ... ! -user tim   ->  (nothing)
+   ```
+
+   Zero console sessions, running as `tim`, serving the original library, announcing, and still
+   no root-owned files. **Every claim this proposal makes is now measured on hardware.**
 3. ~~**The data-dir migration**, ported from Windows.~~ **CUT.** There is no migration, on
    either platform, and there should not be - see the design note above. What remains of this
    slice is the ownership check, which folds into slice 2's hardware verification.
