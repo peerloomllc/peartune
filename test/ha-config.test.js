@@ -156,7 +156,12 @@ test('the port and token are substituted, never left as placeholders', () => {
 // the existing `automation:` list, not add a second top-level `automation:` key. A duplicate
 // key does not error - the later one silently wins, and the voice sentences vanish.
 
-const LED = { light: 'light.ring', player: 'media_player.spk', style: 'solid' }
+const LED = {
+  light: 'light.ring',
+  player: 'media_player.spk',
+  style: 'solid',
+  satellite: 'assist_satellite.spk'
+}
 const cfgLed = (over = {}) =>
   haConfig({ port: 8742, token: 'test-token', led: { ...LED, ...over } })
 
@@ -178,14 +183,16 @@ test('the LED automation JOINS the automation list - no duplicate top-level key'
 })
 
 test('solid sets a colour once; pulse loops with a transition', () => {
+  // choose[0] is the stand-down branch; the music branch is the one keyed on "playing".
+  const musicBranch = a => a.actions[0].choose.find(b => b.conditions.some(c => c.state === 'playing'))
   const solid = yaml.load(cfgLed({ style: 'solid' })).automation.find(a => a.id === 'peartune_led')
-  const play = solid.actions[0].choose[0].sequence
+  const play = musicBranch(solid).sequence
   assert.equal(play.length, 1, 'solid is one call')
   assert.equal(play[0].action, 'light.turn_on')
   assert.ok(!JSON.stringify(play).includes('repeat'), 'solid does not loop')
 
   const pulse = yaml.load(cfgLed({ style: 'pulse' })).automation.find(a => a.id === 'peartune_led')
-  const loop = pulse.actions[0].choose[0].sequence[0].repeat
+  const loop = musicBranch(pulse).sequence[0].repeat
   assert.ok(loop, 'pulse is a repeat loop')
   assert.equal(loop.while[0].state, 'playing', 'and it ends by itself when the music does')
   assert.ok(JSON.stringify(loop.sequence).includes('"transition":2'), 'it fades rather than steps')
@@ -206,12 +213,77 @@ test('there is NO paused branch, because the firmware blanks the ring there', ()
   // Commanding a colour that never renders is exactly how that version looked verified, so
   // the branch is gone rather than left in as a hopeful no-op.
   const a = yaml.load(cfgLed({ style: 'pulse' })).automation.find(a => a.id === 'peartune_led')
-  const branches = a.actions[0].choose
-  assert.equal(branches.length, 1, 'playing is the only state that is ours to drive')
-  assert.equal(branches[0].conditions[0].state, 'playing')
+  const music = a.actions[0].choose.find(b => b.conditions.some(c => c.state === 'playing'))
+  assert.ok(music, 'playing is the one state that is ours to drive')
   assert.ok(!JSON.stringify(a).includes('200, 120, 0'), 'no amber anywhere')
-  // Not playing: turn ours off and hand the ring back, rather than set some colour of ours.
-  assert.equal(a.actions[0].default[0].action, 'light.turn_off')
+  // Not playing: hand the ring back rather than keep driving it.
+  assert.equal(a.actions[0].default.at(-1).action, 'light.turn_off')
+  assert.ok(!JSON.stringify(a.actions[0].default).includes('0, 180, 60'), 'no green left behind')
+})
+
+test('stopping restores the ring to the speaker\'s own resting blue', () => {
+  // The bug Tim caught on 2026-08-10: after this feature shipped, the ring woke GREEN on the
+  // wake word instead of blue. `light.led_ring` is not just a light on the Voice PE, it is
+  // the palette the FIRMWARE paints its own voice states with -
+  //   auto light_color = id(led_ring).current_values;   (home-assistant-voice.yaml)
+  // so our playing colour was recolouring listening and thinking too, and it stuck on the
+  // device after light.turn_off.
+  const a = yaml.load(cfgLed({ style: 'pulse' })).automation.find(a => a.id === 'peartune_led')
+  const restore = a.actions[0].default.find(s => s.if)
+  assert.ok(restore, 'nothing puts the colour back when the music stops')
+  const call = restore.then[0]
+  assert.equal(call.action, 'light.turn_on')
+  // The firmware's factory initial_state: 9.4% / 73.3% / 94.9% at 66% brightness.
+  assert.deepEqual(call.data.rgb_color, [24, 187, 242])
+  assert.equal(call.data.brightness, 168)
+  // And it must be off again afterwards, not left showing our restore.
+  assert.equal(a.actions[0].default.at(-1).action, 'light.turn_off')
+})
+
+test('the colour is only restored when WE are the one holding the ring', () => {
+  // The gate is the light being on, which in the not-playing branch means our own pulse left
+  // it on. Without it the minute tick would overwrite a colour the owner set with the
+  // speaker's dial, every 60 seconds, forever.
+  const a = yaml.load(cfgLed()).automation.find(a => a.id === 'peartune_led')
+  const restore = a.actions[0].default.find(s => s.if)
+  assert.equal(restore.if[0].entity_id, 'light.ring')
+  assert.equal(restore.if[0].state, 'on')
+})
+
+// --- the speaker's own voice is not music (2026-08-10) -----------------------
+//
+// Tim saw a second of erratic flicker at the wake word. The Voice PE speaks its replies
+// through the SAME media_player this automation watches, so every "Okay Nabu" showed up as a
+// second of `playing` and we lit the ring underneath the assistant's own animation.
+
+test('a one-second announcement is not mistaken for music', () => {
+  const a = yaml.load(cfgLed()).automation.find(a => a.id === 'peartune_led')
+  const start = a.triggers.find(t => t.to === 'playing')
+  assert.equal(start.for, '00:00:05', 'playing has to LAST before we take the ring')
+  const music = a.actions[0].choose.find(b => b.conditions.some(c => c.state === 'playing'))
+  assert.equal(music.conditions[0].for, '00:00:05', 'or the minute tick grabs it mid-reply')
+})
+
+test('it stands off the ring entirely while the assistant is using it', () => {
+  const a = yaml.load(cfgLed({ style: 'pulse' })).automation.find(a => a.id === 'peartune_led')
+  // First branch wins in a choose, so standing down has to come before the music branch.
+  const busy = a.actions[0].choose[0]
+  assert.match(String(busy.conditions[0].value_template), /assist_satellite\.spk/)
+  assert.ok(busy.sequence[0].stop, 'it must do NOTHING, not write some colour of its own')
+  // And it has to hear the assistant let go, or the ring stays dark for up to a minute.
+  assert.ok(a.triggers.some(t => t.entity_id === 'assist_satellite.spk'), 'no trigger to come back on')
+  // The pulse stops writing too, rather than painting over the animation every two seconds.
+  const loop = a.actions[0].choose[1].sequence[0].repeat
+  assert.match(JSON.stringify(loop.while), /assist_satellite\.spk/)
+})
+
+test('a speaker with no Assist satellite still works, and never stands down', () => {
+  // states() on an unknown entity is 'unknown', not an error - but rather than lean on that,
+  // a config without a satellite omits the trigger and hard-codes the branch to false.
+  const a = yaml.load(cfgLed({ satellite: '' })).automation.find(a => a.id === 'peartune_led')
+  assert.ok(!JSON.stringify(a).includes('assist_satellite'), 'no dangling entity id')
+  assert.match(String(a.actions[0].choose[0].conditions[0].value_template), /false/)
+  assert.equal(a.triggers.filter(t => t.id === 'assistant').length, 0, 'nothing to trigger on')
 })
 
 test('it re-asserts on a timer, because the assistant takes the ring back', () => {

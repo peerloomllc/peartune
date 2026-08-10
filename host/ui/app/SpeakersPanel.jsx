@@ -75,10 +75,17 @@ export function SpeakersPanel ({ toast }) {
   // exposes `media_player.<device>_media_player` and `light.<device>_led_ring` as a pair, so
   // the ring follows from the speaker already picked. Any other speaker yields no ring and
   // the option is simply not offered, which is the honest answer rather than an empty menu.
-  const ledLight = (() => {
+  const ledSlug = (() => {
     const m = /^media_player\.(.+)_media_player$/.exec(cfg?.voiceEntityId || '')
-    return m ? `light.${m[1]}_led_ring` : ''
+    return m ? m[1] : ''
   })()
+  const ledLight = ledSlug ? `light.${ledSlug}_led_ring` : ''
+  // The same device's Assist satellite, which reports idle / listening / processing /
+  // responding. The automation stands off the ring while that is not idle, so we never draw
+  // underneath the assistant's own animation. Derived the same way as the ring, and the
+  // generated template treats a missing entity as idle, so a device that names this
+  // differently keeps working exactly as it did before.
+  const ledSatellite = ledSlug ? `assist_satellite.${ledSlug}_assist_satellite` : ''
   const ledStyle = cfg?.ledStyle || 'off'
 
   const haYaml = haConfig({
@@ -86,7 +93,7 @@ export function SpeakersPanel ({ toast }) {
     token: voiceToken,
     speakerEntity: cfg?.voiceEntityId || '',
     led: ledLight && ledStyle !== 'off'
-      ? { light: ledLight, player: cfg.voiceEntityId, style: ledStyle }
+      ? { light: ledLight, player: cfg.voiceEntityId, style: ledStyle, satellite: ledSatellite }
       : null
   })
 
@@ -274,7 +281,10 @@ export function SpeakersPanel ({ toast }) {
                           paused colour to offer. It breathes rather than sparkles: the ring is
                           one light rather than twelve separate ones, and the twinkle you see
                           at setup is the speaker's own firmware, which it does not offer to
-                          Home Assistant at all. Re-write the file below after changing this.
+                          Home Assistant at all. When the music stops, the ring's colour is
+                          set back to the speaker's own blue, because that is the colour it
+                          uses for its own lights when it hears the wake word.
+                          Re-write the file below after changing this.
                         </p>
                       </>
                     )}
