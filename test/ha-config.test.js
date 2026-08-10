@@ -210,8 +210,40 @@ test('there is NO paused branch, because the firmware blanks the ring there', ()
   assert.equal(branches.length, 1, 'playing is the only state that is ours to drive')
   assert.equal(branches[0].conditions[0].state, 'playing')
   assert.ok(!JSON.stringify(a).includes('200, 120, 0'), 'no amber anywhere')
-  // Not playing: turn ours off and hand the ring back, rather than set some colour of ours.
-  assert.equal(a.actions[0].default[0].action, 'light.turn_off')
+  // Not playing: hand the ring back rather than keep driving it.
+  assert.equal(a.actions[0].default.at(-1).action, 'light.turn_off')
+  assert.ok(!JSON.stringify(a.actions[0].default).includes('0, 180, 60'), 'no green left behind')
+})
+
+test('stopping restores the ring to the speaker\'s own resting blue', () => {
+  // The bug Tim caught on 2026-08-10: after this feature shipped, the ring woke GREEN on the
+  // wake word instead of blue. `light.led_ring` is not just a light on the Voice PE, it is
+  // the palette the FIRMWARE paints its own voice states with -
+  //   auto light_color = id(led_ring).current_values;   (home-assistant-voice.yaml)
+  // so our playing colour was recolouring listening and thinking too, and it stuck on the
+  // device after light.turn_off.
+  const a = yaml.load(cfgLed({ style: 'pulse' })).automation.find(a => a.id === 'peartune_led')
+  const restore = a.actions[0].default.find(s => s.if)
+  assert.ok(restore, 'nothing puts the colour back when the music stops')
+  const call = restore.then[0]
+  assert.equal(call.action, 'light.turn_on')
+  // The firmware's factory initial_state: 9.4% / 73.3% / 94.9% at 66% brightness.
+  assert.deepEqual(call.data.rgb_color, [24, 187, 242])
+  assert.equal(call.data.brightness, 168)
+  // And it must be off again afterwards, not left showing our restore.
+  assert.equal(a.actions[0].default.at(-1).action, 'light.turn_off')
+})
+
+test('the resting colour is restored on the stop only, never on the minute tick', () => {
+  // Otherwise the ring's own dial - which writes the hue straight back into led_ring - would
+  // be overwritten within 60 seconds of the owner using it.
+  const a = yaml.load(cfgLed()).automation.find(a => a.id === 'peartune_led')
+  const ids = a.triggers.map(t => t.id)
+  assert.ok(ids.includes('playback') && ids.includes('tick'), 'both triggers need ids to tell apart')
+  const restore = a.actions[0].default.find(s => s.if)
+  const when = String(restore.if[0].value_template)
+  assert.match(when, /trigger\.id/, 'the restore has to know which trigger fired')
+  assert.match(when, /playback/)
 })
 
 test('it re-asserts on a timer, because the assistant takes the ring back', () => {

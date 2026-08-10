@@ -274,7 +274,10 @@ export function SpeakersPanel ({ toast }) {
                           paused colour to offer. It breathes rather than sparkles: the ring is
                           one light rather than twelve separate ones, and the twinkle you see
                           at setup is the speaker's own firmware, which it does not offer to
-                          Home Assistant at all. Re-write the file below after changing this.
+                          Home Assistant at all. When the music stops, the ring's colour is
+                          set back to the speaker's own blue, because that is the colour it
+                          uses for its own lights when it hears the wake word.
+                          Re-write the file below after changing this.
                         </p>
                       </>
                     )}

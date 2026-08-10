@@ -77,6 +77,35 @@ export const PACKAGE_PATH = 'packages/peartune.yaml'
 //
 // So there is no paused branch. The ring goes dark when the music stops, which is the
 // firmware's behaviour rather than ours, and the UI says so plainly.
+//
+// SETTING THE COLOUR IS NOT A LOCAL ACT. Tim noticed (2026-08-10) that after this shipped,
+// the ring turned GREEN when the assistant woke on the wake word, where it had always been
+// the stock blue. That is us, and it is by design in the firmware rather than a bug in it.
+// From esphome/home-assistant-voice-pe's home-assistant-voice.yaml: every voice-state
+// animation reads its colour off the user light,
+//
+//   auto light_color = id(led_ring).current_values;                        // each effect
+//   brightness: !lambda return max(id(led_ring).current_values.get_brightness(), 0.2f);
+//
+// so `light.led_ring` is not just "a light we can turn on" - it is the PALETTE the whole
+// device paints its own states with, wake word included. Writing green to it recolours
+// listening, thinking and replying too, and the ring holds that colour on the device after
+// light.turn_off (HA reports rgb_color null while it is off, which is why nothing in the
+// dashboard showed the change).
+//
+// So the automation has to PUT THE PALETTE BACK when the music stops. The firmware's own
+// factory setting is the target: initial_state red 9.4% green 73.3% blue 94.9% at 66%
+// brightness, i.e. rgb(24, 187, 242) at 168/255.
+//
+// RESTORED ON THE STOP TRANSITION ONLY, NEVER ON THE MINUTE TICK. The tick exists to
+// re-assert our colour during playback; if it also re-asserted the resting colour it would
+// wipe out a colour the owner had chosen themselves - the device's dial sets the ring hue
+// (the firmware writes it straight back into led_ring), so a stomp every 60 seconds would
+// make that dial useless. Restoring only when playback ends touches the palette exactly as
+// often as we dirtied it.
+const PLAYING_RGB = '[0, 180, 60]'
+const RESTING_RGB = '[24, 187, 242]'
+const RESTING_BRIGHTNESS = 168
 
 // IT IS A LIST ITEM, NOT A SECOND `automation:` KEY. Appending another top-level
 // `automation:` to this file would be a DUPLICATE YAML KEY - the second one silently wins
@@ -102,7 +131,7 @@ function ledConfig ({ light, player, style }) {
                       target:
                         entity_id: ${light}
                       data:
-                        rgb_color: [0, 180, 60]
+                        rgb_color: ${PLAYING_RGB}
                         brightness: 110
                         transition: 2
                     - delay: "00:00:02"
@@ -110,7 +139,7 @@ function ledConfig ({ light, player, style }) {
                       target:
                         entity_id: ${light}
                       data:
-                        rgb_color: [0, 180, 60]
+                        rgb_color: ${PLAYING_RGB}
                         brightness: 20
                         transition: 2
                     - delay: "00:00:02"`
@@ -119,7 +148,7 @@ function ledConfig ({ light, player, style }) {
                 target:
                   entity_id: ${light}
                 data:
-                  rgb_color: [0, 180, 60]
+                  rgb_color: ${PLAYING_RGB}
                   brightness: 60`
 
   return `
@@ -143,8 +172,10 @@ function ledConfig ({ light, player, style }) {
       - trigger: state
         entity_id: ${player}
         to: ["playing", "paused", "idle", "off", "standby"]
+        id: playback
       - trigger: time_pattern
         minutes: "/1"
+        id: tick
     actions:
       - choose:
           - conditions:
@@ -153,9 +184,28 @@ function ledConfig ({ light, player, style }) {
                 state: "playing"
             sequence:${playing}
         default:
-          # NOT PLAYING. Turn ours off and hand the ring back. The firmware has almost
-          # certainly blanked it already - a colour commanded here never appears on the
-          # device - so this is tidiness rather than something the eye will notice.
+          # NOT PLAYING. Put the ring's colour back to the speaker's own resting blue
+          # before handing it over, because that colour is what the device paints its
+          # wake-word and listening animations with. Leave green here and the assistant
+          # answers in green for good.
+          #
+          # Only on the playback trigger. The minute tick must not touch it, or the
+          # ring's own dial (which sets this same colour) would be overwritten within
+          # the minute.
+          #
+          # It goes on and straight off again: the write is invisible on the device -
+          # the firmware is already blanking the ring here - but it lands in the colour
+          # the animations read.
+          - if:
+              - condition: template
+                value_template: "{{ trigger.id | default('') == 'playback' }}"
+            then:
+              - action: light.turn_on
+                target:
+                  entity_id: ${light}
+                data:
+                  rgb_color: ${RESTING_RGB}
+                  brightness: ${RESTING_BRIGHTNESS}
           - action: light.turn_off
             target:
               entity_id: ${light}
