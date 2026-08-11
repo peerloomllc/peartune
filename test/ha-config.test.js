@@ -303,15 +303,22 @@ test('a half-configured LED request is ignored rather than half-written', () => 
 //
 // "Put on Metallica in the kitchen." The host already accepted a target speaker
 // (cast.js: `body.entityId || cfg.voiceEntityId`); what was missing was Home Assistant
-// ever sending one. These pin the two decisions that were made by LOOKING at Tim's real
-// Home Assistant rather than at how one is supposed to be set up.
+// ever sending one.
+//
+// THE FIRST CUT HAD A SECOND SENTENCE SET - "put on {query} in [the] {room}" - and Tim's
+// Voice PE killed it in one utterance. Both patterns matched, so the automation ran twice:
+//
+//   voice:no-match {"query":"Metallica in the kitchen"}           <- the plain sentence
+//   voice:play     {"query":"Metallica","entityId":"...man cave"} <- the room sentence
+//
+// A spurious "I could not find that", AND the music in the wrong room. These pin the
+// redesign: one pattern, and the room is parsed out of what was said.
 
 const voiceAuto = () => yaml.load(CFG()).automation.find(a => a.alias === 'PearTune voice')
-const resolverOf = (a) => String(a.actions.find(s => s.variables)?.variables?.target || '')
+const varSteps = (a) => a.actions.filter(s => s.variables).map(s => s.variables)
+const resolverOf = (a) => String(varSteps(a).find(v => v.target)?.target || '')
 
 test('a room reaches the host, instead of being thrown away', () => {
-  // The payload used to hardcode "entityId":"" - so a room could be heard, matched, and
-  // then silently dropped on the doorstep.
   // Assert on the PARSED payload, not the source text: inside a single-quoted YAML scalar
   // the empty default is written '''' and unescapes to ''. Reading the raw file would be
   // testing the escaping rather than what Home Assistant receives.
@@ -322,15 +329,21 @@ test('a room reaches the host, instead of being thrown away', () => {
   assert.ok(step.data.entity_id, 'the play step does not pass one')
 })
 
-test('the plain sentences still exist, and are matched FIRST', () => {
-  // A wildcard room in the only pattern would eat part of an artist's name.
-  const t = voiceAuto().triggers
-  const plain = t.find(x => x.id === 'here')
-  const room = t.find(x => x.id === 'room')
-  assert.ok(plain && room, 'both sentence sets must exist')
-  assert.ok(plain.command.every(c => !c.includes('{room}')), 'the plain set must have no room slot')
-  assert.ok(room.command.every(c => c.includes('{room}')), 'the room set must have one')
-  assert.ok(t.indexOf(plain) < t.indexOf(room), 'plain sentences come first')
+test('THERE IS ONE SENTENCE SET, because two of them raced', () => {
+  const a = voiceAuto()
+  const convo = a.triggers.filter(t => t.trigger === 'conversation')
+  assert.equal(convo.length, 1, 'a second set means one utterance can fire this twice')
+  assert.ok(
+    convo[0].command.every(c => !c.includes('{room}')),
+    'no room wildcard: a wildcard cannot be told not to be greedy'
+  )
+})
+
+test('the room is taken from the END of what was said, not the start', () => {
+  // "Rock in the USA in the kitchen" has to keep the title and find the kitchen.
+  const r = String(varSteps(voiceAuto()).find(v => v.r)?.r || '')
+  assert.match(r, /rsplit\(' in ', 1\)/, 'splitting on the FIRST " in " would eat song titles')
+  assert.match(r, /t\[4:\]/, 'a leading "the" has to come off')
 })
 
 test('a room is looked up by AREA first, then by speaker NAME', () => {
@@ -353,16 +366,37 @@ test('the resolver uses NO regex, because HA has no regex_escape', () => {
   assert.match(r, /\| lower\) in \(/, 'plain containment is what replaced it')
 })
 
-test('AN UNFINDABLE ROOM MUST NOT PLAY SOMEWHERE ELSE', () => {
-  // Falling through to the default speaker would answer "play it in the kitchen" by
-  // playing it in the man cave. The person walks off believing it worked.
-  const a = voiceAuto()
-  const guard = a.actions.findIndex(s => s.if && JSON.stringify(s.if).includes('NONE'))
-  const play = a.actions.findIndex(s => s.action === 'rest_command.peartune_play')
-  assert.ok(guard > -1, 'nothing catches a room with no speaker')
-  assert.ok(guard < play, 'the guard has to come BEFORE the play, or it plays anyway')
-  assert.match(JSON.stringify(a.actions[guard].then), /could not find a speaker/i)
-  assert.ok(JSON.stringify(a.actions[guard].then).includes('stop'), 'it must stop, not continue')
+test('WORDS THAT ARE NOT A ROOM STAY PART OF THE SONG', () => {
+  // "Put on Rock in the USA" must search for the whole title. The only thing that can
+  // tell a room from a lyric is whether this house has a speaker by that name, so NONE
+  // means "not a room" and the search keeps every word.
+  const final = varSteps(voiceAuto()).find(v => v.search)
+  assert.ok(final, 'nothing decides what to search for')
+  assert.match(final.search, /else said/, 'an unmatched tail must fall back to the whole phrase')
+  assert.match(final.speaker, /else ''/, 'and it must NOT pick a speaker')
+  assert.match(final.room, /else ''/, 'nor claim a room in the spoken reply')
+})
+
+test('every variables step can only look BACKWARDS', () => {
+  // Each is its own action so a later step always sees an earlier one. Two variables in
+  // one block referencing each other is the kind of thing that fails silently, and this
+  // feature was already bitten once by a template that rendered empty in production while
+  // working standalone.
+  const steps = varSteps(voiceAuto())
+  assert.ok(steps.length >= 4, 'the pipeline should be several small steps')
+  const defined = new Set()
+  for (const step of steps) {
+    for (const [name, tpl] of Object.entries(step)) {
+      for (const other of Object.keys(step)) {
+        if (other === name) continue
+        assert.ok(
+          !new RegExp(`\\b${other}\\b`).test(String(tpl)),
+          `${name} reads ${other} from its own block - move it to a later step`
+        )
+      }
+    }
+    Object.keys(step).forEach(k => defined.add(k))
+  }
 })
 
 test('the LLM path takes a room too, and resolves it identically', () => {
@@ -370,12 +404,8 @@ test('the LLM path takes a room too, and resolves it identically', () => {
   const intent = doc.intent_script.PearTunePlayMusic
   assert.ok(intent.parameters.room, 'an LLM agent cannot pass a room')
   const intentResolver = String(intent.action.find(s => s.variables)?.variables?.target || '')
-  const spoken = resolverOf(voiceAuto())
   // Same text, not merely similar: two copies WILL drift about what a room means.
-  assert.ok(intentResolver.includes('area_entities(r)') && intentResolver.includes('states.media_player'))
-  assert.equal(
-    intentResolver.replace(/\s+/g, ' ').includes(spoken.split('%}').pop().replace(/\s+/g, ' ').trim().slice(0, 40)),
-    true,
-    'the two paths must share one resolver'
-  )
+  assert.match(intentResolver, /area_entities\(r\)/)
+  assert.match(intentResolver, /states\.media_player/)
+  assert.ok(!intentResolver.includes('regex_escape'))
 })

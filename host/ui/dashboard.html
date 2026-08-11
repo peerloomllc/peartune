@@ -188,23 +188,41 @@ ${t?`      # Out of idle: the assistant wants the ring. Back to idle: we can hav
     payload: '{"token":"${e}","action":"{{ action }}"}'
 
 automation:
-  # SAYING A ROOM IS OPTIONAL. The plain sentences come first so "put on Led Zeppelin"
-  # is matched by a pattern with no room in it at all - a wildcard room would otherwise
-  # try to eat part of the artist's name.
+  # ONE SET OF SENTENCES, AND THE ROOM IS PARSED OUT OF WHAT WAS SAID.
   #
-  # WHY THE RESOLVER LOOKS IN TWO PLACES, and it is not belt-and-braces - it is what a
-  # real house looks like. Measured on Tim's Home Assistant, 2026-08-11:
+  # The first cut had a second set - "put on {query} in [the] {room}" - and Tim's own
+  # Voice PE proved it wrong within a minute. BOTH patterns matched one utterance, so the
+  # automation ran TWICE off a single "put on Metallica in the kitchen":
+  #
+  #   voice:no-match {"query":"Metallica in the kitchen"}          <- the plain sentence
+  #   voice:play     {"query":"Metallica","entityId":"...man cave"} <- the room sentence
+  #
+  # He got a spurious "I could not find that" AND the music in the wrong room. A wildcard
+  # cannot be told not to be greedy, and two patterns that can both match one sentence are
+  # a race, not a design.
+  #
+  # So there is one pattern, and the room is found by asking a question only THIS HOUSE can
+  # answer: take the text after the last " in ", and see whether it names a speaker. If it
+  # does, it was a room. If it does not, it was part of the song - which is why
+  # "put on Rock in the USA" still searches for the whole title.
+  #
+  # WHY THE LOOKUP CHECKS TWO PLACES, and it is not belt-and-braces - it is what a real
+  # house looks like. Measured on Tim's Home Assistant, 2026-08-11:
   #
   #   media_player.kitchen_speaker              area=None   "Kitchen speaker"
   #   media_player.master_bedroom_speaker       area=None   "Master Bedroom speaker"
   #   media_player.home_assistant_voice_...     area=Man Cave
   #
-  # Only ONE of his five speakers is assigned to an area. Areas are the tidy Home
-  # Assistant answer, and a config that only used them would have found nothing for
-  # every room but the man cave - built, shipped, and useless in his own house. But the
-  # Chromecasts are NAMED for their rooms, because that is what people call them when
-  # they set them up. So: try the area first (it is the more deliberate statement), then
-  # fall back to matching the spoken room against speaker names.
+  # FOUR OF HIS FIVE SPEAKERS HAVE NO AREA, and they are named for their rooms, because
+  # that is what people type when setting a Chromecast up. Areas are the tidy Home
+  # Assistant answer and area-only would have found nothing outside the man cave - built,
+  # shipped, and useless in the house it was built for. So: area first (the more
+  # deliberate statement), then the speaker's own name.
+  #
+  # EACH "variables:" STEP IS ITS OWN ACTION, on purpose. A later step can always see an
+  # earlier step's variables; whether two variables in the SAME block can see each other is
+  # exactly the kind of thing that fails silently, and one of those bit this feature once
+  # already.
   - alias: PearTune voice
     mode: queued
     triggers:
@@ -214,38 +232,35 @@ automation:
           - "listen to [some] {query}"
           - "I want to listen to [some] {query}"
           - "play [some] {query} from peartune"
-        id: here
-      - trigger: conversation
-        command:
-          - "put on [some] {query} in [the] {room}"
-          - "listen to [some] {query} in [the] {room}"
-          - "I want to listen to [some] {query} in [the] {room}"
-          - "play [some] {query} in [the] {room} from peartune"
-        id: room
     actions:
       - variables:
-          room: "{{ trigger.slots.room | default('') | trim }}"
-          # '' means "no room was said" - the host then uses the configured default
-          # speaker, exactly as it did before this existed.
+          said: "{{ trigger.slots.query | default('') | trim }}"
+      # The candidate room: everything after the LAST " in ", without a leading "the".
+      # Last, not first, so "Rock in the USA in the kitchen" still finds the kitchen.
+      - variables:
+          r: >-
+            {%- set parts = said.rsplit(' in ', 1) -%}
+            {%- if parts | count == 2 -%}
+              {%- set t = parts[1] | trim -%}
+              {{ (t[4:] | trim) if (t[:4] | lower == 'the ') else t }}
+            {%- endif -%}
+      - variables:
           target: >-
-            {%- set r = room -%}
             ${rg}
-      # A ROOM NOBODY CAN FIND MUST NOT PLAY SOMEWHERE ELSE. Falling through to the
-      # default speaker would answer "play it in the kitchen" by playing it in the man
-      # cave, which is worse than saying no - the person walks off believing it worked.
-      - if:
-          - condition: template
-            value_template: "{{ target == 'NONE' }}"
-        then:
-          - set_conversation_response: "I could not find a speaker for the {{ room }}"
-          - stop: "no speaker for that room"
+      # NONE means "that was not a room", so it stays part of what to search for. Nothing
+      # here can send the music to a room nobody asked for: either the tail named a speaker
+      # in this house, or it is treated as words in a title.
+      - variables:
+          room: "{{ r if (target and target != 'NONE') else '' }}"
+          search: "{{ said.rsplit(' in ', 1)[0] | trim if (target and target != 'NONE') else said }}"
+          speaker: "{{ target if (target and target != 'NONE') else '' }}"
       - action: rest_command.peartune_play
         data:
-          query: "{{ trigger.slots.query }}"
-          entity_id: "{{ target | default('') }}"
+          query: "{{ search }}"
+          entity_id: "{{ speaker }}"
         response_variable: result
       - set_conversation_response: >-
-          {% if result.status != 200 %}I could not find {{ trigger.slots.query }} in your library{% elif result.content.kind == 'artist' %}Playing {{ result.content.artist }}{% elif result.content.kind == 'album' %}Playing the album {{ result.content.title }}{% elif result.content.artist %}Playing {{ result.content.title }} by {{ result.content.artist }}{% else %}Playing {{ result.content.title }}{% endif %}{% if room %} in the {{ room }}{% endif %}
+          {% if result.status != 200 %}I could not find {{ search }} in your library{% if r and not room %}, and I do not know a speaker called {{ r }}{% endif %}{% elif result.content.kind == 'artist' %}Playing {{ result.content.artist }}{% elif result.content.kind == 'album' %}Playing the album {{ result.content.title }}{% elif result.content.artist %}Playing {{ result.content.title }} by {{ result.content.artist }}{% else %}Playing {{ result.content.title }}{% endif %}{% if room %} in the {{ room }}{% endif %}
 
   - alias: PearTune voice controls
     mode: queued
