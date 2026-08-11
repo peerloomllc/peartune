@@ -2548,7 +2548,7 @@ export default function App () {
     screen = (
       <AlbumScreen
         id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom}
-        onPlayAll={playAll} onQueue={enqueue} onViewArt={viewArt}
+        onPlayAll={playAll} onQueue={enqueue} onViewArt={viewArt} onLong={setMenu}
         favs={favs} onFav={favSupported ? onFav : null}
         pinned={pinned.has(top.id)} pinning={pinning[top.id]}
         // No Download in demo mode (a null onPin hides the button). Downloading means "pull
@@ -2562,7 +2562,7 @@ export default function App () {
     screen = (
       <DownloadScreen
         id={top.id} name={top.name} now={now} onBack={pop}
-        onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
+        onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue} onLong={setMenu}
         onUnpin={() => unpinAlbum(top.id)}
       />
     )
@@ -2595,13 +2595,13 @@ export default function App () {
         <PlaylistScreen
           key={'srv:' + top.id} id={top.id} name={top.name} now={now} onBack={pop}
           server sourceName={sourceText(state)}
-          onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
+          onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue} onLong={setMenu}
         />
         )
       : (
         <PlaylistScreen
           key={top.id} id={top.id} name={top.name} now={now} onBack={pop} refreshKey={plRefresh}
-          onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
+          onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue} onLong={setMenu}
           onRename={renamePlaylist}
           onSetTracks={(pid, trackIds) => call('setPlaylistTracks', { id: pid, trackIds }).then(() => loadPlaylists(true))}
           onDelete={() => confirmDeletePlaylist(top.id, top.name)}
@@ -4150,7 +4150,7 @@ function RequestsView ({ requests, onNew, onRemove }) {
 // A downloaded album's own screen, sourced entirely from the local pin registry - so it
 // renders and plays with NO connection, even from a cold launch. The shim serves each
 // track from disk.
-function DownloadScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onUnpin }) {
+function DownloadScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onLong, onUnpin }) {
   const [dl, setDl] = useState(null)
   const [err, setErr] = useState(null)
   useEffect(() => {
@@ -4191,7 +4191,7 @@ function DownloadScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
           </button>
           <ul className='tracks'>
             {tracks.map(t => (
-              <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo />
+              <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo onLong={onLong} />
             ))}
           </ul>
         </>
@@ -4813,7 +4813,7 @@ function Cover ({ src, big, sm, artist }) {
 
 // Each drill-down fetches its own data from its id, so the nav stack holds nothing
 // but ids and popping back never has to restore anything.
-function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt, favs, onFav, pinned, pinning, onPin, onUnpin }) {
+function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt, onLong, favs, onFav, pinned, pinning, onPin, onUnpin }) {
   const [album, setAlbum] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -4879,6 +4879,7 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
         {tracks.map(t => (
           <Row
             key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo
+            onLong={onLong}
             fav={favs?.track?.has(t.id)} onFav={onFav ? (x => onFav('track', x)) : null}
           />
         ))}
@@ -5059,7 +5060,7 @@ function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay
   )
 }
 
-function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onRename, onDelete, onSetTracks, server, sourceName, refreshKey = 0 }) {
+function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onLong, onRename, onDelete, onSetTracks, server, sourceName, refreshKey = 0 }) {
   const [pl, setPl] = useState(null)
   const [err, setErr] = useState(null)
   const [editing, setEditing] = useState(false)
@@ -5273,7 +5274,7 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
               {tracks.map((t, i) => (
                 <Row
                   key={t._k ?? i} t={t} on={now?.trackId === t.id}
-                  onPlay={() => onPlay(tracks, t)} art
+                  onPlay={() => onPlay(tracks, t)} art onLong={onLong}
                 />
               ))}
             </ul>
