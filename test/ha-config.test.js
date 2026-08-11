@@ -298,3 +298,84 @@ test('a half-configured LED request is ignored rather than half-written', () => 
   assert.ok(!haConfig({ led: { light: '', player: 'media_player.spk' } }).includes('peartune_led'))
   assert.ok(!haConfig({ led: { light: 'light.ring', player: '' } }).includes('peartune_led'))
 })
+
+// --- saying a room (2026-08-11) ----------------------------------------------
+//
+// "Put on Metallica in the kitchen." The host already accepted a target speaker
+// (cast.js: `body.entityId || cfg.voiceEntityId`); what was missing was Home Assistant
+// ever sending one. These pin the two decisions that were made by LOOKING at Tim's real
+// Home Assistant rather than at how one is supposed to be set up.
+
+const voiceAuto = () => yaml.load(CFG()).automation.find(a => a.alias === 'PearTune voice')
+const resolverOf = (a) => String(a.actions.find(s => s.variables)?.variables?.target || '')
+
+test('a room reaches the host, instead of being thrown away', () => {
+  // The payload used to hardcode "entityId":"" - so a room could be heard, matched, and
+  // then silently dropped on the doorstep.
+  // Assert on the PARSED payload, not the source text: inside a single-quoted YAML scalar
+  // the empty default is written '''' and unescapes to ''. Reading the raw file would be
+  // testing the escaping rather than what Home Assistant receives.
+  const payload = yaml.load(CFG()).rest_command.peartune_play.payload
+  assert.match(payload, /"entityId":"\{\{ entity_id \| default\(''\) \}\}"/, 'the rest_command cannot carry a speaker')
+  assert.doesNotThrow(() => JSON.parse(payload.replace(/\{\{[^}]*\}\}/g, 'x')), 'the payload must still be JSON')
+  const step = voiceAuto().actions.find(s => s.action === 'rest_command.peartune_play')
+  assert.ok(step.data.entity_id, 'the play step does not pass one')
+})
+
+test('the plain sentences still exist, and are matched FIRST', () => {
+  // A wildcard room in the only pattern would eat part of an artist's name.
+  const t = voiceAuto().triggers
+  const plain = t.find(x => x.id === 'here')
+  const room = t.find(x => x.id === 'room')
+  assert.ok(plain && room, 'both sentence sets must exist')
+  assert.ok(plain.command.every(c => !c.includes('{room}')), 'the plain set must have no room slot')
+  assert.ok(room.command.every(c => c.includes('{room}')), 'the room set must have one')
+  assert.ok(t.indexOf(plain) < t.indexOf(room), 'plain sentences come first')
+})
+
+test('a room is looked up by AREA first, then by speaker NAME', () => {
+  // Measured on Tim's HA 2026-08-11: FOUR of his five speakers have no area at all, and
+  // are named for their rooms ("Kitchen speaker"). Areas alone would have found nothing
+  // outside the man cave.
+  const r = resolverOf(voiceAuto())
+  assert.match(r, /area_entities\(r\)/, 'no area lookup')
+  assert.match(r, /states\.media_player/, 'no name fallback')
+  assert.ok(r.indexOf('area_entities') < r.indexOf('states.media_player'), 'area is the more deliberate statement, so it wins')
+})
+
+test('the resolver uses NO regex, because HA has no regex_escape', () => {
+  // The first cut did, and Tim's own Home Assistant answered "No filter named
+  // 'regex_escape' found" - every room lookup would have thrown at runtime. Plain
+  // lowercase containment also survives the apostrophe in "Sarah's room", which resolved
+  // correctly against his real speakers.
+  const r = resolverOf(voiceAuto())
+  assert.ok(!r.includes('regex_escape'), 'regex_escape does not exist in Home Assistant')
+  assert.match(r, /\| lower\) in \(/, 'plain containment is what replaced it')
+})
+
+test('AN UNFINDABLE ROOM MUST NOT PLAY SOMEWHERE ELSE', () => {
+  // Falling through to the default speaker would answer "play it in the kitchen" by
+  // playing it in the man cave. The person walks off believing it worked.
+  const a = voiceAuto()
+  const guard = a.actions.findIndex(s => s.if && JSON.stringify(s.if).includes('NONE'))
+  const play = a.actions.findIndex(s => s.action === 'rest_command.peartune_play')
+  assert.ok(guard > -1, 'nothing catches a room with no speaker')
+  assert.ok(guard < play, 'the guard has to come BEFORE the play, or it plays anyway')
+  assert.match(JSON.stringify(a.actions[guard].then), /could not find a speaker/i)
+  assert.ok(JSON.stringify(a.actions[guard].then).includes('stop'), 'it must stop, not continue')
+})
+
+test('the LLM path takes a room too, and resolves it identically', () => {
+  const doc = yaml.load(CFG())
+  const intent = doc.intent_script.PearTunePlayMusic
+  assert.ok(intent.parameters.room, 'an LLM agent cannot pass a room')
+  const intentResolver = String(intent.action.find(s => s.variables)?.variables?.target || '')
+  const spoken = resolverOf(voiceAuto())
+  // Same text, not merely similar: two copies WILL drift about what a room means.
+  assert.ok(intentResolver.includes('area_entities(r)') && intentResolver.includes('states.media_player'))
+  assert.equal(
+    intentResolver.replace(/\s+/g, ' ').includes(spoken.split('%}').pop().replace(/\s+/g, ' ').trim().slice(0, 40)),
+    true,
+    'the two paths must share one resolver'
+  )
+})
