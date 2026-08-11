@@ -70,6 +70,32 @@ Take `PearTune-x.y.z-arm64.dmg` for Apple Silicon, `PearTune-x.y.z.dmg` for Inte
 The Windows installer asks for **administrator rights**, because it registers PearTune as
 a background service so your library keeps serving when you are signed out.
 
+### An encrypted disk changes what "always on" means
+
+Both platforms can run PearTune as a background service that keeps serving after you sign
+out. Neither can serve anything while the disk it lives on is still locked.
+
+- **macOS with FileVault on** (check with `fdesetup status`). After a restart or a power
+  cut the drive stays encrypted at the login window, and nothing stored on it runs -
+  PearTune's service included. **Somebody has to unlock the machine before your music is
+  reachable again.** Measured on a real Mac mini, 2026-08-11: rebooted 08:05, nothing
+  until the disk was unlocked at 09:15, and the host then started itself and served for
+  twenty minutes before anyone actually logged in. So it genuinely survives a logout. It
+  does not survive a power cut with nobody home.
+- **Windows with BitLocker** normally unlocks itself at boot using the machine's TPM, so
+  the service starts with no one present. If you have added a startup PIN, you are in the
+  same position as FileVault above.
+- **A machine with no disk encryption** - which is the usual case for a NAS, an Umbrel or
+  a Linux box in a cupboard - just comes back on its own.
+
+This is worth a moment's thought rather than a setting to change. Disk encryption is the
+thing protecting your library if the machine is ever stolen. If unattended restarts matter
+more to you than that, a machine that lives in a cupboard and holds nothing else is a
+better home for the host than your laptop.
+
+The same rule holds on Linux with LUKS, and [`../desktop/README.md`](../desktop/README.md)
+has the per-platform measurements behind all of this.
+
 <details>
 <summary>Build it yourself instead</summary>
 
