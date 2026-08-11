@@ -5774,10 +5774,22 @@ function SpeakerSheet ({ speakers, castingTo, onClose, onPick, onHere, busy }) {
             </button>
           ))}
           {!speakers.length && <p className='muted sm'>No speakers found.</p>}
+          {/* "Everything else works as usual" USED TO END THIS, and it stopped being true.
+              While casting, the phone's own player is deliberately paused and muted (it is a
+              silent placeholder queue), and the lock screen can only mirror that player - so
+              its button reads Play the whole time, however the speaker is doing. expo-audio's
+              AudioLockScreenOptions is only { showSeekForward, showSeekBackward }; there is no
+              way to say "show pause" while the underlying player is paused, and the only route
+              to an honest button is keeping the phone playing a long silent item, which
+              reintroduces the racing hazard the one-second queue exists to avoid.
+              So the button is not going to be fixed, and the honest thing is to say what it
+              does: it TOGGLES the speaker (PR #327), which is more than it used to do -
+              pressing it once destroyed the cast outright. */}
           {castingTo &&
             <p className='muted sm'>
               There is a short gap between tracks on a speaker, and you cannot scrub
-              through a song. Everything else works as usual.
+              through a song. On the lock screen the button always shows Play - tap it
+              to pause the speaker, and again to carry on.
             </p>}
           <button className='wide' onClick={onClose}>Cancel</button>
         </div>
