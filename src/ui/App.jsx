@@ -28,6 +28,7 @@ import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
 import { shouldShowNudge } from './donation'
 import { normalizeViewState, isDefaultView, sameViewState } from './viewstate'
+import { albumIdsOf, pendingDownloads, groupDownloadState, downloadPrompt, removePrompt } from './downloads'
 import { runScene, sceneOpens } from './screenshot'
 
 // --- About + donation (suite config, shared across PeerLoom apps) ------------
@@ -266,6 +267,10 @@ export default function App () {
   const [naming, setNaming] = useState(false) // the "new playlist" name prompt
   const [pinned, setPinned] = useState(() => new Set()) // pinned (downloaded) album ids
   const [pinning, setPinning] = useState({}) // albumId -> { done, total } while downloading
+  // The ONE group download in flight (an artist, a genre): { key, name, done, total }.
+  // One at a time on purpose - these are album loops over someone's phone data plan, and
+  // two at once would fight for the same connection and report two spinners for one queue.
+  const [groupDl, setGroupDl] = useState(null)
   const [downloads, setDownloads] = useState(null) // the Downloads view: [{ id, name, ... }]
   // Merged library (multi-host step 2): when 2+ hosts are paired the library home is the BLENDED,
   // deduped view of all of them, and `merged` holds its per-source status ({ merged, libraries:
@@ -1743,6 +1748,58 @@ export default function App () {
       haptic('warn'); toast(e.message, true)
     }
   }
+  // Download every album behind an artist or a genre (Tim, 2026-08-11: "the Download option
+  // should be consistent across category types"). A loop rather than a new kind of pin - see
+  // src/ui/downloads.js for why album-keyed pins are worth keeping.
+  //
+  // ALWAYS ASKS FIRST, and asks about what it will actually FETCH rather than the group's
+  // size. Tim's call, and the right one: a genre can be most of a library, and the tap that
+  // starts it is a long-press away from Play.
+  async function downloadGroup ({ key, name, albumIds }) {
+    const todo = pendingDownloads(albumIds, pinned)
+    if (!todo.length) {
+      haptic('light')
+      return toast(albumIds.length ? `${name} is already downloaded` : `Nothing to download in ${name}`)
+    }
+    setConfirming({
+      ...downloadPrompt({ name, count: todo.length }),
+      onYes: async () => {
+        haptic('light')
+        setGroupDl({ key, name, done: 0, total: todo.length })
+        let done = 0
+        for (const albumId of todo) {
+          try {
+            await call('pinAlbum', { albumId })
+          } catch (e) {
+            // STOP, do not plough on. The usual causes - cellular, a dead link, a full disk -
+            // apply to every album behind this one, so continuing would mean one toast per
+            // album. What completed stays downloaded; the button will say "partly" and the
+            // next tap picks up the rest.
+            haptic('warn'); toast(e.message, true)
+            break
+          }
+          setGroupDl(g => (g && g.key === key ? { ...g, done: ++done } : g))
+        }
+        setGroupDl(g => (g && g.key === key ? null : g))
+        loadPinned(); loadDownloads(true)
+      }
+    })
+  }
+
+  function removeGroup ({ name, albumIds }) {
+    const here = (albumIds || []).filter(id => pinned.has(id))
+    if (!here.length) return
+    setConfirming({
+      ...removePrompt({ name, count: here.length }),
+      onYes: async () => {
+        for (const albumId of here) {
+          try { await call('unpinAlbum', { albumId }) } catch (e) { haptic('warn'); toast(e.message, true); break }
+        }
+        loadPinned(); loadDownloads(true)
+      }
+    })
+  }
+
   function unpinAlbum (albumId) {
     setConfirming({
       title: 'Remove download?',
@@ -2390,6 +2447,13 @@ export default function App () {
   // long-press one. The tracks are fetched when an action is actually chosen.
   async function tracksFor (item) {
     if (item.type === 'track') return [item.track]
+    // A DOWNLOAD RESOLVES LOCALLY, which is the whole point of it. Going through
+    // call('album') would ask the host for a track list we are holding on disk, so the menu
+    // on a downloaded album would fail on a plane - exactly where downloads earn their keep.
+    if (item.type === 'download') {
+      const d = await call('downloadDetail', { albumId: item.id })
+      return d?.tracks || []
+    }
     if (item.type === 'album') {
       const a = await call('album', { id: item.id })
       return (a?.tracks || []).map(t => ({ ...t, art: t.art ?? a.art, artFull: a.artFull }))
@@ -2412,6 +2476,25 @@ export default function App () {
     if (action === 'playlist') {
       if (plSupported) loadPlaylists()
       return setAddingTo(item)
+    }
+    // DOWNLOAD FROM THE MENU (Tim, 2026-08-11: "so users don't always have to drill down into
+    // something to do it"). Like Add to playlist, this resolves on the ACTION, not on opening
+    // the menu - an artist's album list is a fetch, and a long-press is not consent to one.
+    if (action === 'download' || action === 'undownload') {
+      if (item.type === 'album' || item.type === 'download') {
+        return action === 'download' ? pinAlbum(item.id) : unpinAlbum(item.id)
+      }
+      try {
+        const detail = await call(item.type, { id: item.id })
+        const albumIds = albumIdsOf(detail)
+        const name = item.name || detail?.name
+        return action === 'download'
+          ? downloadGroup({ key: `${item.type}:${item.id}`, name, albumIds })
+          : removeGroup({ name, albumIds })
+      } catch (e) {
+        haptic('warn')
+        return toast(e.message, true)
+      }
     }
     try {
       const list = await tracksFor(item)
@@ -2543,6 +2626,17 @@ export default function App () {
 
   const viewArt = (url, title) => { if (url) { haptic('light'); setViewing({ url, title }) } }
 
+  // Everything an artist or genre screen needs to offer Download, in one prop. `enabled` is
+  // off in demo mode for the same reason the album screen hides it there: the demo tracks are
+  // already on the phone and there is no server to fetch them from.
+  const groupDlProps = {
+    enabled: !state.demo,
+    pinned,
+    active: groupDl,
+    onDownload: downloadGroup,
+    onRemove: removeGroup
+  }
+
   let screen
   if (top?.type === 'album') {
     screen = (
@@ -2574,6 +2668,7 @@ export default function App () {
         onArtistAction={(artistId, action) => menuAction({ type: 'artist', id: artistId }, action)}
         onOpenAlbum={(id) => push({ type: 'album', id })}
         favs={favs} onFav={favSupported ? onFav : null}
+        dl={groupDlProps}
       />
     )
   } else if (top?.type === 'genre') {
@@ -2585,6 +2680,7 @@ export default function App () {
         onOpenAlbum={(id) => push({ type: 'album', id })}
         onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
         favs={favs} onFav={favSupported ? onFav : null}
+        dl={groupDlProps}
       />
     )
   } else if (top?.type === 'playlist') {
@@ -2746,6 +2842,13 @@ export default function App () {
           onClose={() => setMenu(null)}
           onAction={(a) => menuAction(menu, a)}
           canPlaylist={plSupported}
+          // No Download in demo mode, for the same reason the album screen hides it: the
+          // demo tracks are already on the phone with no server behind them.
+          // An ALBUM knows whether it is already downloaded (we hold the pinned set); an
+          // artist or a genre does not, because that would mean fetching its albums just to
+          // open a menu. So they offer Download, and the sheet says nothing it cannot know.
+          canDownload={!state.demo}
+          downloaded={menu.type === 'download' || (menu.type === 'album' && pinned.has(menu.id))}
         />
       )}
       {addingTo && (
@@ -3078,7 +3181,10 @@ function QueueScreen ({ items, index, skin, onJump, onMove, onRemove, onClear })
 }
 
 // Play / Shuffle / Add to queue / Add to playlist, without drilling into the thing first.
-function ActionSheet ({ item, onClose, onAction, canPlaylist }) {
+function ActionSheet ({ item, onClose, onAction, canPlaylist, canDownload, downloaded }) {
+  // A pin is album-keyed, so a single track has nothing to download - offering it would mean
+  // silently pulling the album it happens to sit on, which is not what the word says.
+  const showDownload = canDownload && item.type !== 'track'
   return (
     <div className='sheetwrap' onClick={onClose}>
       <div className='sheet' onClick={e => e.stopPropagation()}>
@@ -3102,6 +3208,17 @@ function ActionSheet ({ item, onClose, onAction, canPlaylist }) {
               <PlaylistIcon size={17} weight='bold' /> Add to playlist
             </button>
           )}
+          {showDownload && (downloaded
+            ? (
+              <button className='wide' onClick={() => onAction('undownload')}>
+                <CheckCircle size={17} weight='fill' /> Remove download
+              </button>
+              )
+            : (
+              <button className='wide' onClick={() => onAction('download')}>
+                <DownloadSimple size={17} weight='bold' /> Download
+              </button>
+              ))}
           <button className='wide' onClick={onClose}>Cancel</button>
         </div>
       </div>
@@ -3932,7 +4049,7 @@ function You ({
               onOpen={onOpenPlaylist} onOpenServer={onOpenServerPlaylist} onNew={onNewPlaylist}
             />
           : view === 'downloads'
-            ? <DownloadsView downloads={downloads} d={D} onOpen={onOpenDownload} />
+            ? <DownloadsView downloads={downloads} d={D} onOpen={onOpenDownload} onLong={onLong} />
           : view === 'requests'
             ? <RequestsView requests={myRequests} onNew={onNewRequest} onRemove={onRemoveRequest} />
           : view === 'manage'
@@ -4057,14 +4174,19 @@ function PlaylistRows ({ items, onOpen, server }) {
 // no connection - the list comes from the local pin registry. Tapping opens the offline
 // album detail (DownloadScreen). Covers may fall back to a placeholder offline (art is not
 // cached in v1).
-function DownloadsView ({ downloads, d, onOpen }) {
+function DownloadsView ({ downloads, d, onOpen, onLong }) {
   if (!downloads) return <SkeletonGrid d={d} />
   if (!downloads.length) return <DownloadsEmpty />
   const list = d.cols === 1
   return (
     <div className={'grid' + (list ? ' aslist' : '')} style={{ '--cols': d.cols }}>
       {downloads.map(a => (
-        <Tile key={a.id} className='album' onPress={() => onOpen(a)}>
+        // type 'download', not 'album': everything behind it must resolve from the phone,
+        // because the one place you open this is where there is no host to ask.
+        <Tile
+          key={a.id} className='album' onPress={() => onOpen(a)}
+          onLongPress={onLong && (() => onLong({ type: 'download', id: a.id, name: a.name }))}
+        >
           <Cover src={a.art} />
           <div className='meta'>
             <div className='t sm'>{a.name}</div>
@@ -4345,6 +4467,42 @@ function DownloadButton ({ pinned, pinning, onPin, onUnpin }) {
     <button className='favhead' onClick={onPin} aria-label='Download album'>
       <DownloadSimple size={20} weight='bold' />
       <span>Download</span>
+    </button>
+  )
+}
+
+// The same control for an ARTIST or a GENRE, which are groups of albums rather than one
+// (Tim, 2026-08-11: "Download should be consistent across category types"). All the state
+// is derived - a group has no pin of its own, only its albums do. See src/ui/downloads.js.
+//
+// Renders NOTHING for a group with no albums (an artist of loose tracks): pins are
+// album-keyed, so there would be nothing to download, and a dead button is worse than none.
+function GroupDownloadButton ({ name, albumIds, groupKey, dl }) {
+  const st = groupDownloadState({ albumIds, pinned: dl.pinned, active: dl.active, key: groupKey })
+  if (st.kind === 'empty') return null
+  if (st.kind === 'downloading') {
+    return (
+      <button className='favhead' disabled aria-label='Downloading'>
+        <CircleNotch size={18} weight='bold' className='spin' />
+        <span>{st.total ? `${st.done}/${st.total} albums` : 'Downloading…'}</span>
+      </button>
+    )
+  }
+  if (st.kind === 'downloaded') {
+    return (
+      <button className='favhead on' onClick={() => dl.onRemove({ name, albumIds })} aria-label='Remove downloads'>
+        <CheckCircle size={20} weight='fill' />
+        <span>Downloaded</span>
+      </button>
+    )
+  }
+  return (
+    <button className='favhead' onClick={() => dl.onDownload({ key: groupKey, name, albumIds })} aria-label='Download'>
+      <DownloadSimple size={20} weight='bold' />
+      {/* Say what is left rather than "Download" when some of it is already here - the
+          alternative is a button that looks like it will fetch twelve albums when it will
+          fetch three. */}
+      <span>{st.kind === 'partial' ? `Download ${st.total - st.done} more` : 'Download'}</span>
     </button>
   )
 }
@@ -4908,7 +5066,7 @@ function Actions ({ onPlay, onShuffle, onQueue }) {
 
 // An artist IS its albums (one getArtist call on the host), so this is the album
 // grid again rather than a new kind of screen.
-function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, onLong, onArtistAction, favs, onFav }) {
+function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, onLong, onArtistAction, favs, onFav, dl }) {
   const [artist, setArtist] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -4944,7 +5102,17 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
                 : `${artist.tracks?.length || 0} ${artist.tracks?.length === 1 ? 'track' : 'tracks'}`}
             </p>
           )}
-          {onFav && artist && <FavHeart on={favs?.artist?.has(id)} onToggle={() => onFav('artist', { id, name: artist.name })} label='artist' />}
+          {artist && (onFav || dl?.enabled) && (
+            <div className='headacts'>
+              {onFav && <FavHeart on={favs?.artist?.has(id)} onToggle={() => onFav('artist', { id, name: artist.name })} label='artist' />}
+              {dl?.enabled && (
+                <GroupDownloadButton
+                  name={artist.name || name} albumIds={albumIdsOf(artist)}
+                  groupKey={'artist:' + id} dl={dl}
+                />
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -4996,7 +5164,7 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
 // artist). No big cover header - a genre has no single face - just its name, a
 // Play/Shuffle/Queue bar, and the albums. A loose-tagged genre with no album of its
 // own falls back to its tracks, the same as an artist.
-function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay, onLong, onGenreAction, favs, onFav }) {
+function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay, onLong, onGenreAction, favs, onFav, dl }) {
   const [genre, setGenre] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -5027,6 +5195,14 @@ function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay
               ? `${genre.albums.length} ${genre.albums.length === 1 ? 'album' : 'albums'}`
               : `${genre.tracks?.length || 0} ${genre.tracks?.length === 1 ? 'track' : 'tracks'}`}
           </p>
+        )}
+        {genre && dl?.enabled && (
+          <div className='headacts'>
+            <GroupDownloadButton
+              name={genre.name || name} albumIds={albumIdsOf(genre)}
+              groupKey={'genre:' + id} dl={dl}
+            />
+          </div>
         )}
       </div>
 

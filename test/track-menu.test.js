@@ -52,6 +52,37 @@ test('the screens holding those rows take an onLong of their own', () => {
   }
 })
 
+// --- the same gap one level up (Tim, 2026-08-11) -----------------------------
+//
+// He found the next one immediately: the menu worked on a track INSIDE a download, and not on
+// the downloaded album itself in the Downloads grid. Same shape, same silence.
+
+test('a downloaded album offers its menu too', () => {
+  const grid = /function DownloadsView \(\{([^}]*)\}/.exec(SRC)
+  assert.ok(grid, 'DownloadsView is gone or no longer takes a props object')
+  assert.match(grid[1], /\bonLong\b/, 'the Downloads grid cannot open a menu')
+  // type 'download', NOT 'album'. The distinction is load-bearing: it is what makes the menu
+  // resolve from the phone instead of asking a host that is not there.
+  assert.match(SRC, /onLong\(\{ type: 'download', id: a\.id/, 'a downloaded album must open as a download')
+  assert.match(SRC, /if \(item\.type === 'download'\) \{\s*\n\s*const d = await call\('downloadDetail'/,
+    'a download must resolve its tracks LOCALLY, or the menu fails offline')
+})
+
+test('Download is offered from the menu, and never on a single track', () => {
+  // A pin is album-keyed, so "download" on one track could only mean its whole album.
+  assert.match(SRC, /const showDownload = canDownload && item\.type !== 'track'/)
+  assert.match(SRC, /onAction\('download'\)/, 'no Download action in the sheet')
+  assert.match(SRC, /onAction\('undownload'\)/, 'no way to remove a download from the sheet')
+})
+
+test('the artist and genre screens carry a Download of their own', () => {
+  for (const screen of ['ArtistScreen', 'GenreScreen']) {
+    const sig = new RegExp(`function ${screen} \\(\\{([^}]*)\\}`).exec(SRC)
+    assert.match(sig[1], /\bdl\b/, `${screen} cannot offer Download`)
+  }
+  assert.equal((SRC.match(/<GroupDownloadButton/g) || []).length, 2, 'both group screens need the control')
+})
+
 test('the action sheet still handles a single track', () => {
   // What the rows above are wired TO. One track cannot be shuffled, so that button is hidden
   // rather than offered as a no-op - if that guard goes, the menu grows a dead button.
