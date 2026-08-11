@@ -444,3 +444,54 @@ test('the helper RE-VERIFIES as root, and restarts LAST', () => {
     'restarting tears down the cgroup this helper runs in - any earlier and it could interrupt dpkg')
   assert.match(h, /--no-block/, 'a blocking restart would have systemd kill the helper mid-call')
 })
+
+// --- the names the RELEASE SCRIPT actually produced (2026-08-11) ---------------
+//
+// Every fixture above is a name somebody typed. These are the twelve assets on the real
+// v1.0.0 release, copied off the GitHub API, and they exist so this suite notices if
+// scripts/release.sh ever renames an artifact out from under the picker.
+//
+// That failure is silent by construction: selectAsset returns null, planApply throws
+// "no asset for this platform", and the person sees an update that will not install with
+// no clue why. Checked against the live release on 2026-08-11 - all five platform/arch
+// combinations picked correctly, and every artifact's .sha256 sidecar matched the digest
+// GitHub itself reports for the file.
+const REAL_V1_NAMES = [
+  'PearTune-1.0.0-arm64.dmg',
+  'PearTune-1.0.0.AppImage',
+  'PearTune-1.0.0.dmg',
+  'peartune-desktop_1.0.0_amd64.deb',
+  'PearTune-Setup-1.0.0.exe',
+  'peartune-v1.0.0.apk'
+]
+const REAL_ASSETS = REAL_V1_NAMES.flatMap(name => ([
+  { name, browser_download_url: `https://github.test/${name}` },
+  { name: name + '.sha256', browser_download_url: `https://github.test/${name}.sha256` }
+]))
+
+test('the picker handles the REAL release artifact names', () => {
+  const update = { available: true, latest: '1.0.0', current: '0.9.9' }
+  const cases = [
+    [{ platform: 'linux', arch: 'x64', appImage: '' }, 'deb', 'peartune-desktop_1.0.0_amd64.deb'],
+    [{ platform: 'linux', arch: 'x64', appImage: '/opt/PearTune.AppImage' }, 'appimage', 'PearTune-1.0.0.AppImage'],
+    [{ platform: 'win32', arch: 'x64' }, 'windows', 'PearTune-Setup-1.0.0.exe'],
+    [{ platform: 'darwin', arch: 'arm64' }, 'macapp', 'PearTune-1.0.0-arm64.dmg'],
+    // The trap this release's naming actually contains: the Intel build is the BARE .dmg,
+    // so a lazy /\.dmg$/ would hand an Intel Mac the arm64 file.
+    [{ platform: 'darwin', arch: 'x64' }, 'macapp', 'PearTune-1.0.0.dmg']
+  ]
+  for (const [opts, applier, name] of cases) {
+    const plan = planApply(update, REAL_ASSETS, opts)
+    assert.equal(plan.name, name, `${opts.platform}/${opts.arch}`)
+    assert.equal(plan.applier, applier)
+    assert.ok(plan.sha256Url, 'every real artifact ships a sidecar; refusing without one is the rule')
+  }
+})
+
+test('no real desktop artifact is ever a phone build', () => {
+  const update = { available: true, latest: '1.0.0', current: '0.9.9' }
+  for (const p of ['win32', 'linux', 'darwin']) {
+    const plan = planApply(update, REAL_ASSETS, { platform: p, arch: 'x64', appImage: '' })
+    assert.ok(!/\.(apk|aab)$/i.test(plan.name), `${p} was handed ${plan.name}`)
+  }
+})

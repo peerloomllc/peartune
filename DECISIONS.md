@@ -8,6 +8,29 @@ Append-only, newest on top. See Constitution §4.
 > maintainer's own scratch, and the pointers are kept as written rather than rewritten after
 > the fact, because this file is append-only.
 
+## 2026-08-11 - A blind relay cannot attribute a session to a device, and it is not meant to
+Tier: T0 (a correction of the record; no code change). Moved here from TODO.md on 2026-08-11
+because it is a FACT, not a task - it could never be ticked off, so it sat on the open list
+making it longer and less true. Re-verified on the way in: still accurate.
+
+MY EARLIER CLAIM WAS WRONG AND IS WITHDRAWN. On 2026-07-27 I read the relay's `relay:pair` lines
+as identifying peers and concluded "none of these are mine, so the relay's load is other people".
+That does not follow, because those keys identify nothing durable.
+
+`new HyperDHT()` is constructed with **no keyPair** on both sides - `host/server.js:121` (options
+carry only bootstrap and an optional port) and `src/bare.js:929` / `:2059` - so a node's DHT key
+is **random per process**. The host uses its real identity only for `server.listen()`. So the
+keys in relay logs are per-process node keys, not device keys and not host keys.
+
+Proved live rather than argued: the Pixel was demonstrably relaying to the Umbrel while the
+Umbrel's host key `se4t5s91` appeared ZERO times in the relay's logs.
+
+CONSEQUENCE, and the reason this is worth keeping: Tim's own hosts and phones ARE in that traffic,
+under keys nobody can match. Anyone reading relay logs later must not re-derive the comfortable
+version. Real attribution would mean correlating relay timings against host-side connect logs -
+or accepting that a blind relay legitimately cannot know who its users are, which is the point of
+it being blind.
+
 ## 2026-08-01 - macOS installs by drag, not by installer wizard
 Tier: T1 (packaging; no host-logic, wire or data change). Confirmed by Tim after asking why the
 Mac install had no wizard like the seeders'.
