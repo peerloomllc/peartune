@@ -298,3 +298,133 @@ test('a half-configured LED request is ignored rather than half-written', () => 
   assert.ok(!haConfig({ led: { light: '', player: 'media_player.spk' } }).includes('peartune_led'))
   assert.ok(!haConfig({ led: { light: 'light.ring', player: '' } }).includes('peartune_led'))
 })
+
+// --- saying a room (2026-08-11) ----------------------------------------------
+//
+// "Put on Metallica in the kitchen." The host already accepted a target speaker
+// (cast.js: `body.entityId || cfg.voiceEntityId`); what was missing was Home Assistant
+// ever sending one.
+//
+// THE FIRST CUT HAD A SECOND SENTENCE SET - "put on {query} in [the] {room}" - and Tim's
+// Voice PE killed it in one utterance. Both patterns matched, so the automation ran twice:
+//
+//   voice:no-match {"query":"Metallica in the kitchen"}           <- the plain sentence
+//   voice:play     {"query":"Metallica","entityId":"...man cave"} <- the room sentence
+//
+// A spurious "I could not find that", AND the music in the wrong room. These pin the
+// redesign: one pattern, and the room is parsed out of what was said.
+
+const voiceAuto = () => yaml.load(CFG()).automation.find(a => a.alias === 'PearTune voice')
+const varSteps = (a) => a.actions.filter(s => s.variables).map(s => s.variables)
+const resolverOf = (a) => String(varSteps(a).find(v => v.target)?.target || '')
+
+test('the speaker is NOT passed as `entity_id`, which Home Assistant eats', () => {
+  // MEASURED ON TIM'S BOX, 2026-08-11, and it cost two rounds of hardware testing. The
+  // automation resolved the room correctly - HA answered "Playing Metallica IN THE KITCHEN"
+  // - and the host still received:
+  //
+  //   voice:play {"query":"Metallica","entityId":"media_player.home_assistant_voice_..."}
+  //
+  // ie. the man cave, its configured default, because body.entityId arrived EMPTY. The
+  // room resolution was never the bug: `entity_id` inside a service call's `data:` is Home
+  // Assistant's own legacy way of naming a TARGET entity, so it never reached the
+  // rest_command's payload template. Any name but that one works.
+  const src = CFG()
+  assert.ok(!/^\s+entity_id: "\{\{ (speaker|target)/m.test(src), 'entity_id in data is swallowed as a target')
+  const play = yaml.load(src).automation.find(a => a.alias === 'PearTune voice')
+    .actions.find(s => s.action === 'rest_command.peartune_play')
+  assert.equal(play.data.entity_id, undefined, 'the reserved name must not be used')
+  assert.ok(play.data.speaker_id, 'the speaker has to travel under a name HA will not take')
+})
+
+test('a room reaches the host, instead of being thrown away', () => {
+  // Assert on the PARSED payload, not the source text: inside a single-quoted YAML scalar
+  // the empty default is written '''' and unescapes to ''. Reading the raw file would be
+  // testing the escaping rather than what Home Assistant receives.
+  const payload = yaml.load(CFG()).rest_command.peartune_play.payload
+  assert.match(payload, /"entityId":"\{\{ speaker_id \| default\(''\) \}\}"/, 'the rest_command cannot carry a speaker')
+  assert.doesNotThrow(() => JSON.parse(payload.replace(/\{\{[^}]*\}\}/g, 'x')), 'the payload must still be JSON')
+  const step = voiceAuto().actions.find(s => s.action === 'rest_command.peartune_play')
+  assert.ok(step.data.speaker_id, 'the play step does not pass one')
+})
+
+test('THERE IS ONE SENTENCE SET, because two of them raced', () => {
+  const a = voiceAuto()
+  const convo = a.triggers.filter(t => t.trigger === 'conversation')
+  assert.equal(convo.length, 1, 'a second set means one utterance can fire this twice')
+  assert.ok(
+    convo[0].command.every(c => !c.includes('{room}')),
+    'no room wildcard: a wildcard cannot be told not to be greedy'
+  )
+})
+
+test('the room is taken from the END of what was said, not the start', () => {
+  // "Rock in the USA in the kitchen" has to keep the title and find the kitchen.
+  const r = String(varSteps(voiceAuto()).find(v => v.r)?.r || '')
+  assert.match(r, /rsplit\(' in ', 1\)/, 'splitting on the FIRST " in " would eat song titles')
+  assert.match(r, /t\[4:\]/, 'a leading "the" has to come off')
+})
+
+test('a room is looked up by AREA first, then by speaker NAME', () => {
+  // Measured on Tim's HA 2026-08-11: FOUR of his five speakers have no area at all, and
+  // are named for their rooms ("Kitchen speaker"). Areas alone would have found nothing
+  // outside the man cave.
+  const r = resolverOf(voiceAuto())
+  assert.match(r, /area_entities\(r\)/, 'no area lookup')
+  assert.match(r, /states\.media_player/, 'no name fallback')
+  assert.ok(r.indexOf('area_entities') < r.indexOf('states.media_player'), 'area is the more deliberate statement, so it wins')
+})
+
+test('the resolver uses NO regex, because HA has no regex_escape', () => {
+  // The first cut did, and Tim's own Home Assistant answered "No filter named
+  // 'regex_escape' found" - every room lookup would have thrown at runtime. Plain
+  // lowercase containment also survives the apostrophe in "Sarah's room", which resolved
+  // correctly against his real speakers.
+  const r = resolverOf(voiceAuto())
+  assert.ok(!r.includes('regex_escape'), 'regex_escape does not exist in Home Assistant')
+  assert.match(r, /\| lower\) in \(/, 'plain containment is what replaced it')
+})
+
+test('WORDS THAT ARE NOT A ROOM STAY PART OF THE SONG', () => {
+  // "Put on Rock in the USA" must search for the whole title. The only thing that can
+  // tell a room from a lyric is whether this house has a speaker by that name, so NONE
+  // means "not a room" and the search keeps every word.
+  const final = varSteps(voiceAuto()).find(v => v.search)
+  assert.ok(final, 'nothing decides what to search for')
+  assert.match(final.search, /else said/, 'an unmatched tail must fall back to the whole phrase')
+  assert.match(final.speaker, /else ''/, 'and it must NOT pick a speaker')
+  assert.match(final.room, /else ''/, 'nor claim a room in the spoken reply')
+})
+
+test('every variables step can only look BACKWARDS', () => {
+  // Each is its own action so a later step always sees an earlier one. Two variables in
+  // one block referencing each other is the kind of thing that fails silently, and this
+  // feature was already bitten once by a template that rendered empty in production while
+  // working standalone.
+  const steps = varSteps(voiceAuto())
+  assert.ok(steps.length >= 4, 'the pipeline should be several small steps')
+  const defined = new Set()
+  for (const step of steps) {
+    for (const [name, tpl] of Object.entries(step)) {
+      for (const other of Object.keys(step)) {
+        if (other === name) continue
+        assert.ok(
+          !new RegExp(`\\b${other}\\b`).test(String(tpl)),
+          `${name} reads ${other} from its own block - move it to a later step`
+        )
+      }
+    }
+    Object.keys(step).forEach(k => defined.add(k))
+  }
+})
+
+test('the LLM path takes a room too, and resolves it identically', () => {
+  const doc = yaml.load(CFG())
+  const intent = doc.intent_script.PearTunePlayMusic
+  assert.ok(intent.parameters.room, 'an LLM agent cannot pass a room')
+  const intentResolver = String(intent.action.find(s => s.variables)?.variables?.target || '')
+  // Same text, not merely similar: two copies WILL drift about what a room means.
+  assert.match(intentResolver, /area_entities\(r\)/)
+  assert.match(intentResolver, /states\.media_player/)
+  assert.ok(!intentResolver.includes('regex_escape'))
+})

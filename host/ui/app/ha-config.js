@@ -136,6 +136,34 @@ const MUSIC_FOR = '00:00:05'
 // Fail-open. An unknown entity id makes states() return 'unknown' rather than an error, so a
 // device that names its satellite differently behaves exactly as it did before this branch
 // existed instead of losing the ring entirely.
+// WHICH SPEAKER DID THEY MEAN? One template, used by both the spoken sentences and the
+// intent_script, so the two can never drift into disagreeing about a room.
+//
+// Expects `r` to be set to the spoken room, already trimmed. Renders the entity id, or the
+// sentinel NONE when a room WAS said and nothing matched - which the caller must treat as
+// "say so", never as "use the default speaker".
+//
+// NO REGEX. The first cut used `selectattr('name','search', '(?i)' ~ (r | regex_escape))` and
+// Tim's own Home Assistant rejected it: **there is no `regex_escape` filter in HA's Jinja.**
+// Every room lookup would have thrown at runtime. Caught by rendering this against his real HA
+// through /api/template before shipping it, which is the only reason it is not in this file.
+// Plain lowercase containment needs no escaping and cannot be broken by an apostrophe or a
+// bracket in someone's room name.
+const ROOM_TO_SPEAKER = `{%- if r -%}
+                {%- set by_area = area_entities(r) | select('search', '^media_player\\\\.') | list -%}
+                {%- if by_area -%}
+                  {{ by_area[0] }}
+                {%- else -%}
+                  {%- set ns = namespace(hit='') -%}
+                  {%- for s in states.media_player -%}
+                    {%- if ns.hit == '' and (r | lower) in (s.name | lower) -%}
+                      {%- set ns.hit = s.entity_id -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.hit if ns.hit else 'NONE' }}
+                {%- endif -%}
+              {%- endif -%}`
+
 const AT_REST = "['idle', 'unknown', 'unavailable']"
 const assistantBusy = satellite => (satellite ? `states('${satellite}') not in ${AT_REST}` : 'false')
 const assistantIdle = satellite => (satellite ? `states('${satellite}') in ${AT_REST}` : 'true')
@@ -288,7 +316,7 @@ export function haConfig ({ port = 8742, token = '', speakerEntity = '', led = n
     url: "http://127.0.0.1:${port}/voice/play"
     method: POST
     content_type: "application/json"
-    payload: '{"token":"${token}","query":"{{ query }}","entityId":""}'
+    payload: '{"token":"${token}","query":"{{ query }}","entityId":"{{ speaker_id | default('''') }}"}'
   peartune_control:
     url: "http://127.0.0.1:${port}/voice/control"
     method: POST
@@ -296,6 +324,41 @@ export function haConfig ({ port = 8742, token = '', speakerEntity = '', led = n
     payload: '{"token":"${token}","action":"{{ action }}"}'
 
 automation:
+  # ONE SET OF SENTENCES, AND THE ROOM IS PARSED OUT OF WHAT WAS SAID.
+  #
+  # The first cut had a second set - "put on {query} in [the] {room}" - and Tim's own
+  # Voice PE proved it wrong within a minute. BOTH patterns matched one utterance, so the
+  # automation ran TWICE off a single "put on Metallica in the kitchen":
+  #
+  #   voice:no-match {"query":"Metallica in the kitchen"}          <- the plain sentence
+  #   voice:play     {"query":"Metallica","entityId":"...man cave"} <- the room sentence
+  #
+  # He got a spurious "I could not find that" AND the music in the wrong room. A wildcard
+  # cannot be told not to be greedy, and two patterns that can both match one sentence are
+  # a race, not a design.
+  #
+  # So there is one pattern, and the room is found by asking a question only THIS HOUSE can
+  # answer: take the text after the last " in ", and see whether it names a speaker. If it
+  # does, it was a room. If it does not, it was part of the song - which is why
+  # "put on Rock in the USA" still searches for the whole title.
+  #
+  # WHY THE LOOKUP CHECKS TWO PLACES, and it is not belt-and-braces - it is what a real
+  # house looks like. Measured on Tim's Home Assistant, 2026-08-11:
+  #
+  #   media_player.kitchen_speaker              area=None   "Kitchen speaker"
+  #   media_player.master_bedroom_speaker       area=None   "Master Bedroom speaker"
+  #   media_player.home_assistant_voice_...     area=Man Cave
+  #
+  # FOUR OF HIS FIVE SPEAKERS HAVE NO AREA, and they are named for their rooms, because
+  # that is what people type when setting a Chromecast up. Areas are the tidy Home
+  # Assistant answer and area-only would have found nothing outside the man cave - built,
+  # shipped, and useless in the house it was built for. So: area first (the more
+  # deliberate statement), then the speaker's own name.
+  #
+  # EACH "variables:" STEP IS ITS OWN ACTION, on purpose. A later step can always see an
+  # earlier step's variables; whether two variables in the SAME block can see each other is
+  # exactly the kind of thing that fails silently, and one of those bit this feature once
+  # already.
   - alias: PearTune voice
     mode: queued
     triggers:
@@ -306,12 +369,34 @@ automation:
           - "I want to listen to [some] {query}"
           - "play [some] {query} from peartune"
     actions:
+      - variables:
+          said: "{{ trigger.slots.query | default('') | trim }}"
+      # The candidate room: everything after the LAST " in ", without a leading "the".
+      # Last, not first, so "Rock in the USA in the kitchen" still finds the kitchen.
+      - variables:
+          r: >-
+            {%- set parts = said.rsplit(' in ', 1) -%}
+            {%- if parts | count == 2 -%}
+              {%- set t = parts[1] | trim -%}
+              {{ (t[4:] | trim) if (t[:4] | lower == 'the ') else t }}
+            {%- endif -%}
+      - variables:
+          target: >-
+            ${ROOM_TO_SPEAKER}
+      # NONE means "that was not a room", so it stays part of what to search for. Nothing
+      # here can send the music to a room nobody asked for: either the tail named a speaker
+      # in this house, or it is treated as words in a title.
+      - variables:
+          room: "{{ r if (target and target != 'NONE') else '' }}"
+          search: "{{ said.rsplit(' in ', 1)[0] | trim if (target and target != 'NONE') else said }}"
+          speaker: "{{ target if (target and target != 'NONE') else '' }}"
       - action: rest_command.peartune_play
         data:
-          query: "{{ trigger.slots.query }}"
+          query: "{{ search }}"
+          speaker_id: "{{ speaker }}"
         response_variable: result
       - set_conversation_response: >-
-          {% if result.status != 200 %}I could not find {{ trigger.slots.query }} in your library{% elif result.content.kind == 'artist' %}Playing {{ result.content.artist }}{% elif result.content.kind == 'album' %}Playing the album {{ result.content.title }}{% elif result.content.artist %}Playing {{ result.content.title }} by {{ result.content.artist }}{% else %}Playing {{ result.content.title }}{% endif %}
+          {% if result.status != 200 %}I could not find {{ search }} in your library{% if r and not room %}, and I do not know a speaker called {{ r }}{% endif %}{% elif result.content.kind == 'artist' %}Playing {{ result.content.artist }}{% elif result.content.kind == 'album' %}Playing the album {{ result.content.title }}{% elif result.content.artist %}Playing {{ result.content.title }} by {{ result.content.artist }}{% else %}Playing {{ result.content.title }}{% endif %}{% if room %} in the {{ room }}{% endif %}
 
   - alias: PearTune voice controls
     mode: queued
@@ -365,10 +450,25 @@ intent_script:
     parameters:
       search_query:
         description: The artist, album or song to play
+      room:
+        description: >-
+          Which room or speaker to play in, if the user named one - "the kitchen",
+          "Sarah's room". Leave it out entirely when they did not, and PearTune uses
+          the speaker it was set up with.
     action:
+      # The same two-step lookup the spoken sentences use, for the same reason: an area
+      # is the tidy answer and a name is what most people actually have. See the note on
+      # the automation above.
+      - variables:
+          target: >-
+            {%- set r = room | default('') | trim -%}
+            ${ROOM_TO_SPEAKER}
+      - condition: template
+        value_template: "{{ target != 'NONE' }}"
       - action: rest_command.peartune_play
         data:
           query: "{{ search_query }}"
+          speaker_id: "{{ target | default('') }}"
     speech:
       text: "Playing {{ search_query }}"
 `
