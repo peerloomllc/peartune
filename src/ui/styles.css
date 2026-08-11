@@ -339,8 +339,14 @@ ul.tracks.editing li.editrow { gap: .5rem; background: var(--color-surface-base)
 
 /* --- downloads / pinning (phase 5C) ---------------------------------------- */
 /* The favorite + download pills sit on one wrapping row under the album title. */
+/* Favorite + Download in an album/artist header. They WRAP - the header column is narrow
+   next to a big cover, and "Download 3 more" is a long pill - so they end up stacked as
+   often as they sit side by side.
+   EQUAL WIDTH EITHER WAY (Tim, 2026-08-11): `flex: 1 1 0` gives them the same share of the
+   row when they fit, and full width each when they stack. Content-sized pills stacked into
+   a ragged left edge is the thing being fixed, so the label is centred too. */
 .headacts { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .7rem; }
-.headacts .favhead { margin-top: 0; }
+.headacts .favhead { margin-top: 0; flex: 1 1 0; justify-content: center; min-width: 8.5rem; }
 /* "Downloading…" badge on an in-progress cover in the Downloads grid. */
 .dlbadge {
   position: absolute; left: .4rem; bottom: 3.2rem; z-index: 2;
