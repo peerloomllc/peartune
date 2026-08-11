@@ -316,7 +316,7 @@ export function haConfig ({ port = 8742, token = '', speakerEntity = '', led = n
     url: "http://127.0.0.1:${port}/voice/play"
     method: POST
     content_type: "application/json"
-    payload: '{"token":"${token}","query":"{{ query }}","entityId":"{{ entity_id | default('''') }}"}'
+    payload: '{"token":"${token}","query":"{{ query }}","entityId":"{{ speaker_id | default('''') }}"}'
   peartune_control:
     url: "http://127.0.0.1:${port}/voice/control"
     method: POST
@@ -393,7 +393,7 @@ automation:
       - action: rest_command.peartune_play
         data:
           query: "{{ search }}"
-          entity_id: "{{ speaker }}"
+          speaker_id: "{{ speaker }}"
         response_variable: result
       - set_conversation_response: >-
           {% if result.status != 200 %}I could not find {{ search }} in your library{% if r and not room %}, and I do not know a speaker called {{ r }}{% endif %}{% elif result.content.kind == 'artist' %}Playing {{ result.content.artist }}{% elif result.content.kind == 'album' %}Playing the album {{ result.content.title }}{% elif result.content.artist %}Playing {{ result.content.title }} by {{ result.content.artist }}{% else %}Playing {{ result.content.title }}{% endif %}{% if room %} in the {{ room }}{% endif %}
@@ -468,7 +468,7 @@ intent_script:
       - action: rest_command.peartune_play
         data:
           query: "{{ search_query }}"
-          entity_id: "{{ target | default('') }}"
+          speaker_id: "{{ target | default('') }}"
     speech:
       text: "Playing {{ search_query }}"
 `

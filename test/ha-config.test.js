@@ -318,15 +318,34 @@ const voiceAuto = () => yaml.load(CFG()).automation.find(a => a.alias === 'PearT
 const varSteps = (a) => a.actions.filter(s => s.variables).map(s => s.variables)
 const resolverOf = (a) => String(varSteps(a).find(v => v.target)?.target || '')
 
+test('the speaker is NOT passed as `entity_id`, which Home Assistant eats', () => {
+  // MEASURED ON TIM'S BOX, 2026-08-11, and it cost two rounds of hardware testing. The
+  // automation resolved the room correctly - HA answered "Playing Metallica IN THE KITCHEN"
+  // - and the host still received:
+  //
+  //   voice:play {"query":"Metallica","entityId":"media_player.home_assistant_voice_..."}
+  //
+  // ie. the man cave, its configured default, because body.entityId arrived EMPTY. The
+  // room resolution was never the bug: `entity_id` inside a service call's `data:` is Home
+  // Assistant's own legacy way of naming a TARGET entity, so it never reached the
+  // rest_command's payload template. Any name but that one works.
+  const src = CFG()
+  assert.ok(!/^\s+entity_id: "\{\{ (speaker|target)/m.test(src), 'entity_id in data is swallowed as a target')
+  const play = yaml.load(src).automation.find(a => a.alias === 'PearTune voice')
+    .actions.find(s => s.action === 'rest_command.peartune_play')
+  assert.equal(play.data.entity_id, undefined, 'the reserved name must not be used')
+  assert.ok(play.data.speaker_id, 'the speaker has to travel under a name HA will not take')
+})
+
 test('a room reaches the host, instead of being thrown away', () => {
   // Assert on the PARSED payload, not the source text: inside a single-quoted YAML scalar
   // the empty default is written '''' and unescapes to ''. Reading the raw file would be
   // testing the escaping rather than what Home Assistant receives.
   const payload = yaml.load(CFG()).rest_command.peartune_play.payload
-  assert.match(payload, /"entityId":"\{\{ entity_id \| default\(''\) \}\}"/, 'the rest_command cannot carry a speaker')
+  assert.match(payload, /"entityId":"\{\{ speaker_id \| default\(''\) \}\}"/, 'the rest_command cannot carry a speaker')
   assert.doesNotThrow(() => JSON.parse(payload.replace(/\{\{[^}]*\}\}/g, 'x')), 'the payload must still be JSON')
   const step = voiceAuto().actions.find(s => s.action === 'rest_command.peartune_play')
-  assert.ok(step.data.entity_id, 'the play step does not pass one')
+  assert.ok(step.data.speaker_id, 'the play step does not pass one')
 })
 
 test('THERE IS ONE SENTENCE SET, because two of them raced', () => {
