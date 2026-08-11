@@ -86,13 +86,19 @@ intent_script:
     parameters:
       search_query:
         description: The artist, album or song to play
-      area:
-        description: Which room or speaker to play on, if the user said one
+      room:
+        description: Which room or speaker to play in, if the user named one
     action:
+      # NOT `entity_id`. That name is Home Assistant's own way of saying "which entity is
+      # this call aimed at", so it is lifted out of `data` and never reaches the
+      # rest_command's payload template - the speaker silently vanishes and PearTune falls
+      # back to its default one. Measured the hard way on 2026-08-11: Home Assistant said
+      # "Playing Metallica in the kitchen" while the music started in the man cave. Any
+      # other name works; the generated config uses `speaker_id`.
       - service: rest_command.peartune_play
         data:
           query: "{{ search_query }}"
-          entity_id: "{{ speaker_entity | default('') }}"
+          speaker_id: "{{ room_entity | default('') }}"
     speech:
       text: "Playing {{ search_query }}"
 ```
@@ -152,6 +158,30 @@ lists:
 ```
 
 Restart Home Assistant, then try it: **"Okay Nabu, play Led Zeppelin."**
+
+**Restart it - do not just reload the automations.** The sentences live in an automation, but
+the call into PearTune is a `rest_command`, and those are two separate reloads. Reload only the
+automations after an update and the new sentences run against the old call, which fails in the
+most confusing way available: the right thing is said out loud and the wrong thing happens.
+
+## Saying a room
+
+**"Okay Nabu, put on Metallica in the kitchen."** The room is optional - leave it out and it
+plays wherever PearTune was set up to play.
+
+How the room is worked out, in this order:
+
+1. **A Home Assistant area of that name** that contains a media player.
+2. **A speaker whose NAME contains it** - "Kitchen speaker", "Master Bedroom speaker". This is
+   the one that usually fires, because Chromecasts are typically named for their room and never
+   assigned to an area at all.
+3. **Neither** - and then those words were not a room. They stay part of what to search for, so
+   *"put on Rock in the USA"* still looks for the song rather than a speaker called the USA. If
+   nothing turns up, the reply says both: it could not find the music, and it does not know a
+   speaker by that name.
+
+Nothing here can send music to a room you did not ask for. Either the words after "in" named a
+speaker in your house, or they were treated as part of the title.
 
 ## What it plays
 
