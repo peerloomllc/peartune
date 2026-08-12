@@ -28,7 +28,11 @@ const os = require('os')
 const { execFileSync } = require('child_process')
 
 const COUNT = Number(process.argv[2]) || 40
-const OUT_DIR = path.join(__dirname, '..', 'metadata', 'screenshot-fixtures')
+// PEARTUNE_FIXTURE_OUT lets the tests write somewhere disposable. Without it they clobbered the
+// real fixture as a side effect of running - and the capture run then shot whatever album count
+// the last test happened to ask for (24, not the 40 this script defaults to). A test that
+// silently changes what a build uses is worse than no test.
+const OUT_DIR = process.env.PEARTUNE_FIXTURE_OUT || path.join(__dirname, '..', 'metadata', 'screenshot-fixtures')
 const SIZE = 400 // covers render at ~150-300px in the grids; 400 has headroom without bloat
 
 // --- deterministic randomness ------------------------------------------------

@@ -13,14 +13,18 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('fs')
 const path = require('path')
+const os = require('os')
 const { execFileSync } = require('child_process')
 
 const SCRIPT = path.join(__dirname, '..', 'scripts', 'make-screenshot-fixture.js')
-const PACK = path.join(__dirname, '..', 'metadata', 'screenshot-fixtures', 'pack.json')
+// A DISPOSABLE OUTPUT DIR. These tests used to write to the real fixture path, so running the
+// suite left metadata/screenshot-fixtures/pack.json holding whatever the last test asked for -
+// and the next store capture silently shot that instead of the intended library.
+const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'peartune-fixture-test-'))
 
 const build = (n = 6) => {
-  execFileSync('node', [SCRIPT, String(n)], { stdio: 'pipe' })
-  return JSON.parse(fs.readFileSync(PACK, 'utf8'))
+  execFileSync('node', [SCRIPT, String(n)], { stdio: 'pipe', env: { ...process.env, PEARTUNE_FIXTURE_OUT: OUT } })
+  return JSON.parse(fs.readFileSync(path.join(OUT, 'pack.json'), 'utf8'))
 }
 
 // ImageMagick draws the covers. On a machine without it there is nothing to test and nothing

@@ -155,7 +155,10 @@ export default function App () {
   const [queue, setQueue] = useState(null) // the up-next list, when opened
   const [note, setNote] = useState(null) // a transient confirmation
   const [viewing, setViewing] = useState(null) // artwork, full screen
-  const [expanded, setExpanded] = useState(false) // the player: mini vs full
+  // The player: mini vs full. NOT initialised from sceneOpens('player') - tried, and it cannot
+  // work: this runs on the first render, before the scene number reaches window. The screenshot
+  // path opens it from runScene instead, which runs once init has resolved. See screenshot.js.
+  const [expanded, setExpanded] = useState(false)
   const [skin, setSkin] = useState('modern') // player skin: modern | classic (the retro Winamp-style face)
   // Show the Recently Added shelf above the album grid. A SETTING, not a dismiss (Tim asked for
   // "hide/dismiss"): a dismiss has to answer "when does it come back?", and any answer to that is
@@ -1157,7 +1160,15 @@ export default function App () {
   const viewReadyRef = useRef(false) // nothing is persisted until the restore has run
   const viewTimer = useRef(null)
   const pendingScrollRef = useRef(0) // a restore target still waiting for its content
-  const pendingExpandedRef = useRef(false) // ditto, waiting for the shell to re-announce the track
+  // STATE, NOT A REF, and that is the whole fix. This waits for the shell to re-announce the
+  // track, and the two halves - "the snapshot said expanded" and "a track arrived" - can land in
+  // EITHER ORDER. As a ref, only one order worked: setting it re-ran nothing, so if the track was
+  // already in flight when the snapshot was applied, the effect below had had its one chance and
+  // the player stayed a mini bar forever. As state, whichever half lands second re-runs the
+  // effect. Found on 2026-08-12 in the store capture - scene 1 is meant to be the full-screen
+  // player and shot a thumbnail twice - but it is not a screenshot bug: it is the same path a
+  // real relaunch takes when you left the app with the full player open.
+  const [pendingExpanded, setPendingExpanded] = useState(false)
 
   // Snapshot on a trailing debounce. Navigation coalesces (a tab tap that drops a
   // stack is two state changes, one write) and scrolling writes once you stop, not
@@ -1217,10 +1228,10 @@ export default function App () {
   // matters for more than looks: `canBack` counts `expanded`, so setting it with
   // nothing playing would render nothing at all while still swallowing a back press.
   useEffect(() => {
-    if (!pendingExpandedRef.current || !now) return
-    pendingExpandedRef.current = false
+    if (!pendingExpanded || !now) return
+    setPendingExpanded(false)
     setExpanded(true)
-  }, [now])
+  }, [pendingExpanded, now])
 
   // Apply the snapshot from settings.json. Returns it so init() can skip the album
   // load when the restored view is not the album grid. Call it BEFORE that load: the
@@ -1246,7 +1257,9 @@ export default function App () {
     if (v.tab !== 'library') setTab(v.tab)
     if (v.tab === 'you') openYouView(v.youView)
     if (v.stack.length) setStack(v.stack)
-    if (v.expanded) pendingExpandedRef.current = true
+    // Order does not matter here - see the note on pendingExpanded. The track may already have
+    // arrived, or may be seconds away; whichever half lands second opens the player.
+    if (v.expanded) setPendingExpanded(true)
     // Artists / genres / songs each load their own list. Albums is the default and
     // init() loads it, so it is the one view this must NOT ask for twice.
     //
@@ -1275,7 +1288,7 @@ export default function App () {
   // script - never reaches the call at all.
   useEffect(() => {
     if (!window.__pearScreenshotScene || state.loading) return
-    runScene({ openOwnerPair })
+    runScene({ openOwnerPair, openPlayer: () => setExpanded(true) })
   }, [state.loading])
 
   // The dock (player + navbar) is fixed, so the content underneath has to know how
