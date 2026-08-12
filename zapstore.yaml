@@ -59,20 +59,33 @@ tags:
 license: MIT
 website: https://peerloomllc.com/peartune/
 
-# NO images: block, and this is now a deliberate CHOICE rather than a gap.
+images:
+  - metadata/store/android/scene-2.webp
+  - metadata/store/android/scene-3.webp
+  - metadata/store/android/scene-4.webp
+  - metadata/store/android/scene-5.webp
+  - metadata/store/android/scene-6.webp
+
+# WHY THESE ARE COMMITTED WHEN NOTHING ELSE UNDER metadata/ IS, and why there are five.
 #
-# The capture works. scripts/android-screenshots.sh drives the app through six numbered
-# scenes and produces six framed PNGs under metadata/android/screenshots/Pixel_9_Framed/.
+# The first Zapstore listing went up with no pictures at all. Not the release script and not a
+# missing credential: this file had no `images:` block, because the only screenshots that existed
+# rendered REAL commercial album art out of a real library. That cannot live in a public MIT repo,
+# so the captures are gitignored, so this file could not point at them - and the publish did
+# exactly what it was told.
 #
-# They are NOT committed, and that is why they cannot be listed here. Every frame renders
-# real album art out of a real library (see scripts/screenshot-fixture.sh) - fine in a store
-# listing, not fine in a public MIT repo's git history - so both the fixture and the captures
-# are gitignored. Pointing this file at those paths would fail the publish on a clean
-# checkout, which is worse than shipping without images.
+# Fixed by INVENTING the library: scripts/make-screenshot-fixture.js draws 40 albums that belong
+# to nobody, deterministically, so anyone can regenerate exactly what shipped. These five are the
+# framed output, converted to WebP - 320 KB the whole set, against 15 MB of PNGs.
 #
-# To publish with screenshots, either commit a set built from art that can be committed, or
-# host them somewhere the publish step can fetch. Regenerate any time:
-#   ./scripts/android-screenshots.sh
+# FIVE, NOT SIX. Scene 1 is the full-screen player, and on a freshly wiped device it captures the
+# MINI player instead - the one frame whose entire subject is the artwork. Three attempted fixes
+# on 2026-08-12 did not change it and the cause is not yet understood; see TODO.md. Shipping the
+# five that are right beats holding the listing hostage to the sixth.
+#
+# Regenerate:
+#   node scripts/make-screenshot-fixture.js && ./scripts/android-screenshots.sh
+#   then convert metadata/android/screenshots/Pixel_9_Framed/dark/*.png to WebP into here.
 
 metadata_sources:
   - github
