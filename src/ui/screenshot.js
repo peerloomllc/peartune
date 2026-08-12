@@ -263,8 +263,15 @@ export function runScene ({ openOwnerPair }) {
   const emit = (name, data) => { if (typeof window.__pearEvent === 'function') window.__pearEvent(name, data) }
 
   if (scene.opens === 'player' && fx && fx.albums.length) {
+    // A FIXTURE MAY CARRY ITS OWN HERO, and when it does that album is deliberately NOT in
+    // `albums` - so it never reaches a grid. The synthetic fixture uses this to put REAL cover
+    // art in the one frame where a cover fills the screen while the browse grids stay a single
+    // coherent invented label; mixing bold real sleeves into forty muted generated ones reads
+    // as a mistake rather than as variety. See scripts/make-screenshot-fixture.js.
     const i = heroIndex(fx)
-    const t = asTrack(fx, fx.albums[i], 0)
+    const t = fx.hero
+      ? { ...asTrack(fx, fx.hero.album, 0), ...fx.hero.track, art: art(fx, fx.hero.album.coverId), artFull: art(fx, fx.hero.album.coverId), album: fx.hero.album.name }
+      : asTrack(fx, fx.albums[i], 0)
     // The same two messages the shell sends when playback really starts (app/index.tsx
     // announceToUi + pushStatus), so the player renders from its own live state.
     emit('play:started', {
