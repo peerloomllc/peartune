@@ -116,6 +116,19 @@ a { color: var(--primary-strong); }
   border: 1px solid color-mix(in srgb, var(--bad) 40%, var(--border)); border-radius: var(--radius-sm);
   padding: 9px 13px; font-size: 13.5px;
 }
+/* News, not a fault. The red banner means something is BROKEN, and a new release is
+   not that, so this one borrows the brand colour instead. */
+.banner.info {
+  background: color-mix(in srgb, var(--primary) 11%, var(--surface));
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--border));
+  display: flex; align-items: center; gap: 10px;
+}
+.banner.info a { color: var(--primary); }
+.bannerx {
+  margin-left: auto; flex: 0 0 auto; background: none; border: 0; color: var(--muted);
+  font-size: 17px; line-height: 1; padding: 2px 4px; cursor: pointer; border-radius: var(--radius-sm);
+}
+.bannerx:hover { color: var(--text); background: color-mix(in srgb, var(--primary) 12%, transparent); }
 
 /* stat rail */
 .stats { flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
@@ -290,6 +303,19 @@ label { display: block; margin: 10px 0 4px; color: var(--subtle); font-size: 12p
 .autoscan { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; font-size: 13px; color: var(--muted); }
 .autoscan select { width: auto; min-width: 156px; }
 .srcactions button { width: 100%; }
+/* The Speakers panel has TWO buttons, not the source panel's three, so the 3-column
+   grid left them hugging the left edge with a dead third column. Centre them on
+   their own row instead of stretching them to a grid that no longer fits. */
+.srcactions.center { display: flex; justify-content: center; }
+/* The generated Home Assistant config. Monospace and scrollable rather than wrapped:
+   YAML is whitespace-significant and a soft-wrapped copy is a broken copy. */
+.setupyaml { width: 100%; font-size: 12px; line-height: 1.45; white-space: pre; overflow-x: auto; resize: vertical; }
+/* The speakers we can see are a RESULT, not another field, so they get their own block
+   under a rule rather than trailing the form as a bare right-aligned list. Rows reuse
+   .rootrow (the folder list's card) so a found speaker looks like a configured thing. */
+.foundlist { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 2px; }
+.foundname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.srcactions.center button { width: auto; min-width: 116px; }
 .srcmsg { text-align: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
 .srcmsg.ok { color: var(--good); }
 .srcmsg.bad { color: var(--bad); }
@@ -587,6 +613,17 @@ button.destructive { background: var(--bad); color: #fff; }
   /* The folder browser's list is a fixed 244px on desktop; on a phone that can push
      the bottom-sheet taller than the screen, so cap it to the viewport. */
   .fb-list { height: auto; max-height: 40vh; min-height: 160px; }
+
+  /* FOUR TABS DO NOT FIT ON A PHONE. Each button is flex:1 with an ellipsis, which was
+     invisible at three tabs and clipped "People & Devices" and "Music Source" the moment
+     Speakers made it four. Wrap instead of shrinking: every label stays readable, and a
+     fifth or sixth tab costs nothing rather than needing this decided again.
+     `flex: 1 1 auto` + a min-width lets two sit per row and the last stretch to fill. */
+  .tabbar { flex-wrap: wrap; }
+  /* EXACTLY half a row each, so the four sit as an even 2x2 rather than sizing to their
+     labels - "Requests" is a third the width of "People & Devices", and flex:auto made
+     that difference visible as soon as they wrapped. The 4px is half the 8px gap. */
+  .tabbar > button { flex: 0 0 calc(50% - 4px); min-width: 0; }
 
   .stats { gap: 8px; }
   .stat { padding: 12px; }

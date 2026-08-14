@@ -13,7 +13,7 @@
 // dies, the loopback stream breaks, and the music stops. That is the product.
 
 import { useEffect, useRef, useState } from 'react'
-import { View, StatusBar, BackHandler, Appearance, AppState, NativeModules, Platform, Settings, Share } from 'react-native'
+import { View, Text, StatusBar, BackHandler, Appearance, AppState, NativeModules, Platform, Settings, Share } from 'react-native'
 import { WebView } from 'react-native-webview'
 import * as Linking from 'expo-linking'
 import * as Clipboard from 'expo-clipboard'
@@ -179,6 +179,19 @@ export default function App () {
   // Set by next/prev/playIndex so the status listener can tell a user skip from a
   // track ending on its own - only the latter should trip end-of-track sleep.
   const manualNav = useRef(false)
+  // CAST MODE (proposal 2026-08-02). A Home Assistant speaker is the output, so this
+  // player is the BRAIN but not the voice: it still owns the queue, the shuffle order,
+  // the repeat mode and what "next" means, and every track change still announces itself
+  // to the UI - which forwards it to the speaker. It just makes no sound while muted and
+  // held paused. Nothing here re-hands the playlist, so gapless and the shuffle order
+  // survive a round trip through casting (the reason setShuffle delegates to ExoPlayer
+  // in the first place - see its comment).
+  const castMode = useRef(false)
+  // Which speaker the cast is on, and whether we believe it is paused. The shell needs
+  // both to answer a lock-screen press, and it cannot ask the UI - the WebView may be
+  // asleep or gone while the lock screen is very much awake.
+  const castEntity = useRef<string | null>(null)
+  const castSpeakerPaused = useRef(false)
   // A pending queue swap after a LIBRARY SWITCH while a track is playing (multi-host). Holds
   // the NEW library's saved queue snapshot; the current track is left to play out (drain),
   // and when it ends we load + play this snapshot. Null when not draining. While set,
@@ -199,6 +212,9 @@ export default function App () {
   // library" rather than freeze.
   const drainStall = useRef({ pos: -1, at: 0 })
   const [uiHtml, setUiHtml] = useState<string | null>(null)
+  // Set only when the boot sequence threw. There is no WebView in that case, so this is the
+  // one message the app is still able to show.
+  const [bootError, setBootError] = useState<string | null>(null)
   const [scheme, setScheme] = useState<'light' | 'dark'>('dark')
   // Whether the UI has a screen or overlay to pop. Suite convention
   // (shell:navState): when it is false we let the press fall through and Android
@@ -307,6 +323,28 @@ export default function App () {
       player.current = p
 
       p.addListener('playbackStatusUpdate', (s: any) => {
+        // A STRAY PLAY WHILE CASTING, and this is the one that bites hardest.
+        //
+        // The lock screen and headset buttons reach ExoPlayer through its MediaSession,
+        // NOT through our toggle() - so the guard there never saw them. Measured on the
+        // TCL 2026-08-02: pressing play during a cast raced the queue at roughly a track
+        // every few seconds (each slot is one second of silence) and then killed the
+        // player outright. It destroyed the cast rather than doing nothing.
+        //
+        // So catch it here, where every play arrives whatever pressed it: pause again at
+        // once, and treat the press as what the person meant - pause or resume THE
+        // SPEAKER, alternating, since one button is all the lock screen gives them.
+        if (castMode.current && p.playing) {
+          try { p.pause() } catch {}
+          const entityId = castEntity.current
+          if (entityId) {
+            const paused = !castSpeakerPaused.current
+            castSpeakerPaused.current = paused
+            call(paused ? 'speakerPause' : 'speakerResume', { entityId }).catch(() => {})
+          }
+          return
+        }
+
         // ExoPlayer owns the queue now, so IT decides when we crossed into the
         // next track. Trust its index rather than counting didJustFinish events.
         const i = p.currentQueueIndex ?? indexRef.current
@@ -316,6 +354,19 @@ export default function App () {
           indexRef.current = i
           announce(i)
           persistQueue(true) // a track advanced - save the new index right away
+
+          // AND SEND IT TO THE SPEAKER FROM HERE (proposal 2026-08-02-cast-control-lives-
+          // in-the-shell). This used to be the UI's job, off the back of play:started - but
+          // Android freezes the WebView with the screen, so a lock-screen next queued up and
+          // only fired when the app was reopened. Tim saw exactly that. Every other link in
+          // this chain already runs in the shell; this was the one that did not.
+          if (castMode.current && castEntity.current) {
+            const t = queueRef.current[i]
+            if (t) {
+              castSpeakerPaused.current = false
+              call('speakerPlay', { entityId: castEntity.current, trackId: t.id }).catch(() => {})
+            }
+          }
 
           // Sleep timer, end-of-track mode: the previous song finished ON ITS OWN
           // (not a user skip), so pause at the top of this next track - the natural
@@ -630,6 +681,12 @@ export default function App () {
   function toggle () {
     const p = player.current
     if (!p) return
+    // While casting, this player is a silent placeholder queue - playing it would race
+    // through a track a second and cast each one. The UI routes its own play/pause to the
+    // SPEAKER; this guard is for the lock screen and headset buttons, which reach here
+    // directly and cannot be intercepted upstream. They do nothing during a cast, which is
+    // a known gap rather than a good answer (TODO).
+    if (castMode.current) return
     if (p.playing) p.pause()
     else p.play()
     // Flush the new play/pause state (and exact position) to the host session at once. A pause
@@ -637,6 +694,74 @@ export default function App () {
     // another device's card would keep saying "Playing on <name>" and a takeover would seek to
     // a stale spot. The forced snapshot reads player.playing, which pause()/play() just set.
     persistQueue(true)
+  }
+
+  // --- cast mode (proposal 2026-08-02) --------------------------------------
+  //
+  // Entering mutes and holds this player paused; leaving unmutes and resumes. The queue
+  // is NOT touched, so skipToNext, skipToPrevious, the shuffle order, the repeat mode,
+  // queue taps and the lock-screen buttons all keep working - they simply make no sound
+  // here, and the UI forwards each resulting play:started to the speaker.
+  //
+  // Resuming on the way out restarts the CURRENT track rather than seeking into it: the
+  // speaker reports no position of its own (the Voice PE has no media_position), so
+  // there is no honest place to resume from. Proposal open question 3.
+  async function setCastMode (on: boolean, entityId: string | null = null) {
+    const p = player.current as any
+    castMode.current = !!on
+    castEntity.current = on ? entityId : null
+    castSpeakerPaused.current = false
+
+    if (on) {
+      if (p) {
+        try {
+          p.volume = 0
+          p.pause()
+          // AND POINT EVERY QUEUE SLOT AT SILENCE. The player has to stay loaded - it is
+          // what owns the order, shuffle and repeat - but a loaded player buffers whatever
+          // track it sits on whether or not anyone can hear it. Measured on the TCL
+          // 2026-08-02: casting four tracks pulled 7 MB the phone never played, about
+          // 1.75 MB a track, which on cellular is close to the cost of just listening.
+          //
+          // Same length, same indices, so skipToNext/skipToPrevious/the shuffle order are
+          // untouched; only the bytes behind each slot change. The real URLs come back on
+          // the way out, where the player is rebuilt anyway.
+          const n = queueRef.current.length
+          if (n) {
+            const r: any = await call('silenceUrl')
+            const at = indexRef.current
+            p.setQueueSources(new Array(n).fill({ uri: r.url }))
+            p.seekToQueueIndex(at)
+            px()?.setShuffle(shuffleRef.current)
+            px()?.setRepeatMode(repeatRef.current)
+            p.pause() // seekToQueueIndex can resume it; a silent 1s queue must never run
+          }
+        } catch {}
+      }
+      persistQueue(true)
+      return
+    }
+
+    // LEAVING. p.play() is NOT enough, and this cost a hardware round to learn: after a
+    // spell muted and paused across several skipToNext calls, the player comes back with
+    // `state=NONE` in Android's media session - no playback state at all, not merely
+    // paused. play(), toggle() and even playIndex() all failed to revive it, and only an
+    // app restart did. So rebuild rather than resume: tear the player down and load the
+    // queue onto a fresh one, which is the same path a relaunch takes and is therefore
+    // already the well-tested way back.
+    const snap = {
+      items: queueRef.current,
+      index: indexRef.current,
+      shuffle: shuffleRef.current,
+      repeat: repeatRef.current,
+      // Deliberately no positionMs: the speaker reports no position of its own, so the
+      // track restarts. Seeking to where the PHONE was paused would be a guess at a
+      // place the music has long since passed.
+      positionMs: 0
+    }
+    stopPlayer() // releases and nulls it, so ensurePlayer builds a new one
+    if (!snap.items.length) return
+    await loadQueueOnPlayer(snap, true)
   }
 
   // --- sleep timer ---------------------------------------------------------
@@ -649,7 +774,10 @@ export default function App () {
     sleepDeadline.current = 0
     sleepMinutes.current = 0
     sleepEndOfTrack.current = false
-    try { if (player.current) player.current.volume = 1 } catch {}
+    // ...but NOT while casting, where 0 is the deliberate volume. Restoring it here would
+    // un-mute the phone behind the user's back and put a second copy of the song in the
+    // room the moment anything cleared a sleep timer.
+    try { if (player.current && !castMode.current) player.current.volume = 1 } catch {}
   }
 
   // Push the current sleep state so the UI can light the moon and count down. `fired`
@@ -681,7 +809,8 @@ export default function App () {
       if (v <= 0) {
         clearInterval(sleepFade.current); sleepFade.current = null
         try { p.pause() } catch {}
-        try { p.volume = 1 } catch {}
+        // Same reason as clearSleep: while casting, 0 is deliberate.
+        try { if (!castMode.current) p.volume = 1 } catch {}
         persistQueue(true)
         pushSleep(true)
       }
@@ -1040,7 +1169,15 @@ export default function App () {
     ;(async () => {
       // The worklet's data dir. The device identity lives here, and it IS the
       // grant the host holds - wiping it means re-pairing.
-      const dataDir = (FileSystem.documentDirectory ?? '').replace('file://', '') + 'peartune'
+      // `?? ''` used to turn a missing documentDirectory into the RELATIVE path "peartune",
+      // which is not a failure the worklet can see: Bare.argv[0] is truthy, so its own
+      // fallback never fires and it happily resolves "peartune" against whatever its cwd is.
+      // The result is a phantom data directory - no identity, no hosts - on a phone that is
+      // perfectly paired, which presents as the onboarding screen and a device key nobody has
+      // granted. Refuse to start rather than start somewhere else.
+      const docs = FileSystem.documentDirectory
+      if (!docs) throw new Error('no documentDirectory - refusing to start the worklet on a relative data path')
+      const dataDir = docs.replace('file://', '') + 'peartune'
 
       const worklet = new Worklet()
       const asset = Asset.fromModule(bundle)
@@ -1098,6 +1235,11 @@ export default function App () {
             // RECONNECT (a switch succeeds, a revoke is denied), so we keep the buffer
             // playing and let the reconnect decide (proposal 2026-07-14).
             if (msg.event === 'host:disconnected') onHostDropped()
+            // The host saw the cast track finish. Advancing is the shell's job now, not the
+            // UI's: the speaker has no queue of its own, and the renderer that used to do
+            // this is asleep whenever the screen is. next() moves ExoPlayer, whose index
+            // change sends the new track to the speaker just above.
+            else if (msg.event === 'speaker:ended') { if (castMode.current) next() }
             else if (msg.event === 'host:connected') dropped.current = false
             else if (msg.event === 'play:rehost') {
               // MID-SONG FAILOVER, the half the shim cannot do (proposal 2026-07-27). The library
@@ -1211,7 +1353,14 @@ export default function App () {
         '</script>'
 
       if (!cancelled) setUiHtml(html.replace('<body>', '<body>' + boot))
-    })().catch(() => {})
+    })().catch((e) => {
+      // NOT `() => {}`. Boot failing silently is indistinguishable from boot being slow: the
+      // WebView never gets mounted, so the app sits on its blank shell forever with nothing
+      // written anywhere saying why. Every failure in here is fatal to the whole app, which
+      // makes it exactly the wrong thing to swallow.
+      console.error('[peartune] boot failed', e)
+      if (!cancelled) setBootError(e?.message ?? String(e))
+    })
 
     // Back belongs to the UI, which owns the nav stack. Suite convention: the UI
     // tells us whether it has anything to pop (shell:navState), and we only
@@ -1341,7 +1490,10 @@ export default function App () {
         if (!p) return
         manualNav.current = true
         p.seekToQueueIndex(i)
-        p.play()
+        // While casting, every slot is one second of silence, so playing would race the
+        // whole queue in under a minute and fire a cast per second. The seek alone is what
+        // is wanted: it announces the track, and the UI sends THAT to the speaker.
+        if (!castMode.current) p.play()
       },
 
       toggle,
@@ -1358,6 +1510,13 @@ export default function App () {
       seekTo: () => seekTo(msg.args.ms ?? 0),
       shuffle: () => setShuffle(!!msg.args.on),
       repeat: () => setRepeat(Number(msg.args.mode) || 0),
+      // A Home Assistant speaker is the output now (proposal 2026-08-02). This player
+      // keeps the queue and the order; it just stops making sound.
+      // Fire-and-forget: leaving cast mode rebuilds the player (see setCastMode), which
+      // resolves a URL per queued track and can take a moment on a long queue. The UI has
+      // nothing to do with the result, and holding the IPC reply open would just make the
+      // sheet feel stuck.
+      castMode: () => { setCastMode(!!msg.args?.on, msg.args?.entityId ?? null); return { ok: true } },
       sleep: () => setSleep(msg.args || {}),
 
       // The UI resolved its theme ('system' against the OS scheme we pushed it)
@@ -1462,6 +1621,19 @@ export default function App () {
   return (
     <View style={{ flex: 1, paddingTop: insets.top, backgroundColor: bg }}>
       <StatusBar barStyle={scheme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={bg} />
+      {bootError && (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <Text style={{ color: scheme === 'dark' ? '#fff' : '#000', fontSize: 17, marginBottom: 10 }}>
+            PearTune could not start.
+          </Text>
+          <Text style={{ color: scheme === 'dark' ? '#aaa' : '#555', fontSize: 14, textAlign: 'center' }}>
+            {bootError}
+          </Text>
+          <Text style={{ color: scheme === 'dark' ? '#aaa' : '#555', fontSize: 14, textAlign: 'center', marginTop: 10 }}>
+            Your libraries and pairings have not been touched. Close PearTune and open it again.
+          </Text>
+        </View>
+      )}
       {uiHtml && (
         <WebView
           ref={webRef}

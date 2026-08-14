@@ -57,7 +57,7 @@ async function readBody (req) {
   }
 }
 
-async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '', passwordSource = 'none' }) {
+async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '', passwordSource = 'none', version = null, updateChecker = null, applier = null }) {
   // Before anything listens. A control plane on a LAN with no password is not a
   // configuration we are willing to run, so this throws rather than warns.
   requireSafeBind(bind, password)
@@ -105,6 +105,30 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         if (!buf) { res.writeHead(404); return res.end() }
         res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'private, no-cache' })
         return res.end(buf)
+      }
+
+      // --- update check ---
+      // Its own route rather than a field on /api/state: /api/state is the hot path the
+      // dashboard polls, and a GitHub-backed value has no business making that page's
+      // shape depend on a third party's availability. Null checker (container install,
+      // or PEARTUNE_NO_UPDATE_CHECK) answers `disabled` and the banner never renders.
+      if (req.method === 'GET' && url.pathname === '/api/update') {
+        if (!updateChecker) return json(res, 200, { disabled: true, current: version })
+        return json(res, 200, { ...updateChecker.get(), apply: applier ? applier.getState() : null })
+      }
+
+      // OPERATOR-GATED, ALWAYS. One button, one machine, one click - never a
+      // silent auto-apply, so a bad release cannot propagate unattended. The
+      // route exists only when an applier was supplied; a container install or a
+      // host with no update checker answers 404 rather than pretending.
+      if (req.method === 'POST' && url.pathname === '/api/update/apply') {
+        if (!applier) return json(res, 404, { error: 'updates are not applied on this install' })
+        // Deliberately not awaited: applying downloads a ~130MB artifact and then
+        // restarts this very process. Holding the request open would mean the
+        // browser waits on a server that is about to go away, and the operator
+        // would see a network error on a SUCCESSFUL update. State is polled.
+        applier.apply().catch(() => {})
+        return json(res, 202, applier.getState())
       }
 
       // --- state ---
@@ -211,6 +235,68 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         try {
           const r = await host.setSource(cfg)
           return json(res, 200, { ok: true, ...r })
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      // --- Home Assistant speakers (proposal 2026-08-01) --------------------
+      //
+      // publicConfig() never returns the token - only a `tokenSet` boolean - so the
+      // browser can render "configured" without ever being able to read it back.
+      if (req.method === 'GET' && url.pathname === '/api/speakers') {
+        let speakers = []
+        if (host.speakers.enabled) speakers = await host.speakers.list().catch(() => [])
+        // castPort is what the operator's configuration.yaml has to name, so it belongs in
+        // the same payload as the rest of the setup rather than being something they have
+        // to find. 0 = not listening yet.
+        return json(res, 200, {
+          config: host.speakers.publicConfig(),
+          speakers,
+          castPort: host.casts.port || 0
+        })
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/speakers') {
+        const cfg = await readBody(req)
+        try {
+          return json(res, 200, { ok: true, config: host.speakers.save(cfg) })
+        } catch (e) {
+          // Where the loopback-only refusal surfaces: the operator learns at the moment
+          // they ask, with the reason, rather than at play time.
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      // Voice control (proposal 2026-08-02). Enabling MINTS the token and returns it ONCE -
+      // publicConfig never carries it, so the operator copies it here or rotates for a new
+      // one. Same rule as the HA token, for the same reason.
+      if (req.method === 'POST' && url.pathname === '/api/speakers/voice') {
+        const body = await readBody(req)
+        try {
+          if (body && body.enabled === false) return json(res, 200, await host.disableVoice())
+          const r = await host.enableVoice({ entityId: body?.entityId || '' })
+          return json(res, 200, r)
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      // Write the Home Assistant config for them (opt-in; see host.writeHaConfig). The
+      // dashboard sends the exact YAML it is showing, so what lands on disk is what the
+      // operator was looking at.
+      if (req.method === 'POST' && url.pathname === '/api/speakers/ha-config') {
+        const body = await readBody(req)
+        try {
+          return json(res, 200, await host.writeHaConfig({ yaml: body?.yaml, include: body?.include }))
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/speakers/test') {
+        try {
+          return json(res, 200, await host.speakers.test())
         } catch (e) {
           return json(res, 400, { ok: false, error: e.message })
         }

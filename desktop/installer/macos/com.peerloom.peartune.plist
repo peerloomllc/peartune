@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd SYSTEM daemon for the PearTune desktop host.
+
+  Installed to /Library/LaunchDaemons/com.peerloom.peartune.plist by
+  `PearTune.app/Contents/MacOS/PearTune --install-service`, run with sudo.
+  Everything __LIKE_THIS__ is templated at install time.
+
+  A SYSTEM DAEMON, NOT A LAUNCHAGENT, and that is the entire point. Measured on
+  2026-07-31: an agent in ~/Library/LaunchAgents loads into gui/501, a domain
+  loginwindow builds at login and tears down at logout, so KeepAlive cannot save
+  it - a heartbeat agent was killed at logout and a DIFFERENT pid appeared at the
+  next login. macOS also refuses to bootstrap an arbitrary job into user/501
+  (error 5). So it is the GUI session or root, with nothing in between.
+
+  Measured on 2026-08-08, this file's own premise: bootstrapped into the system
+  domain, survived a real reboot with NOBODY logged in (0 users, no console
+  session), ran as root, read the user's ~/Music without any Full Disk Access
+  grant, and announced on the DHT.
+
+  THE PATHS BELONG TO A USER, and that is deliberate - see the data dir note in
+  installer/windows/installer.nsh. The store cannot be copied: hypercore-storage
+  stamps store/CORESTORE with the file's inode via `device-file` and re-checks it
+  on open, so even a byte-perfect digest-verified copy refuses to open, forever.
+  So the daemon is pointed at the library where it already lives rather than
+  given a copy of it. Running as root is what makes reaching that path fine.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.peerloom.peartune</string>
+
+  <!-- Run the Electron binary as plain Node. No second runtime and no bundling
+       step: the installed binary already carries Node and every native addon
+       (sodium-native, rocksdb-native, hyperdht), and asar resolves them out of
+       app.asar.unpacked. A daemon needs no display, which is what this gives. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ELECTRON_RUN_AS_NODE</key>
+    <string>1</string>
+    <!-- THE DATA DIR IS THE LIBRARY'S IDENTITY. host.seed under here is the key
+         every paired phone knows this library by, and nothing regenerates it. It
+         MUST stay the path the tray app already uses, or the daemon comes up as
+         a brand-new empty library and every paired phone stops recognising it -
+         which is not hypothetical: it is what the Windows slice shipped by
+         accident on 2026-08-01 and had to be found on hardware. -->
+    <key>PEARTUNE_DATA</key>
+    <string>__DATA__</string>
+    <key>PEARTUNE_MUSIC</key>
+    <string>__MUSIC__</string>
+  </dict>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__BIN__</string>
+    <string>__ENTRY__</string>
+  </array>
+
+  <!-- RUN AS THE USER, NOT AS ROOT - while still being a system-domain DAEMON.
+       Those are independent: what survives logout is living in the SYSTEM domain
+       rather than gui/501, and UserName only decides which credentials the job
+       runs with. So this keeps every property slice 1 measured and drops the one
+       thing root cost us.
+
+       The first cut of this daemon did run as root, and it was caught on hardware
+       (2026-08-08): within minutes it had left root-owned CURRENT, LOG and
+       MANIFEST files inside the user's own store directory -
+
+         -rw-r--r--  1 root  staff  16  CURRENT
+         -rw-r--r--  1 tim   staff      LOG.old.1785607332657036
+
+       - so removing the daemon and going back to the tray app would leave that
+       app, running as the user, unable to write files it supposedly owns. A
+       rollback that quietly corrupts the thing it is rolling back is worse than
+       no rollback. Running as the user means no ownership churn at all, and it
+       matches what the tray app has always done. -->
+  <key>UserName</key>
+  <string>__USER__</string>
+  <key>GroupName</key>
+  <string>__GROUP__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/peartune-host.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/peartune-host.log</string>
+</dict>
+</plist>

@@ -34,7 +34,9 @@ Every connection is end-to-end encrypted and mutually authenticated. The host kn
 
 **iOS: [download PearTune on the App Store](https://apps.apple.com/app/id6796709523).**
 
-**Android is not published yet.** It is in closed testing on Google Play and goes to the Play Store once that finishes. There is no Zapstore listing and no GitHub release of the app yet either - until then the Android client is built from this repo.
+**The host is downloadable now: [the releases page](https://github.com/peerloomllc/peartune/releases/latest)** has the desktop app for macOS (signed and notarized), Windows and Linux, plus the Android `.apk`. On Umbrel, install it from the [PeerLoom community app store](https://github.com/peerloomllc/peerloom-umbrel-app-store).
+
+**Android is not in the Play Store yet.** It is in closed testing there and lands once that finishes. Until then the Android client is the `.apk` on that same releases page, or get it from [Zapstore](https://zapstore.dev/apps/com.peartune). [Status](#status) says exactly where things stand.
 
 ## Setting it up
 
@@ -42,7 +44,7 @@ Every connection is end-to-end encrypted and mutually authenticated. The host kn
 
 Install pages for a specific machine: [Linux and Docker](docs/host-linux.md) · [macOS and Windows](docs/host-macos-windows.md).
 
-**On Umbrel**, use the Docker path on the Linux page for now. The PearTune community-store listing is written but not published, so it will not appear in Umbrel's app store yet.
+**On Umbrel**, add the [PeerLoom community app store](https://github.com/peerloomllc/peerloom-umbrel-app-store) in Umbrel's app store settings and install PearTune from there. (The Docker path on the Linux page also works.)
 
 **Start9 is not a supported target right now.** A host works there, but StartOS runs every service behind a container NAT that peer-to-peer connections cannot punch through, so all traffic falls back to a relay - which works, and costs PeerLoom bandwidth for music that often never leaves the listener's home. Measured and tabled on 2026-07-29; see [`start9/README.md`](start9/README.md) for the numbers.
 
@@ -87,7 +89,7 @@ Beyond playing:
 
 The wire protocol (`proposals/2026-07-13-wire-protocol.md`) is implemented and the whole path runs: scan the QR, browse the library, play. The host is packaged as a Docker image and runs on an Umbrel, and both the Android and the iOS clients run on real phones. Pairing, gapless playback, per-person grants, live revocation and multiple hosts in one merged library have all been exercised on real devices against real hosts, including off-LAN over cellular.
 
-What is still missing is the rest of distribution: Android is mid closed-test, there is no GitHub release of the host or the desktop app, and the Umbrel community-store listing is written but not published. Design decisions and the reasoning behind them are in `DECISIONS.md`.
+What is missing is the rest of store distribution: Android is mid closed-test on Google Play, and the Windows build has no signing certificate yet, so SmartScreen warns on first run. The host itself is published - desktop installers on the releases page, a Docker image and an Umbrel community-store listing. Design decisions and the reasoning behind them are in `DECISIONS.md`.
 
 ## Privacy and support
 

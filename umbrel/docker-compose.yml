@@ -16,7 +16,7 @@ services:
   # umbrelOS fills with the app password shown next to PearTune in the app list.
   # The host refuses to start on a non-loopback bind without it.
   app:
-    image: ghcr.io/peerloomllc/peartune-host:0.2.41@sha256:47ab391cc042382a1b5c2eee8dddbba936153b1b3b6695ae41765055e3504032
+    image: ghcr.io/peerloomllc/peartune-host:0.2.44@sha256:715eb4fffce1e4d4ebc9fa3b300c565ab4a223c3fd7bb3a81f5e23db2bcb8955
     restart: on-failure
     stop_grace_period: 1m
     network_mode: host
@@ -38,6 +38,10 @@ services:
       # mount below. The operator can pick a different folder in the dashboard
       # (music vs podcasts vs audiobooks) - it browses what the container can see.
       PEARTUNE_MUSIC: /library/music
+      # Where Home Assistant's config is, as seen from inside this container (the mount
+      # below). Pre-fills the Speakers tab so nobody has to know the path; the WRITE is still
+      # an explicit button press, not a consequence of the mount existing.
+      PEARTUNE_HA_CONFIG: /ha-config
     volumes:
       # The host identity seed and the grant store. Losing this means every device
       # must re-pair; leaking it means someone can impersonate your library.
@@ -56,3 +60,21 @@ services:
       # given user keeps things. Read-only, always: PearTune serves music, it has no
       # business writing to it.
       - ${UMBREL_ROOT}/home/Downloads:/library:ro
+      # HOME ASSISTANT'S CONFIG, so PearTune can set up voice control itself.
+      #
+      # WHY THIS IS HERE AT ALL. Voice control needs one file in Home Assistant's config
+      # folder, and on Umbrel there is no way for a person to put it there from inside Home
+      # Assistant: this is the CONTAINER install, with no Supervisor, so no add-on store and
+      # no File editor (measured - /api/hassio/supervisor/info answers 404). Without this
+      # mount the only routes left are the Files app or a terminal.
+      #
+      # READ-WRITE, and that is the part to be uneasy about, so: PearTune writes exactly two
+      # filenames, both spelled out in host/server.js writeHaConfig rather than derived from
+      # anything a browser sends - packages/peartune.yaml, and one appended line in
+      # configuration.yaml if packages are not already loaded (backed up first, never
+      # rewritten, never reordered). It refuses to touch a folder with no configuration.yaml
+      # in it, and it only ever does any of this when someone presses the button.
+      #
+      # No Home Assistant installed? Docker creates the path empty, PearTune sees no
+      # configuration.yaml, and the feature stays switched off. Nothing breaks.
+      - ${UMBREL_ROOT}/app-data/home-assistant/data:/ha-config

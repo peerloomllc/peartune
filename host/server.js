@@ -33,6 +33,7 @@ const Corestore = require('corestore')
 const Hyperbee = require('hyperbee')
 const Protomux = require('protomux')
 const b4a = require('b4a')
+const crypto = require('crypto')
 const z32 = require('z32')
 
 const { createIdentity } = require('./identity')
@@ -62,6 +63,8 @@ const EXPIRY_SWEEP_MS = 30_000
 // playback; only the phone knows.
 const NOWPLAYING_STALE_MS = 20 * 1000
 const { serveMedia } = require('./media')
+const { Speakers, canWriteHaConfig } = require('./speakers')
+const { CastSessions } = require('./cast')
 const { PairSession, tokenEquals } = require('./pair')
 const { SCOPE } = require('../protocol/constants')
 const { SourceStore, buildAdapter } = require('./source')
@@ -186,6 +189,18 @@ class PearTuneHost {
     this._topic = null
     this._reannounce = null
     this._earlyReannounce = null
+
+    // Home Assistant speaker playback (proposal 2026-08-01). Both are inert until
+    // an operator configures HA in the dashboard: `speakers.enabled` is false with
+    // no speakers.json, and CastSessions binds nothing until the first play.
+    this.speakers = new Speakers({ dataDir: this.dataDir, log: this.log })
+    this.casts = new CastSessions({
+      speakers: this.speakers,
+      grants: this.grants,
+      getAdapter: () => this.adapter,
+      presence: this.presence,
+      log: this.log
+    })
   }
 
   get publicKey () {
@@ -323,6 +338,18 @@ class PearTuneHost {
       this.log('host:source-failed', { source: this.adapter.kind, err: e.message })
     }
 
+    // Voice control listens on the cast server, so it has to be up from the start rather
+    // than lazily on the first cast - otherwise a spoken request after a restart hits a
+    // closed port. Only when voice is actually on; casting alone still starts it lazily.
+    if (this.speakers.config?.voiceEnabled) {
+      try {
+        const port = await this.casts.start()
+        this.log('voice:listening', { port })
+      } catch (e) {
+        this.log('voice:listen-failed', { err: e?.message })
+      }
+    }
+
     // Arm the scheduled auto-rescan from the persisted setting (a no-op when off).
     this._armRescan()
 
@@ -394,14 +421,20 @@ class PearTuneHost {
   // Walk the live-connection devices and kill any whose grant decide() now refuses -
   // an expired guest, mostly (a revoke already killed on its own event). Loads each
   // lookup, then delegates the selection to the pure gate.sweepKills.
+  //
+  // CASTING DEVICES ARE SWEPT TOO, even with no live connection. A phone can start a
+  // cast and close the app: the connection goes, the speaker keeps playing, and a
+  // connection-only sweep would never look at that device again - so an expiring
+  // guest grant would leave music playing indefinitely.
   async _sweepExpired () {
-    const keys = this.connections.deviceKeys()
+    const keys = [...new Set([...this.connections.deviceKeys(), ...this.casts.deviceKeys()])]
     if (!keys.length) return
     const lookups = new Map()
     for (const key of keys) lookups.set(key, await this.grants.lookup(key))
     for (const key of sweepKills(keys, lookups)) {
       const killed = this.connections.kill(key)
-      this.log('host:expired', { device: key.slice(0, 8), killed })
+      const silenced = await this.casts.stopFor(key).catch(() => 0)
+      this.log('host:expired', { device: key.slice(0, 8), killed, silenced })
     }
   }
 
@@ -543,6 +576,21 @@ class PearTuneHost {
           requests: () => this.ownerRequestList(),
           resolveRequest: (id, status) => this.resolveRequestAndNotify(id, status)
         },
+        // Home Assistant speaker playback (proposal 2026-08-01). Bound operations only,
+        // never the host - and media.js gates every one on the grant's scope, because
+        // casting makes noise in somebody's house.
+        speakers: {
+          enabled: () => this.speakers.enabled,
+          list: () => this.speakers.list(),
+          state: (entityId) => this.speakers.getState(entityId),
+          setVolume: (entityId, level) => this.speakers.setVolume(entityId, level),
+          pause: (entityId) => this.speakers.pause(entityId),
+          resume: (entityId) => this.speakers.resume(entityId),
+          // deviceKey is bound from THIS connection's grant by media.js, never a param.
+          play: (deviceKey, entityId, trackId) => this.casts.play({ deviceKey, entityId, trackId }),
+          stop: (deviceKey, entityId) => this.casts.stop(deviceKey, entityId),
+          active: (deviceKey) => this.casts.active(deviceKey)
+        },
         log: (msg, data) => this.log(msg, { device: short, ...data })
       })
     })
@@ -660,12 +708,113 @@ class PearTuneHost {
   // hook never runs again for one already open. Killing the live connections is
   // what makes revoke mean "the music stops now" instead of "the music stops
   // whenever they happen to reconnect".
+  // --- voice control (proposal 2026-08-02) ---------------------------------
+  //
+  // Voice plays as a REAL grant rather than a special case in the security path, so
+  // revoking it is the same revoke as revoking a phone - the audio route's live grant
+  // re-read denies it and casts.stopFor silences the speaker, with no new code in either.
+  //
+  // The device key is random bytes with NO private half anywhere, so nothing can ever open
+  // a Noise connection as this device. It exists only to be looked up locally.
+  async enableVoice ({ entityId = '' } = {}) {
+    const cfg = this.speakers.config
+    let voiceKey = cfg.voiceKey
+    if (!voiceKey) {
+      voiceKey = z32.encode(crypto.randomBytes(32))
+      await this.grants.grant({
+        deviceKey: voiceKey,
+        label: 'Home Assistant voice',
+        platform: 'voice',
+        scope: SCOPE.OWNER, // what CAST_SCOPES requires; unusable over Noise regardless
+        grantedBy: 'operator'
+      })
+      this.log('voice:granted', { device: voiceKey.slice(0, 8) })
+    } else {
+      // Re-enabling after a revoke: the row is tombstoned, so mint a fresh one rather
+      // than trying to un-revoke, which grants.js deliberately refuses.
+      const row = await this.grants.get(voiceKey)
+      if (!row || row.revokedAt) {
+        voiceKey = z32.encode(crypto.randomBytes(32))
+        await this.grants.grant({
+          deviceKey: voiceKey,
+          label: 'Home Assistant voice',
+          platform: 'voice',
+          scope: SCOPE.OWNER,
+          grantedBy: 'operator'
+        })
+        this.log('voice:regranted', { device: voiceKey.slice(0, 8) })
+      }
+    }
+    const voiceToken = crypto.randomBytes(32).toString('base64url')
+    this.speakers.save({ voiceEnabled: true, voiceKey, voiceToken, voiceEntityId: entityId })
+    // The route has to be LISTENING before we hand out a URL for it. The cast server is
+    // otherwise lazy (it starts on the first cast), which would have meant the address in
+    // someone's configuration.yaml refused connections until they happened to cast first.
+    const port = await this.casts.start()
+    this.notifyOwnersDevicesChanged()
+    return { ok: true, voiceToken, voiceKey, port }
+  }
+
+  // WRITE THE HOME ASSISTANT CONFIG FOR THEM, when they have opted in by giving us the path.
+  //
+  // Only ever two files, both named here rather than derived from anything the browser sends:
+  // <dir>/packages/peartune.yaml, and the one-time packages include appended to
+  // configuration.yaml if it is not already loading them. Nothing else in that directory is
+  // read, written or listed. The path itself is checked by canWriteHaConfig, which refuses
+  // anything without a configuration.yaml in it.
+  //
+  // The alternative was asking people to place a file by hand, and on Umbrel - which runs the
+  // CONTAINER install of Home Assistant, with no Supervisor and so no File Editor add-on -
+  // there is no way to do that from inside Home Assistant at all.
+  async writeHaConfig ({ yaml, include }) {
+    const dir = this.speakers.haConfigDir
+    const check = canWriteHaConfig(dir)
+    if (!check.ok) throw new Error(check.why || 'no Home Assistant config folder is set')
+    if (!yaml || typeof yaml !== 'string') throw new Error('nothing to write')
+
+    const pkgDir = path.join(dir, 'packages')
+    fs.mkdirSync(pkgDir, { recursive: true })
+    fs.writeFileSync(path.join(pkgDir, 'peartune.yaml'), yaml)
+
+    // The include is APPENDED only when packages are not already being loaded - never
+    // rewritten, never reordered. Somebody else's configuration.yaml is not ours to tidy.
+    const cfgPath = path.join(dir, 'configuration.yaml')
+    let addedInclude = false
+    const cfg = fs.readFileSync(cfgPath, 'utf8')
+    if (!/^\s*packages:\s*!include_dir_named/m.test(cfg)) {
+      fs.copyFileSync(cfgPath, cfgPath + '.peartune-backup')
+      fs.appendFileSync(cfgPath, '\n' + (include || '') + '\n')
+      addedInclude = true
+    }
+    this.log('speakers:ha-config-written', { dir, addedInclude })
+    return { ok: true, addedInclude, path: path.join(pkgDir, 'peartune.yaml') }
+  }
+
+  // Off means OFF: the token goes, and the grant is revoked so anything mid-flight dies on
+  // the same path a revoked phone does.
+  async disableVoice () {
+    const key = this.speakers.config.voiceKey
+    if (key) {
+      await this.grants.revoke(key, { by: 'operator' }).catch(() => null)
+      await this.casts.stopFor(Grants.keyOf(key)).catch(() => 0)
+    }
+    this.speakers.save({ voiceEnabled: false, voiceToken: '' })
+    this.log('voice:disabled')
+    this.notifyOwnersDevicesChanged()
+    return { ok: true }
+  }
+
   async revokeDevice (deviceKey) {
     const row = await this.grants.revoke(deviceKey, { by: 'operator' })
     const killed = this.connections.kill(deviceKey)
+    // A speaker is NOT one of the connections kill() destroys - the audio reaches it
+    // from this process, not from the revoked phone. Without this the music would keep
+    // playing in the room. See host/cast.js.
+    const silenced = await this.casts.stopFor(Grants.keyOf(deviceKey)).catch(() => 0)
     this.log('host:revoked', {
       device: Grants.keyOf(deviceKey).slice(0, 8),
-      killedConnections: killed
+      killedConnections: killed,
+      silencedSpeakers: silenced
     })
     this.notifyOwnersDevicesChanged()
     return { grant: row, killed }
@@ -697,8 +846,10 @@ class PearTuneHost {
   async setDeviceExpiry (deviceKey, expiresAt) {
     const row = await this.grants.setExpiry(deviceKey, expiresAt)
     if (!row) return { grant: null, killed: 0 }
-    const killed = (expiresAt && Date.now() > expiresAt) ? this.connections.kill(deviceKey) : 0
-    this.log('host:expiry-set', { device: Grants.keyOf(deviceKey).slice(0, 8), expiresAt, killed })
+    const past = !!(expiresAt && Date.now() > expiresAt)
+    const killed = past ? this.connections.kill(deviceKey) : 0
+    const silenced = past ? await this.casts.stopFor(Grants.keyOf(deviceKey)).catch(() => 0) : 0
+    this.log('host:expiry-set', { device: Grants.keyOf(deviceKey).slice(0, 8), expiresAt, killed, silenced })
     this.notifyOwnersDevicesChanged()
     return { grant: row, killed }
   }
@@ -706,7 +857,10 @@ class PearTuneHost {
   async revokePerson (personId) {
     const revoked = await this.grants.revokePerson(personId)
     const killed = this.connections.killAll(revoked.map(r => r.deviceKey))
-    this.log('host:revoked-person', { personId, devices: revoked.length, killedConnections: killed })
+    const silenced = await this.casts.stopForAll(revoked.map(r => Grants.keyOf(r.deviceKey))).catch(() => 0)
+    this.log('host:revoked-person', {
+      personId, devices: revoked.length, killedConnections: killed, silencedSpeakers: silenced
+    })
     this.notifyOwnersDevicesChanged()
     return { revoked, killed }
   }
@@ -722,7 +876,8 @@ class PearTuneHost {
     if (!row) return { deleted: null, killed: 0 }
     this.avatars.delete(deviceKey) // don't orphan the photo file
     const killed = this.connections.kill(deviceKey)
-    this.log('host:device-deleted', { device: Grants.keyOf(deviceKey).slice(0, 8), killed })
+    const silenced = await this.casts.stopFor(Grants.keyOf(deviceKey)).catch(() => 0)
+    this.log('host:device-deleted', { device: Grants.keyOf(deviceKey).slice(0, 8), killed, silenced })
     this.notifyOwnersDevicesChanged()
     return { deleted: row, killed }
   }
@@ -838,6 +993,9 @@ class PearTuneHost {
     if (this._topic) {
       try { await this.dht.unannounce(this._topic, this.identity.keyPair) } catch {}
     }
+    // Before the store closes: stopFor() silences speakers, and a speaker left
+    // playing from a URL that has stopped answering is a worse ending than silence.
+    await this.casts.close().catch(() => {})
     if (this.server) await this.server.close()
     await this.bee.close()
     await this.stateBee.close()

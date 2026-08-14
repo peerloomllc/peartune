@@ -80,6 +80,19 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   set -a; source "$SCRIPT_DIR/.env"; set +a
 fi
 
+# Which editor opens the release notes and the Nostr draft.
+#
+# DELIBERATELY NOT $EDITOR. That is /usr/bin/nano here (a system-wide default nobody
+# set on purpose), and these two drafts are edited in vim - they are the only
+# interactive editing this script does, and being dropped into the wrong editor
+# mid-release is a bad moment to discover it. Override per-run with
+# RELEASE_EDITOR=..., or set it in scripts/.env to make it stick.
+RELEASE_EDITOR="${RELEASE_EDITOR:-vim}"
+if ! command -v "${RELEASE_EDITOR%% *}" >/dev/null 2>&1; then
+  echo "WARNING: RELEASE_EDITOR '$RELEASE_EDITOR' not found; falling back to vi." >&2
+  RELEASE_EDITOR=vi
+fi
+
 # Required app.conf keys, checked once, up front.
 #
 # Each of these used to carry a hard-coded default copied from whichever
@@ -772,7 +785,7 @@ if $CHECK_VERSIONS_ONLY; then
   echo ""
   if [ -n "$HOST_IMAGE_CURRENT" ]; then
     echo "    Host image query succeeded: $HOST_IMAGE_CURRENT ($HOST_IMAGE)"
-    echo "    Next host image would be: $(_patch_bump "$HOST_IMAGE_CURRENT")  (override with HOST_IMAGE_VERSION)"
+    echo "    Next host image would be: $APP_VERSION  (the app version; override with HOST_IMAGE_VERSION)"
   else
     echo "    Host image query returned nothing for $HOST_IMAGE — the image may not be"
     echo "    published yet, the package may be private, or the registry was unreachable."
@@ -1101,7 +1114,11 @@ if ! $CHECK_VERSIONS_ONLY; then
   if $SKIP_HOST; then
     echo "    - Host image (skipped via --skip-host)"
   else
-    _host_next="${HOST_IMAGE_VERSION:-$(_patch_bump "$HOST_IMAGE_CURRENT")}"
+    # ONE CADENCE (Tim, 2026-07-31): the host image rides the app version rather than
+    # patch-bumping a line of its own. It had drifted to 0.2.41 against an app at 1.0.0,
+    # which is what made "am I out of date" unanswerable and left four version lines to
+    # reconcile by hand. HOST_IMAGE_VERSION still overrides for a host-only rebuild.
+    _host_next="${HOST_IMAGE_VERSION:-$APP_VERSION}"
     if [ -z "$_host_next" ]; then
       SKIP_HOST=true
       echo "    - Host image (skipped — could not read the current tag from ghcr;"
@@ -1191,7 +1208,19 @@ APP_VERSION="$APP_VERSION" node -e "
   const j = JSON.parse(fs.readFileSync(f, 'utf8'));
   const v = process.env.APP_VERSION;
   const [major, minor, patch] = v.split('.').map(Number);
-  const versionCode = major * 1000000 + minor * 1000 + patch;
+  const derived = major * 1000000 + minor * 1000 + patch;
+  // MONOTONIC, because the formula is not the only thing that has ever set this.
+  // Play refuses any versionCode it has already seen, and refuses to go backwards - so a
+  // versionCode set BY HAND between releases (2026-07-31: 1000001, to re-upload a build with
+  // the unused permissions stripped) makes the derived value for the SAME version number a
+  // regression. That failure lands at step 10, after GitHub and Zapstore have already
+  // published, which is the worst place to discover it.
+  const current = Number(j.expo.android && j.expo.android.versionCode) || 0;
+  const versionCode = derived > current ? derived : current + 1;
+  if (versionCode !== derived) {
+    console.log('    NOTE versionCode ' + derived + ' would not be higher than the ' + current +
+                ' already in app.json - using ' + versionCode + ' instead.');
+  }
   j.expo.version = v;
   if (!j.expo.android) j.expo.android = {};
   j.expo.android.versionCode = versionCode;
@@ -1546,8 +1575,8 @@ fi
 
 printf "%b" "$NOTES" > release_notes.md
 sed -i 's/\*\*//g' release_notes.md
-echo "    Opening release notes in ${EDITOR:-vi} for review/editing..."
-"${EDITOR:-vi}" release_notes.md
+echo "    Opening release notes in $RELEASE_EDITOR for review/editing..."
+$RELEASE_EDITOR release_notes.md
 echo "--- Release notes ---"
 cat release_notes.md
 echo "---"
@@ -1729,6 +1758,22 @@ if ! $SKIP_DESKTOP; then
     for _f in "${DESKTOP_ARTIFACTS[@]}"; do
       echo "    - $(basename "$_f")  ($(du -sh "$_f" | cut -f1))"
     done
+
+    # .sha256 sidecars for the desktop artifacts (step 4e does the MOBILE ones).
+    # The upload step already picks up "${asset}.sha256" when it exists and already
+    # maps the .sha256 content type - only the generation was missing, so desktop
+    # downloads have shipped with nothing to verify them against.
+    #
+    # THE SIDECAR MUST NAME THE FILE, NOT ITS BUILD PATH. These artifacts are
+    # absolute paths on this machine, and `sha256sum /home/tim/.../PearTune.AppImage`
+    # writes that path into the file - so `sha256sum -c` fails for every downloader,
+    # who has the file in their own directory under its bare name. Hashing from
+    # inside the artifact's own directory keeps the sidecar to "<hash>  <basename>",
+    # which is what the mobile ones already produce and what -c expects.
+    for _f in "${DESKTOP_ARTIFACTS[@]}"; do
+      ( cd "$(dirname "$_f")" && sha256sum "$(basename "$_f")" > "$(basename "$_f").sha256" )
+      echo "    sha256  $(cut -d' ' -f1 < "${_f}.sha256")  $(basename "$_f")"
+    done
   else
     echo "==> No desktop installers produced (all skipped or failed); mobile release continues."
   fi
@@ -1774,7 +1819,10 @@ else
     # tee keeps the full log. PIPESTATUS[0] is the builder's real exit (grep/awk
     # after it never mask a build failure); set +e so the pipeline can't abort us.
     set +e
-    ( cd "$REPO_ROOT" && ${HOST_IMAGE_BUILD:-bash host/build-image.sh} "$HOST_IMAGE_BUILT" ) 2>&1 \
+    # STORE_DIR is what makes build-image.sh sync the community store listing from
+    # umbrel/. Without it the builder pins the in-repo files and the store keeps whatever
+    # snapshot it had - which on 2026-07-31 was image 0.1.0 pointed at an empty music path.
+    ( cd "$REPO_ROOT" && STORE_DIR="${UMBREL_STORE_DIR:-}" ${HOST_IMAGE_BUILD:-bash host/build-image.sh} "$HOST_IMAGE_BUILT" ) 2>&1 \
       | tee /tmp/peartune-build-host.log \
       | grep --line-buffered -E '^==|STEP [0-9]+/|Copying (blob|config)|Writing manifest|pinned |WARNING|[Ee]rror' \
       | awk '{ print "      " $0; fflush() }'
@@ -3025,8 +3073,8 @@ sys.stdout.write("\n".join(out))
     # starting point, not a ceiling.
     NOSTR_DRAFT=$(mktemp /tmp/nostr-note-XXXXXX.txt)
     printf '%s' "$NOTE_CONTENT" > "$NOSTR_DRAFT"
-    echo "    Opening note in ${EDITOR:-vi} for review/editing..."
-    "${EDITOR:-vi}" "$NOSTR_DRAFT"
+    echo "    Opening note in $RELEASE_EDITOR for review/editing..."
+    $RELEASE_EDITOR "$NOSTR_DRAFT"
     NOTE_CONTENT=$(cat "$NOSTR_DRAFT")
     rm -f "$NOSTR_DRAFT"
 

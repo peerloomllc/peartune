@@ -46,6 +46,14 @@ const { ArtStore } = require('../worklet/art-cache')
 const demo = require('../worklet/demo')
 
 const DATA_DIR = Bare.argv[0] || '/tmp/peartune'
+// A RELATIVE data dir is always a bug in the caller, never a choice. It resolves against
+// whatever the worklet's cwd happens to be, so the app silently runs on a phantom directory
+// with no identity and no hosts while the real ones sit untouched somewhere else - a paired
+// phone showing onboarding. The shell now refuses to pass one (app/index.tsx); this is the
+// second line of that fence, because the failure is invisible without it.
+if (!path.isAbsolute(DATA_DIR)) {
+  throw new Error(`data dir must be absolute, got ${JSON.stringify(DATA_DIR)}`)
+}
 // What kind of device this is, handed down by the shell (argv[1]) because only the shell knows.
 // It rides the pairing claim so an operator's dashboard names the device type correctly - this was
 // hardcoded to 'android' until the first signed iOS build showed every iPhone arriving as an
@@ -355,22 +363,67 @@ function log (msg, data) {
 // The device keypair is not a convenience, it is the account. The host's grant is
 // keyed to this public key, so losing this file means the phone is a stranger
 // again and must re-pair. Keep it out of anything that syncs.
-function loadIdentity () {
+// "I COULD NOT READ THIS" IS NOT "IT IS NOT THERE", and nowhere in the app does the difference
+// matter more. Absent means a fresh install. Unreadable means something is wrong - and the two
+// loaders below used to catch both and conclude "fresh install", which is a DESTRUCTIVE
+// conclusion in each case:
+//
+//   - loadIdentity mints a new key pair. That key IS the grant every host holds, so one
+//     unreadable file turns the phone into a stranger to every library it was ever paired
+//     with, and no amount of relaunching brings it back.
+//   - loadHostsFile returns the empty list, so a fully paired phone shows the ONBOARDING
+//     screen and its owner reasonably concludes their library is gone (found on the TCL after
+//     a reboot, 2026-08-02; PR #330 added a retry without ever establishing the cause).
+//
+// So: absent is ENOENT and nothing else. Everything else throws, and a loud failure the UI can
+// show beats a quiet wrong answer that looks like data loss. bare-fs follows node's convention
+// of putting the code on the error, but the message is checked too rather than betting the
+// device identity on that holding.
+function isMissing (e) {
+  return e?.code === 'ENOENT' || /ENOENT|no such file/i.test(e?.message || '')
+}
+
+function readJsonIfPresent (file) {
+  let raw
   try {
-    const raw = JSON.parse(fs.readFileSync(IDENTITY_FILE, 'utf8'))
+    raw = fs.readFileSync(file, 'utf8')
+  } catch (e) {
+    if (isMissing(e)) return undefined
+    throw e
+  }
+  try {
+    return JSON.parse(raw)
+  } catch (e) {
+    throw new Error(`${file} is unreadable (${e.message}) - refusing to treat it as a fresh install`)
+  }
+}
+
+// Write via a temp file and a rename, so a kill or a reboot mid-write cannot leave a TRUNCATED
+// file behind. Without this, the crash-safety story ends at "and then it reads as a fresh
+// install", which is exactly the outcome the loaders above now refuse to produce - there is no
+// point hardening the read if the write can still manufacture the corrupt case.
+function writeJsonAtomic (file, value) {
+  fs.mkdirSync(DATA_DIR, { recursive: true })
+  const tmp = file + '.tmp'
+  fs.writeFileSync(tmp, JSON.stringify(value))
+  fs.renameSync(tmp, file)
+}
+
+function loadIdentity () {
+  const raw = readJsonIfPresent(IDENTITY_FILE)
+  if (raw) {
     return {
       publicKey: b4a.from(raw.publicKey, 'hex'),
       secretKey: b4a.from(raw.secretKey, 'hex')
     }
-  } catch {
-    const kp = hcrypto.keyPair()
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    fs.writeFileSync(IDENTITY_FILE, JSON.stringify({
-      publicKey: b4a.toString(kp.publicKey, 'hex'),
-      secretKey: b4a.toString(kp.secretKey, 'hex')
-    }))
-    return kp
   }
+  const kp = hcrypto.keyPair()
+  writeJsonAtomic(IDENTITY_FILE, {
+    publicKey: b4a.toString(kp.publicKey, 'hex'),
+    secretKey: b4a.toString(kp.secretKey, 'hex')
+  })
+  log('identity:created', { dir: DATA_DIR })
+  return kp
 }
 
 // The paired-host LIST (multi-host, 2026-07-19). hosts.json holds the canonical v2 shape
@@ -378,16 +431,15 @@ function loadIdentity () {
 // logic (including the v1 single-object upgrade) lives in worklet/hosts.js so it is tested
 // without a disk. Here we just read/normalize and write.
 function loadHostsFile () {
-  try {
-    return hostList.normalize(JSON.parse(fs.readFileSync(HOSTS_FILE, 'utf8')))
-  } catch {
-    return hostList.empty()
-  }
+  const raw = readJsonIfPresent(HOSTS_FILE)
+  // normalize() is still total for anything it CAN read - a hand-edited file, a v1 file, a
+  // stale active pointer - and that stays. What changed is that a file we could not read at
+  // all no longer arrives here as "no libraries".
+  return raw === undefined ? hostList.empty() : hostList.normalize(raw)
 }
 
 function saveHostsFile (f) {
-  fs.mkdirSync(DATA_DIR, { recursive: true })
-  fs.writeFileSync(HOSTS_FILE, JSON.stringify(f))
+  writeJsonAtomic(HOSTS_FILE, f)
 }
 
 // The currently-active host object, or null. Everything that used to call loadHost() (one
@@ -943,6 +995,14 @@ function makeClient () {
       // the UI is about to make. The host does not send us our own writes.
       log('favorites:changed', { kind: m.data?.kind ?? null, on: m.data?.on ?? null })
       emit('favorites:changed', m.data || {})
+    } else if (m?.kind === 'speaker:ended') {
+      // A track we sent to a Home Assistant speaker finished (proposal 2026-08-01). The
+      // speaker has no queue of its own, so THIS is the only signal that it is time to
+      // send the next one - the app owns the queue and acts on this. Carries the entity
+      // and the track that ended so a stale push (a speaker the user already moved off)
+      // can be ignored rather than skipping the wrong track.
+      log('speaker:ended', { entityId: m.data?.entityId ?? null })
+      emit('speaker:ended', m.data || {})
     }
   }
   return c
@@ -1843,6 +1903,13 @@ function libForTrack (trackId) { return mergedMode() ? (trackLib.get(trackId) ||
 const nowPlayingUnsupported = new Set()
 let lastNowPlayingLib = null
 
+// WHAT THE SPEAKER IS DOING, when a cast is on. The phone's own snapshot says `playing:
+// false` for the whole of a cast - it is deliberately muted and paused - so the dashboard
+// showed "Paused" while music filled the room (Tim, 2026-08-02). Tracked here because every
+// speaker call already passes through this module, so nothing else has to be told.
+let castingOn = false
+let castingPaused = false
+
 async function reportNowPlaying (snapshot) {
   const cur = snapshot && Array.isArray(snapshot.items) ? snapshot.items[snapshot.index || 0] : null
   // WHICH COPY IS ACTUALLY PLAYING, not which one owns the merged id. `libForTrack` answers the
@@ -1868,7 +1935,9 @@ async function reportNowPlaying (snapshot) {
       trackId: cur.id,
       title: cur.title || null,
       artist: cur.artist || null,
-      playing: !!snapshot.playing
+      // While casting, report the SPEAKER. The phone is muted and paused throughout, and
+      // saying so would be true of the phone and false of the music.
+      playing: castingOn ? !castingPaused : !!snapshot.playing
     })
   } catch (e) {
     if (e?.code === 'ENOMETHOD') nowPlayingUnsupported.add(lib)
@@ -3564,6 +3633,84 @@ const methods = {
     }
   },
 
+  // --- Home Assistant speakers (proposal 2026-08-01) ------------------------
+  //
+  // Same degradation contract as the owner.* methods above, and for the same reason:
+  // an old host answers ENOMETHOD and a non-owner grant answers EFORBIDDEN, and the UI
+  // must treat BOTH as "there are no speakers here" rather than as an error worth
+  // showing. `enabled: false` is the third ordinary case - the host is new enough and
+  // this device is an owner, but nobody has set Home Assistant up.
+  //
+  // Speakers belong to a LIBRARY (the host that talks to Home Assistant), so these
+  // target the active host unless a libraryId says otherwise, exactly like owner.*.
+  async speakerList ({ libraryId } = {}) {
+    try {
+      const r = await (await ownerClient(libraryId)).speakerList()
+      return { speakers: r?.speakers || [], active: r?.active || [], enabled: !!r?.enabled, supported: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { speakers: [], active: [], enabled: false, supported: false }
+      if (e?.code === 'EFORBIDDEN') return { speakers: [], active: [], enabled: false, forbidden: true }
+      return { speakers: [], active: [], enabled: false, offline: true }
+    }
+  },
+
+  // ONE track. The speaker has no queue of its own (no MEDIA_ENQUEUE on either the
+  // ESPHome or the Cast platform), so the app stays the queue and sends the next track
+  // when the host pushes `speaker:ended`.
+  async speakerPlay ({ libraryId, entityId, trackId }) {
+    try {
+      await (await ownerClient(libraryId)).speakerPlay({ entityId, trackId })
+      castingOn = true
+      castingPaused = false
+      return { ok: true }
+    } catch (e) {
+      if (e?.code === 'ENOMETHOD') return { ok: false, supported: false }
+      return { ok: false, error: e?.message || 'could not play on that speaker' }
+    }
+  },
+
+  async speakerStop ({ libraryId, entityId }) {
+    try {
+      await (await ownerClient(libraryId)).speakerStop({ entityId })
+      castingOn = false
+      castingPaused = false
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e?.message || 'could not stop that speaker' }
+    }
+  },
+
+  // Pause and resume the SPEAKER, so the player's play/pause button has something to
+  // drive while casting instead of falling through to the phone.
+  async speakerPause ({ libraryId, entityId }) {
+    try {
+      await (await ownerClient(libraryId)).speakerPause({ entityId })
+      castingPaused = true
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e?.message || 'could not pause that speaker' }
+    }
+  },
+
+  async speakerResume ({ libraryId, entityId }) {
+    try {
+      await (await ownerClient(libraryId)).speakerResume({ entityId })
+      castingPaused = false
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e?.message || 'could not resume that speaker' }
+    }
+  },
+
+  async speakerVolume ({ libraryId, entityId, level }) {
+    try {
+      await (await ownerClient(libraryId)).speakerVolume({ entityId, level })
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e?.message || 'could not change the volume' }
+    }
+  },
+
   async ownerRevoke ({ libraryId, deviceKey }) {
     try {
       const r = await (await ownerClient(libraryId)).ownerRevoke({ deviceKey })
@@ -3751,6 +3898,13 @@ const methods = {
 
   // The URL the RN player hands to ExoPlayer. The audio never touches RN: the
   // player pulls it from the worklet's loopback server, which pulls it over P2P.
+  // Where cast mode points the player's queue instead of at real audio (see the note in
+  // worklet/shim.js). Needs the shim up, because the URL carries its port.
+  async silenceUrl () {
+    await ensureShim()
+    return { url: 'http://127.0.0.1:' + shimPort + '/silence.wav', port: shimPort }
+  },
+
   async urlFor ({ trackId, libraryId, copies }) {
     await ensureShim()
     // DEMO MODE needs no serving code of its own: the bundled tracks were installed as PINNED

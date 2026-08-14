@@ -254,7 +254,7 @@ export function fixtureAnswer (scene, method, args) {
 // The two things a scene cannot express as data: the full-size player only exists once a track is
 // PLAYING (which arrives as an event, not as state), and the pairing sheet is local state inside
 // App.jsx. Called once, from App's single guarded read, after init has landed.
-export function runScene ({ openOwnerPair }) {
+export function runScene ({ openOwnerPair, openPlayer }) {
   const scene = activeScene()
   if (!scene) return
   const fx = fixture()
@@ -263,8 +263,24 @@ export function runScene ({ openOwnerPair }) {
   const emit = (name, data) => { if (typeof window.__pearEvent === 'function') window.__pearEvent(name, data) }
 
   if (scene.opens === 'player' && fx && fx.albums.length) {
+    // OPEN IT FROM HERE, not from a useState initialiser in App.jsx. The player is "local
+    // component state with no data path into it" (see the note on SCENES), and the obvious
+    // reading of that - `useState(() => sceneOpens('player'))`, the way libMenuOpen does it -
+    // DOES NOT WORK: that initialiser runs on App's first render and the scene number is not on
+    // window yet, so it reads false. libMenuOpen gets away with it only because its component
+    // mounts later. runScene is called from an effect once init has resolved, which is exactly
+    // when the scene IS known - the same reason the emits below land. Scene 1 shot the mini
+    // player four times before this was understood (2026-08-12).
+    if (openPlayer) openPlayer()
+    // A FIXTURE MAY CARRY ITS OWN HERO, and when it does that album is deliberately NOT in
+    // `albums` - so it never reaches a grid. The synthetic fixture uses this to put REAL cover
+    // art in the one frame where a cover fills the screen while the browse grids stay a single
+    // coherent invented label; mixing bold real sleeves into forty muted generated ones reads
+    // as a mistake rather than as variety. See scripts/make-screenshot-fixture.js.
     const i = heroIndex(fx)
-    const t = asTrack(fx, fx.albums[i], 0)
+    const t = fx.hero
+      ? { ...asTrack(fx, fx.hero.album, 0), ...fx.hero.track, art: art(fx, fx.hero.album.coverId), artFull: art(fx, fx.hero.album.coverId), album: fx.hero.album.name }
+      : asTrack(fx, fx.albums[i], 0)
     // The same two messages the shell sends when playback really starts (app/index.tsx
     // announceToUi + pushStatus), so the player renders from its own live state.
     emit('play:started', {

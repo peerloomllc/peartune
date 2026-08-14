@@ -8,6 +8,99 @@ Append-only, newest on top. See Constitution §4.
 > maintainer's own scratch, and the pointers are kept as written rather than rewritten after
 > the fact, because this file is append-only.
 
+## 2026-08-11 - A blind relay cannot attribute a session to a device, and it is not meant to
+Tier: T0 (a correction of the record; no code change). Moved here from TODO.md on 2026-08-11
+because it is a FACT, not a task - it could never be ticked off, so it sat on the open list
+making it longer and less true. Re-verified on the way in: still accurate.
+
+MY EARLIER CLAIM WAS WRONG AND IS WITHDRAWN. On 2026-07-27 I read the relay's `relay:pair` lines
+as identifying peers and concluded "none of these are mine, so the relay's load is other people".
+That does not follow, because those keys identify nothing durable.
+
+`new HyperDHT()` is constructed with **no keyPair** on both sides - `host/server.js:121` (options
+carry only bootstrap and an optional port) and `src/bare.js:929` / `:2059` - so a node's DHT key
+is **random per process**. The host uses its real identity only for `server.listen()`. So the
+keys in relay logs are per-process node keys, not device keys and not host keys.
+
+Proved live rather than argued: the Pixel was demonstrably relaying to the Umbrel while the
+Umbrel's host key `se4t5s91` appeared ZERO times in the relay's logs.
+
+CONSEQUENCE, and the reason this is worth keeping: Tim's own hosts and phones ARE in that traffic,
+under keys nobody can match. Anyone reading relay logs later must not re-derive the comfortable
+version. Real attribution would mean correlating relay timings against host-side connect logs -
+or accepting that a blind relay legitimately cannot know who its users are, which is the point of
+it being blind.
+
+## 2026-08-01 - macOS installs by drag, not by installer wizard
+Tier: T1 (packaging; no host-logic, wire or data change). Confirmed by Tim after asking why the
+Mac install had no wizard like the seeders'.
+
+THE COMPARISON THAT PROMPTED IT WAS OFF BY ONE PRODUCT. The wizard is the SEEDERS'
+(PearCircle/PearCal seeder), which ship a .pkg with Distribution.xml and a postinstall script.
+PearCal's DESKTOP app targets `dmg`, exactly like PearTune's - so the two desktop apps already
+agree, and it is the seeders that are the odd ones out.
+
+WHY THE SEEDERS NEED A PKG AND PEARTUNE DOES NOT: a seeder installs things AROUND the system -
+a LaunchAgent, a payload under /usr/local/lib, a root LaunchDaemon for its updater, ownership
+changes, `launchctl bootstrap` to register the service. None of that is possible by dragging an
+icon; it needs a package whose scripts run as root. PearTune's Mac app installs NOTHING outside
+its own bundle: you drag it to /Applications and it registers its own login item from inside the
+app on first launch. There is nothing for a wizard to do.
+
+DECISION: keep the .dmg. It needs no admin prompt, leaves nothing scattered around the system,
+matches PearCal's desktop app, and a wizard would add friction without buying anything macOS can
+actually use - it could not make the host always-on, which is the one thing that would justify it
+(a LaunchAgent dies with its login session; see the 2026-08-01 hardened-runtime entry and the
+measurement behind it).
+
+THE COST, STATED: no install-time setup, and no uninstall path at all until
+desktop/installer/macos/uninstall.sh (PR #313) - which is the gap this question surfaced. The
+uninstaller now ships inside the bundle. Also accepted: PearTune is deliberately INCONSISTENT
+across platforms - Windows shows an installer and asks for admin because it registers a service,
+Linux's .deb sets up a systemd unit, macOS does neither - because each platform's capability
+genuinely differs.
+
+REJECTED: a .pkg wizard (an admin prompt on every install, a second target to build and notarize,
+and still no always-on host), and surfacing "Uninstall PearTune…" in the tray menu (Tim: keep the
+.dmg as-is).
+
+## 2026-08-01 - macOS is hardened and notarized; the "it breaks LAN pairing" claim was false
+Tier: T2 (packaging/signing; no host-logic or wire change). Branch feat/macos-notarization.
+
+THE CLAIM THAT WAS WRONG, and it had hardened into fact across three files
+(desktop/scripts/build-mac.sh, DECISIONS, TODO): "notarization requires hardened runtime, and
+hardened runtime silently blocks HyperDHT's raw UDP, so a notarized build breaks same-network
+pairing." It was inherited from PearCal and never measured here. It steered the desktop release
+for weeks and was the stated reason Mac users would right-click-to-open forever.
+
+DISPROVEN TWICE, both against the real thing:
+  1. Socket level - a hardened and an unhardened host run side by side on the mac-mini: identical.
+     18 UDP sockets and 10 established outbound DHT peers each, dashboard 200 on both.
+  2. End to end - an Android phone PAIRED with a hardened, current-code PearTune.app over the LAN
+     (device online, granted by qr-pair, full scope, against the real 209-track library), and then
+     again with the fully NOTARIZED build.
+
+AND THE ENTITLEMENTS WERE ALREADY THERE. desktop/build/entitlements.mac.plist already carried
+allow-jit, allow-unsigned-executable-memory, allow-dyld-environment-variables, network.client and
+network.server - the file had been written for hardened runtime from the start. The flag had simply
+never been flipped.
+
+DECISION: hardenedRuntime true, notarize on, credentials staged to the mac from scripts/.env.
+Gatekeeper now reports `accepted / source=Notarized Developer ID` with the ticket stapled, so the
+"unidentified developer" prompt is gone for good.
+
+TWO IMPLEMENTATION NOTES worth keeping:
+  * electron-builder 25 REFUSES `notarize.teamId` in package.json - it wants APPLE_TEAM_ID in the
+    environment, and says so only as an easily-missed info line mid-build.
+  * a failed dmg build leaves its temp image ATTACHED, and every later build then dies with a
+    misleading `hdiutil resize ... Exit code 35`. Detach it before re-running.
+
+THE METHOD LESSON, which is the durable part: this was found by measuring a claim nobody had
+tested, on the day it was finally cheap to test. A comment repeated into two other files is not
+evidence. The same day produced three sibling cases - digests that proved bytes arrived but not
+that a store opened, a service reporting healthy while serving an empty library, and an installer
+reporting success while installing nothing.
+
 ## 2026-07-30 - CORRECTION to the entry below, plus: the token host no longer follows the view
 Tier: T1. Proposal `proposals/2026-07-30-session-home-regardless-of-view.md`. Branch
 fix/session-home-any-view.

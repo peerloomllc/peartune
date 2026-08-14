@@ -1,6 +1,6 @@
 {
   "name": "peartune-desktop",
-  "version": "0.2.3",
+  "version": "1.0.0",
   "description": "PearTune host as a desktop tray app (macOS / Windows / Linux).",
   "license": "MIT",
   "private": true,
@@ -44,7 +44,7 @@
   "build": {
     "appId": "com.peartune.desktop",
     "productName": "PearTune",
-    "copyright": "Copyright © 2026 PeerLoom LLC",
+    "copyright": "Copyright \u00a9 2026 PeerLoom LLC",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -54,6 +54,8 @@
       "vendor/**/*",
       "build/icon.png",
       "build/tray-icon.png",
+      "build/trayTemplate.png",
+      "build/trayTemplate@2x.png",
       "build/entitlements.mac.plist",
       "package.json",
       "!**/*.test.js",
@@ -67,38 +69,95 @@
       "**/node_modules/*/prebuilds/**/*"
     ],
     "protocols": [
-      { "name": "PearTune", "schemes": ["peartune"] }
+      {
+        "name": "PearTune",
+        "schemes": [
+          "peartune"
+        ]
+      }
     ],
     "mac": {
       "category": "public.app-category.music",
-      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
       "icon": "build/icon.png",
-      "extendInfo": { "LSUIElement": 1 },
-      "hardenedRuntime": false,
+      "extendInfo": {
+        "LSUIElement": 1
+      },
+      "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
+      "extraResources": [
+        {
+          "from": "installer/macos/uninstall.sh",
+          "to": "uninstall.sh"
+        },
+        {
+          "from": "installer/macos/com.peerloom.peartune.plist",
+          "to": "com.peerloom.peartune.plist"
+        }
+      ],
       "identity": "22F9540D333EBFB4245EE11170F68A61E6E22689",
-      "notarize": false
+      "notarize": true
     },
     "win": {
       "target": "nsis",
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "extraResources": [
+        {
+          "from": "installer/windows/nssm.exe",
+          "to": "nssm.exe"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "PearTune"
+      "shortcutName": "PearTune",
+      "include": "installer/windows/installer.nsh",
+      "perMachine": true
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "build/icon.png",
       "category": "AudioVideo",
       "maintainer": "PeerLoom LLC <peerloomllc@proton.me>",
       "synopsis": "Self-hosted music, playable anywhere",
-      "desktop": { "Name": "PearTune", "StartupWMClass": "peartune" }
+      "desktop": {
+        "Name": "PearTune",
+        "StartupWMClass": "peartune"
+      },
+      "extraResources": [
+        {
+          "from": "installer/linux/peartune-host.service",
+          "to": "peartune-host.service"
+        },
+        {
+          "from": "installer/linux/updater-helper.sh",
+          "to": "../updater-helper.sh"
+        },
+        {
+          "from": "installer/linux/peartune-updater.rules.in",
+          "to": "../peartune-updater.rules.in"
+        }
+      ]
+    },
+    "deb": {
+      "afterInstall": "installer/linux/postinst.sh",
+      "afterRemove": "installer/linux/postrm.sh"
     }
   }
 }

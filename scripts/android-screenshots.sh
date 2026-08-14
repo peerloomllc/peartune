@@ -147,7 +147,19 @@ for avd in "${AVDS[@]}"; do
 
   wait_for_boot "$SERIAL"
   sleep 3
-  "$ADB" -s "$SERIAL" install -r "$APK_PATH" >/dev/null
+  # CHECK THE INSTALL, and never send it to /dev/null. `adb install` prints "Failure ..." and
+  # still EXITS ZERO, so `set -e` does not catch it and the run continues against WHATEVER APK
+  # was already on that emulator. Cost on 2026-08-12: five capture runs, ~40 minutes, all six
+  # frames identical every time while three separate code fixes were "not working" - because
+  # none of them was ever on the device. The same failure (INSTALL_FAILED_INSUFFICIENT_STORAGE,
+  # behind a Java stack trace) had already been seen once that morning.
+  _install_out=$("$ADB" -s "$SERIAL" install -r "$APK_PATH" 2>&1 || true)
+  if ! printf '%s' "$_install_out" | grep -q "Success"; then
+    echo "Error: APK install failed - the run would have captured a STALE app" >&2
+    printf '%s\n' "$_install_out" | tail -5 >&2
+    exit 1
+  fi
+  echo "    Installed: $(basename "$APK_PATH")"
   # Pre-grant runtime permissions so the app shows no system dialogs. CAMERA is
   # the pairing QR scanner; POST_NOTIFICATIONS is the playback notification.
   for perm in \

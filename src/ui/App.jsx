@@ -28,6 +28,7 @@ import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
 import { loadThemePref, applyThemePref, onSystemThemeChange } from './theme'
 import { shouldShowNudge } from './donation'
 import { normalizeViewState, isDefaultView, sameViewState } from './viewstate'
+import { albumIdsOf, pendingDownloads, groupDownloadState, downloadPrompt, removePrompt } from './downloads'
 import { runScene, sceneOpens } from './screenshot'
 
 // --- About + donation (suite config, shared across PeerLoom apps) ------------
@@ -154,7 +155,10 @@ export default function App () {
   const [queue, setQueue] = useState(null) // the up-next list, when opened
   const [note, setNote] = useState(null) // a transient confirmation
   const [viewing, setViewing] = useState(null) // artwork, full screen
-  const [expanded, setExpanded] = useState(false) // the player: mini vs full
+  // The player: mini vs full. NOT initialised from sceneOpens('player') - tried, and it cannot
+  // work: this runs on the first render, before the scene number reaches window. The screenshot
+  // path opens it from runScene instead, which runs once init has resolved. See screenshot.js.
+  const [expanded, setExpanded] = useState(false)
   const [skin, setSkin] = useState('modern') // player skin: modern | classic (the retro Winamp-style face)
   // Show the Recently Added shelf above the album grid. A SETTING, not a dismiss (Tim asked for
   // "hide/dismiss"): a dismiss has to answer "when does it come back?", and any answer to that is
@@ -218,6 +222,23 @@ export default function App () {
   const [repeat, setRepeat] = useState(0) // 0 off, 1 one, 2 all
   const [sleep, setSleep] = useState(null) // sleep timer: { active, endOfTrack, deadline } from the shell
   const [sleepOpen, setSleepOpen] = useState(false) // the sleep-timer picker sheet
+  // Home Assistant speakers (proposal 2026-08-01). `speakers` is null until we have asked;
+  // an empty list, an old host, a non-owner grant and an unconfigured host all collapse to
+  // "no button", which is why only ONE flag drives the UI.
+  const [speakers, setSpeakers] = useState(null) // [{ entityId, name, state }] or null
+  const [castingTo, setCastingTo] = useState(null) // entityId we are currently playing on
+  const [speakerOpen, setSpeakerOpen] = useState(false) // the "Play on" sheet
+  const [speakerBusy, setSpeakerBusy] = useState(false)
+  // The once-registered speaker:ended handler closes over the first render, so it reads
+  // these rather than the state values. Same trick as youViewRef below.
+  const castingToRef = useRef(null)
+  castingToRef.current = castingTo
+  // Whether the SPEAKER is paused. Tracked here because the speaker has no position and
+  // the phone's own `status.playing` is false throughout a cast (it is held paused), so
+  // neither one can answer "is the music going" while casting.
+  const [castPaused, setCastPaused] = useState(false)
+  const castPausedRef = useRef(false)
+  castPausedRef.current = castPaused
   const [themePref, setThemePref] = useState(() => loadThemePref())
   // Favorited ids, grouped by kind (track / album / artist). Sets for O(1) heart checks.
   const [favs, setFavs] = useState(() => ({ track: new Set(), album: new Set(), artist: new Set() }))
@@ -249,6 +270,10 @@ export default function App () {
   const [naming, setNaming] = useState(false) // the "new playlist" name prompt
   const [pinned, setPinned] = useState(() => new Set()) // pinned (downloaded) album ids
   const [pinning, setPinning] = useState({}) // albumId -> { done, total } while downloading
+  // The ONE group download in flight (an artist, a genre): { key, name, done, total }.
+  // One at a time on purpose - these are album loops over someone's phone data plan, and
+  // two at once would fight for the same connection and report two spinners for one queue.
+  const [groupDl, setGroupDl] = useState(null)
   const [downloads, setDownloads] = useState(null) // the Downloads view: [{ id, name, ... }]
   // Merged library (multi-host step 2): when 2+ hosts are paired the library home is the BLENDED,
   // deduped view of all of them, and `merged` holds its per-source status ({ merged, libraries:
@@ -271,10 +296,41 @@ export default function App () {
     setPairNames(p => ({ deviceName: p.deviceName || d, userName: p.userName || u }))
   }, [state.settings?.deviceName, state.settings?.userName])
 
+  // A SECOND LOOK, when the first one said there is no library.
+  //
+  // Seen on the TCL after a reboot (2026-08-02): the app sat on the ONBOARDING screen while
+  // fully paired. init from the same page a minute later returned host:true, connected:true
+  // and the right library name, and identity() said owner:true - so the pairing was there the
+  // whole time and the UI simply held what its own first init had returned, which was null.
+  // It never recovered, across several relaunches and a 60s wait. Somebody hitting that would
+  // reasonably decide their library was gone and re-pair or reinstall.
+  //
+  // The cause is not established - init reads the hosts file synchronously, so there is no
+  // obvious window - which is exactly why this is a RETRY rather than a fix to init. It costs
+  // one extra call in the genuinely-unpaired case and turns a permanent wrong screen into a
+  // few seconds of one. If the cause is ever found, this can go.
+  const recheckedHost = useRef(false)
+  async function recheckHostOnce () {
+    if (recheckedHost.current) return
+    recheckedHost.current = true
+    for (const wait of [2500, 8000]) {
+      await new Promise(r => setTimeout(r, wait))
+      let s = null
+      try { s = await call('init') } catch { continue }
+      if (s?.host) {
+        setState(prev => (prev.host ? prev : { ...s, loading: false }))
+        return
+      }
+    }
+  }
+
   useEffect(() => {
     call('init')
       .then((s) => {
         setState({ ...s, loading: false })
+        // Paired according to the worklet a moment later, but not according to the answer we
+        // just got. Look again rather than showing onboarding forever.
+        if (!s.host) recheckHostOnce()
         if (s.settings?.density) setDensity(String(s.settings.density))
         if (s.settings?.skin) setSkin(String(s.settings.skin))
         // Default true, so only an explicit false hides it - a missing key must not read as "off".
@@ -308,7 +364,7 @@ export default function App () {
         if (s.merged?.merged && showAlbums) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
         if (s.connected) {
           if (showAlbums) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
-          loadRecent(); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists()
+          loadRecent(); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists(); loadSpeakers()
         }
         // Paired but not connected YET: the background connect is in flight, so show
         // a spinner rather than a verdict until it lands or fails.
@@ -328,6 +384,11 @@ export default function App () {
         setNow(d); setError(null)
         setHandoff(null) // we are the active player now - hide any "Playing on <other>" card
         countedRef.current = { trackId: d?.trackId, counted: false } // a fresh play to count
+        // NOT forwarded to the speaker from here any more: the SHELL does it, on the same
+        // index change, because this handler does not run while the screen is off (proposal
+        // 2026-08-02-cast-control-lives-in-the-shell). Doing it in both places would send
+        // every track twice.
+        if (castingToRef.current && d?.trackId) setCastPaused(false)
       }),
       on('play:status', setStatus),
       // Session handoff: another device took the token, so we paused. Say so, then refresh the
@@ -422,6 +483,13 @@ export default function App () {
         loadContinue()
         loadHandoff(); setTimeout(loadHandoff, 2000) // retry: the active device may push its queue just after we connect
         loadPlaylists(true)
+        // Speakers belong here for the same reason as everything above: init connects in the
+        // BACKGROUND, so `connected` is false when init resolves and the load it does there
+        // never runs on a cold start. Found on the TCL 2026-08-01 - the speaker button was
+        // missing on a freshly launched app even though the host was serving the list. It
+        // also covers the operator turning Home Assistant on while the app sits connected,
+        // which nothing else would tell us about until a reconnect.
+        loadSpeakers()
         // REQUESTS TOO, and this is not symmetry for its own sake. A backgrounded phone loses its
         // connection in about 30 seconds (measured on the TCL, 2026-07-30), and a push cannot
         // reach a device that is not there - so anything that happened while it was away is
@@ -509,7 +577,7 @@ export default function App () {
         call('setLibraryFilter', { libraryId: '_all' }).catch(() => {})
         setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery(''); setError(null)
         if (liveRef.current?.connected) {
-          loadAlbums(0); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadPlaylists(true)
+          loadAlbums(0); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadPlaylists(true); loadSpeakers()
         }
         // Swap the play queue to the new library: if a track is playing it drains first, then
         // the new library's queue takes over; if nothing is playing it swaps straight over
@@ -583,6 +651,14 @@ export default function App () {
         loadPlaylists(true)
         setPlRefresh((n) => n + 1)
       }),
+      // A track we sent to a Home Assistant speaker finished (proposal 2026-08-01). The
+      // speaker has NO QUEUE of its own, so this push is the only thing that can advance
+      // one - the app owns the queue and sends the next track here. Ignore a push for a
+      // speaker we have since moved off, or it would skip a track on the phone.
+      // speaker:ended is handled by the SHELL now (it calls next() directly), for the same
+      // reason: this handler is asleep whenever the screen is. Kept only to refresh the
+      // display when the UI happens to be awake.
+      on('speaker:ended', () => {}),
       // A pear:// pairing link was opened while the app was already running. The shell parks
       // it and nudges; we take it below. See takePendingLink.
       on('link:pending', () => { takePendingLink() })
@@ -1084,7 +1160,15 @@ export default function App () {
   const viewReadyRef = useRef(false) // nothing is persisted until the restore has run
   const viewTimer = useRef(null)
   const pendingScrollRef = useRef(0) // a restore target still waiting for its content
-  const pendingExpandedRef = useRef(false) // ditto, waiting for the shell to re-announce the track
+  // STATE, NOT A REF, and that is the whole fix. This waits for the shell to re-announce the
+  // track, and the two halves - "the snapshot said expanded" and "a track arrived" - can land in
+  // EITHER ORDER. As a ref, only one order worked: setting it re-ran nothing, so if the track was
+  // already in flight when the snapshot was applied, the effect below had had its one chance and
+  // the player stayed a mini bar forever. As state, whichever half lands second re-runs the
+  // effect. Found on 2026-08-12 in the store capture - scene 1 is meant to be the full-screen
+  // player and shot a thumbnail twice - but it is not a screenshot bug: it is the same path a
+  // real relaunch takes when you left the app with the full player open.
+  const [pendingExpanded, setPendingExpanded] = useState(false)
 
   // Snapshot on a trailing debounce. Navigation coalesces (a tab tap that drops a
   // stack is two state changes, one write) and scrolling writes once you stop, not
@@ -1144,10 +1228,10 @@ export default function App () {
   // matters for more than looks: `canBack` counts `expanded`, so setting it with
   // nothing playing would render nothing at all while still swallowing a back press.
   useEffect(() => {
-    if (!pendingExpandedRef.current || !now) return
-    pendingExpandedRef.current = false
+    if (!pendingExpanded || !now) return
+    setPendingExpanded(false)
     setExpanded(true)
-  }, [now])
+  }, [pendingExpanded, now])
 
   // Apply the snapshot from settings.json. Returns it so init() can skip the album
   // load when the restored view is not the album grid. Call it BEFORE that load: the
@@ -1173,7 +1257,9 @@ export default function App () {
     if (v.tab !== 'library') setTab(v.tab)
     if (v.tab === 'you') openYouView(v.youView)
     if (v.stack.length) setStack(v.stack)
-    if (v.expanded) pendingExpandedRef.current = true
+    // Order does not matter here - see the note on pendingExpanded. The track may already have
+    // arrived, or may be seconds away; whichever half lands second opens the player.
+    if (v.expanded) setPendingExpanded(true)
     // Artists / genres / songs each load their own list. Albums is the default and
     // init() loads it, so it is the one view this must NOT ask for twice.
     //
@@ -1202,7 +1288,7 @@ export default function App () {
   // script - never reaches the call at all.
   useEffect(() => {
     if (!window.__pearScreenshotScene || state.loading) return
-    runScene({ openOwnerPair })
+    runScene({ openOwnerPair, openPlayer: () => setExpanded(true) })
   }, [state.loading])
 
   // The dock (player + navbar) is fixed, so the content underneath has to know how
@@ -1675,6 +1761,58 @@ export default function App () {
       haptic('warn'); toast(e.message, true)
     }
   }
+  // Download every album behind an artist or a genre (Tim, 2026-08-11: "the Download option
+  // should be consistent across category types"). A loop rather than a new kind of pin - see
+  // src/ui/downloads.js for why album-keyed pins are worth keeping.
+  //
+  // ALWAYS ASKS FIRST, and asks about what it will actually FETCH rather than the group's
+  // size. Tim's call, and the right one: a genre can be most of a library, and the tap that
+  // starts it is a long-press away from Play.
+  async function downloadGroup ({ key, name, albumIds }) {
+    const todo = pendingDownloads(albumIds, pinned)
+    if (!todo.length) {
+      haptic('light')
+      return toast(albumIds.length ? `${name} is already downloaded` : `Nothing to download in ${name}`)
+    }
+    setConfirming({
+      ...downloadPrompt({ name, count: todo.length }),
+      onYes: async () => {
+        haptic('light')
+        setGroupDl({ key, name, done: 0, total: todo.length })
+        let done = 0
+        for (const albumId of todo) {
+          try {
+            await call('pinAlbum', { albumId })
+          } catch (e) {
+            // STOP, do not plough on. The usual causes - cellular, a dead link, a full disk -
+            // apply to every album behind this one, so continuing would mean one toast per
+            // album. What completed stays downloaded; the button will say "partly" and the
+            // next tap picks up the rest.
+            haptic('warn'); toast(e.message, true)
+            break
+          }
+          setGroupDl(g => (g && g.key === key ? { ...g, done: ++done } : g))
+        }
+        setGroupDl(g => (g && g.key === key ? null : g))
+        loadPinned(); loadDownloads(true)
+      }
+    })
+  }
+
+  function removeGroup ({ name, albumIds }) {
+    const here = (albumIds || []).filter(id => pinned.has(id))
+    if (!here.length) return
+    setConfirming({
+      ...removePrompt({ name, count: here.length }),
+      onYes: async () => {
+        for (const albumId of here) {
+          try { await call('unpinAlbum', { albumId }) } catch (e) { haptic('warn'); toast(e.message, true); break }
+        }
+        loadPinned(); loadDownloads(true)
+      }
+    })
+  }
+
   function unpinAlbum (albumId) {
     setConfirming({
       title: 'Remove download?',
@@ -2155,10 +2293,109 @@ export default function App () {
     else call('playIndex', { index })
   }
 
+  // --- Home Assistant speakers (proposal 2026-08-01) ------------------------
+  //
+  // Asked once per connect, and only ever answered for an OWNER of a host that has
+  // Home Assistant set up. Every other case (old host, non-owner, unconfigured,
+  // offline) collapses to an empty list, which is what hides the button - so there
+  // is no state in which a speaker control appears and then fails when tapped.
+  async function loadSpeakers () {
+    try {
+      const r = await call('speakerList')
+      // Drop speakers Home Assistant reports as `unavailable` - it cannot reach them, so
+      // offering one is offering a tap that fails. `off` is deliberately kept: play_media
+      // wakes a Cast device that is merely off, and hiding those would hide most of a house.
+      const list = (r?.speakers || []).filter(s => s.state !== 'unavailable')
+      setSpeakers(r?.enabled ? list : [])
+      // Re-attach to a cast this device already had running: the app can be closed and
+      // reopened while a speaker plays, and the host still knows about it. And CLEAR one
+      // that has since ended - this used to only ever set, so the cast icon could stay
+      // lit over nothing after a reconnect (review finding 5). The host is the authority
+      // on what is playing; do not second-guess it from local state.
+      const mine = (r?.active || [])[0]
+      setCastingTo(mine ? mine.entityId : null)
+      if (!mine) setCastPaused(false)
+    } catch {
+      setSpeakers([])
+    }
+  }
+
+  // CASTING IS A MODE OF THE PLAYER, NOT A SECOND PLAYER (proposal 2026-08-02).
+  //
+  // The shell's ExoPlayer stays the brain: it owns the queue, the shuffle ORDER, the
+  // repeat mode and what "next" means. Cast mode only takes away its voice. So every
+  // track change - a tap in the queue, Next, Previous, an automatic advance, a shuffled
+  // pick - arrives here the same way, as `play:started`, and we forward THAT to the
+  // speaker.
+  //
+  // Phase 1 walked the queue with its own integer cursor instead, which is why a
+  // shuffled queue cast in file order. That cursor is gone; this is less code.
+  async function castCurrent (trackId) {
+    if (!castingToRef.current || !trackId) return
+    const r = await call('speakerPlay', { entityId: castingToRef.current, trackId })
+    if (!r?.ok) {
+      setError(r?.error || 'could not play on that speaker')
+      await castHere()
+    }
+  }
+
+  async function castTo (entityId) {
+    setSpeakerBusy(true)
+    try {
+      // Mute and hold the phone BEFORE the speaker starts. Two copies of the same song a
+      // room apart is the worst outcome here, so it must not depend on ordering luck.
+      // The shell needs the entity: a lock-screen press arrives there, not here.
+      await call('castMode', { on: true, entityId }).catch(() => {})
+      setCastingTo(entityId)
+      castingToRef.current = entityId
+      // Whatever is loaded right now is what the speaker should pick up. `now` is the
+      // shell's own announcement of the current track, so it already reflects shuffle.
+      const trackId = nowRef.current?.trackId
+      if (trackId) await castCurrent(trackId)
+      setSpeakerOpen(false)
+    } finally {
+      setSpeakerBusy(false)
+    }
+  }
+
+  // Back to the phone: silence the speaker, then give this player its voice back. The
+  // track RESTARTS rather than resuming mid-song - the speaker reports no position of
+  // its own, so there is no honest place to resume from (proposal, open question 3).
+  async function castHere () {
+    const entityId = castingToRef.current
+    setCastingTo(null)
+    castingToRef.current = null
+    setSpeakerOpen(false)
+    if (entityId) await call('speakerStop', { entityId }).catch(() => {})
+    await call('castMode', { on: false }).catch(() => {})
+  }
+
+  // The host saw the track finish. Ask the SHELL for the next one rather than working it
+  // out here: it honours shuffle and repeat, and its play:started brings us back to
+  // castCurrent. Nothing in this path knows what shuffle is, which is the point.
+  async function castNext () {
+    await call('next').catch(() => {})
+  }
+
+  // Play/pause while casting drives the SPEAKER. Without this the button fell through to
+  // the phone and started a second stream (the review's worst finding).
+  async function castToggle () {
+    const entityId = castingToRef.current
+    if (!entityId) return
+    const method = castPausedRef.current ? 'speakerResume' : 'speakerPause'
+    setCastPaused(!castPausedRef.current)
+    const r = await call(method, { entityId })
+    if (!r?.ok) setCastPaused(castPausedRef.current) // put the icon back if it did not take
+  }
+
   // The player's X: stop PLAYBACK only, and KEEP the queue. The bar hides (play:stopped),
   // the queue stays in the Queue tab, and tapping a track there resumes it.
   function stopPlayback () {
     haptic('light')
+    // While casting, the X has to stop the SPEAKER as well. Without this it stopped a
+    // phone that was already silent and left the room playing, with nothing left in the
+    // app that would ever stop it (review finding 3).
+    if (castingToRef.current) castHere()
     call('stopKeepQueue')
   }
 
@@ -2223,6 +2460,13 @@ export default function App () {
   // long-press one. The tracks are fetched when an action is actually chosen.
   async function tracksFor (item) {
     if (item.type === 'track') return [item.track]
+    // A DOWNLOAD RESOLVES LOCALLY, which is the whole point of it. Going through
+    // call('album') would ask the host for a track list we are holding on disk, so the menu
+    // on a downloaded album would fail on a plane - exactly where downloads earn their keep.
+    if (item.type === 'download') {
+      const d = await call('downloadDetail', { albumId: item.id })
+      return d?.tracks || []
+    }
     if (item.type === 'album') {
       const a = await call('album', { id: item.id })
       return (a?.tracks || []).map(t => ({ ...t, art: t.art ?? a.art, artFull: a.artFull }))
@@ -2245,6 +2489,25 @@ export default function App () {
     if (action === 'playlist') {
       if (plSupported) loadPlaylists()
       return setAddingTo(item)
+    }
+    // DOWNLOAD FROM THE MENU (Tim, 2026-08-11: "so users don't always have to drill down into
+    // something to do it"). Like Add to playlist, this resolves on the ACTION, not on opening
+    // the menu - an artist's album list is a fetch, and a long-press is not consent to one.
+    if (action === 'download' || action === 'undownload') {
+      if (item.type === 'album' || item.type === 'download') {
+        return action === 'download' ? pinAlbum(item.id) : unpinAlbum(item.id)
+      }
+      try {
+        const detail = await call(item.type, { id: item.id })
+        const albumIds = albumIdsOf(detail)
+        const name = item.name || detail?.name
+        return action === 'download'
+          ? downloadGroup({ key: `${item.type}:${item.id}`, name, albumIds })
+          : removeGroup({ name, albumIds })
+      } catch (e) {
+        haptic('warn')
+        return toast(e.message, true)
+      }
     }
     try {
       const list = await tracksFor(item)
@@ -2277,6 +2540,27 @@ export default function App () {
   }
 
   if (state.loading) return <div className='center'><p className='muted'>Starting…</p></div>
+
+  // INIT FAILED. Not "you have no library" - we do not KNOW what you have, because the thing
+  // that would tell us could not be read. Those are different sentences and the app used to
+  // show the wrong one: the catch on init writes `error` into state, nothing rendered it, and
+  // with no host in state the render fell straight through to the onboarding wall. Someone
+  // whose storage hiccuped was told, in effect, that their library was gone - and the obvious
+  // response to that screen is to re-pair or reinstall, which is how a recoverable glitch
+  // turns into real loss. Say what happened instead, and offer the one action that helps.
+  if (state.error) {
+    return (
+      <div className='center'>
+        <p><strong>PearTune could not start up properly.</strong></p>
+        <p className='muted'>{state.error}</p>
+        <p className='muted'>
+          Your libraries and pairings have not been touched. Closing PearTune and opening it
+          again usually clears this.
+        </p>
+        <button onClick={() => window.location.reload()}>Try again</button>
+      </div>
+    )
+  }
 
   // Adding ANOTHER library over the running app (Settings > Libraries > Add). Same flow as
   // the pairing wall, but cancellable back into the app rather than a dead end.
@@ -2355,12 +2639,23 @@ export default function App () {
 
   const viewArt = (url, title) => { if (url) { haptic('light'); setViewing({ url, title }) } }
 
+  // Everything an artist or genre screen needs to offer Download, in one prop. `enabled` is
+  // off in demo mode for the same reason the album screen hides it there: the demo tracks are
+  // already on the phone and there is no server to fetch them from.
+  const groupDlProps = {
+    enabled: !state.demo,
+    pinned,
+    active: groupDl,
+    onDownload: downloadGroup,
+    onRemove: removeGroup
+  }
+
   let screen
   if (top?.type === 'album') {
     screen = (
       <AlbumScreen
         id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom}
-        onPlayAll={playAll} onQueue={enqueue} onViewArt={viewArt}
+        onPlayAll={playAll} onQueue={enqueue} onViewArt={viewArt} onLong={setMenu}
         favs={favs} onFav={favSupported ? onFav : null}
         pinned={pinned.has(top.id)} pinning={pinning[top.id]}
         // No Download in demo mode (a null onPin hides the button). Downloading means "pull
@@ -2374,7 +2669,7 @@ export default function App () {
     screen = (
       <DownloadScreen
         id={top.id} name={top.name} now={now} onBack={pop}
-        onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
+        onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue} onLong={setMenu}
         onUnpin={() => unpinAlbum(top.id)}
       />
     )
@@ -2386,6 +2681,7 @@ export default function App () {
         onArtistAction={(artistId, action) => menuAction({ type: 'artist', id: artistId }, action)}
         onOpenAlbum={(id) => push({ type: 'album', id })}
         favs={favs} onFav={favSupported ? onFav : null}
+        dl={groupDlProps}
       />
     )
   } else if (top?.type === 'genre') {
@@ -2397,6 +2693,7 @@ export default function App () {
         onOpenAlbum={(id) => push({ type: 'album', id })}
         onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
         favs={favs} onFav={favSupported ? onFav : null}
+        dl={groupDlProps}
       />
     )
   } else if (top?.type === 'playlist') {
@@ -2407,13 +2704,13 @@ export default function App () {
         <PlaylistScreen
           key={'srv:' + top.id} id={top.id} name={top.name} now={now} onBack={pop}
           server sourceName={sourceText(state)}
-          onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
+          onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue} onLong={setMenu}
         />
         )
       : (
         <PlaylistScreen
           key={top.id} id={top.id} name={top.name} now={now} onBack={pop} refreshKey={plRefresh}
-          onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue}
+          onPlay={playFrom} onPlayAll={playAll} onQueue={enqueue} onLong={setMenu}
           onRename={renamePlaylist}
           onSetTracks={(pid, trackIds) => call('setPlaylistTracks', { id: pid, trackIds }).then(() => loadPlaylists(true))}
           onDelete={() => confirmDeletePlaylist(top.id, top.name)}
@@ -2532,6 +2829,9 @@ export default function App () {
             onExpand={() => { haptic('light'); setExpanded(true) }}
             onCollapse={() => { haptic('light'); setExpanded(false) }}
             onViewArt={() => viewArt(now.artFull || now.art, now.album || now.title)}
+            canCast={!!(speakers && speakers.length)} castingTo={castingTo}
+            castPaused={castPaused} onCastToggle={castToggle}
+            onSpeakers={() => { loadSpeakers(); setSpeakerOpen(true) }}
           />
         )}
         {/* The navbar stays put during a drill-down, unlike PearList's (which
@@ -2555,6 +2855,13 @@ export default function App () {
           onClose={() => setMenu(null)}
           onAction={(a) => menuAction(menu, a)}
           canPlaylist={plSupported}
+          // No Download in demo mode, for the same reason the album screen hides it: the
+          // demo tracks are already on the phone with no server behind them.
+          // An ALBUM knows whether it is already downloaded (we hold the pinned set); an
+          // artist or a genre does not, because that would mean fetching its albums just to
+          // open a menu. So they offer Download, and the sheet says nothing it cannot know.
+          canDownload={!state.demo}
+          downloaded={menu.type === 'download' || (menu.type === 'album' && pinned.has(menu.id))}
         />
       )}
       {addingTo && (
@@ -2580,6 +2887,16 @@ export default function App () {
         />
       )}
       {viewing && <ArtViewer {...viewing} onClose={() => setViewing(null)} />}
+      {speakerOpen && (
+        <SpeakerSheet
+          speakers={speakers || []}
+          castingTo={castingTo}
+          busy={speakerBusy}
+          onClose={() => setSpeakerOpen(false)}
+          onPick={castTo}
+          onHere={castHere}
+        />
+      )}
       {sleepOpen && (
         <SleepSheet
           sleep={sleep}
@@ -2877,7 +3194,10 @@ function QueueScreen ({ items, index, skin, onJump, onMove, onRemove, onClear })
 }
 
 // Play / Shuffle / Add to queue / Add to playlist, without drilling into the thing first.
-function ActionSheet ({ item, onClose, onAction, canPlaylist }) {
+function ActionSheet ({ item, onClose, onAction, canPlaylist, canDownload, downloaded }) {
+  // A pin is album-keyed, so a single track has nothing to download - offering it would mean
+  // silently pulling the album it happens to sit on, which is not what the word says.
+  const showDownload = canDownload && item.type !== 'track'
   return (
     <div className='sheetwrap' onClick={onClose}>
       <div className='sheet' onClick={e => e.stopPropagation()}>
@@ -2901,6 +3221,17 @@ function ActionSheet ({ item, onClose, onAction, canPlaylist }) {
               <PlaylistIcon size={17} weight='bold' /> Add to playlist
             </button>
           )}
+          {showDownload && (downloaded
+            ? (
+              <button className='wide' onClick={() => onAction('undownload')}>
+                <CheckCircle size={17} weight='fill' /> Remove download
+              </button>
+              )
+            : (
+              <button className='wide' onClick={() => onAction('download')}>
+                <DownloadSimple size={17} weight='bold' /> Download
+              </button>
+              ))}
           <button className='wide' onClick={onClose}>Cancel</button>
         </div>
       </div>
@@ -3731,7 +4062,7 @@ function You ({
               onOpen={onOpenPlaylist} onOpenServer={onOpenServerPlaylist} onNew={onNewPlaylist}
             />
           : view === 'downloads'
-            ? <DownloadsView downloads={downloads} d={D} onOpen={onOpenDownload} />
+            ? <DownloadsView downloads={downloads} d={D} onOpen={onOpenDownload} onLong={onLong} />
           : view === 'requests'
             ? <RequestsView requests={myRequests} onNew={onNewRequest} onRemove={onRemoveRequest} />
           : view === 'manage'
@@ -3856,14 +4187,19 @@ function PlaylistRows ({ items, onOpen, server }) {
 // no connection - the list comes from the local pin registry. Tapping opens the offline
 // album detail (DownloadScreen). Covers may fall back to a placeholder offline (art is not
 // cached in v1).
-function DownloadsView ({ downloads, d, onOpen }) {
+function DownloadsView ({ downloads, d, onOpen, onLong }) {
   if (!downloads) return <SkeletonGrid d={d} />
   if (!downloads.length) return <DownloadsEmpty />
   const list = d.cols === 1
   return (
     <div className={'grid' + (list ? ' aslist' : '')} style={{ '--cols': d.cols }}>
       {downloads.map(a => (
-        <Tile key={a.id} className='album' onPress={() => onOpen(a)}>
+        // type 'download', not 'album': everything behind it must resolve from the phone,
+        // because the one place you open this is where there is no host to ask.
+        <Tile
+          key={a.id} className='album' onPress={() => onOpen(a)}
+          onLongPress={onLong && (() => onLong({ type: 'download', id: a.id, name: a.name }))}
+        >
           <Cover src={a.art} />
           <div className='meta'>
             <div className='t sm'>{a.name}</div>
@@ -3949,7 +4285,7 @@ function RequestsView ({ requests, onNew, onRemove }) {
 // A downloaded album's own screen, sourced entirely from the local pin registry - so it
 // renders and plays with NO connection, even from a cold launch. The shim serves each
 // track from disk.
-function DownloadScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onUnpin }) {
+function DownloadScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onLong, onUnpin }) {
   const [dl, setDl] = useState(null)
   const [err, setErr] = useState(null)
   useEffect(() => {
@@ -3990,7 +4326,7 @@ function DownloadScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
           </button>
           <ul className='tracks'>
             {tracks.map(t => (
-              <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo />
+              <Row key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo onLong={onLong} />
             ))}
           </ul>
         </>
@@ -4144,6 +4480,42 @@ function DownloadButton ({ pinned, pinning, onPin, onUnpin }) {
     <button className='favhead' onClick={onPin} aria-label='Download album'>
       <DownloadSimple size={20} weight='bold' />
       <span>Download</span>
+    </button>
+  )
+}
+
+// The same control for an ARTIST or a GENRE, which are groups of albums rather than one
+// (Tim, 2026-08-11: "Download should be consistent across category types"). All the state
+// is derived - a group has no pin of its own, only its albums do. See src/ui/downloads.js.
+//
+// Renders NOTHING for a group with no albums (an artist of loose tracks): pins are
+// album-keyed, so there would be nothing to download, and a dead button is worse than none.
+function GroupDownloadButton ({ name, albumIds, groupKey, dl }) {
+  const st = groupDownloadState({ albumIds, pinned: dl.pinned, active: dl.active, key: groupKey })
+  if (st.kind === 'empty') return null
+  if (st.kind === 'downloading') {
+    return (
+      <button className='favhead' disabled aria-label='Downloading'>
+        <CircleNotch size={18} weight='bold' className='spin' />
+        <span>{st.total ? `${st.done}/${st.total} albums` : 'Downloading…'}</span>
+      </button>
+    )
+  }
+  if (st.kind === 'downloaded') {
+    return (
+      <button className='favhead on' onClick={() => dl.onRemove({ name, albumIds })} aria-label='Remove downloads'>
+        <CheckCircle size={20} weight='fill' />
+        <span>Downloaded</span>
+      </button>
+    )
+  }
+  return (
+    <button className='favhead' onClick={() => dl.onDownload({ key: groupKey, name, albumIds })} aria-label='Download'>
+      <DownloadSimple size={20} weight='bold' />
+      {/* Say what is left rather than "Download" when some of it is already here - the
+          alternative is a button that looks like it will fetch twelve albums when it will
+          fetch three. */}
+      <span>{st.kind === 'partial' ? `Download ${st.total - st.done} more` : 'Download'}</span>
     </button>
   )
 }
@@ -4612,7 +4984,7 @@ function Cover ({ src, big, sm, artist }) {
 
 // Each drill-down fetches its own data from its id, so the nav stack holds nothing
 // but ids and popping back never has to restore anything.
-function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt, favs, onFav, pinned, pinning, onPin, onUnpin }) {
+function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt, onLong, favs, onFav, pinned, pinning, onPin, onUnpin }) {
   const [album, setAlbum] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -4678,6 +5050,7 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
         {tracks.map(t => (
           <Row
             key={t.id} t={t} on={now?.trackId === t.id} onPlay={() => onPlay(tracks, t)} showTrackNo
+            onLong={onLong}
             fav={favs?.track?.has(t.id)} onFav={onFav ? (x => onFav('track', x)) : null}
           />
         ))}
@@ -4706,7 +5079,7 @@ function Actions ({ onPlay, onShuffle, onQueue }) {
 
 // An artist IS its albums (one getArtist call on the host), so this is the album
 // grid again rather than a new kind of screen.
-function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, onLong, onArtistAction, favs, onFav }) {
+function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, onLong, onArtistAction, favs, onFav, dl }) {
   const [artist, setArtist] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -4742,7 +5115,17 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
                 : `${artist.tracks?.length || 0} ${artist.tracks?.length === 1 ? 'track' : 'tracks'}`}
             </p>
           )}
-          {onFav && artist && <FavHeart on={favs?.artist?.has(id)} onToggle={() => onFav('artist', { id, name: artist.name })} label='artist' />}
+          {artist && (onFav || dl?.enabled) && (
+            <div className='headacts'>
+              {onFav && <FavHeart on={favs?.artist?.has(id)} onToggle={() => onFav('artist', { id, name: artist.name })} label='artist' />}
+              {dl?.enabled && (
+                <GroupDownloadButton
+                  name={artist.name || name} albumIds={albumIdsOf(artist)}
+                  groupKey={'artist:' + id} dl={dl}
+                />
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -4794,7 +5177,7 @@ function ArtistScreen ({ id, name, now, onBack, onOpenAlbum, onPlay, onViewArt, 
 // artist). No big cover header - a genre has no single face - just its name, a
 // Play/Shuffle/Queue bar, and the albums. A loose-tagged genre with no album of its
 // own falls back to its tracks, the same as an artist.
-function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay, onLong, onGenreAction, favs, onFav }) {
+function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay, onLong, onGenreAction, favs, onFav, dl }) {
   const [genre, setGenre] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -4825,6 +5208,14 @@ function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay
               ? `${genre.albums.length} ${genre.albums.length === 1 ? 'album' : 'albums'}`
               : `${genre.tracks?.length || 0} ${genre.tracks?.length === 1 ? 'track' : 'tracks'}`}
           </p>
+        )}
+        {genre && dl?.enabled && (
+          <div className='headacts'>
+            <GroupDownloadButton
+              name={genre.name || name} albumIds={albumIdsOf(genre)}
+              groupKey={'genre:' + id} dl={dl}
+            />
+          </div>
         )}
       </div>
 
@@ -4858,7 +5249,7 @@ function GenreScreen ({ id, name, now, onBack, onOpenAlbum, onOpenArtist, onPlay
   )
 }
 
-function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onRename, onDelete, onSetTracks, server, sourceName, refreshKey = 0 }) {
+function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, onLong, onRename, onDelete, onSetTracks, server, sourceName, refreshKey = 0 }) {
   const [pl, setPl] = useState(null)
   const [err, setErr] = useState(null)
   const [editing, setEditing] = useState(false)
@@ -5072,7 +5463,7 @@ function PlaylistScreen ({ id, name, now, onBack, onPlay, onPlayAll, onQueue, on
               {tracks.map((t, i) => (
                 <Row
                   key={t._k ?? i} t={t} on={now?.trackId === t.id}
-                  onPlay={() => onPlay(tracks, t)} art
+                  onPlay={() => onPlay(tracks, t)} art onLong={onLong}
                 />
               ))}
             </ul>
@@ -5128,8 +5519,20 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
 // content padding along with it.
 function Player ({
   now, status, expanded, skin, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
-  onViewArt, onQueue, onStop, queueItems, queueIndex, onJump, sleep, onSleep
+  onViewArt, onQueue, onStop, queueItems, queueIndex, onJump, sleep, onSleep,
+  canCast, castingTo, castPaused, onCastToggle, onSpeakers
 }) {
+  // While casting, play/pause drives the SPEAKER and the icon reflects the SPEAKER. The
+  // phone is muted and held paused throughout, so `status.playing` is false the whole
+  // time and reading it would show a play icon over music that is playing (proposal
+  // 2026-08-02). One helper, used by both the mini bar and the expanded transport, so
+  // the two can never disagree.
+  const playing = castingTo ? !castPaused : !!status?.playing
+  const onPlayPause = () => {
+    haptic('light')
+    if (castingTo) onCastToggle()
+    else call('toggle')
+  }
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
@@ -5166,7 +5569,9 @@ function Player ({
   // Tap anywhere on the bar to seek. The seek goes out over P2P as a byte-range
   // request, which is why range support had to be right from day one.
   const scrub = (e) => {
-    if (!dur) return
+    // No seeking while casting: the speaker cannot seek (the Voice PE reports no SEEK)
+    // and the phone this would move is muted, so a tap here would silently do nothing.
+    if (!dur || castingTo) return
     const r = e.currentTarget.getBoundingClientRect()
     const ratio = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
     call('seekTo', { ms: Math.round(ratio * dur) })
@@ -5211,10 +5616,10 @@ function Player ({
             // looking. stopPropagation, or play/pause would also expand the player.
             <button
               className='icon big'
-              onClick={(e) => { e.stopPropagation(); haptic('light'); call('toggle') }}
+              onClick={(e) => { e.stopPropagation(); onPlayPause() }}
               aria-label='Play/pause'
             >
-              {status?.playing ? <Pause size={22} weight='fill' /> : <Play size={22} weight='fill' />}
+              {playing ? <Pause size={22} weight='fill' /> : <Play size={22} weight='fill' />}
             </button>
             )}
       </div>
@@ -5251,8 +5656,8 @@ function Player ({
           <button className='icon' onClick={() => { haptic('light'); call('prev') }} aria-label='Previous'>
             <SkipBack size={22} weight='fill' />
           </button>
-          <button className='icon big' onClick={() => { haptic('light'); call('toggle') }} aria-label='Play/pause'>
-            {status?.playing ? <Pause size={26} weight='fill' /> : <Play size={26} weight='fill' />}
+          <button className='icon big' onClick={onPlayPause} aria-label='Play/pause'>
+            {playing ? <Pause size={26} weight='fill' /> : <Play size={26} weight='fill' />}
           </button>
           <button className='icon' onClick={() => { haptic('light'); call('next') }} aria-label='Next'>
             <SkipForward size={22} weight='fill' />
@@ -5265,7 +5670,7 @@ function Player ({
         </div>
 
         <div className='transport sub-transport'>
-          <button className='icon' onClick={() => call('seekBy', { seconds: -15 })} aria-label='Back 15 seconds'>
+          <button className='icon' onClick={() => call('seekBy', { seconds: -15 })} aria-label='Back 15 seconds' disabled={!!castingTo}>
             <ArrowCounterClockwise size={15} /> 15
           </button>
           <button
@@ -5276,9 +5681,24 @@ function Player ({
             <Moon size={16} weight={sleep?.active ? 'fill' : 'regular'} />
             {sleep?.active && <SleepCountdown sleep={sleep} />}
           </button>
-          <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds'>
+          <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds' disabled={!!castingTo}>
             15 <ArrowClockwise size={15} />
           </button>
+          {/* Only when the host actually offers speakers AND this device may use them.
+              An unconfigured host, an old host or a non-owner grant all mean canCast
+              is false, and then there is no button at all rather than one that
+              explains itself when tapped. */}
+          {canCast &&
+            <button
+              // `mode` matters: only button.icon.mode.on carries the highlight colour, so
+              // without it the "actively casting" state rendered as nothing at all. Same
+              // class the shuffle and repeat toggles use, which is what this is.
+              className={'icon mode' + (castingTo ? ' on' : '')}
+              onClick={() => { haptic('light'); onSpeakers() }}
+              aria-label='Play on a speaker'
+            >
+              <SpeakerHigh size={16} weight={castingTo ? 'fill' : 'regular'} />
+            </button>}
         </div>
       </div>
     </div>
@@ -5330,6 +5750,60 @@ function SleepSheet ({ sleep, onClose, onPick }) {
               Turn off timer
             </button>
           )}
+          <button className='wide' onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Where the music comes out: this phone, or a Home Assistant speaker in the house
+// (proposal 2026-08-01).
+//
+// The list is deliberately flat and short. Anything clever - which speakers exist,
+// whether this device may use them - was decided by the host before we got here; a
+// non-owner or an unconfigured host simply never sees the button that opens this.
+//
+// The honest limits are stated in the sheet rather than discovered: a speaker has no
+// queue of its own, so there is a small gap between tracks, and the Nabu Casa speaker
+// cannot scrub at all. Better said here than reported as a bug.
+function SpeakerSheet ({ speakers, castingTo, onClose, onPick, onHere, busy }) {
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Play on</h1>
+        <div className='acts'>
+          <button className={'wide' + (castingTo ? '' : ' on')} onClick={onHere} disabled={busy}>
+            <DeviceMobile size={16} weight='regular' /> This phone
+          </button>
+          {speakers.map(s => (
+            <button
+              key={s.entityId}
+              className={'wide' + (castingTo === s.entityId ? ' on' : '')}
+              onClick={() => onPick(s.entityId)}
+              disabled={busy}
+            >
+              <SpeakerHigh size={16} weight='regular' /> {s.name}
+            </button>
+          ))}
+          {!speakers.length && <p className='muted sm'>No speakers found.</p>}
+          {/* "Everything else works as usual" USED TO END THIS, and it stopped being true.
+              While casting, the phone's own player is deliberately paused and muted (it is a
+              silent placeholder queue), and the lock screen can only mirror that player - so
+              its button reads Play the whole time, however the speaker is doing. expo-audio's
+              AudioLockScreenOptions is only { showSeekForward, showSeekBackward }; there is no
+              way to say "show pause" while the underlying player is paused, and the only route
+              to an honest button is keeping the phone playing a long silent item, which
+              reintroduces the racing hazard the one-second queue exists to avoid.
+              So the button is not going to be fixed, and the honest thing is to say what it
+              does: it TOGGLES the speaker (PR #327), which is more than it used to do -
+              pressing it once destroyed the cast outright. */}
+          {castingTo &&
+            <p className='muted sm'>
+              There is a short gap between tracks on a speaker, and you cannot scrub
+              through a song. On the lock screen the button always shows Play - tap it
+              to pause the speaker, and again to carry on.
+            </p>}
           <button className='wide' onClick={onClose}>Cancel</button>
         </div>
       </div>

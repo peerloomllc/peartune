@@ -10,10 +10,12 @@ import { loadThemePref, applyThemePref, resolveTheme } from './theme'
 import { PEAR_MARK } from './icon'
 import { Collapse, ConfirmHost, Modal, askConfirm } from './ui'
 import { SourcePanel } from './SourcePanel'
+import { SpeakersPanel } from './SpeakersPanel'
 import { PairModal, DAY_MS } from './Pair'
 import { MaintenanceModal } from './Maintenance'
 import SetupWizard from './Wizard'
 import { needsSetup, setupDismissed, dismissSetup, undismissSetup } from './setup'
+import { shouldShowUpdate, dismissUpdate, dismissedVersion } from './update'
 
 // The operator control plane, as an app shell adapted from the PearCircle seeder's
 // #153 redesign: a fixed top bar, a scrollable middle (stats + the people-first
@@ -37,6 +39,13 @@ export default function App () {
   // configured one never sees it. Once set, it is the operator's, not the poll's:
   // finishing or skipping must not be undone by the next refresh.
   const [setup, setSetup] = useState(null)
+  // GET /api/update, kept off the 3s /api/state poll on purpose: the host only asks
+  // GitHub once an hour, so polling it with the dashboard's hot path would be 1200
+  // requests for one answer. null until the first reply, and never fatal.
+  const [update, setUpdate] = useState(null)
+  // Read once at mount, then held in state so a dismissal hides the banner without a
+  // reload. localStorage is the durable copy; this is just what the render reads.
+  const [dismissedUpdate, setDismissedUpdate] = useState(dismissedVersion)
 
   useEffect(() => { applyThemePref(pref) }, [pref])
 
@@ -61,6 +70,27 @@ export default function App () {
     const t = setInterval(refresh, 3000)
     return () => clearInterval(t)
   }, [refresh])
+
+  // Kick off the apply, then poll fast enough to follow it. The host is about to
+  // restart under us, so failures here are expected and must not surface as errors -
+  // the state is re-read from whatever comes back up.
+  const applyUpdate = useCallback(async () => {
+    setUpdate(u => ({ ...u, apply: { status: 'running' } }))
+    await api('/api/update/apply', {}).catch(() => {})
+    const t = setInterval(() => {
+      api('/api/update').then(u => { if (u && u.latest) setUpdate(u) }).catch(() => {})
+    }, 2000)
+    setTimeout(() => clearInterval(t), 120000)
+  }, [])
+
+  useEffect(() => {
+    const poll = () => api('/api/update').then(setUpdate).catch(() => {})
+    poll()
+    // Half the host's own check interval, so a dashboard left open overnight picks up
+    // a release without a reload, and a shut one costs nothing.
+    const t = setInterval(poll, 30 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [])
 
   const cycleTheme = () => setPref(resolveTheme(pref) === 'dark' ? 'light' : 'dark')
   const isDark = resolveTheme(pref) === 'dark'
@@ -92,6 +122,11 @@ export default function App () {
       <TopBar state={state} isDark={isDark} onTheme={cycleTheme} onOpen={setModal} onSetup={openSetup} />
 
       <div className='main'>
+        {shouldShowUpdate(update, dismissedUpdate) &&
+          <UpdateBanner info={update}
+            onDismiss={() => { dismissUpdate(update.latest); setDismissedUpdate(update.latest) }}
+            onApply={applyUpdate} />}
+
         {state.sourceError &&
           <div className='banner'>The music source is not working: {state.sourceError}</div>}
 
@@ -114,6 +149,10 @@ export default function App () {
             className={tab === 'requests' ? 'on' : ''} onClick={() => setTab('requests')}>
             Requests{pendingRequests > 0 && <span className='tabbadge'>{pendingRequests}</span>}
           </button>
+          <button role='tab' id='tab-speakers' aria-controls='pane-speakers' aria-selected={tab === 'speakers'}
+            className={tab === 'speakers' ? 'on' : ''} onClick={() => setTab('speakers')}>
+            Speakers
+          </button>
         </div>
 
         {/* Both panels stay mounted (hidden, not unmounted) so in-flight edits -
@@ -127,6 +166,9 @@ export default function App () {
           </div>
           <div className='tabpane' id='pane-requests' role='tabpanel' aria-labelledby='tab-requests' hidden={tab !== 'requests'}>
             <RequestsPanel state={state} refresh={refresh} toast={toast} />
+          </div>
+          <div className='tabpane' id='pane-speakers' role='tabpanel' aria-labelledby='tab-speakers' hidden={tab !== 'speakers'}>
+            <SpeakersPanel toast={toast} />
           </div>
         </div>
       </div>
@@ -143,6 +185,44 @@ export default function App () {
       {modal === 'maintenance' && <MaintenanceModal state={state} onClose={() => setModal(null)} onSaved={refresh} toast={toast} />}
       {note && <div className={'toast' + (note.bad ? ' err' : '')}>{note.msg}</div>}
       <ConfirmHost />
+    </div>
+  )
+}
+
+/* ---- "a new PearTune is out" ---------------------------------------------- */
+// A version, an "Update now" button where the install can apply it, and a link
+// where it cannot. The download link is ALWAYS present - it is what this banner did
+// before there was a button, it is the fallback for every failure, and it is never
+// the wrong answer. `apply` is null on installs with no applier (a container).
+function UpdateBanner ({ info, onDismiss, onApply }) {
+  const st = (info.apply && info.apply.status) || 'idle'
+  const busy = st === 'running'
+  const done = st === 'restarting'
+
+  // Only offer the button where an apply could actually happen. Somewhere it
+  // cannot, a button that always fails is worse than no button.
+  const canApply = !!info.apply && !['needs-manual'].includes(st)
+
+  return (
+    <div className='banner info'>
+      <span>
+        <strong>PearTune {info.latest} is out.</strong>{' '}
+        {done
+          ? <>Installing it now - PearTune will restart on {info.latest}.</>
+          : st === 'error'
+            ? <>That update could not be verified, so nothing was installed.{' '}
+                {info.htmlUrl && <a href={info.htmlUrl} target='_blank' rel='noreferrer'>Download it yourself</a>}</>
+            : info.htmlUrl
+              ? <a href={info.htmlUrl} target='_blank' rel='noreferrer'>See what changed</a>
+              : 'Grab it from the PearTune releases page.'}
+      </span>
+      {canApply && !done &&
+        <button className='btn small' onClick={onApply} disabled={busy}>
+          {busy ? 'Updating…' : 'Update now'}
+        </button>}
+      {!done &&
+        <button className='bannerx' onClick={onDismiss} title='Hide until the next release'
+          aria-label='Hide this update notice'>×</button>}
     </div>
   )
 }

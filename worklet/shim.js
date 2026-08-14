@@ -151,7 +151,41 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
     return m
   }
 
+  // A tiny silent WAV, built once and held. CAST MODE points every queue slot at this
+  // instead of at real audio.
+  //
+  // WHY: the player has to stay loaded while casting, because it is what owns the queue
+  // order, shuffle and repeat. But a loaded player BUFFERS whatever track it sits on, muted
+  // and paused or not - measured on the TCL 2026-08-02 at ~1.75 MB per cast track, audio
+  // nobody could hear. On cellular that is close to the cost of listening, for nothing.
+  // Sixteen kilobytes of silence per slot costs nothing and keeps the ordering intact.
+  //
+  // Generated rather than embedded: 16-bit PCM zeros ARE silence, so the whole thing is a
+  // 44-byte header over a zeroed buffer, and no base64 blob has to live in the source.
+  let silenceBuf = null
+  function silence () {
+    if (silenceBuf) return silenceBuf
+    const rate = 8000
+    const dataLen = rate * 2 // one second, 16-bit mono
+    const b = Buffer.alloc(44 + dataLen)
+    b.write('RIFF', 0); b.writeUInt32LE(36 + dataLen, 4); b.write('WAVE', 8)
+    b.write('fmt ', 12); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22)
+    b.writeUInt32LE(rate, 24); b.writeUInt32LE(rate * 2, 28)
+    b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34)
+    b.write('data', 36); b.writeUInt32LE(dataLen, 40)
+    silenceBuf = b
+    return b
+  }
+
   const server = http.createServer(async (req, res) => {
+    // Before parseUrl, which only knows track and art ids. No connection, no cache, no
+    // lease: there is nothing here to authorize - it is silence.
+    if ((req.url || '').startsWith('/silence')) {
+      const b = silence()
+      res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': b.length, 'accept-ranges': 'none' })
+      return res.end(req.method === 'HEAD' ? undefined : b)
+    }
+
     const parsed = parseUrl(req.url || '')
     if (!parsed) {
       res.writeHead(404)

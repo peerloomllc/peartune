@@ -18,7 +18,7 @@
 
 services:
   peartune-host:
-    image: ghcr.io/peerloomllc/peartune-host:0.2.41@sha256:47ab391cc042382a1b5c2eee8dddbba936153b1b3b6695ae41765055e3504032
+    image: ghcr.io/peerloomllc/peartune-host:0.2.44@sha256:715eb4fffce1e4d4ebc9fa3b300c565ab4a223c3fd7bb3a81f5e23db2bcb8955
     container_name: peartune-host
     restart: unless-stopped
     stop_grace_period: 1m
@@ -44,6 +44,14 @@ services:
       # UP: losing it means every phone must re-pair; leaking it means someone can
       # impersonate your library.
       - ./data:/data
+      # OPTIONAL: Home Assistant's config folder, if you run it on this same machine and
+      # want PearTune to set voice control up for itself. Uncomment and point the left side
+      # at wherever your configuration.yaml lives, then set PEARTUNE_HA_CONFIG=/ha-config
+      # above. PearTune writes exactly two files there - packages/peartune.yaml and one
+      # appended line in configuration.yaml - and only when you press the button in the
+      # dashboard. Leave it out and the dashboard will offer a download instead.
+      # - /path/to/homeassistant/config:/ha-config
+      #
       # Your music. Read-only, always - PearTune serves music, it never writes it.
       # Change the left side to wherever your library actually lives.
       - /srv/music:/music:ro
