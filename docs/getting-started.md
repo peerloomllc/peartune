@@ -129,9 +129,10 @@ fine if you add music rarely; you can always press **Rescan** by hand.
 Install PearTune on the phone, then press **Pair a device** at the bottom right of the
 dashboard.
 
-> **There is no published app yet** - not in the Play Store, the App Store or Zapstore, and
-> no APK on a releases page. The clients are built from this repo for now. See
-> [Getting the app](../README.md#getting-the-app).
+> **iOS:** [App Store](https://apps.apple.com/app/id6796709523). **Android:** not in the Play
+> Store yet - it is in closed testing there, and until that finishes the Android client is the
+> `.apk` on [the releases page](https://github.com/peerloomllc/peartune/releases/latest) or on
+> [Zapstore](https://zapstore.dev/apps/com.peartune). See [Getting the app](../README.md#getting-the-app).
 
 ![The Pair a Device dialog offering a choice between Full access and Guest pass](img/dashboard-pair-modal.png)
 

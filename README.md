@@ -32,9 +32,11 @@ Every connection is end-to-end encrypted and mutually authenticated. The host kn
 
 ## Getting the app
 
+**iOS: [download PearTune on the App Store](https://apps.apple.com/app/id6796709523).**
+
 **The host is downloadable now: [the releases page](https://github.com/peerloomllc/peartune/releases/latest)** has the desktop app for macOS (signed and notarized), Windows and Linux, plus the Android `.apk`. On Umbrel, install it from the [PeerLoom community app store](https://github.com/peerloomllc/peerloom-umbrel-app-store).
 
-**The phone apps are not in the stores yet.** iOS is with App Review and Android is on an internal Play track, so for now the Android client is the `.apk` on that same releases page. [Status](#status) says exactly where things stand.
+**Android is not in the Play Store yet.** It is in closed testing there and lands once that finishes. Until then the Android client is the `.apk` on that same releases page, or get it from [Zapstore](https://zapstore.dev/apps/com.peartune). [Status](#status) says exactly where things stand.
 
 ## Setting it up
 
@@ -83,11 +85,11 @@ Beyond playing:
 
 ## Status
 
-**Alpha. Working, and downloadable.**
+**1.0 on iOS. Android in closed testing.**
 
 The wire protocol (`proposals/2026-07-13-wire-protocol.md`) is implemented and the whole path runs: scan the QR, browse the library, play. The host is packaged as a Docker image and runs on an Umbrel, and both the Android and the iOS clients run on real phones. Pairing, gapless playback, per-person grants, live revocation and multiple hosts in one merged library have all been exercised on real devices against real hosts, including off-LAN over cellular.
 
-What is missing is store distribution: iOS is with App Review, Android is on an internal Play track, and the Windows build has no signing certificate yet, so SmartScreen warns on first run. The host itself is published - desktop installers on the releases page, a Docker image, and an Umbrel community-store listing. Design decisions and the reasoning behind them are in `DECISIONS.md`.
+What is missing is the rest of store distribution: Android is mid closed-test on Google Play, and the Windows build has no signing certificate yet, so SmartScreen warns on first run. The host itself is published - desktop installers on the releases page, a Docker image and an Umbrel community-store listing. Design decisions and the reasoning behind them are in `DECISIONS.md`.
 
 ## Privacy and support
 
