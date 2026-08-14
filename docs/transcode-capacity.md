@@ -4,6 +4,14 @@
 **Question this answers:** "How many devices can stream from a PearTune host at once, and
 what's the limit — CPU, memory, or bandwidth?"
 
+> **AUDIO ONLY. These numbers are wrong for video, in the direction that hurts.**
+> This doc's headline — transcode CPU is almost never the bottleneck — is measured
+> for mp3-class audio and is FALSE for video: the same N100 that paced 200+ audio
+> transcodes held **1.02x realtime for ONE software video transcode** on the whole
+> CPU. Video capacity lives in `pearcinema/docs/transcode-capacity.md`, measured
+> 2026-08-13 on the same box: hardware engine or nothing, ~10 concurrent 1080p
+> streams, uplink the real limit off-LAN. Do not size anything video from this file.
+
 ## TL;DR
 
 - For the **folder + transcoding** path (the CPU-heaviest case), transcode CPU is **almost
