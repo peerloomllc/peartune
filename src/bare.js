@@ -2005,7 +2005,7 @@ async function ensureShim () {
     },
     // Read fresh each request so a Settings change (or a wifi->cellular flip) applies
     // to the next track without rebuilding the shim.
-    quality: () => streamParams(loadSettings(), networkType),
+    quality: (trackId, suffix) => streamParams(loadSettings(), networkType, suffix, PLATFORM),
     cache: audioCache,
     artStore,
     // The lease gate: a cached track is only served from disk while authorization is
