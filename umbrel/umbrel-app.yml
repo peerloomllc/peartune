@@ -1,9 +1,18 @@
 manifestVersion: 1
 id: peerloom-peartune
 name: PearTune
+# Hosted on the website because umbrelOS falls back to its OFFICIAL-apps gallery CDN
+# when this field is missing, which 404s for community-store apps (generic tile).
+# GitHub raw links do not work either: text/plain + nosniff, browsers refuse them.
+icon: https://peerloomllc.com/assets/icon-peartune.svg
 tagline: Your music, playable anywhere - and shareable with friends
 category: media
-version: "1.0.0"
+# The Umbrel LISTING's version, compared against the installed copy to offer updates.
+# build-image.sh stamps it from app.json's version on every synced release; this
+# out-of-band .1 exists so installs from the 1.0.0 listing get offered the 0.2.44 host
+# and this manifest. It means the NEXT app release must version past 1.0.1 or its store
+# sync ships to nobody - build-image.sh warns out loud when that collision happens.
+version: "1.0.1"
 port: 8741
 description: >-
   Play the music on your Umbrel from anywhere, without exposing your server to the
@@ -46,14 +55,16 @@ repo: https://github.com/peerloomllc/peartune
 support: https://github.com/peerloomllc/peartune/issues
 gallery: []
 releaseNotes: |-
-  Getting started:
-  Your music, wherever it already lives:
-  Staying connected:
-  Keeping it running:
-  Downloads:
-  Good to know:
-  - The phone apps aren't in the app stores yet. iOS is with App Review; on Android, install
-  - On Linux, the `.deb` sets up the background service for you. The AppImage runs when you log
+  This update brings the Umbrel listing up to date with everything shipped since launch.
+  New:
+  - Play your library on the Google and Home Assistant speakers around your home.
+  - Voice control through Home Assistant: say "Okay Nabu, play Led Zeppelin", or name a room, like "put on Metallica in the kitchen".
+  - PearTune can set voice control up in Home Assistant for you, with one button on the Speakers tab.
+  Improvements:
+  - PearTune now shows its real icon in the Umbrel app store and on your home screen.
+  - The dashboard is easier to use on a phone.
+  Fixes:
+  - Speaker lights no longer keep PearTune's colours after the music stops.
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the
