@@ -27,7 +27,7 @@ const Hyperswarm = require('hyperswarm')
 // the call site - if hyperdht moves it, the diagnostic just omits the classification.
 const { PearTuneClient } = require('../client')
 const { createAudioShim, mimeFor, DEFAULT_ART_SIZE } = require('../worklet/shim')
-const { streamParams } = require('../worklet/quality')
+const { streamParams, pinParams, minTranscodeBytes } = require('../worklet/quality')
 const { isPairLink, parseLink } = require('../protocol/link')
 const { hostTopic, libraryId: deriveLibraryId } = require('../protocol/ids')
 const { RELAY_PUBLIC_KEY, relayThroughFor, relayAudioDecision } = require('../protocol/relay')
@@ -4013,11 +4013,25 @@ const methods = {
     for (const t of tracks) {
       try {
         if (!audioCache.has(t.id)) {
-          const mime = mimeFor(t.suffix ? 'a.' + t.suffix : (t.path || t.title || ''))
+          // A format the phone cannot decode is pinned as its mp3 TRANSCODE - a raw
+          // .wma on disk is silence offline. tc null (every playable format) keeps
+          // the original bytes, full quality, exactly as before.
+          const tc = pinParams(t.suffix, PLATFORM)
+          const mime = tc ? 'audio/mpeg' : mimeFor(t.suffix ? 'a.' + t.suffix : (t.path || t.title || ''))
           // Tagged with the library, same as the shim's write-through: it is what lets
           // removing ONE library reclaim its bytes while the others stay downloaded.
-          const sink = audioCache.createSink(t.id, { mime, size: t.size, library: defaultLibraryId || null })
-          await mustClient().streamTo({ trackId: t.id }, (chunk) => sink.write(chunk))
+          // A transcode has no known size, so the sink records what arrives and the
+          // byte-floor below stands in for the short-read guard the size gave us.
+          const sink = audioCache.createSink(t.id, { mime, size: tc ? null : t.size, library: defaultLibraryId || null })
+          let got = 0
+          await mustClient().streamTo(
+            tc ? { trackId: t.id, format: tc.format, bitrate: tc.bitrate } : { trackId: t.id },
+            (chunk) => { got += chunk.length; sink.write(chunk) }
+          )
+          if (tc && got < minTranscodeBytes(tc.bitrate, t.durationMs)) {
+            sink.abort()
+            throw new Error('short transcode download')
+          }
           if (!await sink.commit()) throw new Error('incomplete download')
         }
         audioCache.setPinned(t.id, true)

@@ -53,4 +53,40 @@ function streamParams (settings, network, suffix, platform) {
   return bitrate ? { format: 'mp3', bitrate } : null
 }
 
-module.exports = { streamParams, needsTranscode, AUTO_CELLULAR_BITRATE, UNPLAYABLE_WIFI_BITRATE }
+// A PIN (an explicit download) of an unplayable format stores the TRANSCODE, not the
+// raw file - raw .wma on disk is silence offline, which defeats the one thing a
+// download is for. Playable formats keep downloading the original bytes at full
+// quality, unchanged.
+//
+// The bitrate is FIXED at mp3's ceiling rather than following the network policy:
+// a pin is a keep-forever artifact, and baking the moment's cellular cap into it
+// would make an album downloaded on the train permanently worse than the same album
+// downloaded at home.
+const PIN_TRANSCODE_BITRATE = 320
+
+function pinParams (suffix, platform) {
+  return needsTranscode(suffix, platform)
+    ? { format: 'mp3', bitrate: PIN_TRANSCODE_BITRATE }
+    : null
+}
+
+// The floor a committed transcode download must clear. A transcode has no known size
+// for the sink's own short-read guard, and the host ends the stream cleanly even if
+// ffmpeg dies mid-encode - so without this, a half-written file would be stored as a
+// complete download and play half an album track forever. CBR mp3 makes the expected
+// size predictable: bitrate/8 bytes per second, with 20% slack for container overhead
+// variance. No known duration -> floor of one byte (an empty file is never a track).
+function minTranscodeBytes (bitrate, durationMs) {
+  if (!durationMs || durationMs <= 0) return 1
+  return Math.floor((bitrate * 1000 / 8) * (durationMs / 1000) * 0.8)
+}
+
+module.exports = {
+  streamParams,
+  needsTranscode,
+  pinParams,
+  minTranscodeBytes,
+  AUTO_CELLULAR_BITRATE,
+  UNPLAYABLE_WIFI_BITRATE,
+  PIN_TRANSCODE_BITRATE
+}

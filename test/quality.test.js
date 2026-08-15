@@ -7,7 +7,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 
-const { streamParams, needsTranscode, AUTO_CELLULAR_BITRATE, UNPLAYABLE_WIFI_BITRATE } = require('../worklet/quality')
+const { streamParams, needsTranscode, pinParams, minTranscodeBytes, AUTO_CELLULAR_BITRATE, UNPLAYABLE_WIFI_BITRATE, PIN_TRANSCODE_BITRATE } = require('../worklet/quality')
 
 test('the default (no setting) is AUTO: original on wifi, capped on cellular', () => {
   assert.equal(streamParams({}, 'wifi'), null, 'wifi -> original bytes')
@@ -62,6 +62,34 @@ test('the unplayable set is per platform: AIFF is Android-only, WMA is universal
   assert.equal(needsTranscode('wma', 'ios'), true)
   assert.equal(needsTranscode('WMA', 'android'), true, 'case-insensitive')
   assert.equal(needsTranscode('wma', 'somethingelse'), true, 'unknown platform gets the safe (android) set')
+})
+
+// Downloads of unplayable formats: a pinned raw .wma is silence offline, so the pin
+// path stores the transcode instead - at a FIXED ceiling bitrate, never the network
+// policy's, so a download made on cellular is not permanently worse than one made at
+// home.
+test('a pin of an unplayable format downloads the mp3 transcode at the fixed ceiling', () => {
+  assert.deepEqual(pinParams('wma', 'android'), { format: 'mp3', bitrate: PIN_TRANSCODE_BITRATE })
+  assert.deepEqual(pinParams('aiff', 'android'), { format: 'mp3', bitrate: PIN_TRANSCODE_BITRATE })
+})
+
+test('a pin of a playable format stays raw - full quality, no transcode', () => {
+  assert.equal(pinParams('flac', 'android'), null)
+  assert.equal(pinParams('mp3', 'android'), null)
+  assert.equal(pinParams('aiff', 'ios'), null, 'AIFF plays natively on iOS, keep the original')
+  assert.equal(pinParams(undefined, 'android'), null)
+})
+
+test('the transcode byte floor guards a half-written download from committing', () => {
+  // 30s at 320kbps CBR is 1.2MB; the floor sits at 80% of that.
+  assert.equal(minTranscodeBytes(320, 30000), Math.floor(320000 / 8 * 30 * 0.8))
+  // A truncated stream (half the bytes) falls under it, a complete one clears it.
+  const floor = minTranscodeBytes(320, 30000)
+  assert.ok(1200000 / 2 < floor)
+  assert.ok(1200000 > floor)
+  // No duration known -> only an empty file is rejected.
+  assert.equal(minTranscodeBytes(320, null), 1)
+  assert.equal(minTranscodeBytes(320, 0), 1)
 })
 
 test('garbage or empty falls back to the AUTO default, not a broken transcode', () => {
