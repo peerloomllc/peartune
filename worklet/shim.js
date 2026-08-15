@@ -88,7 +88,13 @@ const MIME = {
   aac: 'audio/aac',
   ogg: 'audio/ogg',
   opus: 'audio/opus',
-  wav: 'audio/wav'
+  wav: 'audio/wav',
+  // Indexed by the scanner but not decodable by the phone - they reach the player
+  // only as transcodes (worklet/quality.js). Named here so the rare direct serve
+  // (a host with no ffmpeg) is at least honestly labeled, not octet-stream.
+  wma: 'audio/x-ms-wma',
+  aiff: 'audio/aiff',
+  aif: 'audio/aiff'
 }
 
 function mimeFor (name = '') {
@@ -109,11 +115,12 @@ function parseRange (header, size) {
   return { start, end, partial: true }
 }
 
-// `quality()` decides, per request, whether to stream the original bytes or ask the
-// host for a smaller transcode. It returns null for direct play, or { format, bitrate }
-// to transcode. The worklet owns the policy (a Settings choice, and later the network
-// type); the shim just asks it at the moment a track is requested, so a change takes
-// effect on the next track without rebuilding anything.
+// `quality(trackId, suffix)` decides, per request, whether to stream the original
+// bytes or ask the host for a smaller transcode. It returns null for direct play, or
+// { format, bitrate } to transcode. The worklet owns the policy (a Settings choice,
+// the network type and which containers the platform can decode at all - the suffix
+// is why a .wma always transcodes); the shim just asks it at the moment a track is
+// requested, so a change takes effect on the next track without rebuilding anything.
 // `hostless(id)` answers whether an id belongs to a library with NO host behind it - today only
 // the demo library (proposal 2026-07-28-app-review-demo). Such an id can only ever be served from
 // local disk, so it skips the lease gate (nothing could have authorized it) and the art store's
@@ -146,7 +153,12 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
     if (!conn) return null // no library to ask - offline, and not in the cache either
     const t = await conn.get({ id: trackId })
     if (!t) return null
-    const m = { size: t.size, mime: mimeFor(t.path || t.title) }
+    // The suffix feeds the quality policy: an unplayable container (wma, aiff on
+    // Android) must be transcoded no matter what the Settings choice says. The
+    // adapters report it directly; the path is the fallback for tracks indexed
+    // before suffix existed.
+    const suffix = t.suffix || String(t.path || t.title || '').split('.').pop().toLowerCase()
+    const m = { size: t.size, mime: mimeFor(t.path || t.title), suffix }
     meta.set(trackId, m)
     return m
   }
@@ -253,7 +265,7 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
       // 200 with no content-length, and `accept-ranges: none` so the player does not
       // try to seek into bytes that do not exist yet. This is what Subsonic and
       // Jellyfin do with their own transcodes; direct play below keeps full seeking.
-      const tc = quality(trackId)
+      const tc = quality(trackId, m.suffix)
       if (tc) {
         res.writeHead(200, {
           'content-type': MIME[tc.format] || 'audio/mpeg',

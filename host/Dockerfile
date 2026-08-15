@@ -29,6 +29,38 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates libatomic1 \
  && rm -rf /var/lib/apt/lists/*
 
+# A per-arch STATIC ffmpeg, the deferred half of DECISIONS 2026-07-14: the folder
+# adapter's transcoder was landed then but the binary was left out of the image until
+# the client could request a transcode. The client can now (worklet/quality.js), and
+# without this an unplayable container (.wma) silently falls back to raw bytes the
+# phone cannot decode - the "shows in the app, player says paused" bug of 2026-08-14.
+#
+# A static build over apt's ffmpeg for the reasons docs/transcode-capacity.md
+# measured: the metapackage nearly doubles the image while this is ~10% growth, and
+# the static build ran ~3.7x faster than the distro build on the same CPU. Pinned by
+# sha256, so the moving "release" URL cannot change bytes under us - when John
+# VanSickle ships a new release the checksum fails LOUDLY and we bump on purpose
+# (the pinned 7.0.2 then lives on under /ffmpeg/old-releases/).
+ARG TARGETARCH
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl xz-utils \
+ && case "$TARGETARCH" in \
+      amd64) FF_SHA=abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67 ;; \
+      arm64) FF_SHA=f4149bb2b0784e30e99bdda85471c9b5930d3402014e934a5098b41d0f7201b1 ;; \
+      *) echo "no static ffmpeg pinned for $TARGETARCH" && exit 1 ;; \
+    esac \
+ && ( { curl -fsSL -o /tmp/ffmpeg.tar.xz "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${TARGETARCH}-static.tar.xz" \
+        && echo "$FF_SHA  /tmp/ffmpeg.tar.xz" | sha256sum -c - ; } \
+   || { curl -fsSL -o /tmp/ffmpeg.tar.xz "https://johnvansickle.com/ffmpeg/old-releases/ffmpeg-7.0.2-${TARGETARCH}-static.tar.xz" \
+        && echo "$FF_SHA  /tmp/ffmpeg.tar.xz" | sha256sum -c - ; } ) \
+ && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp \
+ && mv /tmp/ffmpeg-*-static/ffmpeg /usr/local/bin/ffmpeg \
+ && rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-*-static \
+ && apt-get purge -y curl xz-utils \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/* \
+ && /usr/local/bin/ffmpeg -hide_banner -version | head -1
+
 WORKDIR /app
 
 # THE HOST'S OWN MANIFEST, not the repo root's. The root package.json is the
