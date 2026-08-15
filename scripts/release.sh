@@ -1611,13 +1611,20 @@ notes = open(os.environ["NOTES_FILE"], encoding="utf-8").read()
 
 # Umbrel renders releaseNotes as plain text, so flatten the markdown: keep the
 # section headings as bare words, keep the bullets, drop the emoji and the ##.
+# A line that is neither a heading nor a bullet is CONTENT, not noise: either
+# the continuation of a wrapped bullet (joined onto it) or a prose paragraph
+# (kept as its own line). Dropping those is what shipped the 1.0.0 listing with
+# six empty headings and two half-sentences.
 lines = []
+in_bullet = False
 for raw in notes.splitlines():
     line = raw.strip()
     if not line:
+        in_bullet = False
         continue
     m = re.match(r"^#{2,4}\s+(.*)$", line)
     if m:
+        in_bullet = False
         title = re.sub(r"[^\x00-\x7F]+", "", m.group(1)).strip()
         if title.lower().startswith("what"):
             continue
@@ -1625,7 +1632,14 @@ for raw in notes.splitlines():
         continue
     m = re.match(r"^[-*]\s+(.+)$", line)
     if m:
+        in_bullet = True
         lines.append("- " + m.group(1).replace("**", "").strip())
+        continue
+    text = line.replace("**", "").strip()
+    if in_bullet:
+        lines[-1] += " " + text
+    else:
+        lines.append(text)
 if not lines:
     sys.exit("release_notes.md produced no renderable lines")
 
