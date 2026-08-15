@@ -8,11 +8,12 @@ icon: https://peerloomllc.com/assets/icon-peartune.svg
 tagline: Your music, playable anywhere - and shareable with friends
 category: media
 # The Umbrel LISTING's version, compared against the installed copy to offer updates.
-# build-image.sh stamps it from app.json's version on every synced release; this
-# out-of-band .1 exists so installs from the 1.0.0 listing get offered the 0.2.44 host
-# and this manifest. It means the NEXT app release must version past 1.0.1 or its store
-# sync ships to nobody - build-image.sh warns out loud when that collision happens.
-version: "1.0.1"
+# build-image.sh stamps it from app.json's version on every synced release; the
+# out-of-band bumps past 1.0.0 (1.0.1 catch-up on 2026-08-14, 1.0.2 for the 0.2.45
+# wma-fix host) exist so installs get offered host updates between app releases. The
+# NEXT app release must version past 1.0.2 or its store sync ships to nobody -
+# build-image.sh warns out loud when that collision happens.
+version: "1.0.2"
 port: 8741
 description: >-
   Play the music on your Umbrel from anywhere, without exposing your server to the
@@ -56,6 +57,8 @@ support: https://github.com/peerloomllc/peartune/issues
 gallery: []
 releaseNotes: |-
   This update brings the Umbrel listing up to date with everything shipped since launch.
+  Fixed:
+  - Music in .wma and .aiff formats now plays. The server converts those files on the fly, so libraries full of them stop showing tracks that sit on pause forever. Update the phone app too when its next release lands - both halves are needed.
   New:
   - Play your library on the Google and Home Assistant speakers around your home.
   - Voice control through Home Assistant: say "Okay Nabu, play Led Zeppelin", or name a room, like "put on Metallica in the kitchen".
