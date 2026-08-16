@@ -3931,6 +3931,32 @@ const methods = {
     return { url: shim.urlFor(trackId), port: shimPort }
   },
 
+  // Where to point the player when the user SEEKS (proposal 2026-08-16, slice 2).
+  // Null url = direct play: the source is a real file with byte ranges, so the shell
+  // seeks it the way it always has. A TRANSCODE cannot seek by bytes, so when the
+  // current policy says this track transcodes, the answer is the same source URL with
+  // ?t=<ms> - a stream that STARTS at the target - and the shell swaps it under the
+  // player. The policy lives here, next to the quality policy it consults, not in the
+  // shell. A cached track with a fresh lease is a seekable file on disk: null.
+  async seekUrl ({ trackId, libraryId, copies, positionMs = 0 }) {
+    await ensureShim()
+    if (demoMode()) return { url: null }
+    const t = Math.max(0, Math.round(Number(positionMs) || 0))
+    if (mergedMode()) {
+      const route = routeTrack({ trackId, libraryId, copies })
+      if (route) {
+        if (audioCache.has(route.id) && leaseValid()) return { url: null }
+        const tc = streamParams(loadSettings(), networkType, shim.suffixFor(route.id), PLATFORM)
+        if (!tc) return { url: null }
+        return { url: shim.urlForLib(route.libraryId, route.id) + '?t=' + t, port: shimPort }
+      }
+    }
+    if (audioCache.has(trackId) && leaseValid()) return { url: null }
+    const tc = streamParams(loadSettings(), networkType, shim.suffixFor(trackId), PLATFORM)
+    if (!tc) return { url: null }
+    return { url: shim.urlFor(trackId) + '?t=' + t, port: shimPort }
+  },
+
   // --- storage / offline cache (milestone 3, phase 5B) ------------------------
   cacheStats () {
     return { bytes: audioCache.totalBytes(), count: audioCache.count(), cap: audioCache.cap, ...artStats() }

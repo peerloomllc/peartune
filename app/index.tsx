@@ -159,6 +159,16 @@ export default function App () {
   const player = useRef<AudioPlayer | null>(null)
   const queueRef = useRef<any[]>([])
   const indexRef = useRef(0)
+  // The resolved source URLs, index-aligned with queueRef. Kept PRISTINE (never a ?t=
+  // variant), so a seek-swap always builds from clean sources and going back to a track
+  // starts it from its beginning. (proposal 2026-08-16-seekable-transcodes, slice 2)
+  const urlsRef = useRef<string[]>([])
+  // Where the current item's TRANSCODED source starts. A transcode requested with
+  // ?t=<ms> begins mid-song, but the player counts its own bytes from zero - every
+  // position this file reports or persists is base + player position. 0 for direct
+  // play and for any track entered normally, so nothing changes on the old paths.
+  const baseOffsetMs = useRef(0)
+  const seekSwap = useRef<{ busy: boolean, pending: number | null }>({ busy: false, pending: null })
   // Mirrored so the persisted queue snapshot can carry them (ExoPlayer owns the
   // live modes; we only need the last-set values for restore).
   const shuffleRef = useRef(false)
@@ -352,6 +362,8 @@ export default function App () {
           const natural = !manualNav.current
           manualNav.current = false
           indexRef.current = i
+          // A new item plays its own source from ITS zero - only a seek-swap sets this.
+          baseOffsetMs.current = 0
           announce(i)
           persistQueue(true) // a track advanced - save the new index right away
 
@@ -385,7 +397,9 @@ export default function App () {
         // revoked device whose buffer runs dry (or a player that errors out to idle
         // waiting for bytes it cannot get) must end cleanly, not freeze. decideStarve
         // owns that call and is unit-tested per branch (app/starve.js, test/starve).
-        const posMs = Math.round((s.currentTime ?? 0) * 1000)
+        // Absolute position in the SONG, not in the source: a seek-swapped transcode's
+        // bytes start mid-track, so the player's own clock is offset by the swap target.
+        const posMs = baseOffsetMs.current + Math.round((s.currentTime ?? 0) * 1000)
 
         // Switch-drain: if the buffered foreign track runs dry (new host can't serve it), don't
         // hang on "buffering" - reuse decideStarve (dropped:true forces its idle/stall timing)
@@ -425,8 +439,10 @@ export default function App () {
 
         toWeb('play:status', {
           playing: !!s.playing,
-          positionMs: Math.round((s.currentTime ?? 0) * 1000),
-          durationMs: s.duration ? Math.round(s.duration * 1000) : null,
+          positionMs: posMs,
+          // A seek-swapped source only holds the REMAINDER of the song, so its own
+          // duration would read short - the UI's metadata fallback is the honest one.
+          durationMs: baseOffsetMs.current ? null : (s.duration ? Math.round(s.duration * 1000) : null),
           buffering: !!s.isBuffering,
           index: indexRef.current,
           queueLength: queueRef.current.length
@@ -452,6 +468,8 @@ export default function App () {
     }
 
     p.setQueueSources(urls.map((uri: string) => ({ uri })))
+    urlsRef.current = urls.slice()
+    baseOffsetMs.current = 0
     p.seekToQueueIndex(startIndex)
     return p
   }
@@ -515,8 +533,8 @@ export default function App () {
     if (!p) return
     toWeb('play:status', {
       playing: !!p.playing,
-      positionMs: Math.round((p.currentTime ?? 0) * 1000),
-      durationMs: p.duration ? Math.round(p.duration * 1000) : null,
+      positionMs: baseOffsetMs.current + Math.round((p.currentTime ?? 0) * 1000),
+      durationMs: baseOffsetMs.current ? null : (p.duration ? Math.round(p.duration * 1000) : null),
       buffering: !!p.isBuffering,
       index: indexRef.current,
       queueLength: queueRef.current.length
@@ -612,6 +630,7 @@ export default function App () {
         urls.push(url)
       }
       queueRef.current = [...queueRef.current, ...q]
+      urlsRef.current = [...urlsRef.current, ...urls]
       px()?.addQueueSources(urls.map((uri) => ({ uri })))
       persistQueue(true)
       toWeb('play:queued', { count: q.length, queueLength: queueRef.current.length })
@@ -737,6 +756,8 @@ export default function App () {
             const r: any = await call('silenceUrl')
             const at = indexRef.current
             p.setQueueSources(new Array(n).fill({ uri: r.url }))
+            urlsRef.current = new Array(n).fill(r.url)
+            baseOffsetMs.current = 0
             p.seekToQueueIndex(at)
             px()?.setShuffle(shuffleRef.current)
             px()?.setRepeatMode(repeatRef.current)
@@ -884,12 +905,53 @@ export default function App () {
   function seekBy (seconds: number) {
     const p = player.current
     if (!p) return
-    const target = Math.max(0, Math.min((p.duration || 0), (p.currentTime || 0) + seconds))
-    p.seekTo(target)
+    // Absolute in the SONG (base + player clock), then through seekTo so a transcoded
+    // stream gets the swap treatment instead of ExoPlayer's reset-to-zero.
+    seekTo(Math.max(0, baseOffsetMs.current + Math.round(((p.currentTime || 0) + seconds) * 1000)))
   }
 
-  function seekTo (ms: number) {
-    player.current?.seekTo(Math.max(0, ms / 1000))
+  // Direct play seeks like it always has: byte ranges, ExoPlayer does the work. A
+  // TRANSCODE cannot - the target's bytes do not exist until ffmpeg makes them - so the
+  // worklet answers seekUrl with a ?t=<ms> source that STARTS at the target, and we swap
+  // it under the player (proposal 2026-08-16-seekable-transcodes, slice 2). The worklet
+  // owns the is-this-a-transcode decision, same as it owns the quality policy; a null
+  // url means "seek normally". One swap in flight at a time: a tap that lands mid-swap
+  // parks its target and runs after, so a scrub burst coalesces to the last position.
+  async function seekTo (ms: number) {
+    const p = player.current
+    if (!p) return
+    const target = Math.max(0, Math.round(ms))
+    if (seekSwap.current.busy) { seekSwap.current.pending = target; return }
+    const t = queueRef.current[indexRef.current]
+    if (t) {
+      seekSwap.current.busy = true
+      try {
+        const r: any = await call('seekUrl', { trackId: t.id, positionMs: target })
+        if (r?.url) {
+          const at = indexRef.current
+          const urls = urlsRef.current.slice()
+          urls[at] = r.url
+          // Base FIRST: the rebuild emits statuses immediately, and they must already
+          // read as base + 0, not as a jump back to zero.
+          baseOffsetMs.current = target
+          p.setQueueSources(urls.map((uri: string) => ({ uri })))
+          p.seekToQueueIndex(at)
+          p.play()
+          return
+        }
+      } catch {
+        // seekUrl unreachable (offline, worklet mid-restart): fall through and seek
+        // the source we have - for direct play that is correct, for a transcode it is
+        // today's reset-to-zero, never worse.
+      } finally {
+        seekSwap.current.busy = false
+        const next = seekSwap.current.pending
+        seekSwap.current.pending = null
+        if (next !== null && next !== target) seekTo(next)
+      }
+    }
+    baseOffsetMs.current = 0
+    p.seekTo(Math.max(0, target / 1000))
   }
 
   function stopPlayer () {
@@ -1108,7 +1170,7 @@ export default function App () {
     const index = indexRef.current
     if (!Array.isArray(q) || !q.length) return
     const p = px()
-    const positionMs = Math.max(0, Math.round((p?.currentTime ?? 0) * 1000))
+    const positionMs = Math.max(0, baseOffsetMs.current + Math.round((p?.currentTime ?? 0) * 1000))
     const wasPlaying = !!p?.playing
     try {
       const urls: string[] = []
