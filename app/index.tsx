@@ -32,7 +32,7 @@ const bundle = require('../assets/bare-universal.bundle')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { reindexAfterMove, reindexAfterRemove } = require('./queue-index')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { decideStarve } = require('./starve')
+const { decideStarve, decideRecover } = require('./starve')
 
 // THE DEMO LIBRARY (proposal 2026-07-28-app-review-demo). Five CC0 tracks that ship inside the
 // app so PearTune works with no server at all - see assets/demo-music/LICENSE.md for why they are
@@ -169,6 +169,16 @@ export default function App () {
   // play and for any track entered normally, so nothing changes on the old paths.
   const baseOffsetMs = useRef(0)
   const seekSwap = useRef<{ busy: boolean, pending: number | null }>({ busy: false, pending: null })
+  // One retry per death of a transcoded source (decideRecover). Reset by forward
+  // progress or a track change, spent by a recovery attempt.
+  const recoverRef = useRef({ tries: 0 })
+  // Recovery's OWN stall clock, always armed (dropped:true). The real starve watchdog
+  // only watches while the link is down - but a broken transcoded stream can sit
+  // buffering forever under a link that flapped straight back up (seen on the
+  // emulator: stream socket dies, link reconnects in under a second, player buffers
+  // at a frozen position indefinitely). Recovery must not depend on the link's mood.
+  const recoverStall = useRef({ pos: -1, at: 0 })
+  const heartbeat = useRef<any>(null) // the watchdog's own clock; see ensurePlayer
   // Mirrored so the persisted queue snapshot can carry them (ExoPlayer owns the
   // live modes; we only need the last-set values for restore).
   const shuffleRef = useRef(false)
@@ -332,7 +342,7 @@ export default function App () {
       p = createAudioPlayer({ uri: urls[startIndex] })
       player.current = p
 
-      p.addListener('playbackStatusUpdate', (s: any) => {
+      const onStatus = (s: any) => {
         // A STRAY PLAY WHILE CASTING, and this is the one that bites hardest.
         //
         // The lock screen and headset buttons reach ExoPlayer through its MediaSession,
@@ -364,6 +374,8 @@ export default function App () {
           indexRef.current = i
           // A new item plays its own source from ITS zero - only a seek-swap sets this.
           baseOffsetMs.current = 0
+          recoverRef.current.tries = 0
+          recoverStall.current = { pos: -1, at: 0 }
           announce(i)
           persistQueue(true) // a track advanced - save the new index right away
 
@@ -401,6 +413,12 @@ export default function App () {
         // bytes start mid-track, so the player's own clock is offset by the swap target.
         const posMs = baseOffsetMs.current + Math.round((s.currentTime ?? 0) * 1000)
 
+        // Real forward progress re-arms the recovery budget: a stream that limps but
+        // moves gets one fresh retry per stall, not one per lifetime.
+        if (s.playing && posMs !== posRef.current) recoverRef.current.tries = 0
+
+
+
         // Switch-drain: if the buffered foreign track runs dry (new host can't serve it), don't
         // hang on "buffering" - reuse decideStarve (dropped:true forces its idle/stall timing)
         // to detect the dry buffer, then advance into the new library instead of freezing.
@@ -428,6 +446,49 @@ export default function App () {
           graceMs: STARVE_MS
         })
         starve.current = d.starve
+
+        // TRANSCODE RECOVERY (proposal 2026-08-16, slice 3). Two ways a broken
+        // transcoded source ends the music, and both land here: the player erroring
+        // out to idle (it cannot range-resume a stream with no ranges), or the starve
+        // watchdog firing on a stalled buffer. Before ending playback, re-enter the
+        // stream ONCE at the last known absolute position via the same seek-swap a
+        // scrub uses. seekTo answers false for direct play - those sources
+        // range-resume on their own, so a death there really is terminal - and the
+        // budget-spent path falls through to exactly the old behaviour. A REVOKED
+        // device's retry is a fresh stream request the host's gate denies, so its
+        // second death arrives with tries spent and playback ends as the acceptance
+        // test demands.
+        const rs = decideStarve({
+          dropped: true, // recovery's clock runs regardless of link state - see recoverStall
+          playbackState: s.playbackState,
+          isBuffering: !!s.isBuffering,
+          positionMs: posMs,
+          now: Date.now(),
+          starve: recoverStall.current,
+          graceMs: STARVE_MS
+        })
+        recoverStall.current = rs.starve
+        const deadCause = rs.starved ? (rs.reason === 'idle' ? 'idle' : 'starve')
+          : (s.playbackState === 'idle' || s.playbackState === 'error') ? s.playbackState : null
+        if (deadCause && !seekSwap.current.busy && decideRecover({
+          cause: deadCause,
+          tries: recoverRef.current.tries,
+          hasQueue: queueRef.current.length > 0,
+          casting: !!castMode.current
+        })) {
+          recoverRef.current.tries++
+          // The retry re-enters at the SAME frozen position, so give it a fresh grace
+          // window - otherwise this clock refires instantly on the unchanged number.
+          recoverStall.current = { pos: -1, at: Date.now() }
+          const resumeAt = posRef.current
+          console.log('[recover] cause=' + deadCause + ' at=' + resumeAt + ' try=' + recoverRef.current.tries)
+          ;(async () => {
+            const swapped = await seekTo(resumeAt)
+            console.log('[recover] swapped=' + swapped)
+            if (!swapped) recoverRef.current.tries = 99 // direct play: no loop, the old rules stand
+          })()
+          return
+        }
         if (d.starved) { onStarved(d.reason); return }
 
         // The playlist ran out. Normally that is a stop() - but if we're DRAINING the last
@@ -464,7 +525,23 @@ export default function App () {
 
         posRef.current = posMs
         persistQueue() // throttled: keeps the saved position roughly current
-      })
+      }
+      p.addListener('playbackStatusUpdate', onStatus)
+
+      // HEARTBEAT. expo-audio's status events go SILENT while the player sits
+      // buffering - measured on the emulator: one burst at load, then nothing for a
+      // minute while a broken transcoded stream buffered at a frozen position. That
+      // blinds every event-driven watchdog at exactly the moment it exists for, so
+      // stall detection gets its own clock: poll the same handler with the player's
+      // imperative status. 5s is coarse enough to cost nothing and fine enough that
+      // the 15s starve grace still means roughly fifteen seconds.
+      if (!heartbeat.current) {
+        heartbeat.current = setInterval(() => {
+          const cur: any = player.current
+          if (!cur) return
+          try { onStatus(cur.currentStatus) } catch {}
+        }, 5000)
+      }
     }
 
     p.setQueueSources(urls.map((uri: string) => ({ uri })))
@@ -934,10 +1011,10 @@ export default function App () {
           // Base FIRST: the rebuild emits statuses immediately, and they must already
           // read as base + 0, not as a jump back to zero.
           baseOffsetMs.current = target
-          p.setQueueSources(urls.map((uri: string) => ({ uri })))
-          p.seekToQueueIndex(at)
+          px()?.setQueueSources(urls.map((uri: string) => ({ uri })))
+          px()?.seekToQueueIndex(at)
           p.play()
-          return
+          return true
         }
       } catch {
         // seekUrl unreachable (offline, worklet mid-restart): fall through and seek
@@ -952,9 +1029,11 @@ export default function App () {
     }
     baseOffsetMs.current = 0
     p.seekTo(Math.max(0, target / 1000))
+    return false
   }
 
   function stopPlayer () {
+    if (heartbeat.current) { clearInterval(heartbeat.current); heartbeat.current = null }
     if (!player.current) return
     try {
       player.current.clearLockScreenControls()

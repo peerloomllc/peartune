@@ -107,3 +107,32 @@ test('a user PAUSE while dropped is not a starve (pause is not buffering)', () =
   const d = decideStarve(status({ dropped: true, isBuffering: false, playbackState: 'ready', positionMs: 5000 }))
   assert.equal(d.starved, false)
 })
+
+// --- decideRecover (proposal 2026-08-16-seekable-transcodes, slice 3) ---------------
+// A dead player gets ONE shot at re-entering a transcoded stream at position. The
+// bound is the security-relevant part: a revoked device's retry is denied by the
+// host's gate, and the second death arrives with the budget spent.
+
+const { decideRecover } = require('../app/starve')
+
+test('every death shape recovers while the budget is unspent', () => {
+  assert.equal(decideRecover({ cause: 'idle', tries: 0, hasQueue: true }), true)
+  assert.equal(decideRecover({ cause: 'error', tries: 0, hasQueue: true }), true)
+  assert.equal(decideRecover({ cause: 'starve', tries: 0, hasQueue: true }), true, 'a stalled buffer past grace recovers too')
+})
+
+test('the budget is one: a second death in the same stall does not retry', () => {
+  assert.equal(decideRecover({ cause: 'idle', tries: 1, hasQueue: true }), false)
+  assert.equal(decideRecover({ cause: 'starve', tries: 1, hasQueue: true }), false)
+})
+
+test('only a DEAD player recovers - live states are not a cause', () => {
+  for (const cause of ['playing', 'buffering', 'ready', 'paused', null, undefined]) {
+    assert.equal(decideRecover({ cause, tries: 0, hasQueue: true }), false, String(cause))
+  }
+})
+
+test('no queue or casting means nothing to recover', () => {
+  assert.equal(decideRecover({ cause: 'idle', tries: 0, hasQueue: false }), false)
+  assert.equal(decideRecover({ cause: 'idle', tries: 0, hasQueue: true, casting: true }), false)
+})
