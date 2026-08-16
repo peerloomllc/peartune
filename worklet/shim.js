@@ -569,6 +569,14 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
       return `http://127.0.0.1:${port}/art/${genSeg()}`
     },
 
+    // The container suffix of a track this shim has already served, from the same
+    // per-track meta the stream path caches. The worklet's seekUrl policy needs it
+    // (is this format transcoding right now?), and by seek time the track is playing,
+    // so the answer is warm. Null for a track never streamed this session.
+    suffixFor (trackId) {
+      return meta.get(trackId)?.suffix ?? null
+    },
+
     artUrlFor (coverId, size) {
       const { port } = server.address()
       const q = size ? `?s=${Math.min(MAX_ART_SIZE, Number(size) || DEFAULT_ART_SIZE)}` : ''

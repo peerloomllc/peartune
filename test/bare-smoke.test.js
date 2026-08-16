@@ -256,6 +256,12 @@ test('demo mode installs the shipped media and serves a browsable library', asyn
     assert.deepEqual((await call('search', { q: 'zzzznotamatch' })).tracks, [])
   })
 
+  await t.test('seekUrl answers null for demo tracks - pinned files seek by byte range', async () => {
+    const { items } = await call('tracks', {})
+    const r = await call('seekUrl', { trackId: items[0].id, positionMs: 30000 })
+    assert.equal(r.url, null)
+  })
+
   await t.test('urlFor mints a loopback URL with no host to ask', async () => {
     const { items } = await call('tracks', {})
     const { url, port } = await call('urlFor', { trackId: items[0].id })
