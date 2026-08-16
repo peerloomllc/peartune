@@ -495,6 +495,12 @@ export default function App () {
       // The big cover, for the UI's full-screen art viewer. The lock screen above
       // deliberately keeps the small one - it is a notification, not a gallery.
       artFull: t.artFull ?? null,
+      // The library's own length. The player only learns a TRANSCODED stream's
+      // duration once the whole thing has downloaded (no content-length), so off-LAN
+      // the UI showed --:-- until near the end of the song. status.durationMs still
+      // wins once the player actually knows; this is the fallback that makes the
+      // number appear immediately (Tim, off-LAN, 2026-08-16).
+      durationMs: t.durationMs ?? null,
       index: i,
       queueLength: queueRef.current.length
     })
