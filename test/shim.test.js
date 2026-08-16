@@ -9,11 +9,21 @@ const assert = require('node:assert/strict')
 const { parseUrl, DEFAULT_ART_SIZE } = require('../worklet/shim')
 
 test('single-host track URL parses with no libraryId', () => {
-  assert.deepEqual(parseUrl('/t/abc123def'), { kind: 'track', libraryId: null, id: 'abc123def' })
+  assert.deepEqual(parseUrl('/t/abc123def'), { kind: 'track', libraryId: null, id: 'abc123def', timeOffsetMs: 0 })
 })
 
 test('merged track URL carries the owning host', () => {
-  assert.deepEqual(parseUrl('/t/lib9xyz/track7abc'), { kind: 'track', libraryId: 'lib9xyz', id: 'track7abc' })
+  assert.deepEqual(parseUrl('/t/lib9xyz/track7abc'), { kind: 'track', libraryId: 'lib9xyz', id: 'track7abc', timeOffsetMs: 0 })
+})
+
+// ?t=<ms>: where a transcode should start (seek-by-time, proposal 2026-08-16). Absent
+// or garbage means 0 - "from the start", which is what every URL meant before it existed.
+test('track URLs carry a time offset for transcode seeks', () => {
+  assert.equal(parseUrl('/t/abc123?t=61500').timeOffsetMs, 61500)
+  assert.equal(parseUrl('/t/lib9xyz/track7abc?t=1000').timeOffsetMs, 1000)
+  assert.equal(parseUrl('/t/abc123').timeOffsetMs, 0)
+  assert.equal(parseUrl('/t/abc123?t=junk').timeOffsetMs, 0)
+  assert.equal(parseUrl('/t/abc123?t=-500').timeOffsetMs, 0, 'negative cannot parse - the regex wants digits')
 })
 
 test('single-host art URL parses with no libraryId and the default size', () => {
@@ -103,6 +113,6 @@ test('a cover legitimately named like a generation is not eaten', () => {
 })
 
 test('track URLs are untouched by any of this', () => {
-  assert.deepEqual(parseUrl('/t/abc123'), { kind: 'track', libraryId: null, id: 'abc123' })
+  assert.deepEqual(parseUrl('/t/abc123'), { kind: 'track', libraryId: null, id: 'abc123', timeOffsetMs: 0 })
   assert.equal(parseUrl('/t/_g1/abc123'), null) // not a real form, and must not silently route
 })

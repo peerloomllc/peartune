@@ -73,10 +73,20 @@ function parseUrl (url = '') {
   m = ART_PATH1.exec(u)
   if (m) return { kind: 'art', libraryId: null, id: decodeURIComponent(m[1]), size: artSize(u) }
   m = TRACK_PATH2.exec(u)
-  if (m) return { kind: 'track', libraryId: m[1], id: m[2] }
+  if (m) return { kind: 'track', libraryId: m[1], id: m[2], timeOffsetMs: timeOffset(u) }
   m = TRACK_PATH1.exec(u)
-  if (m) return { kind: 'track', libraryId: null, id: m[1] }
+  if (m) return { kind: 'track', libraryId: null, id: m[1], timeOffsetMs: timeOffset(u) }
   return null
+}
+
+// ?t=<ms> - where a TRANSCODE should start, in milliseconds. Seek-by-time for streams
+// whose bytes do not exist yet (proposals/2026-08-16-seekable-transcodes.md): the
+// shell swaps its source to a ?t= URL on a scrub or a stall retry. Ignored entirely
+// for direct play, which seeks by byte range like it always has. 0 when absent or
+// nonsense, and 0 means "from the start" - today's behaviour.
+function timeOffset (url) {
+  const m = /[?&]t=(\d+)/.exec(String(url))
+  return m ? Math.max(0, Number(m[1]) || 0) : 0
 }
 
 // ExoPlayer sniffs the container anyway, but a correct type saves it a probe and
@@ -272,11 +282,11 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
           'accept-ranges': 'none'
         })
         await conn.streamTo(
-          { trackId, format: tc.format, bitrate: tc.bitrate },
+          { trackId, format: tc.format, bitrate: tc.bitrate, ...(parsed.timeOffsetMs ? { timeOffsetMs: parsed.timeOffsetMs } : {}) },
           (chunk) => res.write(chunk)
         )
         res.end()
-        log('shim:transcoded', { track: trackId.slice(0, 8), format: tc.format, bitrate: tc.bitrate })
+        log('shim:transcoded', { track: trackId.slice(0, 8), format: tc.format, bitrate: tc.bitrate, ...(parsed.timeOffsetMs ? { t: parsed.timeOffsetMs } : {}) })
         return
       }
 

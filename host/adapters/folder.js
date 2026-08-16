@@ -794,12 +794,12 @@ class FolderAdapter {
   // If ffmpeg is NOT present we fall back to raw bytes - the pre-spike behavior. The
   // client still warns about raw-over-cellular, so this degrades to exactly what it
   // was, never worse.
-  async stream ({ trackId: id, offset = 0, length, format, bitrate } = {}) {
+  async stream ({ trackId: id, offset = 0, length, format, bitrate, timeOffsetMs } = {}) {
     const t = this.tracks.get(id)
     if (!t) return null
 
     if ((format || bitrate) && await hasFfmpeg()) {
-      const stream = this._transcode(t, { format, bitrate })
+      const stream = this._transcode(t, { format, bitrate, timeOffsetMs })
       if (stream) return stream
       // fall through to raw if the transcode could not start
     }
@@ -814,13 +814,17 @@ class FolderAdapter {
   // Spawn ffmpeg and hand back its stdout as the audio stream.
   //
   // Byte offsets do NOT survive a transcode - the bytes do not exist until ffmpeg
-  // makes them - so this ignores `offset`/`length` and streams from the start, the
-  // same best-effort-range limitation Navidrome and Jellyfin have while transcoding.
-  // The client only asks for a transcode on cellular, where it also tends not to scrub.
-  _transcode (t, { format = 'mp3', bitrate }) {
+  // makes them - so this ignores `offset`/`length`. Seeking a transcode is by TIME
+  // instead: `timeOffsetMs` becomes `-ss` BEFORE `-i` (input seeking - fast, and
+  // exact enough for audio), per proposals/2026-08-16-seekable-transcodes.md. The
+  // phone swaps its source to `?t=<ms>` on a scrub or a stall retry; an old phone
+  // that never sends it gets second-0 audio, exactly the old behaviour.
+  _transcode (t, { format = 'mp3', bitrate, timeOffsetMs }) {
     const spec = TRANSCODE[format] || TRANSCODE.mp3
+    const ss = Math.max(0, Number(timeOffsetMs) || 0)
     const args = [
       '-hide_banner', '-loglevel', 'error',
+      ...(ss > 0 ? ['-ss', String(ss / 1000)] : []),
       '-i', t.absPath,
       '-vn', '-map', '0:a:0', // audio only - drop any embedded cover art
       '-c:a', spec.codec
