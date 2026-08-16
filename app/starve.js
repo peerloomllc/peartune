@@ -63,4 +63,28 @@ function decideStarve ({
   return { starved: false, reason: null, starve: { pos: -1, at: now } }
 }
 
-module.exports = { decideStarve, DEFAULT_GRACE_MS }
+// RECOVERY decision for a dead player (proposal 2026-08-16-seekable-transcodes,
+// slice 3). A TRANSCODED source that breaks cannot be resumed by ExoPlayer - no byte
+// ranges - so the player errors out to idle and, before this existed, playback simply
+// ended ("stops a few seconds into the next song", Tim, off LAN). The shell now asks:
+// should we try re-entering the stream at the last known position?
+//
+// Deliberately dumb and bounded: ONE retry per death, reset only by real forward
+// progress or a track change. The retry itself is an ordinary stream request, so a
+// REVOKED device's retry is denied at the host's gate and the second death lands here
+// with tries spent - playback ends, exactly as the revoke acceptance test demands,
+// one denied request later.
+//
+// `cause` names how the player died: 'idle' | 'error' straight from playbackState
+// (a source that broke outright), or 'starve' when decideStarve just fired (a stalled
+// buffer past its grace). Anything else - a player that is merely buffering, paused
+// or playing - is not dead and must not be "recovered".
+//
+// Pure for the same reason decideStarve is: every branch testable without a device.
+function decideRecover ({ cause, tries, maxTries = 1, hasQueue, casting = false }) {
+  if (casting || !hasQueue) return false // cast mode plays silence slots; nothing to save
+  if (cause !== 'idle' && cause !== 'error' && cause !== 'starve') return false
+  return tries < maxTries
+}
+
+module.exports = { decideStarve, decideRecover, DEFAULT_GRACE_MS }
