@@ -265,7 +265,7 @@ test('demo mode installs the shipped media and serves a browsable library', asyn
     assert.match(url, /^http:\/\/127\.0\.0\.1:45999\/t\/[a-z0-9]+$/)
     const { parseUrl } = require('../worklet/shim')
     assert.deepEqual(parseUrl(url.replace(/^http:\/\/[^/]+/, '')), {
-      kind: 'track', libraryId: null, id: items[0].id
+      kind: 'track', libraryId: null, id: items[0].id, timeOffsetMs: 0
     })
   })
 

@@ -241,6 +241,23 @@ test('transcode: format+bitrate yields a valid, different stream', { skip: !HAS_
   assert.ok(head === '494433' || (mp3[0] === 0xff && (mp3[1] & 0xe0) === 0xe0), 'looks like an MP3')
 })
 
+test('transcode honours timeOffsetMs - starting mid-track yields a shorter stream', { skip: !HAS_FFMPEG && 'ffmpeg not installed' }, async () => {
+  // The fixtures are one second long, so half a second in is a meaningful offset.
+  // CBR mp3 makes the comparison sturdy: half the duration is roughly half the
+  // bytes, and certainly fewer - if -ss were ignored the two would be identical.
+  const a = await scanned()
+  const { items } = await a.list({ type: 'tracks' })
+  const flac = items.find(t => t.suffix === 'flac')
+
+  const full = await drain(await a.stream({ trackId: flac.id, format: 'mp3', bitrate: 128 }))
+  const tail = await drain(await a.stream({ trackId: flac.id, format: 'mp3', bitrate: 128, timeOffsetMs: 500 }))
+
+  assert.ok(tail.length > 0, 'produced audio')
+  assert.ok(tail.length < full.length, `offset stream (${tail.length}b) is shorter than the full one (${full.length}b)`)
+  const head = tail.subarray(0, 3).toString('hex')
+  assert.ok(head === '494433' || (tail[0] === 0xff && (tail[1] & 0xe0) === 0xe0), 'still a real MP3')
+})
+
 test('transcode is REQUESTED-only - no format means exact original bytes', async () => {
   const a = await scanned()
   const { items } = await a.list({ type: 'tracks' })
