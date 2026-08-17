@@ -90,7 +90,12 @@ test('pair by QR link, then reach the library', async (t) => {
   // The capability the phone's seek gate reads: hosts that cannot honour a
   // timeOffsetMs must not be sent one, or the clock jumps while the audio restarts
   // (found on a real Pixel against a pre-timeOffset host, 2026-08-16).
-  assert.equal(pong.caps.timeOffset, true)
+  // True wherever ffmpeg exists (the shipped image bundles it); a box without it
+  // must answer FALSE - inviting ?t= requests it would serve from second 0 is the
+  // clock-lies-audio-restarts bug the caps gate exists to prevent.
+  let ffmpegHere = false
+  try { require('child_process').execSync('ffmpeg -hide_banner -version', { stdio: 'ignore' }); ffmpegHere = true } catch {}
+  assert.equal(pong.caps.timeOffset, ffmpegHere)
 
   const stats = await client.stats()
   assert.equal(stats.source, 'folder')

@@ -25,6 +25,8 @@
 // the raw-folder path a first-class citizen rather than a fallback nobody tests.
 
 const crypto = require('crypto')
+const { Readable } = require('stream')
+const { hasFfmpeg, spawnTranscode } = require('../transcode')
 const { trackId } = require('../../protocol/ids')
 
 // What Subsonic can actually sort, and it is uneven. getAlbumList2 offers a few
@@ -581,11 +583,26 @@ class SubsonicAdapter {
   // bytes do not exist until Navidrome makes them - so a range request while
   // transcoding is best-effort. Known v1 limitation; the client only asks for
   // transcoding on cellular, where it also tends not to scrub.
-  async stream ({ trackId: id, offset = 0, length, format, bitrate } = {}) {
+  async stream ({ trackId: id, offset = 0, length, format, bitrate, timeOffsetMs } = {}) {
     const songId = await this._songId(id)
     if (!songId) return null
 
     const transcoding = !!(format || bitrate)
+
+    // A transcode that must START MID-SONG cannot come from upstream - Subsonic's
+    // timeOffset is documented for video only, and servers vary. So the host does it:
+    // fetch the ORIGINAL bytes and decode locally from the target (proposal 2026-08-16
+    // slice 4). No ffmpeg -> ignore the offset and serve the upstream transcode from
+    // the start, exactly the pre-slice behaviour (ping's caps already said so).
+    if (transcoding && Number(timeOffsetMs) > 0 && await hasFfmpeg()) {
+      const raw = await fetch(this._url('stream', { id: songId, format: 'raw' }))
+      if (raw.ok && raw.body) {
+        const out = spawnTranscode(Readable.fromWeb(raw.body), { format, bitrate, timeOffsetMs })
+        if (out) return out
+      }
+      // fall through: upstream transcode from the start beats silence
+    }
+
     const url = this._url('stream', {
       id: songId,
       maxBitRate: bitrate,

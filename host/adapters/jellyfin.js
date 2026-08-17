@@ -22,7 +22,9 @@
 // on the first restart after the operator logged us out somewhere else.
 
 const crypto = require('crypto')
+const { Readable } = require('stream')
 const { trackId } = require('../../protocol/ids')
+const { hasFfmpeg, spawnTranscode } = require('../transcode')
 const { FULL_SORTS } = require('./sort')
 
 const CLIENT = 'PearTune'
@@ -597,11 +599,23 @@ class JellyfinAdapter {
   // For a TRANSCODED stream there are no stable byte offsets to seek to - the bytes
   // do not exist until Jellyfin makes them - so a range request while transcoding is
   // best-effort. Same known v1 limitation as Navidrome.
-  async stream ({ trackId: id, offset = 0, length, format, bitrate } = {}) {
+  async stream ({ trackId: id, offset = 0, length, format, bitrate, timeOffsetMs } = {}) {
     const itemId = await this._itemId(id)
     if (!itemId) return null
 
     const transcoding = !!(format || bitrate)
+
+    // Mid-song transcode starts are the HOST's job, same as the Subsonic adapter:
+    // fetch the original (static=true), decode locally from the target. No ffmpeg ->
+    // upstream transcode from the start, as before (proposal 2026-08-16 slice 4).
+    if (transcoding && Number(timeOffsetMs) > 0 && await hasFfmpeg()) {
+      const raw = await fetch(this._url(`/Audio/${itemId}/stream`, { static: true }), { headers: this._authHeaders() })
+      if (raw && raw.ok && raw.body) {
+        const out = spawnTranscode(Readable.fromWeb(raw.body), { format, bitrate, timeOffsetMs })
+        if (out) return out
+      }
+      // fall through: upstream transcode from the start beats silence
+    }
 
     const url = transcoding
       ? this._url(`/Audio/${itemId}/universal`, {
