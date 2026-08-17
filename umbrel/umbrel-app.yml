@@ -57,18 +57,20 @@ repo: https://github.com/peerloomllc/peartune
 support: https://github.com/peerloomllc/peartune/issues
 gallery: []
 releaseNotes: |-
-  Fixed:
-  - Skipping around inside a song now works when listening away from home, and playback that hits a bad patch of network picks itself back up instead of stopping. (Needs the updated phone app too.)
-  - Music in .wma and .aiff formats now plays. The server converts those files on the fly, so libraries full of them stop showing tracks that sit on pause forever. Update the phone app too when its next release lands - both halves are needed.
-  New:
-  - Play your library on the Google and Home Assistant speakers around your home.
+  New
+  - Play your music on the Google and Home Assistant speakers around your home.
   - Voice control through Home Assistant: say "Okay Nabu, play Led Zeppelin", or name a room, like "put on Metallica in the kitchen".
-  - PearTune can set voice control up in Home Assistant for you, with one button on the Speakers tab.
-  Improvements:
-  - PearTune now shows its real icon in the Umbrel app store and on your home screen.
-  - The dashboard is easier to use on a phone.
-  Fixes:
-  - Speaker lights no longer keep PearTune's colours after the music stops.
+  - Songs in .wma and .aiff formats now play, streamed or downloaded for offline.
+  Improvements
+  - Song lengths show right away when listening away from home.
+  - Jumping around inside a song now works when listening away from home.
+  - Download is easier to reach: long-press any album or track, anywhere in the app.
+  - Clearer messages when a library cannot be reached or read, instead of it just looking empty.
+  Fixes
+  - Playback that hits a bad patch of network picks itself back up instead of stopping.
+  - Music no longer goes silent when the next song starts while the app is in the background.
+  - The lock screen play button no longer ends a speaker cast by accident.
+  - Leaving speaker casting hands playback back to the phone properly, and speakers that cannot be reached stay out of the list.
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the
