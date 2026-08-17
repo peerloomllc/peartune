@@ -9,11 +9,12 @@ tagline: Your music, playable anywhere - and shareable with friends
 category: media
 # The Umbrel LISTING's version, compared against the installed copy to offer updates.
 # build-image.sh stamps it from app.json's version on every synced release; the
-# out-of-band bumps past 1.0.0 (1.0.1 catch-up on 2026-08-14, 1.0.2 for the 0.2.45
-# wma-fix host) exist so installs get offered host updates between app releases. The
-# NEXT app release must version past 1.0.2 or its store sync ships to nobody -
+# out-of-band bumps past 1.0.0 (1.0.1 catch-up, 1.0.2 wma host, 1.0.3 for the
+# 0.2.46 seekable-transcode host) exist so installs get offered host updates between
+# app releases. The NEXT app release must version past 1.0.3 or its store sync ships
+# to nobody -
 # build-image.sh warns out loud when that collision happens.
-version: "1.0.2"
+version: "1.0.3"
 port: 8741
 description: >-
   Play the music on your Umbrel from anywhere, without exposing your server to the
@@ -56,8 +57,8 @@ repo: https://github.com/peerloomllc/peartune
 support: https://github.com/peerloomllc/peartune/issues
 gallery: []
 releaseNotes: |-
-  This update brings the Umbrel listing up to date with everything shipped since launch.
   Fixed:
+  - Skipping around inside a song now works when listening away from home, and playback that hits a bad patch of network picks itself back up instead of stopping. (Needs the updated phone app too.)
   - Music in .wma and .aiff formats now plays. The server converts those files on the fly, so libraries full of them stop showing tracks that sit on pause forever. Update the phone app too when its next release lands - both halves are needed.
   New:
   - Play your library on the Google and Home Assistant speakers around your home.
