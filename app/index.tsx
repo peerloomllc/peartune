@@ -179,6 +179,9 @@ export default function App () {
   // at a frozen position indefinitely). Recovery must not depend on the link's mood.
   const recoverStall = useRef({ pos: -1, at: 0 })
   const heartbeat = useRef<any>(null) // the watchdog's own clock; see ensurePlayer
+  // Whether setActiveForLockScreen has built the session for the CURRENT player.
+  // announce() goes metadata-only while true; cleared wherever the controls are.
+  const lockScreenActive = useRef(false)
   // Mirrored so the persisted queue snapshot can carry them (ExoPlayer owns the
   // live modes; we only need the last-set values for restore).
   const shuffleRef = useRef(false)
@@ -557,16 +560,27 @@ export default function App () {
     const t = queueRef.current[i]
     if (!t) return
 
-    player.current?.setActiveForLockScreen(
-      true,
-      {
-        title: t.title,
-        artist: t.artist ?? undefined,
-        albumTitle: t.album ?? undefined,
-        artworkUrl: t.art ?? undefined
-      },
-      { showSeekForward: true, showSeekBackward: true }
-    )
+    const meta = {
+      title: t.title,
+      artist: t.artist ?? undefined,
+      albumTitle: t.album ?? undefined,
+      artworkUrl: t.art ?? undefined
+    }
+    // FIRST activation builds the MediaSession + foreground notification. Every LATER
+    // track change is METADATA-ONLY: setActiveForLockScreen releases the whole session
+    // and re-posts the foreground notification, and doing that from the BACKGROUND
+    // trips Android's foreground-service-start restriction - the audio OUTPUT dies
+    // while the player keeps decoding. Tim heard exactly that on the Pixel
+    // (2026-08-16): next song silent after a couple of seconds, clock still
+    // advancing, sound back the moment the app foregrounds. updateLockScreenMetadata
+    // touches neither the session nor the service, so a background transition keeps
+    // its sound.
+    if (lockScreenActive.current) {
+      try { (player.current as any)?.updateLockScreenMetadata(meta) } catch {}
+    } else {
+      player.current?.setActiveForLockScreen(true, meta, { showSeekForward: true, showSeekBackward: true })
+      lockScreenActive.current = true
+    }
 
     announceToUi(i)
   }
@@ -1037,6 +1051,7 @@ export default function App () {
     if (!player.current) return
     try {
       player.current.clearLockScreenControls()
+      lockScreenActive.current = false
       player.current.pause()
       player.current.remove()
     } catch {}
@@ -1093,6 +1108,7 @@ export default function App () {
     const p = player.current
     if (p) {
       try { p.pause(); p.clearLockScreenControls() } catch {}
+      lockScreenActive.current = false
     }
     posRef.current = 0
     toWeb('play:stopped', {})
