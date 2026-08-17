@@ -87,6 +87,10 @@ test('pair by QR link, then reach the library', async (t) => {
   const pong = await client.ping()
   assert.equal(pong.protocol, 1)
   assert.equal(pong.libraryId, host.libraryId)
+  // The capability the phone's seek gate reads: hosts that cannot honour a
+  // timeOffsetMs must not be sent one, or the clock jumps while the audio restarts
+  // (found on a real Pixel against a pre-timeOffset host, 2026-08-16).
+  assert.equal(pong.caps.timeOffset, true)
 
   const stats = await client.stats()
   assert.equal(stats.source, 'folder')
