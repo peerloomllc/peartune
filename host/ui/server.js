@@ -19,6 +19,7 @@
 const http = require('http')
 const fs = require('fs')
 const path = require('path')
+const { Readable } = require('stream')
 const QRCode = require('qrcode')
 const z32 = require('z32')
 
@@ -94,7 +95,13 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         const stream = coverId && host.adapter ? await host.adapter.art({ coverId }).catch(() => null) : null
         if (!stream) { res.writeHead(404); return res.end() }
         res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'private, max-age=300' })
-        return stream.pipe(res)
+        // The folder adapter hands back a Node stream, but the Subsonic and Jellyfin
+        // adapters hand back fetch()'s WEB stream, which has no .pipe - calling it
+        // threw after the 200 above was already written, and the json(500) in the
+        // catch below then crashed the whole process (ERR_HTTP_HEADERS_SENT).
+        const body = typeof stream.pipe === 'function' ? stream : Readable.fromWeb(stream)
+        body.on('error', () => res.destroy())
+        return body.pipe(res)
       }
 
       // --- device avatar (a photo the user set on that device) ---
@@ -562,6 +569,10 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
 
       json(res, 404, { error: 'not found' })
     } catch (e) {
+      // If a handler died AFTER starting its response, writing a 500 here throws
+      // ERR_HTTP_HEADERS_SENT out of the request handler and takes down the whole
+      // host process. Kill just this response instead.
+      if (res.headersSent) { res.destroy(); return }
       json(res, 500, { error: e.message })
     }
   })
