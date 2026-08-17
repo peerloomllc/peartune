@@ -78,3 +78,25 @@ services:
       # No Home Assistant installed? Docker creates the path empty, PearTune sees no
       # configuration.yaml, and the feature stays switched off. Nothing breaks.
       - ${UMBREL_ROOT}/app-data/home-assistant/data:/ha-config
+      # EXTERNAL / ATTACHED DRIVES, so the folder picker can reach a USB music disk.
+      # /media and /mnt are exactly where a person mounts one, and the picker already
+      # keeps both visible (visibleMounts in host/adapters/folder.js). Read-only, like
+      # the library mount.
+      #
+      # Long-form with propagation: rslave, and that is the load-bearing part. A plain
+      # bind snapshots the mount table at container start, so a drive plugged in AFTER
+      # the app starts would leave the container staring at an empty directory forever -
+      # which reads as "PearTune cannot see my drive". rslave makes new host mounts
+      # under these paths appear inside the running container.
+      - type: bind
+        source: /media
+        target: /media
+        read_only: true
+        bind:
+          propagation: rslave
+      - type: bind
+        source: /mnt
+        target: /mnt
+        read_only: true
+        bind:
+          propagation: rslave
