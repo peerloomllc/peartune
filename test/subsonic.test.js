@@ -552,3 +552,26 @@ test('a transcode from second 0 fetches the ORIGINAL (format=raw) and decodes lo
   assert.equal(urls.length, 1, 'exactly one upstream fetch')
   assert.ok(urls[0].includes('format=raw'), 'it asked for the ORIGINAL bytes, not an upstream transcode')
 })
+
+// --- stale ids answer NULL, not a throw (source swap, 2026-08-17) -----------
+//
+// The adapter contract (set by the folder adapter) is null for an unknown id - the
+// app renders that as "not in this library any more". Subsonic answers a stale id
+// with error code 70, which used to throw out of get() and reach the phone as
+// "internal error". Stale ids are NORMAL: every id a phone holds goes stale the
+// moment the operator swaps the music source.
+
+test('get() answers null for a stale id (subsonic code 70), and still throws on real errors', async (t) => {
+  const realFetch = global.fetch
+  t.after(() => { global.fetch = realFetch })
+
+  const answer = (payload) => ({ ok: true, status: 200, json: async () => ({ 'subsonic-response': payload }) })
+
+  global.fetch = async () => answer({ status: 'failed', error: { code: 70, message: 'The requested data was not found.' } })
+  const a = make()
+  assert.equal(await a.get({ id: 'stale-jellyfin-id', type: 'album' }), null, 'code 70 -> null')
+  assert.equal(await a.get({ id: 'stale-jellyfin-id', type: 'artist' }), null, 'artist path too')
+
+  global.fetch = async () => answer({ status: 'failed', error: { code: 0, message: 'A generic error.' } })
+  await assert.rejects(() => a.get({ id: 'x', type: 'album' }), /generic error/, 'a real failure still throws')
+})

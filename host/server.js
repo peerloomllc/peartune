@@ -233,6 +233,12 @@ class PearTuneHost {
 
     const st = await next.stats().catch(() => ({}))
     this.log('host:source-changed', { source: cfg.kind, tracks })
+    // Every id a connected phone holds just went stale (trackIds are source-scoped by
+    // design - the dashboard warns on swap). Tell every live connection so the app can
+    // drop its cached index and reload, instead of asking the new source for an old id
+    // and painting "internal error" (Tim, 2026-08-17). Additive: an old client ignores
+    // unknown push kinds.
+    this.presence.notifyAll('library:changed', { libraryId: this.libraryId, source: cfg.kind })
     return { kind: cfg.kind, tracks, albums: st.albums ?? 0, artists: st.artists ?? 0 }
   }
 

@@ -401,7 +401,22 @@ class SubsonicAdapter {
     return { type, items: [], nextCursor: null }
   }
 
-  async get ({ id, type = 'track' }) {
+  // The adapter contract (set by the folder adapter) is NULL for an unknown id, not a
+  // throw - the app renders null as "not in this library any more". Subsonic answers a
+  // stale id with error code 70 ("requested data was not found"), which _call turns
+  // into a throw and the media channel into "internal error". Stale ids are a NORMAL
+  // event: every id a phone holds goes stale the moment the operator swaps the music
+  // source (found 2026-08-17, Jellyfin -> Navidrome mid-session).
+  async get (params) {
+    try {
+      return await this._get(params)
+    } catch (e) {
+      if (/\(code 70\)/.test(String(e?.message))) return null
+      throw e
+    }
+  }
+
+  async _get ({ id, type = 'track' }) {
     // An artist IS its albums. getArtist returns them in one call, so browsing by
     // artist costs the same round trip as browsing by album - no walking.
     if (type === 'artist') {

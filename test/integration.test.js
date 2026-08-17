@@ -1459,3 +1459,33 @@ test('connect() leaves the live connection on client.conn (poolClient depends on
   assert.ok(client.conn, 'client.conn is set after connect')
   assert.equal(client.conn.destroyed, false, 'and it is the LIVE connection, which poolClient checks')
 })
+
+// --- source swap push (stale ids must not strand a connected app) ---------------
+
+test('SOURCE SWAP: setSource pushes "library:changed" to a connected device', async (t) => {
+  const { testnet, host, dir } = await scaffold(t)
+  const { client, paired } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  // Registered in presence before we swap (connect() resolves client-side first).
+  await client.ping()
+
+  // A second folder source, so the swap is real: new adapter, new scan, new ids.
+  const otherDir = path.join(dir, 'other-music')
+  await fsp.mkdir(otherDir, { recursive: true })
+  await fsp.copyFile(path.join(dir, 'music', 'test-track.flac'), path.join(otherDir, 'other.flac'))
+
+  // Arm BEFORE swapping so the push cannot be missed. Every id this device holds goes
+  // stale at the swap - the push is what lets it reload instead of painting an error
+  // (Tim, 2026-08-17, Jellyfin -> Navidrome mid-session).
+  const pushed = oncePush(client, 'library:changed')
+  await host.setSource({ kind: 'folder', roots: [otherDir] })
+
+  const evt = await pushed
+  assert.equal(evt.data.libraryId, paired.libraryId, 'self-describing: carries the libraryId')
+  assert.equal(evt.data.source, 'folder', 'and names the new source kind')
+
+  // And the library actually serves the NEW catalog on the same connection.
+  const { items } = await client.list({ type: 'tracks' })
+  assert.equal(items.length, 1)
+})

@@ -399,7 +399,21 @@ class JellyfinAdapter {
     return { type, items: [], nextCursor: null }
   }
 
-  async get ({ id, type = 'track' } = {}) {
+  // NULL for an unknown id, never a throw - the adapter contract the folder adapter
+  // set, and what the app renders as "not in this library any more". The primary item
+  // fetches below already answer null, but the companion /Items calls can 400/404 on a
+  // stale id and take the whole get down. Stale ids are a NORMAL event: every id a
+  // phone holds goes stale when the operator swaps the music source (2026-08-17).
+  async get (params) {
+    try {
+      return await this._get(params)
+    } catch (e) {
+      if (/HTTP (400|404)\b/.test(String(e?.message))) return null
+      throw e
+    }
+  }
+
+  async _get ({ id, type = 'track' } = {}) {
     if (type === 'album') {
       const [album, songs] = await Promise.all([
         this._call(`/Users/${this.userId}/Items/${id}`).catch(() => null),

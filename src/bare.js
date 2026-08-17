@@ -981,6 +981,16 @@ function makeClient () {
         // over your alias until the next reload.
         emit('host:renamed', { hostKey: rec.hostKey, libraryName: labelFor(lib, name), hostName: name })
       }
+    } else if (m?.kind === 'library:changed') {
+      // The operator swapped the music source on this host's dashboard. Every id we hold
+      // for that library is now stale (ids are source-scoped), so a drill-down the user
+      // has open would ask the new source for an old id and die. Rebuild the blend from
+      // the new catalog and tell the UI to fall back to the library root and reload -
+      // BEFORE this, the app painted "internal error" and only a full restart recovered
+      // (Tim, 2026-08-17, Jellyfin -> Navidrome mid-session).
+      log('library:changed', { library: String(m.data?.libraryId || '').slice(0, 8), source: m.data?.source ?? null })
+      if (mergedMode()) rebuildIndex().catch(() => {})
+      emit('library:changed', m.data || {})
     } else if (m?.kind === 'devices:changed') {
       // An owned host's device roster changed (a pair/revoke/delete/promote on its dashboard). Hand
       // it to the UI so an open You > Manage reloads that library's list live (carries libraryId so
