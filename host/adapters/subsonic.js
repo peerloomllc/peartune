@@ -589,12 +589,14 @@ class SubsonicAdapter {
 
     const transcoding = !!(format || bitrate)
 
-    // A transcode that must START MID-SONG cannot come from upstream - Subsonic's
-    // timeOffset is documented for video only, and servers vary. So the host does it:
-    // fetch the ORIGINAL bytes and decode locally from the target (proposal 2026-08-16
-    // slice 4). No ffmpeg -> ignore the offset and serve the upstream transcode from
-    // the start, exactly the pre-slice behaviour (ping's caps already said so).
-    if (transcoding && Number(timeOffsetMs) > 0 && await hasFfmpeg()) {
+    // EVERY transcode the host can do locally, it does locally: fetch the ORIGINAL
+    // bytes and decode here. Mid-song starts have to work this way (Subsonic's
+    // timeOffset is documented for video only - proposal 2026-08-16 slice 4), and
+    // start-of-song joined 2026-08-17 because an upstream transcode job runs to
+    // COMPLETION even when the listener is long gone, while spawnTranscode kills
+    // ffmpeg the moment the reader closes. No ffmpeg -> upstream transcode from the
+    // start (from second 0 if an offset was asked for - ping's caps already said so).
+    if (transcoding && await hasFfmpeg()) {
       const raw = await fetch(this._url('stream', { id: songId, format: 'raw' }))
       if (raw.ok && raw.body) {
         const out = spawnTranscode(Readable.fromWeb(raw.body), { format, bitrate, timeOffsetMs })

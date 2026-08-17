@@ -605,10 +605,14 @@ class JellyfinAdapter {
 
     const transcoding = !!(format || bitrate)
 
-    // Mid-song transcode starts are the HOST's job, same as the Subsonic adapter:
-    // fetch the original (static=true), decode locally from the target. No ffmpeg ->
-    // upstream transcode from the start, as before (proposal 2026-08-16 slice 4).
-    if (transcoding && Number(timeOffsetMs) > 0 && await hasFfmpeg()) {
+    // EVERY transcode the host can do locally, it does locally, same as the Subsonic
+    // adapter: fetch the original (static=true), decode here. Mid-song starts have to
+    // (proposal 2026-08-16 slice 4); start-of-song joined 2026-08-17 because each
+    // /universal call spawns a fresh Jellyfin ffmpeg job that runs to COMPLETION even
+    // when the listener is long gone (13 jobs in a minute for 3 tracks, observed),
+    // while spawnTranscode kills ffmpeg the moment the reader closes. No ffmpeg ->
+    // upstream transcode from the start, as before.
+    if (transcoding && await hasFfmpeg()) {
       const raw = await fetch(this._url(`/Audio/${itemId}/stream`, { static: true }), { headers: this._authHeaders() })
       if (raw && raw.ok && raw.body) {
         const out = spawnTranscode(Readable.fromWeb(raw.body), { format, bitrate, timeOffsetMs })

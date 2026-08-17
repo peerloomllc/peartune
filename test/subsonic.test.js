@@ -510,3 +510,45 @@ test('a genre with no albums falls back to its loose songs', async () => {
   assert.equal(r.tracks.length, 1)
   assert.equal(r.tracks[0].title, 'Birdsong')
 })
+
+// --- start-of-song transcodes are LOCAL, not upstream (2026-08-17) ----------
+//
+// Same change as the Jellyfin adapter: an upstream transcode job runs to completion
+// even after the listener is gone, so with ffmpeg on the host every transcode is
+// done locally from the ORIGINAL bytes (format=raw), where an abandoned reader
+// kills ffmpeg. Upstream transcoding is only the no-ffmpeg fallback.
+
+const fss = require('fs')
+const paths = require('path')
+let HAS_FFMPEG = false
+try { require('child_process').execSync('ffmpeg -hide_banner -version', { stdio: 'ignore' }); HAS_FFMPEG = true } catch {}
+
+test('a transcode from second 0 fetches the ORIGINAL (format=raw) and decodes locally', { skip: !HAS_FFMPEG && 'ffmpeg not installed' }, async (t) => {
+  const dir = paths.join(__dirname, 'fixtures', 'music', 'Led Zeppelin', 'IV')
+  const file = paths.join(dir, fss.readdirSync(dir).find(n => /\.(flac|mp3|m4a|ogg)$/.test(n)))
+
+  const urls = []
+  const realFetch = global.fetch
+  t.after(() => { global.fetch = realFetch })
+  global.fetch = async (url) => {
+    urls.push(String(url))
+    return {
+      ok: true,
+      status: 200,
+      body: require('stream').Readable.toWeb(fss.createReadStream(file))
+    }
+  }
+
+  const a = make()
+  a._songId = async () => 'song1'
+
+  const out = await a.stream({ trackId: 'whatever', format: 'mp3', bitrate: 128 })
+  assert.ok(out, 'a stream came back')
+  const chunks = []
+  for await (const c of out) chunks.push(c)
+  const buf = Buffer.concat(chunks)
+  assert.ok(buf.length > 1000, `local ffmpeg produced audio (${buf.length} bytes)`)
+
+  assert.equal(urls.length, 1, 'exactly one upstream fetch')
+  assert.ok(urls[0].includes('format=raw'), 'it asked for the ORIGINAL bytes, not an upstream transcode')
+})
