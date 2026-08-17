@@ -60,6 +60,30 @@ if (!path.isAbsolute(DATA_DIR)) {
 // Android phone (2026-07-28). Defaults to android for an old shell that passes nothing, which
 // keeps existing Android devices reading exactly as before.
 const PLATFORM = Bare.argv[1] || 'android'
+
+// What each connected host can do beyond protocol 1, from its ping body. Cached per
+// library and dropped on reconnect (an upgraded host announces itself by answering
+// differently). Absent or unanswered = no caps, which makes every gate that reads
+// this degrade to the OLD behaviour - the safe direction against old hosts.
+const hostCaps = new Map()
+async function capsFor (libId) {
+  const key = libId || defaultLibraryId
+  if (!key) return {}
+  if (hostCaps.has(key)) return hostCaps.get(key)
+  const c = clientFor(key)
+  if (!c) return {}
+  try {
+    const body = await Promise.race([
+      c.ping(),
+      new Promise((_, reject) => { const t = setTimeout(() => reject(new Error('ping timeout')), 3000); if (t.unref) t.unref() })
+    ])
+    const caps = (body && body.caps) || {}
+    hostCaps.set(key, caps)
+    return caps
+  } catch {
+    return {} // do not cache a failure - the next seek asks again
+  }
+}
 // The name a device goes by when the person did not choose one. "Android phone" on an iPhone is
 // the same lie in friendlier clothing, so it follows the platform too.
 const DEFAULT_DEVICE_NAME = PLATFORM === 'ios' ? 'iPhone' : 'Android phone'
@@ -1226,6 +1250,7 @@ async function attach (host, conn) {
     startNudge(host) // the swarm redials on its own, but its backoff is far too slow off-LAN
   })
 
+  hostCaps.delete(libId) // the host may have upgraded across the reconnect - re-ask
   log('link:connected', { lib: libId.slice(0, 8), role: isDefault ? 'default' : 'other', library: host.libraryName })
 
   // A FRESH LINK MEANS THE HOST MAY BE A DIFFERENT BUILD. Both "this host is too old for X" marks
@@ -3948,12 +3973,16 @@ const methods = {
         if (audioCache.has(route.id) && leaseValid()) return { url: null }
         const tc = streamParams(loadSettings(), networkType, shim.suffixFor(route.id), PLATFORM)
         if (!tc) return { url: null }
+        // An old host ignores timeOffsetMs and serves second-0 audio under a clock
+        // that jumped - worse than an honest reset. Only swap when it says it can.
+        if (!(await capsFor(route.libraryId)).timeOffset) return { url: null }
         return { url: shim.urlForLib(route.libraryId, route.id) + '?t=' + t, port: shimPort }
       }
     }
     if (audioCache.has(trackId) && leaseValid()) return { url: null }
     const tc = streamParams(loadSettings(), networkType, shim.suffixFor(trackId), PLATFORM)
     if (!tc) return { url: null }
+    if (!(await capsFor(null)).timeOffset) return { url: null } // old host: seek honestly instead
     return { url: shim.urlFor(trackId) + '?t=' + t, port: shimPort }
   },
 

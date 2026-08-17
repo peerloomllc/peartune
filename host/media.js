@@ -170,7 +170,12 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
 
     switch (method) {
       case 'ping':
-        return send.res.send({ id, body: { protocol: 1, libraryId } })
+        // caps: what this host can do beyond protocol 1, so a NEWER phone degrades
+        // deliberately instead of optimistically. timeOffset = media.stream honours
+        // timeOffsetMs (ffmpeg -ss); a phone that sees no caps seeks the old way,
+        // keeping its clock and its audio telling the same story (found on a real
+        // Pixel against a pre-timeOffset host: the clock jumped, the audio restarted).
+        return send.res.send({ id, body: { protocol: 1, libraryId, caps: { timeOffset: true } } })
 
       case 'library.stats':
         return send.res.send({ id, body: await getAdapter().stats() })
