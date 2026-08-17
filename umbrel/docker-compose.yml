@@ -79,24 +79,14 @@ services:
       # configuration.yaml, and the feature stays switched off. Nothing breaks.
       - ${UMBREL_ROOT}/app-data/home-assistant/data:/ha-config
       # EXTERNAL / ATTACHED DRIVES, so the folder picker can reach a USB music disk.
-      # /media and /mnt are exactly where a person mounts one, and the picker already
-      # keeps both visible (visibleMounts in host/adapters/folder.js). Read-only, like
-      # the library mount.
+      # umbrelOS mounts them under ${UMBREL_ROOT}/external/<label> - NOT /media or
+      # /mnt (verified on hardware 2026-08-17: four drives there, both classic paths
+      # empty). Read-only, like the library mount.
       #
-      # Long-form with propagation: rslave, and that is the load-bearing part. A plain
-      # bind snapshots the mount table at container start, so a drive plugged in AFTER
-      # the app starts would leave the container staring at an empty directory forever -
-      # which reads as "PearTune cannot see my drive". rslave makes new host mounts
-      # under these paths appear inside the running container.
-      - type: bind
-        source: /media
-        target: /media
-        read_only: true
-        bind:
-          propagation: rslave
-      - type: bind
-        source: /mnt
-        target: /mnt
-        read_only: true
-        bind:
-          propagation: rslave
+      # SHORT syntax only, and that is a hard rule for THIS file: umbreld's compose
+      # patcher calls .replace() on every volume entry, so a long-form (object)
+      # volume crashes install AND update with "volume?.replace is not a function" -
+      # exactly how the 1.0.4 listing wedged at 1% (2026-08-17). rslave rides in the
+      # short-form mode flags instead, and is still load-bearing: without it a drive
+      # plugged in AFTER the app starts never appears inside the running container.
+      - ${UMBREL_ROOT}/external:/external:ro,rslave
