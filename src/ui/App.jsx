@@ -45,8 +45,8 @@ const GITHUB_URL = 'https://github.com/peerloomllc/peartune'
 const CONTACT_EMAIL = 'peerloomllc@proton.me'
 const CONTACT_URL = `mailto:${CONTACT_EMAIL}?subject=%5BPearTune%5D%20Feedback`
 const SHARE_TEXT = 'PearTune - the music on your own server, or a friend\'s, playable anywhere. No port forwarding, no VPN, no account.\n\nhttps://peerloomllc.com/peartune/'
-// iOS hides the donation section per App Store guideline 3.1.1 (no external
-// donation links). The shell injects the platform before the bundle runs.
+// The shell injects the platform before the bundle runs. (The donation section used
+// to hide on iOS as a launch-review precaution; live everywhere since 2026-08-16.)
 const isIOS = () => typeof window !== 'undefined' && window.__pearPlatform === 'ios'
 
 const openUrl = (url) => { call('shell:openUrl', { url }).catch(() => {}) }
@@ -6947,15 +6947,13 @@ function About ({ onDonate, deviceKey }) {
         </div>
       </Section>
 
-      {!isIOS() && (
-        <Section id='support' title='Support development' Icon={Heart} open={open === 'support'} onToggle={toggle}>
-          <p>PearTune is free and open source. If it brings you value, consider sending a little back.</p>
-          <div className='btnrow'>
-            <button className='primary' onClick={onDonate}>⚡ Bitcoin ⚡</button>
-            <button onClick={() => openUrl(BUYMEACOFFEE_URL)}>$ USD $</button>
-          </div>
-        </Section>
-      )}
+      <Section id='support' title='Support development' Icon={Heart} open={open === 'support'} onToggle={toggle}>
+        <p>PearTune is free and open source. If it brings you value, consider sending a little back.</p>
+        <div className='btnrow'>
+          <button className='primary' onClick={onDonate}>⚡ Bitcoin ⚡</button>
+          <button onClick={() => openUrl(BUYMEACOFFEE_URL)}>$ USD $</button>
+        </div>
+      </Section>
 
       <Section id='btc' title='Learn about Bitcoin' Icon={CurrencyBtc} open={open === 'btc'} onToggle={toggle}>
         <p>

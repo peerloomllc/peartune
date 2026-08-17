@@ -2,8 +2,7 @@
 
 // The two-week donation nudge fires on shouldShowNudge() alone, so that timing rule
 // is the part worth pinning: fire it early and it nags a day-one user; miss the
-// gate and it never shows; forget the iOS guard and it dead-ends against a hidden
-// donation surface (and risks an App Store rejection).
+// stamp handling and it never fires for anyone.
 
 const test = require('node:test')
 const assert = require('node:assert')
@@ -36,9 +35,9 @@ test('the boundary is inclusive at exactly two weeks', async () => {
   assert.strictEqual(shouldShowNudge(base({ settings: { firstRunAt: now - NUDGE_AFTER_MS + 1 } })), false)
 })
 
-test('never fires on iOS (App Store forbids external donation links)', async () => {
+test('fires on iOS too - the launch-review hiding ended 2026-08-16', async () => {
   const { shouldShowNudge } = await load()
-  assert.strictEqual(shouldShowNudge(base({ ios: true })), false)
+  assert.strictEqual(shouldShowNudge(base({ ios: true })), true)
 })
 
 test('never fires twice - donationNudgeShown gates it', async () => {
