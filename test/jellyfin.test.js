@@ -255,3 +255,23 @@ test('a transcode from second 0 fetches the ORIGINAL and decodes locally', { ski
   assert.ok(urls[0].includes('static=true'), 'with static=true (no upstream transcode)')
   assert.ok(!urls.some(u => u.includes('/universal')), 'and /universal was never called')
 })
+
+test('get() answers null when a stale id 400s/404s upstream, and still throws on real errors', async (t) => {
+  const realFetch = global.fetch
+  t.after(() => { global.fetch = realFetch })
+
+  const a2 = make()
+  a2.token = 'T'
+  a2.userId = 'u'
+  a2._auth = async () => {}
+
+  // The companion /Items query 400s on a stale filter id - the case the primary
+  // fetch's own null-guard does not cover. Must come back null, not a throw.
+  global.fetch = async (url) => String(url).includes('/Users/')
+    ? { ok: true, status: 200, json: async () => ({ Id: 'x', Name: 'X', Type: 'MusicAlbum' }) }
+    : { ok: false, status: 400, json: async () => ({}) }
+  assert.equal(await a2.get({ id: 'stale', type: 'album' }), null, 'HTTP 400 on the companion query -> null')
+
+  global.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) })
+  await assert.rejects(() => a2.get({ id: 'x', type: 'album' }), /HTTP 500/, 'a real failure still throws')
+})

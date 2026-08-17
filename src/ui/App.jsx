@@ -535,6 +535,17 @@ export default function App () {
           refreshFavItems()
         }
       }),
+      // The operator swapped this host's music source. Every id this UI holds for it is
+      // stale (ids are source-scoped), so any open drill-down would ask the new source
+      // for an old id and fail - the exact path that painted "internal error" until a
+      // full restart (Tim, 2026-08-17). Fall back to the library root and reload from
+      // the new catalog; the toast says why the screen just changed under the user.
+      on('library:changed', () => {
+        toast('This library changed its music source. Reloading.')
+        setStack([])
+        if (mergedRef.current?.merged) call('refreshMerged').catch(() => {})
+        else { loadAlbums(0); loadRecent() }
+      }),
       // A library reachable only through the relay is about to stream audio and has not been
       // asked yet (proposal 2026-07-29-relay-audio-consent). The worklet raises this ONCE per
       // library - ExoPlayer range-requests a single track many times - and has already refused
