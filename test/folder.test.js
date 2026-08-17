@@ -269,14 +269,20 @@ test('transcode is REQUESTED-only - no format means exact original bytes', async
 test('transcode requested but ffmpeg ABSENT falls back to raw, never errors', async (t) => {
   // A fresh module instance with a broken ffmpeg path, so hasFfmpeg() resolves false.
   const dir = require('path').join(__dirname, '..', 'host', 'adapters', 'folder.js')
+  const tdir = require('path').join(__dirname, '..', 'host', 'transcode.js')
   const resolved = require.resolve(dir)
+  const tresolved = require.resolve(tdir)
   const saved = require.cache[resolved]
+  const tsaved = require.cache[tresolved]
   delete require.cache[resolved]
+  delete require.cache[tresolved]
   const prev = process.env.PEARTUNE_FFMPEG
   process.env.PEARTUNE_FFMPEG = '/nonexistent/ffmpeg'
   t.after(() => {
     delete require.cache[resolved]
+    delete require.cache[tresolved]
     if (saved) require.cache[resolved] = saved
+    if (tsaved) require.cache[tresolved] = tsaved
     if (prev === undefined) delete process.env.PEARTUNE_FFMPEG; else process.env.PEARTUNE_FFMPEG = prev
   })
 

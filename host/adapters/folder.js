@@ -24,41 +24,16 @@ const fsp = require('fs/promises')
 const path = require('path')
 const crypto = require('crypto')
 const { Readable } = require('stream')
-const { spawn } = require('child_process')
+
 const { trackId, groupId } = require('../../protocol/ids')
 const { TRACK_CMP, ALBUM_CMP, ARTIST_CMP, GENRE_CMP, FULL_SORTS, sortRows } = require('./sort')
 
-// The transcoder. `PEARTUNE_FFMPEG` overrides the binary (a bundled static build,
-// say); otherwise we trust PATH. Adding ffmpeg to the host image is what turns
-// folder mode from "raw bytes only" into something that can cap a FLAC for cellular.
-const FFMPEG = process.env.PEARTUNE_FFMPEG || 'ffmpeg'
 
 // format -> ffmpeg codec + CONTAINER. The container is the trap: `-f aac` is not a
 // thing (it is `adts`), and opus rides in an ogg container.
-const TRANSCODE = {
-  mp3: { codec: 'libmp3lame', container: 'mp3' },
-  opus: { codec: 'libopus', container: 'ogg' },
-  aac: { codec: 'aac', container: 'adts' }
-}
-
-// Is ffmpeg actually here? Checked ONCE and memoized: if it is missing, transcoding
-// silently degrades to raw bytes (the pre-transcoder behavior), never an error. The
-// promise is cached so a screenful of stream requests does not spawn a probe each.
-let _ffmpeg = null
-function hasFfmpeg () {
-  if (_ffmpeg) return _ffmpeg
-  _ffmpeg = new Promise((resolve) => {
-    let ff
-    try {
-      ff = spawn(FFMPEG, ['-hide_banner', '-version'])
-    } catch {
-      return resolve(false)
-    }
-    ff.on('error', () => resolve(false))
-    ff.on('close', (code) => resolve(code === 0))
-  })
-  return _ffmpeg
-}
+// Transcoding moved to host/transcode.js when the server adapters grew a local
+// -ss path (proposal 2026-08-16 slice 4) - one transcoder, three adapters.
+const { hasFfmpeg, spawnTranscode } = require('../transcode')
 
 const AUDIO_EXT = new Set(['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.wma', '.aiff', '.aif'])
 
@@ -799,7 +774,7 @@ class FolderAdapter {
     if (!t) return null
 
     if ((format || bitrate) && await hasFfmpeg()) {
-      const stream = this._transcode(t, { format, bitrate, timeOffsetMs })
+      const stream = spawnTranscode(t.absPath, { format, bitrate, timeOffsetMs, log: (ev, d) => this.log('folder:' + ev, d) })
       if (stream) return stream
       // fall through to raw if the transcode could not start
     }
@@ -811,44 +786,6 @@ class FolderAdapter {
     return fs.createReadStream(t.absPath, { start, end })
   }
 
-  // Spawn ffmpeg and hand back its stdout as the audio stream.
-  //
-  // Byte offsets do NOT survive a transcode - the bytes do not exist until ffmpeg
-  // makes them - so this ignores `offset`/`length`. Seeking a transcode is by TIME
-  // instead: `timeOffsetMs` becomes `-ss` BEFORE `-i` (input seeking - fast, and
-  // exact enough for audio), per proposals/2026-08-16-seekable-transcodes.md. The
-  // phone swaps its source to `?t=<ms>` on a scrub or a stall retry; an old phone
-  // that never sends it gets second-0 audio, exactly the old behaviour.
-  _transcode (t, { format = 'mp3', bitrate, timeOffsetMs }) {
-    const spec = TRANSCODE[format] || TRANSCODE.mp3
-    const ss = Math.max(0, Number(timeOffsetMs) || 0)
-    const args = [
-      '-hide_banner', '-loglevel', 'error',
-      ...(ss > 0 ? ['-ss', String(ss / 1000)] : []),
-      '-i', t.absPath,
-      '-vn', '-map', '0:a:0', // audio only - drop any embedded cover art
-      '-c:a', spec.codec
-    ]
-    if (bitrate) args.push('-b:a', `${Number(bitrate)}k`)
-    args.push('-f', spec.container, 'pipe:1')
-
-    let ff
-    try {
-      ff = spawn(FFMPEG, args)
-    } catch {
-      return null // ffmpeg vanished between the check and here
-    }
-
-    // A transcode nobody finishes reading (the phone paused, the link dropped) must
-    // not leave ffmpeg chewing CPU on a Pi. Kill it when the reader is done or breaks.
-    const kill = () => { try { ff.kill('SIGKILL') } catch {} }
-    ff.stdout.on('close', kill)
-    ff.stdout.on('error', kill)
-    ff.on('error', (e) => { this.log('folder:transcode-failed', { err: e?.message }); kill() })
-    ff.stderr.on('data', (d) => this.log('folder:transcode-stderr', { msg: String(d).slice(0, 200) }))
-
-    return ff.stdout
-  }
 }
 
 // What CAN this container see? Used to turn "0 tracks" - the least helpful thing a
