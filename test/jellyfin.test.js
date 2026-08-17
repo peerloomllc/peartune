@@ -207,3 +207,51 @@ test('get({type:"genre"}) returns the genre albums filtered by GenreIds', async 
   assert.equal(r.albums.length, 1)
   assert.equal(r.albums[0].name, 'IV')
 })
+
+// --- start-of-song transcodes are LOCAL, not upstream (2026-08-17) ----------
+//
+// Each /Audio/{id}/universal call spawns a fresh Jellyfin ffmpeg job that runs to
+// COMPLETION even after the listener is gone (13 jobs in a minute for 3 tracks,
+// observed on the Umbrel). With ffmpeg on the host, stream() must fetch the
+// ORIGINAL (static=true) and decode locally - where an abandoned reader kills the
+// transcode - and must not touch /universal at all.
+
+const fsj = require('fs')
+const pathj = require('path')
+let HAS_FFMPEG = false
+try { require('child_process').execSync('ffmpeg -hide_banner -version', { stdio: 'ignore' }); HAS_FFMPEG = true } catch {}
+
+test('a transcode from second 0 fetches the ORIGINAL and decodes locally', { skip: !HAS_FFMPEG && 'ffmpeg not installed' }, async (t) => {
+  const dir = pathj.join(__dirname, 'fixtures', 'music', 'Led Zeppelin', 'IV')
+  const file = pathj.join(dir, fsj.readdirSync(dir).find(n => /\.(flac|mp3|m4a|ogg)$/.test(n)))
+
+  const urls = []
+  const realFetch = global.fetch
+  t.after(() => { global.fetch = realFetch })
+  global.fetch = async (url) => {
+    urls.push(String(url))
+    return {
+      ok: true,
+      status: 200,
+      body: require('stream').Readable.toWeb(fsj.createReadStream(file))
+    }
+  }
+
+  const a = make()
+  a.token = 'T'
+  a.userId = 'u'
+  a._auth = async () => {}
+  a._itemId = async () => 'item1'
+
+  const out = await a.stream({ trackId: 'whatever', format: 'mp3', bitrate: 128 })
+  assert.ok(out, 'a stream came back')
+  const chunks = []
+  for await (const c of out) chunks.push(c)
+  const buf = Buffer.concat(chunks)
+  assert.ok(buf.length > 1000, `local ffmpeg produced audio (${buf.length} bytes)`)
+
+  assert.equal(urls.length, 1, 'exactly one upstream fetch')
+  assert.ok(urls[0].includes('/Audio/item1/stream'), 'it was the ORIGINAL-bytes endpoint')
+  assert.ok(urls[0].includes('static=true'), 'with static=true (no upstream transcode)')
+  assert.ok(!urls.some(u => u.includes('/universal')), 'and /universal was never called')
+})
