@@ -55,6 +55,8 @@
     </dict>
     <key>NSCameraUsageDescription</key>
     <string>PearTune scans a pairing QR code to connect to your library host.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>PearTune streams directly from your music library when it is on the same network, instead of routing your music through the internet.</string>
     <key>NSUserActivityTypes</key>
     <array>
       <string>$(PRODUCT_BUNDLE_IDENTIFIER).expo.index_route</string>
