@@ -1737,13 +1737,46 @@ else
 fi
 
 if ! $SKIP_DESKTOP; then
+  # Dependencies for the two LOCAL builds. Hoisted out of the Linux branch for two
+  # reasons: it must finish BEFORE the background macOS job starts reading the tree
+  # (build-mac.sh rsyncs the repo, and npm install rewrites package-lock.json inside
+  # it - a concurrent read could ship a half-written lockfile and fail the remote
+  # install), and Windows needed it too but only ever got it as a side effect of
+  # Linux having run first.
+  if ! $SKIP_LINUX || ! $SKIP_WINDOWS; then
+    ( cd "$_DT" && npm install --no-audit --no-fund --loglevel=error ) \
+      > /tmp/peartune-build-deps.log 2>&1 || true
+  fi
+
+  # macOS STARTS FIRST AND RUNS IN THE BACKGROUND, because it is the one build that
+  # happens somewhere else: build-mac.sh rsyncs to the mac-mini, builds and notarizes
+  # there, and pulls two .dmg files back. Almost none of that is this machine's work,
+  # so running it in series behind Linux and Windows spent its entire duration idle.
+  # Overlapping makes the desktop stage cost max(macOS, Linux+Windows) rather than
+  # the sum of all three.
+  #
+  # Safe to overlap precisely BECAUSE it shares nothing local. The rsync excludes
+  # desktop/node_modules, desktop/vendor and desktop/dist, which is everything the
+  # local builds write, and it reads from a different machine's checkout thereafter.
+  # The one thing it genuinely did share was the npm install above, hence the hoist.
+  #
+  # NOT extended to Linux || Windows: those two run electron-builder in the SAME
+  # desktop/ directory against the SAME dist/ and the same electron cache, so racing
+  # them is asking for a corrupted output rather than a faster release.
+  _MAC_PID=""
+  if $SKIP_MACOS; then
+    echo "--> macOS    (skipped via --skip-macos)"
+  else
+    echo "--> macOS    (.dmg, building on the Mac mini in the background)"
+    ( cd "$_DT" && ${DESKTOP_BUILD_MAC:-npm run build:mac} ) > /tmp/peartune-build-macos.log 2>&1 &
+    _MAC_PID=$!
+  fi
+
   if $SKIP_LINUX; then
     echo "--> Linux    (skipped via --skip-linux)"
   else
     echo "--> Linux    (.AppImage + .deb, built locally)"
-    ( cd "$_DT" && npm install --no-audit --no-fund --loglevel=error ) \
-      > /tmp/peartune-build-linux.log 2>&1 || true
-    if ( cd "$_DT" && ${DESKTOP_BUILD_LINUX:-npm run build:linux} ) >> /tmp/peartune-build-linux.log 2>&1; then
+    if ( cd "$_DT" && ${DESKTOP_BUILD_LINUX:-npm run build:linux} ) > /tmp/peartune-build-linux.log 2>&1; then
       for _f in "$_DT/dist/PearTune-${_DTV}.AppImage" \
                 "$_DT/dist/peartune-desktop_${_DTV}_amd64.deb"; do
         if [ -f "$_f" ]; then DESKTOP_ARTIFACTS+=("$_f"); fi
@@ -1774,11 +1807,13 @@ if ! $SKIP_DESKTOP; then
     fi
   fi
 
-  if $SKIP_MACOS; then
-    echo "--> macOS    (skipped via --skip-macos)"
-  else
-    echo "--> macOS    (.dmg, built on the Mac mini)"
-    if ( cd "$_DT" && ${DESKTOP_BUILD_MAC:-npm run build:mac} ) > /tmp/peartune-build-macos.log 2>&1; then
+  # Collect the macOS result. Its artifacts are gathered HERE rather than in the
+  # background job because a subshell cannot append to this shell's
+  # DESKTOP_ARTIFACTS array. `wait` yields the job's real exit status, and the `if`
+  # keeps `set -e` from aborting the release when a best-effort build fails.
+  if [ -n "$_MAC_PID" ]; then
+    echo "--> macOS    (waiting for the Mac mini to finish)"
+    if wait "$_MAC_PID"; then
       for _f in "$_DT/dist/PearTune-${_DTV}.dmg" \
                 "$_DT/dist/PearTune-${_DTV}-arm64.dmg"; do
         if [ -f "$_f" ]; then DESKTOP_ARTIFACTS+=("$_f"); fi

@@ -40,6 +40,21 @@ echo ">> Syncing repo to $MAC_HOST:$REMOTE_DIR"
 # --checksum guards against mtime skips of files we just edited. Exclude
 # node_modules/build-output everywhere and the phone-app trees the desktop
 # build does not need; vendor/ is regenerated on the Mac by npm's postinstall.
+#
+# THE EXCLUDES ARE A SPEED FEATURE, NOT TIDINESS, because of --checksum: rsync
+# hashes every file still in the list on BOTH machines, every release, however
+# little has changed. Measured 2026-08-17, before the last three excludes below:
+# the list held 3,335,051,187 bytes across 792 files while only ~3.6MB actually
+# differed, so 3.3GB was read and hashed on each end to move 3.6MB. After adding
+# them: 64,068,218 bytes across 698 files, the SAME 3.6MB transferred, and the
+# file-list stage fell from 6.85s to 0.08s.
+#
+# What those three drop is other platforms' build OUTPUT sitting in the repo -
+# start9/ (the .s9pk packages plus the amd64+arm64 docker image tarballs, ~2.7GB
+# on its own), and the .apk/.aab the phone release leaves at the root (~330MB).
+# All of it untracked, none of it referenced anywhere in this build. Adding a
+# large build artifact somewhere new will quietly cost time here again, so if the
+# sync starts feeling slow, look at the file list before blaming the network.
 rsync -az --checksum \
   --exclude='.git' \
   --exclude='node_modules' \
@@ -50,6 +65,9 @@ rsync -az --checksum \
   --exclude='ios' \
   --exclude='.expo' \
   --exclude='*.bundle' \
+  --exclude='start9' \
+  --exclude='*.apk' \
+  --exclude='*.aab' \
   ../ \
   "$MAC_HOST:$REMOTE_DIR/"
 
