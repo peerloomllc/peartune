@@ -1231,6 +1231,36 @@ APP_VERSION="$APP_VERSION" node -e "
   console.log('Updated app.json to ' + v + ' (versionCode: ' + versionCode + ', iOS buildNumber: ' + j.expo.ios.buildNumber + ')');
 "
 
+# The desktop host version moves WITH app.json, in the same step, on purpose.
+#
+# electron-builder names every desktop artifact after desktop/package.json, and the
+# updater compares a desktop install's version against the release tag (derived from
+# app.json). Let those drift and the desktop artifacts ship stamped with the old
+# number, which is exactly what happened to v1.0.1 - real rebuilt binaries carrying
+# the speakers/.wma/off-LAN work, published as PearTune-1.0.0.* and therefore
+# unreachable by the in-app update.
+#
+# Doing it HERE rather than leaving it to the operator is what makes the invariant
+# hold: step 1's verify gate asserts the two match (test/desktop-version.test.js),
+# and step 5b refuses to build mislabelled artifacts. Both of those are backstops.
+# If the bump is not automatic, every release trips its own gate at step 1 - which
+# is precisely what a 1.0.2 run did on 2026-08-17, with app.json already at 1.0.2
+# and desktop still at 1.0.1.
+_DTP="$REPO_ROOT/${DESKTOP_DIR:-desktop}/package.json"
+if [ -f "$_DTP" ]; then
+  _DTV_NOW=$(node -p "require('$_DTP').version" 2>/dev/null || echo "")
+  if [ "$_DTV_NOW" = "$APP_VERSION" ]; then
+    echo "    Desktop host already at $APP_VERSION."
+  elif npm --prefix "$REPO_ROOT/${DESKTOP_DIR:-desktop}" version "$APP_VERSION" \
+         --no-git-tag-version --allow-same-version >/dev/null 2>&1; then
+    echo "    Updated desktop/package.json to $APP_VERSION (was ${_DTV_NOW:-unknown})."
+  else
+    echo "    WARNING: could not bump desktop/package.json to $APP_VERSION."
+    echo "             Step 1's verify gate will fail on the mismatch. Fix by hand:"
+    echo "             npm --prefix ${DESKTOP_DIR:-desktop} version $APP_VERSION --no-git-tag-version"
+  fi
+fi
+
 # Derive APP_VERSION_CODE from the version string for Gradle.
 #
 # android/ is checked in here (see the repo CLAUDE.md), so step 2 does NOT
@@ -1997,6 +2027,11 @@ fi
 # ---------------------------------------------------------------------------
 _bump_paths=(
   app.json
+  # Bumped alongside app.json in step 0 and must land in the SAME commit as it -
+  # the tag has to contain the version the desktop artifacts were named after, or
+  # the tree at that tag disagrees with what was published.
+  "${DESKTOP_DIR:-desktop}/package.json"
+  "${DESKTOP_DIR:-desktop}/package-lock.json"
   "$XCODE_PROJECT"
   "${UMBREL_DIR:-umbrel}/umbrel-app.yml"
   "${UMBREL_DIR:-umbrel}/docker-compose.yml"
