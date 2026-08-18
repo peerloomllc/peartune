@@ -64,6 +64,31 @@ test('the unplayable set is per platform: AIFF is Android-only, WMA is universal
   assert.equal(needsTranscode('wma', 'somethingelse'), true, 'unknown platform gets the safe (android) set')
 })
 
+// Every format the folder adapter indexes, against what iOS actually decoded on the
+// Simulator (see the measurement table in worklet/quality.js). Pinned as a test because
+// the iOS list was wrong for four months on an ASSUMPTION that AVPlayer handled
+// everything but .wma, and nothing in the suite would have noticed.
+test('the iOS unplayable set matches what iOS actually decodes', () => {
+  // Decoded on the Simulator, so they must direct-play.
+  for (const ok of ['mp3', 'm4a', 'flac', 'wav', 'aiff', 'opus']) {
+    assert.equal(needsTranscode(ok, 'ios'), false, `${ok} decoded on iOS - do not transcode it`)
+  }
+  // Produced no audio track at all, so they must transcode.
+  for (const bad of ['ogg', 'wma']) {
+    assert.equal(needsTranscode(bad, 'ios'), true, `${bad} has no decoder on iOS - it must transcode`)
+  }
+  // The pair that makes the suffix, not the container, the right key: both are Ogg.
+  assert.equal(needsTranscode('opus', 'ios'), false, 'Opus-in-Ogg decodes')
+  assert.equal(needsTranscode('ogg', 'ios'), true, 'Vorbis-in-Ogg does not')
+})
+
+// Android keeps Ogg: ExoPlayer ships both Vorbis and Opus extractors, so this is a
+// genuine platform difference rather than an oversight copied across.
+test('Android still direct-plays Ogg', () => {
+  assert.equal(needsTranscode('ogg', 'android'), false)
+  assert.equal(needsTranscode('opus', 'android'), false)
+})
+
 // Downloads of unplayable formats: a pinned raw .wma is silence offline, so the pin
 // path stores the transcode instead - at a FIXED ceiling bitrate, never the network
 // policy's, so a download made on cellular is not permanently worse than one made at

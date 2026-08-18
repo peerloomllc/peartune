@@ -14,10 +14,30 @@ const AUTO_CELLULAR_BITRATE = 192
 // forever (found 2026-08-14 with a real .wma library). The scanner indexes them on
 // purpose - the fix is to transcode, not to hide the music.
 //   android - ExoPlayer ships no WMA/ASF and no AIFF extractor
-//   ios     - AVPlayer plays AIFF natively; WMA plays nowhere
+//   ios     - AVPlayer plays AIFF natively; WMA plays nowhere; and NO VORBIS, which
+//             is what a .ogg is
+//
+// The iOS list was ['wma'] alone until 2026-08-18, on the assumption that AVPlayer
+// handled everything else the scanner indexes. It does not. MEASURED on the Simulator
+// (iOS 26.5, PearTune-Test) by decoding one second of each format the folder adapter
+// indexes through AVAssetReader and counting the PCM frames that came out - not by
+// asking isPlayable, which is the same trust-the-readback mistake that let the .wma
+// case ship:
+//
+//   mp3 45504   m4a 44100   flac 46080   wav 44100   aiff 44100   opus 48000   -> decoded
+//   ogg     0 tracks, "Operation Stopped"                                      -> NO DECODER
+//   wma     0 tracks, "Cannot Open"                                            -> NO DECODER
+//
+// The harness was proved on mp3 and flac before any of this was read as a result: a
+// first run failed EVERY format identically, which was a relative-path bug in the
+// runner, not a codec finding.
+//
+// The .opus row is the surprise and it is why this list keys on the suffix rather than
+// the container: Opus-in-Ogg decodes fine, Vorbis-in-Ogg does not. The Ogg container is
+// supported, the Vorbis CODEC never has been. So 'ogg' belongs here and 'opus' must NOT.
 const UNPLAYABLE = {
   android: ['wma', 'aiff', 'aif'],
-  ios: ['wma']
+  ios: ['wma', 'ogg']
 }
 
 // What an unplayable format transcodes to when nothing else forces a bitrate. On

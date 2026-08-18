@@ -8,6 +8,49 @@ Append-only, newest on top. See Constitution §4.
 > maintainer's own scratch, and the pointers are kept as written rather than rewritten after
 > the fact, because this file is append-only.
 
+## 2026-08-18 - iOS has no Vorbis decoder, so .ogg joins the transcode list
+Tier: T1 (a playback-policy correction with a measurement behind it).
+
+worklet/quality.js listed `ios: ['wma']` on the ASSUMPTION that AVPlayer handled everything else
+host/adapters/folder.js indexes. Wrong since the list was written, and invisible because the
+failure mode is silent: a format the player cannot decode raises no error, the bytes arrive,
+nothing comes out, and the UI shows "paused" forever. That is exactly how the .wma case reached a
+user on 2026-08-14.
+
+MEASURED RATHER THAN REASONED. One second of a 440Hz sine encoded into each of the eight
+containers the scanner indexes, run through AVAssetReader inside a booted Simulator (iOS 26.5,
+PearTune-Test) with the decoded PCM frames counted. Not AVURLAsset.isPlayable - that is a
+readback, and trusting readbacks is the mistake this codebase keeps paying for.
+
+  mp3 45504   m4a 44100   flac 46080   wav 44100   aiff 44100   opus 48000   decoded
+  ogg      0 tracks, "Operation Stopped"                                     NO DECODER
+  wma      0 tracks, "Cannot Open"                                           NO DECODER
+
+So `ios` becomes `['wma', 'ogg']`. Five of the six assumed-fine formats really were fine; the
+sixth was not, and there was no way to know which without running it.
+
+THE .opus ROW IS THE INTERESTING ONE and it decides how the list is keyed. A .opus file is
+Opus-in-Ogg and it decodes; a .ogg file is Vorbis-in-Ogg and it does not. The Ogg CONTAINER is
+supported, the Vorbis CODEC never has been. Key on the suffix, not the container, and never
+"fix" this by adding 'opus' for symmetry.
+
+Android is unchanged and that asymmetry is real, not a copy-paste oversight: ExoPlayer ships both
+Vorbis and Opus extractors.
+
+VERIFICATION DISCIPLINE, because the first run said something false. It failed EVERY format
+identically, iOS-decodes-nothing, which is absurd on its face for mp3 - and the cause was that
+`simctl spawn` does not inherit the caller's working directory, so every relative path missed.
+Absolute paths, and mp3/flac confirmed decoding, BEFORE any row was read as a finding. The tool
+is committed at scripts/ios-format-check/ with that trap written into its header, so the next
+person re-runs the measurement instead of re-deriving it, and test/quality.test.js now pins every
+row. The new test fails against the old `['wma']` list and passes against the fix.
+
+CONSEQUENCE WORTH TRACKING: .ogg on iOS now needs a host-side transcode, so it needs ffmpeg on
+the host. The Umbrel image has had it since 0.2.45, but the Mac desktop host runs from node
+source and `which ffmpeg` on the mac-mini says not found. iOS + .ogg + a Mac host is still
+silence until that is fixed - logged in TODO.md, and it is the same open item that already
+covered the .wma case there.
+
 ## 2026-08-18 - The App Store listing copy is committed too, and the Android asymmetry is real
 Tier: T1 (repo layout; no runtime code changes). The follow-up split out of the ios/ decision
 below, decided the same day.
