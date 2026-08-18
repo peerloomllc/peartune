@@ -66,6 +66,10 @@ metadata/screenshot-fixtures/
 # scripts/android-screenshots.sh reproduce them from the fixture in a couple of minutes.
 metadata/ios/screenshots/
 metadata/android/screenshots/
+# Note the screenshots are the ONLY part of metadata/ios that is ignored. The .json files
+# beside them are the App Store listing copy that `asc metadata apply` sends to Apple -
+# source, not output - and they are committed (DECISIONS.md 2026-08-18). metadata/android has
+# no counterpart because the Play listing text is edited in the Play Console, not from here.
 
 # Release secrets. app.conf says "scripts/.env is not [committed]" and nothing was
 # enforcing it - scripts/ios-appstore.sh tells you to put an App Store Connect app-specific
