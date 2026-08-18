@@ -8,6 +8,46 @@ Append-only, newest on top. See Constitution §4.
 > maintainer's own scratch, and the pointers are kept as written rather than rewritten after
 > the fact, because this file is append-only.
 
+## 2026-08-18 - The macOS updater now ends the old daemon, because swapping the .app never did
+Tier: T1 (update path; no wire or storage change). Follows directly from the incident recorded
+below, which was inferred to affect "UPDATE NOW" as well. It does, and this is the measurement.
+
+THE CAUSE WAS A COMMENT THAT STOPPED BEING TRUE. host/update-apply.js's macapp applier said:
+"macOS has no supervisor - it is a login-item tray app, measured - so it always relaunches
+itself." That WAS measured, and it was correct when written. It stopped being correct on
+2026-08-08, when the system LaunchDaemon shipped. Nobody re-read it, so detectSupervisor kept its
+linux and win32 branches and never grew a darwin one - it returns null on macOS, and the applier
+swapped the .app and relaunched only the tray.
+
+So a Mac user accepting an update got: the new bundle installed, the UI reporting the new version,
+and the OLD host still serving the library from the replaced bundle by inode - until they
+rebooted. Silent, and indefinite. That is the third stale-comment failure in two days; the pattern
+is now unmistakable enough to say plainly: a comment asserting a measured fact needs a date and a
+re-read, because the thing it measured can change without touching the file.
+
+THE FIX IS A PLAIN KILL, NOT `launchctl kickstart`. kickstart on a system-domain job needs root
+and the updater runs as the user. But the daemon's plist sets UserName to the console user
+(deliberately, since 2026-08-08, so it does not leave root-owned files in the user's store), which
+means the same user may signal it. Measured on the mac-mini: pid 1384 before, `pkill -f` exited 0
+as the user with no password, pid 2943 twelve seconds later, dashboard back at http 200, and the
+host still transcoding (12,174,566 -> 3,529,005 bytes on the same request).
+
+ORDER MATTERS AND IS PINNED BY A TEST: kill AFTER the swap. Kill first and KeepAlive restarts the
+host from the bundle that is still the old one, which is precisely the incident below.
+
+The match is on the daemon's host-entry argv rather than the process name, verified on the real
+machine: `pgrep -f "PearTune.app/Contents/Resources/app.asar/vendor/host"` matches pid 1384 and
+NOT the tray at 828, which carries no such argument. Killing by name would take the tray down too.
+
+FAILURE IS REPORTED, NOT PAPERED OVER. An install predating the run-as-user fix is root-owned and
+refuses the signal; the applier then returns staleDaemon and the dashboard says the update is
+installed but the background service is still on the old version, naming the one command that
+fixes it. Claiming success there would recreate the exact bug in a new place.
+
+Linux and Windows were already correct and were checked rather than assumed: the appimage applier
+restarts the systemd user unit (with --no-block, for the cgroup-teardown reason in its own
+comment), and the .deb helper restarts the unit itself, last. macOS was the only gap.
+
 ## 2026-08-18 - A binary inside app.asar exists but cannot run, and a KeepAlive daemon outlives its own install
 Tier: T1. Two findings from verifying the entry below ON HARDWARE, both of which make a green build
 and a correct-looking install serve the old broken behaviour. Neither was reachable from the unit
