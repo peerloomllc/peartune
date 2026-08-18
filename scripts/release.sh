@@ -1287,6 +1287,32 @@ if [ -f "$XCODE_PROJECT" ]; then
      s/MARKETING_VERSION = [0-9][0-9.]*;/MARKETING_VERSION = ${APP_VERSION};/g" \
     "$XCODE_PROJECT"
   echo "    Synced $XCODE_PROJECT"
+
+  # AND Info.plist, which is the one that actually decides what ships.
+  #
+  # expo prebuild writes LITERAL values into ios/<app>/Info.plist rather than the
+  # $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION) build settings, so that file
+  # is a snapshot of app.json AS AT THE LAST PREBUILD. On a tree where ios/ already
+  # exists, prebuild does not rewrite it, and the literals silently WIN over
+  # everything the sed above just did to project.pbxproj.
+  #
+  # That is not theory. The 1.0.2 run on 2026-08-17 had app.json at 1.0.2 build 5
+  # and project.pbxproj at MARKETING_VERSION 1.0.2 / CURRENT_PROJECT_VERSION 5 on
+  # both machines, and still archived and uploaded an IPA stamped 1.0.1 build 3 -
+  # because Info.plist still said so. App Store Connect already had build 3 in the
+  # 1.0.1 train, so it rejected the upload with "The bundle version must be higher
+  # than the previously uploaded version". The IPA was not what any other file in
+  # the tree claimed it was, and nothing before the upload noticed.
+  _ios_plist="$(dirname "$(dirname "$XCODE_PROJECT")")/${APP_NAME}/Info.plist"
+  if [ -f "$_ios_plist" ]; then
+    sed -i \
+      "/<key>CFBundleShortVersionString<\/key>/{n;s|<string>[^<]*</string>|<string>${APP_VERSION}</string>|;}; \
+       /<key>CFBundleVersion<\/key>/{n;s|<string>[^<]*</string>|<string>${_ios_build_number}</string>|;}" \
+      "$_ios_plist"
+    echo "    Synced $_ios_plist (now ${APP_VERSION} build ${_ios_build_number})"
+  else
+    echo "    NOTE no Info.plist at $_ios_plist yet - step 2's prebuild will generate it from app.json."
+  fi
 else
   echo "    $XCODE_PROJECT absent (ios/ is generated, not committed) - step 2 will prebuild it."
 fi
