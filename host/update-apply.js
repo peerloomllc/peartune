@@ -172,6 +172,13 @@ async function downloadAndVerify (plan, { workDir, fetchImpl } = {}) {
 
 const UNIT = 'peartune-host.service'
 const WIN_SERVICE = 'PearTuneHost'
+// The macOS daemon, mirroring desktop/src/main/service.js (the source of truth for
+// installing it). World-readable, root-owned, so a check for it needs no privilege.
+const MAC_DAEMON_PLIST = '/Library/LaunchDaemons/com.peerloom.peartune.plist'
+// What the daemon's ProgramArguments look like in `ps`: the Electron binary invoked
+// with the host entry. The TRAY has no such argument, so this matches the daemon and
+// only the daemon.
+const MAC_HOST_ARGV = 'PearTune.app/Contents/Resources/app.asar/vendor/host'
 const DEB_HELPER = '/opt/PearTune/updater-helper.sh'
 
 // The Apple Developer Team that signs PearTune's macOS build. Verified from the
@@ -212,9 +219,24 @@ class NeedsManualError extends Error {
 // It must be DETECTED rather than assumed, because the same AppImage runs both
 // ways: as a supervised systemd user service, or as a plain tray app someone
 // double-clicked.
-async function detectSupervisor ({ platform = process.platform, exec } = {}) {
+async function detectSupervisor ({ platform = process.platform, exec, fsImpl } = {}) {
   if (!exec) return null
   try {
+    if (platform === 'darwin') {
+      // ADDED 2026-08-18, and it is a CORRECTION. This function had no darwin branch
+      // and the macapp applier said "macOS has no supervisor - it is a login-item tray
+      // app, measured". That was true when it was written and stopped being true on
+      // 2026-08-08, when the system LaunchDaemon shipped.
+      //
+      // The consequence was measured on the mac-mini on 2026-08-18: KeepAlive restarts
+      // the host from the bundle still on disk the instant the old one dies, so the
+      // daemon came up at 10:01:09 and the new .app landed at 10:01:12 - three seconds
+      // later. The new bundle then sat under a process running the OLD code, while the
+      // UI reported the new version. Every check on the installed app passed. The
+      // server was old.
+      const ffs = fsImpl || fs
+      return ffs.existsSync(MAC_DAEMON_PLIST) ? 'launchd' : null
+    }
     if (platform === 'linux') {
       const out = await exec(['systemctl', '--user', 'is-active', UNIT])
       return String(out || '').trim() === 'active' ? 'systemd' : null
@@ -268,8 +290,13 @@ const APPLIERS = {
   },
 
   // Mount the verified .dmg, check who signed the .app inside it, and swap it into
-  // place. macOS has no supervisor - it is a login-item tray app, measured - so it
-  // always relaunches itself.
+  // place - then, if a LaunchDaemon is supervising the host, make it restart.
+  //
+  // IT USED TO SAY "macOS has no supervisor - it is a login-item tray app, measured".
+  // True when written, false since 2026-08-08 when the system LaunchDaemon shipped, and
+  // the stale comment is exactly why nobody looked: an update swapped the .app while
+  // KeepAlive kept the OLD host alive from the replaced bundle, indefinitely, with the
+  // UI reporting the new version. See detectSupervisor for the measurement.
   //
   // THE SIGNATURE CHECK IS THE SECOND HALF OF THE TRUST BOUNDARY, and it is here
   // rather than on the other platforms because it is the only one available to us:
@@ -278,7 +305,7 @@ const APPLIERS = {
   // will not vouch for this bundle and `spctl` would reject it. A Developer ID team
   // check DOES work un-notarized, and proves PeerLoom signed what we are about to
   // run. Gating on spctl instead would reject every legitimate update we ship.
-  macapp: async ({ file, target, exec, mountDir }) => {
+  macapp: async ({ file, target, supervisor, exec, mountDir }) => {
     if (!target) throw new NeedsManualError('could not work out where PearTune.app is installed')
     const mount = mountDir || `/tmp/peartune-update-${Date.now()}`
     await exec(['hdiutil', 'attach', '-nobrowse', '-readonly', '-mountpoint', mount, file])
@@ -303,6 +330,28 @@ const APPLIERS = {
       // Always unmount, including after a rejected signature - a stray mounted
       // image is a confusing thing to leave on someone's desktop.
       await exec(['hdiutil', 'detach', mount, '-quiet']).catch(() => {})
+    }
+
+    // THE SWAP IS NOT THE UPDATE. A running daemon holds the old bundle open by inode
+    // and keeps serving it forever, so the last step is to end that process and let
+    // KeepAlive start a fresh one from what we just installed.
+    //
+    // A plain kill, NOT `launchctl kickstart`: kickstart on a system-domain job needs
+    // root, and this runs as the user. The daemon's plist sets UserName to the console
+    // user precisely so it does not run as root, which means the same user may signal
+    // it - verified on the mac-mini, where killing it as the user had launchd bring it
+    // straight back.
+    //
+    // pkill exits 1 when nothing matched, which is not an error here: it means no
+    // daemon was running and the tray relaunch below is the whole story.
+    if (supervisor === 'launchd') {
+      let killed = true
+      await exec(['pkill', '-f', MAC_HOST_ARGV]).catch(() => { killed = false })
+      // Report honestly rather than optimistically. If the daemon predates the
+      // run-as-user fix it is root-owned, the kill is refused, and the user needs to be
+      // told to restart it rather than left believing the update took.
+      if (killed) return { restarted: true, needsRelaunch: true, via: 'launchd' }
+      return { restarted: false, needsRelaunch: true, via: 'dmg-swap', staleDaemon: true }
     }
     return { restarted: false, needsRelaunch: true, via: 'dmg-swap' }
   },
@@ -358,13 +407,16 @@ function defaultExec (argv) {
 // ones where we did nothing, because "nothing happened" must never look like
 // "it worked".
 class UpdateApplier {
-  constructor ({ getUpdate, platform = process.platform, arch = process.arch, target = process.env.APPIMAGE, exec = defaultExec, fetchImpl, onRelaunch = null, log = () => {} } = {}) {
+  // fsImpl is injectable for the same reason exec is: detectSupervisor asks whether the
+  // macOS daemon plist exists, and a test must be able to answer that without one.
+  constructor ({ getUpdate, platform = process.platform, arch = process.arch, target = process.env.APPIMAGE, exec = defaultExec, fetchImpl, fsImpl = fs, onRelaunch = null, log = () => {} } = {}) {
     this._getUpdate = getUpdate
     this._platform = platform
     this._arch = arch
     this._target = target
     this._exec = exec
     this._fetchImpl = fetchImpl
+    this._fs = fsImpl
     this._onRelaunch = onRelaunch
     this._log = log
     this._state = { status: 'idle' }
@@ -393,7 +445,7 @@ class UpdateApplier {
       const { file, digest } = await downloadAndVerify(plan, { fetchImpl: this._fetchImpl })
       this._log('update:verified', { version: plan.version, digest: digest.slice(0, 12) })
 
-      const supervisor = await detectSupervisor({ platform: this._platform, exec: this._exec })
+      const supervisor = await detectSupervisor({ platform: this._platform, exec: this._exec, fsImpl: this._fs })
       // The target means different things per platform: the AppImage file to
       // replace on Linux, the .app bundle to swap on macOS, and nothing at all on
       // Windows (the installer knows where it lives).
@@ -401,7 +453,21 @@ class UpdateApplier {
       const r = await applyUpdate(plan, { file, digest, supervisor, target, exec: this._exec, log: this._log })
 
       if (r.needsRelaunch) {
-        this._state = { status: 'restarting', version: plan.version, via: 'self' }
+        // staleDaemon means the swap landed but the OLD host is still serving and we
+        // could not end it - a root-owned daemon from before the run-as-user fix. Say
+        // so, because the alternative is reporting a successful update while the
+        // library keeps being served by the version we just replaced.
+        this._state = r.staleDaemon
+          ? {
+              status: 'restarting',
+              version: plan.version,
+              via: 'self',
+              staleDaemon: true,
+              warning: 'The update is installed, but the background service is still ' +
+                'running the old version. Restart this Mac, or run: ' +
+                'sudo launchctl kickstart -k system/com.peerloom.peartune'
+            }
+          : { status: 'restarting', version: plan.version, via: 'self' }
         if (this._onRelaunch) this._onRelaunch()
       } else {
         this._state = { status: 'restarting', version: plan.version, via: r.via || 'supervisor' }
@@ -422,5 +488,6 @@ class UpdateApplier {
 module.exports = {
   VerifyError, NeedsManualError, UpdateApplier, defaultExec, selectAsset, planApply, downloadAndVerify,
   download, sha256File, parseSha256Sidecar, detectSupervisor, applyUpdate, APPLIERS, UNIT, WIN_SERVICE, DEB_HELPER,
+  MAC_DAEMON_PLIST, MAC_HOST_ARGV,
   parseCodesignTeam, macAppRoot, APPLE_TEAM_ID
 }

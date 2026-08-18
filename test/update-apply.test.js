@@ -184,6 +184,86 @@ test('a supervisor is DETECTED, never assumed - the same AppImage runs both ways
   assert.equal(await detectSupervisor({ platform: 'linux', exec: boom.exec }), null)
 })
 
+// macOS was the platform with no supervisor branch, on the strength of a comment that
+// said so - "it is a login-item tray app, measured". True when written, false from
+// 2026-08-08 when the system LaunchDaemon shipped, and nobody re-read it.
+//
+// What it cost was measured on the mac-mini on 2026-08-18: KeepAlive restarts the host
+// from the bundle still on disk the moment the old one dies, so the daemon came up at
+// 10:01:09 and the new .app landed at 10:01:12. The new bundle then sat under a process
+// running the OLD code while the UI reported the new version - so an update reported as
+// applied had changed nothing about what was actually serving the library.
+test('macOS detects the LaunchDaemon, so an update does not leave the old host running', async () => {
+  const r = recorder()
+  assert.equal(
+    await detectSupervisor({ platform: 'darwin', exec: r.exec, fsImpl: { existsSync: () => true } }),
+    'launchd',
+    'the daemon plist is world-readable and root-owned, so this needs no privilege'
+  )
+  assert.equal(
+    await detectSupervisor({ platform: 'darwin', exec: r.exec, fsImpl: { existsSync: () => false } }),
+    null,
+    'a plain tray install has no daemon and must still relaunch itself'
+  )
+})
+
+// The applier verifies the signer before swapping, so every macapp test needs a
+// signed-looking answer. (SIGNED is declared further down this file, after these.)
+const TEAM_OK = 'TeamIdentifier=G79ALD29NA'
+
+test('the .dmg swap ENDS the old daemon, so KeepAlive starts a fresh one from the new bundle', async () => {
+  const r = recorder({ 'codesign -dv': TEAM_OK })
+  const out = await applyUpdate({ applier: 'macapp', version: '1.1.0' }, {
+    file: '/tmp/PearTune-1.1.0-arm64.dmg',
+    target: '/Applications/PearTune.app',
+    supervisor: 'launchd',
+    mountDir: '/tmp/mnt',
+    exec: r.exec
+  })
+
+  const swap = r.calls.findIndex((c) => c.startsWith('mv /Applications/PearTune.app.new'))
+  const kill = r.calls.findIndex((c) => c.startsWith('pkill -f'))
+  assert.ok(swap !== -1, 'the app should have been swapped into place')
+  assert.ok(kill !== -1,
+    'nothing ended the running daemon, so it keeps serving the OLD bundle by inode - ' +
+    'forever, while the UI reports the new version')
+  assert.ok(swap < kill,
+    'the daemon must be ended AFTER the swap: kill it first and KeepAlive restarts it ' +
+    'from the bundle that is still the old one, which is exactly the 2026-08-18 incident')
+  assert.match(r.calls[kill], /vendor\/host/,
+    'match the daemon by its host entry argv - the tray has no such argument, so this ' +
+    'must not take the tray down with it')
+  assert.equal(out.restarted, true)
+  assert.equal(out.via, 'launchd')
+})
+
+test('a daemon that refuses to die is REPORTED, not papered over', async () => {
+  // An install predating the run-as-user fix is root-owned, so pkill from the user is
+  // refused. Claiming the update applied would leave the old host serving with nobody
+  // any the wiser.
+  const calls = []
+  const exec = async (argv) => {
+    calls.push(argv.join(' '))
+    if (argv[0] === 'pkill') throw new Error('Operation not permitted')
+    if (argv.join(' ').includes('codesign -dv')) return TEAM_OK
+    return ''
+  }
+  const out = await applyUpdate({ applier: 'macapp', version: '1.1.0' }, {
+    file: '/tmp/x.dmg', target: '/Applications/PearTune.app', supervisor: 'launchd', mountDir: '/tmp/mnt', exec
+  })
+  assert.equal(out.restarted, false, 'must not claim a restart that did not happen')
+  assert.equal(out.staleDaemon, true, 'and must say WHY, so the UI can tell the user')
+})
+
+test('with no daemon installed, the .dmg swap still just relaunches the tray', async () => {
+  const r = recorder({ 'codesign -dv': TEAM_OK })
+  const out = await applyUpdate({ applier: 'macapp', version: '1.1.0' }, {
+    file: '/tmp/x.dmg', target: '/Applications/PearTune.app', supervisor: null, mountDir: '/tmp/mnt', exec: r.exec
+  })
+  assert.ok(!r.calls.some((c) => c.startsWith('pkill')), 'nothing to kill on a plain tray install')
+  assert.equal(out.needsRelaunch, true)
+})
+
 test('the AppImage swap keeps the executable bit, then hands off to systemd', async () => {
   const r = recorder()
   const out = await applyUpdate({ applier: 'appimage', version: '1.1.0' },
