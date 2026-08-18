@@ -1,6 +1,6 @@
 {
   "name": "peartune-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "PearTune host as a desktop tray app (macOS / Windows / Linux).",
   "license": "MIT",
   "private": true,
@@ -44,7 +44,7 @@
   "build": {
     "appId": "com.peartune.desktop",
     "productName": "PearTune",
-    "copyright": "Copyright \u00a9 2026 PeerLoom LLC",
+    "copyright": "Copyright © 2026 PeerLoom LLC",
     "directories": {
       "output": "dist",
       "buildResources": "build"
