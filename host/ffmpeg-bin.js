@@ -47,6 +47,23 @@ function bundleDir () {
   return `${process.platform}-${process.arch}`
 }
 
+// A path INSIDE an asar archive is not a real file: Electron's fs shim makes
+// existsSync say yes, but nothing can spawn it - the bytes live inside the archive and
+// there is no executable on disk to exec.
+//
+// This is not hypothetical. The first cut of this shipped exactly that: package.json's
+// `files` glob included `vendor/**/*`, so electron-builder packed vendor/ffmpeg INTO
+// app.asar as well as staging a real copy beside it, BOTH candidates below reported
+// EXISTS, the in-asar one came first and won, and hasFfmpeg() then failed to spawn it
+// and silently fell back to raw bytes. The bug the whole change exists to fix, shipped
+// inside the fix, and every unit test passed because they mock existsSync.
+//
+// The glob now excludes it, and this is the belt to that braces: a candidate under an
+// .asar is never a spawnable binary, whatever the filesystem claims.
+function spawnable (p, exists) {
+  return !p.split(path.sep).some((seg) => seg.endsWith('.asar')) && exists(p)
+}
+
 function candidates (dir = __dirname) {
   return [
     path.join(dir, '..', 'ffmpeg', bundleDir(), EXE),
@@ -59,9 +76,9 @@ function candidates (dir = __dirname) {
 function resolveFfmpeg ({ env = process.env, dir = __dirname, exists = fs.existsSync } = {}) {
   if (env.PEARTUNE_FFMPEG) return env.PEARTUNE_FFMPEG
   for (const c of candidates(dir)) {
-    if (exists(c)) return c
+    if (spawnable(c, exists)) return c
   }
   return 'ffmpeg'
 }
 
-module.exports = { resolveFfmpeg, candidates, bundleDir, EXE }
+module.exports = { resolveFfmpeg, candidates, spawnable, bundleDir, EXE }

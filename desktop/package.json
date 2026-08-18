@@ -52,6 +52,7 @@
     "files": [
       "src/**/*",
       "vendor/**/*",
+      "!vendor/ffmpeg/**",
       "build/icon.png",
       "build/tray-icon.png",
       "build/trayTemplate.png",
