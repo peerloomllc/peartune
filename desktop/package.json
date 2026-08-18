@@ -103,6 +103,14 @@
         {
           "from": "installer/macos/com.peerloom.peartune.plist",
           "to": "com.peerloom.peartune.plist"
+        },
+        {
+          "from": "vendor/ffmpeg/darwin-arm64",
+          "to": "ffmpeg/darwin-arm64"
+        },
+        {
+          "from": "vendor/ffmpeg/darwin-x64",
+          "to": "ffmpeg/darwin-x64"
         }
       ],
       "identity": "22F9540D333EBFB4245EE11170F68A61E6E22689",
@@ -115,6 +123,10 @@
         {
           "from": "installer/windows/nssm.exe",
           "to": "nssm.exe"
+        },
+        {
+          "from": "vendor/ffmpeg/win32-x64",
+          "to": "ffmpeg/win32-x64"
         }
       ]
     },
@@ -152,6 +164,10 @@
         {
           "from": "installer/linux/peartune-updater.rules.in",
           "to": "../peartune-updater.rules.in"
+        },
+        {
+          "from": "vendor/ffmpeg/linux-x64",
+          "to": "ffmpeg/linux-x64"
         }
       ]
     },

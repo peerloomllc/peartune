@@ -4,6 +4,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 node scripts/prepack.js
+# Refuse to package without the bundled ffmpeg. electron-builder treats a missing
+# extraResources source as a warning, so without this the installer ships and simply
+# cannot transcode - silently. See scripts/ffmpeg/README.md.
+node scripts/ffmpeg/require-binaries.js linux
 ./node_modules/.bin/electron-builder --linux --x64 --publish never
 if ! ls dist/*.AppImage >/dev/null 2>&1; then
   echo "ERROR: no AppImage was produced - Linux build failed" >&2; exit 1
