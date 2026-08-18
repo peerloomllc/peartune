@@ -9,7 +9,7 @@
     "userInterfaceStyle": "automatic",
     "android": {
       "package": "com.peartune",
-      "versionCode": 1000005,
+      "versionCode": 1000007,
       "permissions": [
         "CAMERA",
         "INTERNET",
@@ -64,7 +64,7 @@
           }
         }
       },
-      "buildNumber": "5"
+      "buildNumber": "7"
     },
     "plugins": [
       [
