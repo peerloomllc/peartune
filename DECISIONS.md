@@ -8,6 +8,40 @@ Append-only, newest on top. See Constitution §4.
 > maintainer's own scratch, and the pointers are kept as written rather than rewritten after
 > the fact, because this file is append-only.
 
+## 2026-08-18 - The App Store listing copy is committed too, and the Android asymmetry is real
+Tier: T1 (repo layout; no runtime code changes). The follow-up split out of the ios/ decision
+below, decided the same day.
+
+`metadata/ios/` held four untracked .json files and no .gitignore entry covering them - the same
+accidental shape `ios/` was in, and for the same reason nobody had noticed. They are not
+incidental: `scripts/release.sh` step 3 of the App Store publish feeds this directory to
+`asc metadata apply`, so these files ARE the description, subtitle, keywords and "what's new"
+that Apple publishes and users read. Text that ships, invisible to review.
+
+Committed, with the split drawn where the generation is:
+
+- `app-info/en-US.json` (name, subtitle, privacy URL) and `version/default/en-US.json` (the
+  canonical listing copy) are hand-maintained SOURCE.
+- `version/<VERSION>/en-US.json` is GENERATED per release from `default/` plus `release_notes.md`,
+  and committed anyway. Unlike `ios/`, this cannot go stale: the generator writes a versioned
+  directory only when one does not already exist, and every release has a new version number, so
+  a committed copy is a durable record of exactly what Apple was told for that release rather
+  than a snapshot waiting to drift.
+- `screenshots/` stays ignored, unchanged - it is regenerated from a real library's album art and
+  was deliberately kept out (see the .gitignore comment).
+
+THE ANDROID ASYMMETRY IS NOT A BUG. `metadata/android/` has no listing copy to commit because the
+Play listing text is edited in the Play Console; nothing in `release.sh` uploads it. Checked
+rather than assumed, since the obvious reading of "iOS has listing files and Android does not" is
+that Android's went missing.
+
+FOUND AND REMOVED WHILE READING: a dead block in `release.sh` that copied `release_notes.md` to
+`metadata/ios/en-US/release_notes.txt` behind an `[ -d metadata/ios/en-US ]` guard. That directory
+has never existed here, so the block had never run - and it read as "the iOS notes are kept in
+sync here", the same mostly-true-comment failure that the entry below is about. Deleted rather
+than repointed: the notes already reach Apple through the `whatsNew` injection in step 3, and a
+second copy would only be a second thing to drift.
+
 ## 2026-08-18 - ios/ is committed, like android/, because the file that ships was the untracked one
 Tier: T1 (repo layout and a verify-gate guard; no runtime code changes). Decided with Tim
 2026-08-18, from the loose end that PR #377 uncovered.

@@ -1651,11 +1651,19 @@ cat release_notes.md
 echo "---"
 _confirm "Release notes look good?"
 
-# Auto-populate iOS metadata release notes if the directory exists
-if [ -d "$REPO_ROOT/metadata/ios/en-US" ]; then
-  cp release_notes.md "$REPO_ROOT/metadata/ios/en-US/release_notes.txt"
-  echo "    Updated metadata/ios/en-US/release_notes.txt"
-fi
+# NO iOS release-notes copy here, deliberately.
+#
+# This used to be a `cp release_notes.md metadata/ios/en-US/release_notes.txt` guarded by
+# `[ -d metadata/ios/en-US ]`. That directory has never existed in this repo - the real
+# layout is metadata/ios/version/<VERSION>/en-US.json - so the guard was always false and
+# the block never ran once. It read as "the iOS notes are kept in sync here", which is
+# exactly the kind of mostly-true statement that stops the real question being asked.
+#
+# What ACTUALLY carries the notes to Apple is step 3 of the App Store publish below: it
+# builds metadata/ios/version/${APP_VERSION}/en-US.json from version/default/en-US.json
+# and injects release_notes.md into its `whatsNew` field (stripping emoji, which App Store
+# Connect rejects). Removed 2026-08-18 rather than repointed, because a second copy of the
+# notes would just be a second thing to drift.
 
 # The same notes into the Umbrel app-store manifest, whose releaseNotes: field
 # is what an Umbrel user reads when offered the update.
