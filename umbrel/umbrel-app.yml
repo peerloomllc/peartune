@@ -57,15 +57,15 @@ repo: https://github.com/peerloomllc/peartune
 support: https://github.com/peerloomllc/peartune/issues
 gallery: []
 releaseNotes: |-
-  New
-  - Music on a USB drive plugged into your Umbrel now shows up when you choose your music folder.
   Improvements
-  - Songs from Jellyfin and Subsonic libraries start playing sooner.
-  - If the person running a library switches where their music comes from, the app now tells you and reloads on its own. Before, it showed an error screen and needed a full restart.
+  - The on/off controls in Settings are now proper switches. You can see what is on at a glance from the position, instead of reading a word.
+  - Those switches now tell screen readers which setting they control, rather than just saying "on" or "off".
+  - On iPhone and iPad, the request to use your local network now explains why PearTune is asking. It connects straight to your library across your wifi instead of taking the long way round.
   Fixes
-  - Fixed a crash that could stop your music. Having the library dashboard open while a song played could shut the server down partway through the track.
-  - Installing or updating PearTune on an Umbrel no longer fails partway.
-  - The update prompt no longer offers an update that would leave you exactly where you started. If a new version has no build for your computer, it now says so plainly instead of appearing to update and changing nothing.
+  - Songs in .ogg format now play on iPhone and iPad. Before, they appeared in your library and tapping one left the player sitting there in silence, with nothing to explain why.
+  - A library served from a Mac, Windows or Linux computer can now play formats your phone does not understand, such as .wma and .ogg. Those tracks used to be silent. There is nothing extra to install - it is built in now.
+  - On a Mac, choosing "Update now" takes effect straight away. The update used to install correctly while your library quietly kept running the old version until you restarted the computer.
+  - The "Recently added row" switch in Settings now gives the same small buzz as the other switches when you tap it.
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the
