@@ -1701,16 +1701,38 @@ else
   echo "==> Building desktop tray-host installers..."
   _DT="$REPO_ROOT/${DESKTOP_DIR:-desktop}"
 
-  # The desktop host carries its OWN version (desktop/package.json), not the
-  # app's, and electron-builder bakes it into every filename. Read it rather
-  # than assuming $RELEASE_TAG, or the asset loop looks for files that do not
-  # exist. See the step 5c comment for why the versions are separate.
+  # THE DESKTOP VERSION MUST TRACK THE RELEASE TAG. electron-builder bakes
+  # desktop/package.json's version into every filename, and the updater compares
+  # a desktop install's own version against the repo's latest release TAG
+  # (host/update-check.js: "ONE VERSION LINE... everything PearTune ships now
+  # moves together", Tim 2026-07-31). If the two drift, the desktop artifacts on
+  # a release are named with the old number and the update is quietly broken.
+  #
+  # This comment used to say the opposite — that the desktop "carries its OWN
+  # version, independent of $RELEASE_TAG" — and that stale instruction is what
+  # shipped the v1.0.1 bug. v1.0.1 (2026-08-17) rebuilt the desktop artifacts
+  # for real (the AppImage grew 183713718 -> 183750579 bytes, so they DO carry
+  # the speakers/.wma/off-LAN work) but named them PearTune-1.0.0.*, because
+  # desktop/package.json had never moved off 1.0.0. selectAsset matches on shape
+  # rather than version, so every platform planned an apply announcing "1.0.1"
+  # while handing back a file stamped 1.0.0 — and the sha256 check passed, since
+  # the digest of the wrong artifact is still that artifact's digest. Users would
+  # be told the update worked, still read as 1.0.0, and be re-offered it forever.
+  # planApply now refuses that outright (PR #372); this keeps it from arising.
   _DTV=$(node -p "require('$_DT/package.json').version" 2>/dev/null || echo "")
+  _TAGV="${RELEASE_TAG#v}"
   if [ -z "$_DTV" ]; then
     echo "    WARNING: could not read $_DT/package.json version — skipping desktop builds."
     SKIP_DESKTOP=true
+  elif [ "$_DTV" != "$_TAGV" ]; then
+    echo "    ERROR: desktop/package.json is $_DTV but this release is $_TAGV."
+    echo "           electron-builder names the artifacts after $_DTV, so they would ship"
+    echo "           mislabelled and the in-app update would refuse them (NEEDS_MANUAL)."
+    echo "           Fix: npm --prefix \"$_DT\" version $_TAGV --no-git-tag-version"
+    echo "           Then re-run. Skipping desktop builds rather than publishing bad names."
+    SKIP_DESKTOP=true
   else
-    echo "    Desktop host version: $_DTV  (independent of $RELEASE_TAG)"
+    echo "    Desktop host version: $_DTV  (matches $RELEASE_TAG)"
   fi
 fi
 
