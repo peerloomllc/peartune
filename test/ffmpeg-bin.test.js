@@ -15,7 +15,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 const fs = require('node:fs')
-const { resolveFfmpeg, candidates, bundleDir, EXE } = require('../host/ffmpeg-bin')
+const { resolveFfmpeg, candidates, spawnable, bundleDir, EXE } = require('../host/ffmpeg-bin')
 
 const none = () => false
 
@@ -96,4 +96,49 @@ test('electron-builder stages the binaries where the resolver looks for them', (
   for (const need of ['darwin-arm64', 'darwin-x64', 'win32-x64', 'linux-x64']) {
     assert.ok(names.includes(need), `nothing staged for ${need} - that platform still cannot transcode`)
   }
+})
+
+// The regression that shipped inside the fix, 2026-08-18.
+//
+// package.json's `files` glob was `vendor/**/*`, so electron-builder packed
+// vendor/ffmpeg INTO app.asar as well as staging a real copy beside it. Electron's fs
+// shim reports a path inside an asar as existing, so BOTH candidates said EXISTS, the
+// in-asar one is first and won - and nothing can spawn a file inside an archive. The
+// host fell back to raw bytes, which is precisely the bug the bundling exists to fix.
+//
+// It passed every unit test here, because they mock existsSync and only ever made the
+// staged path exist. It was caught on a real installed .app. The lesson is in the shape
+// of this test: make BOTH exist, the way they really did.
+test('an in-asar copy never wins, even when the filesystem says it exists', () => {
+  const resources = '/Applications/PearTune.app/Contents/Resources'
+  const hostDir = path.join(resources, 'app.asar', 'vendor', 'host')
+  const staged = path.join(resources, 'ffmpeg', bundleDir(), EXE)
+
+  const got = resolveFfmpeg({ env: {}, dir: hostDir, exists: () => true })
+
+  assert.ok(!got.split(path.sep).some((s) => s.endsWith('.asar')),
+    'resolved to a path inside app.asar. existsSync says yes there, but the bytes live ' +
+    'inside the archive and nothing can spawn them - the host then falls back to raw ' +
+    'audio the phone cannot decode, silently.')
+  assert.equal(got, staged, 'must resolve to the copy electron-builder staged outside the archive')
+})
+
+test('spawnable() rejects any path under an .asar', () => {
+  const yes = () => true
+  assert.equal(spawnable('/a/app.asar/vendor/ffmpeg/x/ffmpeg', yes), false)
+  assert.equal(spawnable('/a/Resources/ffmpeg/x/ffmpeg', yes), true)
+  // app.asar.unpacked IS a real directory on disk, so it must stay spawnable.
+  assert.equal(spawnable('/a/app.asar.unpacked/ffmpeg/x/ffmpeg', yes), true)
+})
+
+// The other half of the same fix: keep it out of the archive in the first place.
+test('electron-builder does not pack vendor/ffmpeg into the asar', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'desktop', 'package.json'), 'utf8'))
+  const files = pkg.build?.files || []
+  assert.ok(files.includes('!vendor/ffmpeg/**'),
+    'desktop/package.json build.files must exclude vendor/ffmpeg. Without it, ' +
+    '"vendor/**/*" packs the binaries into app.asar where they cannot be executed - ' +
+    'and ships them twice.')
+  assert.ok(files.indexOf('vendor/**/*') < files.indexOf('!vendor/ffmpeg/**'),
+    'the negation has to come after the glob it narrows')
 })

@@ -8,6 +8,52 @@ Append-only, newest on top. See Constitution §4.
 > maintainer's own scratch, and the pointers are kept as written rather than rewritten after
 > the fact, because this file is append-only.
 
+## 2026-08-18 - A binary inside app.asar exists but cannot run, and a KeepAlive daemon outlives its own install
+Tier: T1. Two findings from verifying the entry below ON HARDWARE, both of which make a green build
+and a correct-looking install serve the old broken behaviour. Neither was reachable from the unit
+tests; both were found by measuring the running system.
+
+FINDING 1 - THE FIX SHIPPED THE BUG INSIDE ITSELF. desktop/package.json's `files` glob included
+`vendor/**/*`, so electron-builder packed vendor/ffmpeg INTO app.asar as well as staging a real
+copy beside it via extraResources. Electron's fs shim reports a path inside an asar as EXISTING,
+so both candidates in ffmpeg-bin.js said EXISTS, the in-asar one is first and won - and nothing
+can spawn a file that lives inside an archive. hasFfmpeg() failed, transcode.js degraded to raw
+bytes, and the result was byte-for-byte the bug the whole change exists to fix.
+
+Every unit test passed, because they inject a mocked `exists` that only ever made the staged path
+exist. The real filesystem made BOTH true. That is the shape of the lesson: a mock that models
+only the case you intended cannot fail the way reality does. The regression test now makes both
+paths exist, exactly as the installed .app did.
+
+Fixed on both sides: `!vendor/ffmpeg/**` keeps it out of the archive (which also stopped shipping
+the binaries twice - the arm64 .dmg went 177MB -> 170MB), and resolveFfmpeg now refuses any
+candidate under an `.asar` whatever existsSync claims. `.asar.unpacked` stays spawnable, since
+that IS a real directory.
+
+FINDING 2 - AND THIS ONE IS BIGGER THAN THIS CHANGE. macOS installs a SYSTEM LaunchDaemon with
+KeepAlive true (/Library/LaunchDaemons/com.peerloom.peartune.plist, since 2026-08-08). Quit the
+app to replace it and launchd restarts the host IMMEDIATELY from the bundle still on disk.
+Measured: the daemon came up at 10:01:09 and /Applications/PearTune.app was replaced at 10:01:12
+- three seconds later. The new bundle then sat under a process still executing the old code,
+indefinitely.
+
+How it presented is worth remembering, because it looked exactly like a broken fix. The installed
+app had ffmpeg staged, resolved it correctly, and transcoded a .wma to mp3 when invoked directly -
+while the process actually serving the library did none of those things. Every check on the APP
+passed. The SERVER was old. `sudo launchctl kickstart -k system/com.peerloom.peartune` fixed it
+instantly.
+
+THE CONSEQUENCE TO CHASE: the "UPDATE NOW" updater (PR #309) swaps the .app the same way, so a Mac
+user accepting an update very likely keeps running the OLD host until they reboot, while the UI
+reports the new version. That is inferred from this incident and NOT yet measured on the updater
+path - verify it before fixing it. Logged P1 in TODO.md, with the Linux systemd user unit to check
+for the same shape.
+
+PROVEN AFTER THE RESTART, on Tim's own Mac, end to end over the real DHT: the same request that
+returned 12,174,566 bytes before returned 3,529,005 after (29%), and a .wma asked for the way
+worklet/quality.js actually asks for it (mp3 @320 on iOS) came back as MP3 rather than ASF. Test
+devices and the test track were removed afterwards; the library is back to its original 209.
+
 ## 2026-08-18 - The desktop installers bundle their own ffmpeg, built audio-only and LGPL
 Tier: T1 (packaging and a host resolution path; no wire or storage change). The capability
 negotiation this feeds - `caps.timeOffset`, gated on `hasFfmpeg()` - already exists to describe
