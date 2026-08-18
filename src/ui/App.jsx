@@ -6747,11 +6747,14 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
               <div className='label'>Choose quality automatically</div>
               <div className='desc'>{QUALITY_AUTO_DESC}</div>
             </div>
+            {/* The label lives in the row beside it, so the switch needs its own accessible
+                name - without the old "On"/"Off" text a screen reader would announce an
+                unnamed switch. aria-checked carries the state. */}
             <button
               className={'toggle' + (quality === 'auto' ? ' on' : '')}
-              role='switch' aria-checked={quality === 'auto'}
+              role='switch' aria-checked={quality === 'auto'} aria-label='Choose quality automatically'
               onClick={() => { haptic('light'); onQuality(quality === 'auto' ? (lastFixedQuality.current || '320') : 'auto') }}
-            >{quality === 'auto' ? 'On' : 'Off'}</button>
+            />
           </div>
           <div className='label' style={{ marginTop: '.6rem' }}>Streaming quality</div>
           <StepSlider
@@ -6817,9 +6820,10 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
               <div className='label'>Download over cellular</div>
               <div className='desc'>Off by default - a downloaded album can be hundreds of MB.</div>
             </div>
-            <button className={'toggle' + (cellular ? ' on' : '')} role='switch' aria-checked={cellular} onClick={toggleCellular}>
-              {cellular ? 'On' : 'Off'}
-            </button>
+            <button
+              className={'toggle' + (cellular ? ' on' : '')} role='switch' aria-checked={cellular}
+              aria-label='Download over cellular' onClick={toggleCellular}
+            />
           </div>
         </Section>
 
@@ -6840,9 +6844,10 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
                 cost of connecting from some networks.
               </div>
             </div>
-            <button className={'toggle' + (useRelay ? ' on' : '')} role='switch' aria-checked={useRelay} onClick={toggleRelay}>
-              {useRelay ? 'On' : 'Off'}
-            </button>
+            <button
+              className={'toggle' + (useRelay ? ' on' : '')} role='switch' aria-checked={useRelay}
+              aria-label='Use the relay when direct fails' onClick={toggleRelay}
+            />
           </div>
         </Section>
 
@@ -6876,10 +6881,13 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
               <div className='label'>Recently added row</div>
               <div className='desc'>The row of newest albums above your library.</div>
             </div>
+            {/* haptic() added 2026-08-18: the other three switches buzzed and this one did
+                not, so the same gesture felt broken on one row out of four. */}
             <button
               className={'toggle' + (showRecent ? ' on' : '')} role='switch' aria-checked={showRecent}
-              onClick={() => onShowRecent(!showRecent)}
-            >{showRecent ? 'On' : 'Off'}</button>
+              aria-label='Recently added row'
+              onClick={() => { haptic('light'); onShowRecent(!showRecent) }}
+            />
           </div>
         </Section>
 

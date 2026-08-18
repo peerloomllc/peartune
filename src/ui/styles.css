@@ -361,13 +361,47 @@ ul.tracks.editing li.editrow { gap: .5rem; background: var(--color-surface-base)
   font-size: .85rem;
 }
 /* A small On/Off pill toggle (download-over-cellular). */
+/* Settings switches.
+   These used to be pill BUTTONS reading "On" / "Off" - the state was a word you had to
+   read, and both states looked equally like something you press. A switch shows its
+   state by POSITION, which is the convention every other setting on the phone uses, so
+   it reads at a glance instead of being parsed.
+   One rule for all four (quality-auto, cellular downloads, relay, recently-added)
+   because they all carry class `toggle`.
+
+   The knob is ::after on the button itself rather than a nested span: these are plain
+   <button role='switch'> elements and adding a child would mean touching four call
+   sites to say the same thing four times.
+
+   SIZE IS A TAP TARGET, not a look. 3.2rem x 1.9rem keeps the hit area at roughly 44px
+   on a phone, which is the floor below which a thumb starts missing. */
 .toggle {
-  flex: none; min-width: 3.4rem; padding: .4rem .9rem; border-radius: 9999px;
-  font-size: .82rem; font-weight: 600;
-  background: var(--color-surface-input); border: 1px solid var(--color-border);
-  color: var(--color-text-secondary);
+  flex: none; position: relative; box-sizing: border-box;
+  width: 3.2rem; height: 1.9rem; padding: 0; border-radius: 9999px;
+  background: var(--color-track); border: 1px solid var(--color-border);
+  transition: background-color .18s ease, border-color .18s ease;
+  cursor: pointer;
 }
-.toggle.on { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-text-on-primary); }
+.toggle::after {
+  content: ''; position: absolute; top: 50%; left: .18rem;
+  width: 1.42rem; height: 1.42rem; border-radius: 50%;
+  background: var(--color-surface-elevated);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  transform: translateY(-50%);
+  transition: transform .18s ease, background-color .18s ease;
+}
+.toggle.on { background: var(--color-primary); border-color: var(--color-primary); }
+/* Travel = track width - knob - both insets. Kept as one number so the knob lands the
+   same distance from the right edge as it starts from the left. */
+.toggle.on::after { transform: translateY(-50%) translateX(1.24rem); background: var(--color-text-on-primary); }
+/* A switch is small and easy to miss on a tap, so it presses visibly. */
+.toggle:active::after { width: 1.55rem; }
+.toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+/* The slide is decoration; the state change is not. With motion reduced the knob still
+   moves, it just arrives immediately. */
+@media (prefers-reduced-motion: reduce) {
+  .toggle, .toggle::after { transition: none; }
+}
 
 .scanner { position: relative; min-height: 100vh; background: #000; }
 .scanner video { width: 100%; height: 100vh; object-fit: cover; }
