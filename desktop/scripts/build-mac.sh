@@ -55,10 +55,19 @@ echo ">> Syncing repo to $MAC_HOST:$REMOTE_DIR"
 # All of it untracked, none of it referenced anywhere in this build. Adding a
 # large build artifact somewhere new will quietly cost time here again, so if the
 # sync starts feeling slow, look at the file list before blaming the network.
+#
+# ONE EXCEPTION, and it must stay one: desktop/vendor is excluded because prepack.js
+# regenerates it on the Mac - but vendor/ffmpeg is NOT regenerated, it is built by
+# scripts/ffmpeg/build.sh over here. Excluding it wholesale meant the Mac never
+# received the binaries and electron-builder happily produced a .dmg with no ffmpeg
+# in it, which is the silent bug this whole change exists to kill. The two --include
+# lines go BEFORE the exclude because rsync takes the first rule that matches.
 rsync -az --checksum \
   --exclude='.git' \
   --exclude='node_modules' \
   --exclude='desktop/node_modules' \
+  --include='desktop/vendor/' \
+  --include='desktop/vendor/ffmpeg/***' \
   --exclude='desktop/vendor' \
   --exclude='desktop/dist' \
   --exclude='android' \
@@ -123,6 +132,11 @@ ASC_KEY_ID="${ASC_KEY_ID:-}" ASC_ISSUER_ID="${ASC_ISSUER_ID:-}" ASC_TEAM_ID="${A
   # Always npm install: near-instant when satisfied, and a guard would silently
   # ship a stale tree when a dep is added. postinstall re-vendors host/.
   npm install --no-audit --no-fund
+  # Checked HERE, on the machine that actually packs the .dmg, not only on the caller.
+  # The binaries reach this box by rsync and survive prepack only because prepack no
+  # longer wipes all of vendor/ - two things that can each break quietly, so the guard
+  # sits where the installer is produced.
+  node scripts/ffmpeg/require-binaries.js mac
   ./node_modules/.bin/electron-builder --mac --arm64 --x64 --publish never 2>&1 | tail -60
   setopt nullglob 2>/dev/null || true
   dmgs=(dist/*.dmg)

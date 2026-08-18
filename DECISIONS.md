@@ -8,6 +8,78 @@ Append-only, newest on top. See Constitution §4.
 > maintainer's own scratch, and the pointers are kept as written rather than rewritten after
 > the fact, because this file is append-only.
 
+## 2026-08-18 - The desktop installers bundle their own ffmpeg, built audio-only and LGPL
+Tier: T1 (packaging and a host resolution path; no wire or storage change). The capability
+negotiation this feeds - `caps.timeOffset`, gated on `hasFfmpeg()` - already exists to describe
+hosts with and without a transcoder, so a desktop host gaining one is that mechanism working
+rather than a cross-peer change.
+
+THE GAP. host/Dockerfile has baked in a static ffmpeg since image 0.2.45, so Umbrel and Start9
+hosts transcode. A DESKTOP install never got one: nothing in desktop/package.json bundled a
+binary, nothing set PEARTUNE_FFMPEG, and host/transcode.js read `PEARTUNE_FFMPEG || 'ffmpeg'` -
+a bare PATH lookup that a normal Mac or Windows machine fails. So every transcode from a desktop
+host did nothing. And nothing errors: transcode.js degrades to raw bytes on purpose, so a format
+the phone cannot decode arrives whole and plays as nothing, which the UI renders as "paused"
+forever. The 2026-08-14 .wma bug, on every desktop library there is, and the same morning's PR
+#380 widened it to .ogg on iOS.
+
+I FIRST FRAMED THIS AS "brew install ffmpeg on the mac-mini" AND TIM CORRECTED IT. That fixes one
+machine, his, and leaves every other desktop user broken. He also remembered bundling work having
+been done - correctly, but in pearcinema, which vendors per-platform binaries for its desktop
+packaging and refuses GPL ones on purpose. PearTune had inherited the container half of that idea
+and never the desktop half. The correction turned a one-command workaround into the actual fix.
+
+AUDIO-ONLY, BUILT FROM SOURCE, and the numbers are why. pearcinema's ready-made BtbN LGPL builds
+are ~110MB each for Linux and Windows, because they are general-purpose and carry every video
+codec. PearTune's desktop installers are 100-175MB today, so reusing those would have roughly
+doubled the Windows (129MB) and Linux .deb (100MB) downloads to ship code a music app can never
+execute. Enumerating only the demuxers/decoders host/adapters/folder.js indexes and the
+encoders/muxers host/transcode.js emits gives 3.8-5.0MB per platform - about 21x smaller. Tim
+chose this over the fast path knowing it cost more work.
+
+LGPL IS A REQUIREMENT, NOT A PREFERENCE. PearTune is MIT and these binaries ship INSIDE the
+installer, so a GPL ffmpeg would drag copyleft across the app - the same reason CLAUDE.md refuses
+the holesail packages. lame is LGPL and opus is BSD, so libmp3lame + libopus need no
+`--enable-gpl`. Asserted on the ARTIFACT rather than the flags, in two places: the build refuses
+to emit a binary whose own `-version` banner reports `--enable-gpl` or `--enable-nonfree`, and
+check.sh re-asserts it per binary afterwards.
+
+RESOLUTION, in host/ffmpeg-bin.js: explicit PEARTUNE_FFMPEG (trusted verbatim, an operator
+outranks our guess), then a bundled binary relative to the host's own location, then PATH. The
+packaged candidate deliberately walks OUT of app.asar, because a binary inside an asar cannot be
+spawned - electron-builder stages it beside the archive instead. That arithmetic is one `..` away
+from silently degrading to PATH, so it is pinned by a test against the real packaged layout.
+
+THREE SILENT TRAPS FOUND WHILE BUILDING IT, each of which alone would have shipped the bug back:
+  - prepack.js wiped ALL of desktop/vendor/ before re-vendoring host/. vendor/ffmpeg is BUILT,
+    not copied, so the wipe deleted it every time - locally right after building it, and on the
+    Mac between the rsync and the pack. Now it wipes only the three directories it owns.
+  - build-mac.sh excluded desktop/vendor from its rsync, so the Mac that actually packs the .dmg
+    never received the binaries. Two --include lines, placed BEFORE the exclude because rsync
+    takes the first matching rule.
+  - electron-builder treats a missing extraResources source as a WARNING. A fresh clone has no
+    binaries (they are gitignored), so the build would have succeeded and shipped an installer
+    that cannot transcode. scripts/ffmpeg/require-binaries.js now refuses, reading what to demand
+    from package.json so the two cannot drift, and rejecting a truncated binary as well as an
+    absent one.
+
+NOT COMMITTED: ~17MB across four platforms, and a fresh copy per ffmpeg bump would sit in history
+forever. Rebuilt per ffmpeg VERSION rather than per release, and they persist on disk between
+releases. Same call pearcinema made. The guard above is what makes that safe.
+
+VERIFIED BY RUNNING, NOT BY LOOKING. Each binary was exercised on its own platform against all
+eight formats the scanner indexes - linux natively, both darwin slices on the mac-mini, win32-x64
+on a real Windows 10.0.26200 box Tim booted for it (wine agreed beforehand, and is the fallback
+in check.sh). 32 conversions, all non-empty, all LGPL clean. Then end to end: electron-builder
+packed the app, the binary landed at resources/ffmpeg/linux-x64/ffmpeg and ran, ffmpeg-bin.js
+resolved to exactly that path from the real packed app.asar layout, and host/transcode.js turned
+a .wma into 24494 bytes of mp3 through it. Both new guards were also reverted deliberately and
+confirmed to fail before being restored.
+
+STILL OPEN: the Mac desktop host currently RUNNING on the mac-mini predates this and has no
+ffmpeg, so Tim's own library keeps the bug until it is rebuilt and reinstalled from this branch.
+Logged in TODO.md.
+
 ## 2026-08-18 - iOS has no Vorbis decoder, so .ogg joins the transcode list
 Tier: T1 (a playback-policy correction with a measurement behind it).
 

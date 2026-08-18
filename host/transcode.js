@@ -7,12 +7,16 @@
 // for video only). So a seek into a server-backed transcode runs through HERE: fetch
 // the upstream ORIGINAL, decode locally, start at the target.
 //
-// `PEARTUNE_FFMPEG` overrides the binary (a bundled static build, or a nonstandard
-// path); otherwise whatever `ffmpeg` is on PATH - same contract folder.js always had.
+// WHERE THE BINARY COMES FROM lives in ./ffmpeg-bin.js, because there are three
+// deployments and only two of them have ffmpeg on PATH. `PEARTUNE_FFMPEG` still
+// overrides everything; otherwise a binary bundled into a desktop install is used
+// before falling back to PATH. Read once at load, so the require-cache dance in
+// test/folder.test.js still swaps it.
 
 const { spawn } = require('child_process')
+const { resolveFfmpeg } = require('./ffmpeg-bin')
 
-const FFMPEG = process.env.PEARTUNE_FFMPEG || 'ffmpeg'
+const FFMPEG = resolveFfmpeg()
 
 const TRANSCODE = {
   mp3: { codec: 'libmp3lame', container: 'mp3' },

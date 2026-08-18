@@ -1,3 +1,13 @@
 node_modules/
 dist/
+# vendor/ is entirely generated: scripts/prepack.js copies host/, client/ and
+# protocol/ in, and scripts/ffmpeg/build.sh drops the bundled ffmpeg binaries into
+# vendor/ffmpeg/. Nothing in here is source.
+#
+# The ffmpeg binaries are ~17MB across four platforms and are rebuilt only when the
+# pinned ffmpeg version changes, so keeping them out of history costs a rebuild per
+# VERSION rather than per release. What that risks is packaging an installer with no
+# binary in it, silently restoring the bug the bundling exists to fix - so the build
+# scripts REFUSE to package without them. Provenance and the LGPL requirement are
+# recorded in scripts/ffmpeg/README.md, which is tracked.
 vendor/

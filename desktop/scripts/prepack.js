@@ -32,11 +32,23 @@ function copyDir (from, to) {
   }
 }
 
-function main () {
-  // Wipe vendor/ first so removed/renamed source doesn't linger in a build.
-  if (fs.existsSync(vendorDir)) fs.rmSync(vendorDir, { recursive: true })
+const VENDORED = ['protocol', 'client', 'host']
 
-  for (const dir of ['protocol', 'client', 'host']) {
+function main () {
+  // Wipe what we are about to re-copy, so removed/renamed source doesn't linger in a
+  // build - but ONLY that, not all of vendor/.
+  //
+  // This used to `rmSync(vendorDir)` wholesale, which was fine while vendor/ held
+  // nothing but copies. vendor/ffmpeg is different: it is BUILT by
+  // scripts/ffmpeg/build.sh, not copied from anywhere, and on the Mac it arrives by
+  // rsync before npm install runs. A blanket wipe deleted it every single time -
+  // locally right after building it, and remotely between the rsync and the pack.
+  for (const dir of VENDORED) {
+    const d = path.join(vendorDir, dir)
+    if (fs.existsSync(d)) fs.rmSync(d, { recursive: true })
+  }
+
+  for (const dir of VENDORED) {
     const from = path.join(repoRoot, dir)
     if (!fs.existsSync(from)) {
       console.error(`[prepack] missing ${dir} at ${from}`)
