@@ -83,6 +83,16 @@ function selectAsset (assets, { platform = process.platform, arch = process.arch
   }
 }
 
+// The version baked into an artifact's filename, or null if there isn't one. Every
+// name from release.sh step 5b carries it: PearTune-1.0.1.AppImage,
+// peartune-desktop_1.0.1_amd64.deb, PearTune-Setup-1.0.1.exe, PearTune-1.0.1.dmg,
+// PearTune-1.0.1-arm64.dmg. The `-arm64` suffix is not a version, hence the
+// three-part match rather than anything looser.
+function versionInName (name) {
+  const m = String(name || '').match(/(\d+\.\d+\.\d+)/)
+  return m ? m[1] : null
+}
+
 // Turn an update (from update-check.js) plus the release's assets into "what will
 // happen". Pure, and it throws rather than returning something half-usable.
 function planApply (update, assets, opts = {}) {
@@ -91,6 +101,31 @@ function planApply (update, assets, opts = {}) {
   if (!picked) throw new Error(`no asset for this platform (${opts.platform || process.platform}/${opts.arch || process.arch})`)
   if (!picked.url) throw new Error(`asset ${picked.name} has no download url`)
   if (!picked.sha256Url) throw new VerifyError(`asset ${picked.name} has no .sha256 sidecar - refusing to apply an unverifiable download`)
+
+  // DOES THE ARTIFACT ACTUALLY CARRY THE VERSION WE ARE CLAIMING TO INSTALL?
+  // selectAsset matches on SHAPE (/\.AppImage$/ and friends) and knows nothing
+  // about versions, so a release that tags a new version while carrying the old
+  // desktop artifacts makes it return the build you are already running.
+  //
+  // Not hypothetical - it is the state of the published releases right now. v1.0.1
+  // (2026-08-17) bumped only the Android artifacts and re-attached the SAME
+  // PearTune-1.0.0.AppImage, .dmg, .exe and .deb. Checked against the real asset
+  // list, every one of the five platform/arch combinations planned an apply that
+  // announced "1.0.1" and handed back a 1.0.0 file. The user would be told the
+  // update succeeded, still be on 1.0.0, and be offered 1.0.1 again on the next
+  // check - forever, with the bytes verifying perfectly every time, because the
+  // sha256 of the wrong artifact is still the sha256 of that artifact.
+  //
+  // So refuse. A release with no build for this platform is a normal thing to say
+  // out loud; silently reinstalling the current version and calling it an upgrade
+  // is not.
+  const assetVersion = versionInName(picked.name)
+  if (update.latest && assetVersion && assetVersion !== update.latest) {
+    throw new NeedsManualError(
+      `release ${update.latest} has no build for this platform - its ${picked.name} is still ${assetVersion}. ` +
+      'Applying it would reinstall the version you are already running.'
+    )
+  }
 
   const platform = opts.platform || process.platform
   const applier = platform === 'win32' ? 'windows'

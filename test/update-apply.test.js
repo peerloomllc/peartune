@@ -488,6 +488,57 @@ test('the picker handles the REAL release artifact names', () => {
   }
 })
 
+test('a release that carries STALE desktop artifacts is refused, not silently reinstalled', () => {
+  // The exact shape of the published v1.0.1 (2026-08-17): the tag moved to 1.0.1 and the
+  // Android artifacts were rebuilt, but the desktop ones are still the 1.0.0 files. Since
+  // selectAsset matches on shape and not on version, it hands back the build the user is
+  // ALREADY RUNNING. Without the guard every platform planned an apply announcing "1.0.1"
+  // while downloading a 1.0.0 file - and it would verify perfectly, because the sha256 of
+  // the wrong artifact is still the sha256 of that artifact. The user is told the update
+  // worked, stays on 1.0.0, and gets offered 1.0.1 again forever.
+  const update = { available: true, latest: '1.0.1', current: '1.0.0' }
+  const stale = REAL_ASSETS.filter(a => !/\.(apk|aab)(\.sha256)?$/i.test(a.name))
+  const cases = [
+    { platform: 'linux', arch: 'x64', appImage: '' },
+    { platform: 'linux', arch: 'x64', appImage: '/opt/PearTune.AppImage' },
+    { platform: 'win32', arch: 'x64' },
+    { platform: 'darwin', arch: 'arm64' },
+    { platform: 'darwin', arch: 'x64' }
+  ]
+  for (const opts of cases) {
+    assert.throws(
+      () => planApply(update, stale, opts),
+      (e) => e.code === 'NEEDS_MANUAL' && /still 1\.0\.0/.test(e.message),
+      `${opts.platform}/${opts.arch} must refuse a 1.0.0 artifact offered as 1.0.1`
+    )
+  }
+})
+
+test('a release whose artifacts DO carry the new version still applies', () => {
+  // The guard must not turn into a blanket refusal - that would break every real update.
+  const update = { available: true, latest: '1.0.1', current: '1.0.0' }
+  const assets = [
+    { name: 'PearTune-1.0.1.AppImage', browser_download_url: 'https://x/a' },
+    { name: 'PearTune-1.0.1.AppImage.sha256', browser_download_url: 'https://x/a.sha256' }
+  ]
+  const plan = planApply(update, assets, { platform: 'linux', arch: 'x64', appImage: '/opt/PearTune.AppImage' })
+  assert.equal(plan.name, 'PearTune-1.0.1.AppImage')
+  assert.equal(plan.version, '1.0.1')
+  assert.equal(plan.applier, 'appimage')
+})
+
+test('an artifact with no version in its name is allowed through', () => {
+  // Only refuse on a version we can actually read AND that disagrees. An unparseable
+  // name is not evidence of staleness, and treating it as such would block a rename.
+  const update = { available: true, latest: '1.0.1', current: '1.0.0' }
+  const assets = [
+    { name: 'PearTune.AppImage', browser_download_url: 'https://x/a' },
+    { name: 'PearTune.AppImage.sha256', browser_download_url: 'https://x/a.sha256' }
+  ]
+  const plan = planApply(update, assets, { platform: 'linux', arch: 'x64', appImage: '/opt/PearTune.AppImage' })
+  assert.equal(plan.name, 'PearTune.AppImage')
+})
+
 test('no real desktop artifact is ever a phone build', () => {
   const update = { available: true, latest: '1.0.0', current: '0.9.9' }
   for (const p of ['win32', 'linux', 'darwin']) {
