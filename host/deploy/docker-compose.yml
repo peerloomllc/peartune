@@ -18,7 +18,7 @@
 
 services:
   peartune-host:
-    image: ghcr.io/peerloomllc/peartune-host:0.2.50@sha256:893ff8bccdfa297b919584c93fbf8831f8555dc9f6fbd2216b2e94d84b7b9db0
+    image: ghcr.io/peerloomllc/peartune-host:0.2.51@sha256:1dfc27fe8aa4e8c6a7ad76abea0860c049239756d78b25cbd79536a64d46b94e
     container_name: peartune-host
     restart: unless-stopped
     stop_grace_period: 1m

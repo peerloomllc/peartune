@@ -58,19 +58,14 @@ support: https://github.com/peerloomllc/peartune/issues
 gallery: []
 releaseNotes: |-
   New
-  - Play your music on the Google and Home Assistant speakers around your home.
-  - Voice control through Home Assistant: say "Okay Nabu, play Led Zeppelin", or name a room, like "put on Metallica in the kitchen".
-  - Songs in .wma and .aiff formats now play, streamed or downloaded for offline.
+  - Music on a USB drive plugged into your Umbrel now shows up when you choose your music folder.
   Improvements
-  - Song lengths show right away when listening away from home.
-  - Jumping around inside a song now works when listening away from home.
-  - Download is easier to reach: long-press any album or track, anywhere in the app.
-  - Clearer messages when a library cannot be reached or read, instead of it just looking empty.
+  - Songs from Jellyfin and Subsonic libraries start playing sooner.
+  - If the person running a library switches where their music comes from, the app now tells you and reloads on its own. Before, it showed an error screen and needed a full restart.
   Fixes
-  - Playback that hits a bad patch of network picks itself back up instead of stopping.
-  - Music no longer goes silent when the next song starts while the app is in the background.
-  - The lock screen play button no longer ends a speaker cast by accident.
-  - Leaving speaker casting hands playback back to the phone properly, and speakers that cannot be reached stay out of the list.
+  - Fixed a crash that could stop your music. Having the library dashboard open while a song played could shut the server down partway through the track.
+  - Installing or updating PearTune on an Umbrel no longer fails partway.
+  - The update prompt no longer offers an update that would leave you exactly where you started. If a new version has no build for your computer, it now says so plainly instead of appearing to update and changing nothing.
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the

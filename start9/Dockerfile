@@ -6,7 +6,7 @@
 # selects the right arch layer from the base image's multi-arch manifest; the
 # s9pk packer expects the built tar tagged start9/<id>/main:<version> (see
 # scripts/build-image-tar.sh).
-FROM ghcr.io/peerloomllc/peartune-host:0.2.50@sha256:893ff8bccdfa297b919584c93fbf8831f8555dc9f6fbd2216b2e94d84b7b9db0
+FROM ghcr.io/peerloomllc/peartune-host:0.2.51@sha256:1dfc27fe8aa4e8c6a7ad76abea0860c049239756d78b25cbd79536a64d46b94e
 
 # The published image is node:20-bookworm-slim (Debian), which has no init. tini
 # reaps children and propagates signals so `systemctl`/StartOS stop is clean.
