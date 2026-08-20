@@ -1348,18 +1348,39 @@ export default function App () {
     else if (view === 'songs') { setSongs(null); setSongCursor(0); loadSongs(0, params) }
   }
 
+  // Returns whether the page landed. Only the infinite-scroll path reads that (see
+  // moreAlbums): a failed page has to fall back to a button, because an observer that
+  // has already fired will not fire again on its own.
   async function loadAlbums (from, params) {
     try {
       const page = await call('albums', { cursor: from, limit: 60, libraryId: filterRef.current, ...(params ?? sortParams('albums')) })
       setAlbums(a => (from ? [...a, ...page.items] : page.items))
       setCursor(page.nextCursor)
       setAlbumsLoaded(true)
+      return true
     } catch (e) {
       setError(e.message)
       // Loaded means "we have an answer", including a bad one. Leaving it false
       // would spin skeletons forever behind the error.
       setAlbumsLoaded(true)
+      return false
     }
+  }
+
+  // The album grid pages itself as you scroll (MoreAlbums), so nothing here is tied to a
+  // tap. Two guards make that safe. The in-flight one, because the observer can ask again
+  // before a page lands and two loads from the same cursor would append the same 60 albums
+  // twice. And the failure one, because without a button there would otherwise be no way
+  // back from a page that errored.
+  const moreBusy = useRef(false)
+  const [moreFailed, setMoreFailed] = useState(false)
+  async function moreAlbums () {
+    if (moreBusy.current || cursor == null) return
+    moreBusy.current = true
+    setMoreFailed(false)
+    try {
+      if (!await loadAlbums(cursor)) setMoreFailed(true)
+    } finally { moreBusy.current = false }
   }
 
   // The host went away (revoked, rebooted, or the Umbrel is simply off). Paired
@@ -2812,7 +2833,8 @@ export default function App () {
         onSearch={runSearch}
         onReconnect={reconnect}
         onRefresh={refresh}
-        onMore={() => loadAlbums(cursor)}
+        onMore={moreAlbums}
+        moreFailed={moreFailed}
         onMoreSongs={() => loadSongs(songCursor)}
         onOpenAlbum={(id) => push({ type: 'album', id })}
         onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
@@ -3483,6 +3505,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 
 function Library ({
   state, albums, artists, genres, songs, recent, showRecent, merged, filter, onFilter, onAddLibrary, cursor, songCursor, density, updating,
+  moreFailed,
   browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting, firstConnect,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
@@ -3884,7 +3907,7 @@ function Library ({
                           and on its own at the top of the page it would be a label for nothing. */}
                       {shelfShown && <div className='grid-head'>All albums</div>}
                       <Grid albums={albums} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} favs={favs} onFav={onFav} />
-                      {cursor != null && <button className='more' onClick={onMore}>Load more</button>}
+                      <MoreAlbums cursor={cursor} onMore={onMore} failed={moreFailed} d={D} />
                     </>
                     )
                   : <Empty reachable={reachable} onRetry={onReconnect} all={allScope} connecting={connecting} loading={updating} />}
@@ -4681,6 +4704,44 @@ function count (browse, { albums, artists, genres, songs }) {
 // A grid of the right SHAPE, greyed and breathing, rather than the word
 // "Loading…" in the middle of an empty screen. The tiles are exactly the size the
 // covers will be, so nothing jumps when they arrive.
+// The tail of the album grid: it fetches the next page itself as you approach it, so a
+// library of any size is just a long scroll and there is no button to press (Tim,
+// 2026-08-19 - he hit the button repeatedly on a real library and asked for it gone).
+//
+// RE-OBSERVING ON EVERY CURSOR CHANGE IS THE WHOLE TRICK. An IntersectionObserver fires
+// on a CHANGE of intersection, not while intersecting - so a sentinel that stays on
+// screen (a short page, a fast host, a wide grid) would fire once and then stall
+// forever with the rest of the library unfetched. Tearing the observer down and building
+// a new one per page re-delivers the current state, so it keeps pulling until the page
+// is long enough to push the sentinel away.
+//
+// The skeleton row is not decoration either: it gives the sentinel something to sit
+// under, so "there is more" reads the same way the first load does.
+function MoreAlbums ({ cursor, onMore, failed, d }) {
+  const ref = useRef(null)
+  const live = typeof IntersectionObserver !== 'undefined' && !failed
+  useEffect(() => {
+    const el = ref.current
+    if (!el || cursor == null || !live) return
+    // A screenful of margin, so the next rows have usually landed before they are
+    // scrolled to and the grid never visibly stops.
+    const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) onMore() }, { rootMargin: '600px 0px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [cursor, live, onMore])
+  if (cursor == null) return null
+  // A page that failed (or a runtime with no observer) keeps the old button. Nothing has
+  // moved, so the observer will not ask again by itself, and silently showing no more
+  // albums would read as the end of the library rather than as an error.
+  if (!live) return <button className='more' onClick={onMore}>Load more</button>
+  return (
+    <>
+      <div ref={ref} className='more-sentinel' aria-hidden='true' />
+      <SkeletonGrid d={d} n={Math.max(2, d.cols)} />
+    </>
+  )
+}
+
 function SkeletonGrid ({ round, n = 6, d = DENSITY[2] }) {
   const list = d.cols === 1
   return (
