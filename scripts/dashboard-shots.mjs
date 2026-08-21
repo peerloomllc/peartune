@@ -19,7 +19,20 @@ import WebSocket from 'ws'
 const BASE = process.argv[2] || 'http://127.0.0.1:18741'
 const OUTDIR = process.argv[3] || 'docs/img'
 const PORT = 9333
-const VIEWPORT = { width: 1280, height: 900 }
+// Docs shots are 1280x900 at 1x. The Umbrel store gallery wants 16:10 at 2x (the
+// official-store images are 2880x1800), so both are env-driven rather than forked into
+// a second script: SHOT_W=1440 SHOT_H=900 SHOT_DPR=2.
+const VIEWPORT = {
+  width: Number(process.env.SHOT_W) || 1280,
+  height: Number(process.env.SHOT_H) || 900,
+}
+// devicePixelRatio is a SIBLING of `viewport` in browsingContext.setViewport, not a field
+// inside it. Nesting it is accepted silently and does nothing, which shows up as a 1x
+// screenshot from a run that looked like it worked.
+const DPR = Number(process.env.SHOT_DPR) || 1
+// A host with a password shows the login page instead of the dashboard, and every wait
+// below would then time out looking for content that is one form away. SHOT_PW fills it.
+const PASSWORD = process.env.SHOT_PW || ''
 
 mkdirSync(OUTDIR, { recursive: true })
 
@@ -109,13 +122,32 @@ try {
 
   const { contexts } = await send('browsingContext.getTree', {})
   const ctx = contexts[0].context
-  await send('browsingContext.setViewport', { context: ctx, viewport: VIEWPORT })
+  await send('browsingContext.setViewport', { context: ctx, viewport: VIEWPORT, devicePixelRatio: DPR })
 
   console.log(`navigating to ${BASE}`)
   await send('browsingContext.navigate', { context: ctx, url: BASE, wait: 'complete' })
 
   // The placeholder is literally the string below, so waiting for its absence is the
   // honest check that real host data arrived - not a guess at a settle time.
+  // Log in first if this host has a password. The login page is a single input plus a
+  // button (host/ui/login.js), and it REPLACES the dashboard, so this has to happen
+  // before any wait for dashboard content.
+  const onLogin = await evaluate(ctx, '!!document.querySelector("input[type=password]") && !document.querySelector(".prow")')
+  if (onLogin) {
+    if (!PASSWORD) throw new Error('the host asked for a password - set SHOT_PW')
+    await evaluate(ctx, `
+      (() => {
+        const input = document.querySelector('input[type=password]')
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        setter.call(input, ${JSON.stringify(PASSWORD)})
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        document.querySelector('button').click()
+        return true
+      })()
+    `)
+    await sleep(1200)
+  }
+
   await waitFor(ctx, '!document.body.innerText.includes("Connecting to the host")', 'host data')
   await sleep(600) // let art and avatars paint
 

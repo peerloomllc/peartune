@@ -11,9 +11,11 @@ category: media
 # build-image.sh stamps it from app.json's version on every synced release; the
 # out-of-band bumps past 1.0.0 (1.0.1 catch-up, 1.0.2 wma host, 1.0.3 for the
 # 0.2.46 seekable-transcode host) exist so installs get offered host updates between
-# app releases. The NEXT app release must version past 1.0.3 or its store sync ships
-# to nobody -
-# build-image.sh warns out loud when that collision happens.
+# app releases. THE LIVE LISTING IS AHEAD OF THIS LINE: the store repo is at 1.0.5
+# (1.0.4 host 0.2.49 + USB drives, 1.0.5 the urgent compose fix), because those bumps
+# were made in the store checkout and never synced back here. So the NEXT app release
+# must version past 1.0.5, not past the literal below, or its store sync ships to
+# nobody - build-image.sh warns out loud when that collision happens.
 version: "1.0.3"
 port: 8741
 description: >-
@@ -55,7 +57,14 @@ website: https://peerloomllc.com
 dependencies: []
 repo: https://github.com/peerloomllc/peartune
 support: https://github.com/peerloomllc/peartune/issues
-gallery: []
+# Full URLs for the same reason `icon:` is one: umbrelOS maps bare filenames to the
+# OFFICIAL-apps gallery CDN, which 404s for a community-store app. 2880x1800, which is
+# what the official store serves for Navidrome, Jellyfin and Immich. Captured by
+# scripts/dashboard-shots.mjs (SHOT_W=1200 SHOT_H=750 SHOT_DPR=2.4).
+gallery:
+  - https://peerloomllc.com/assets/gallery-peartune-1.jpg
+  - https://peerloomllc.com/assets/gallery-peartune-2.jpg
+  - https://peerloomllc.com/assets/gallery-peartune-3.jpg
 releaseNotes: |-
   Improvements
   - The on/off controls in Settings are now proper switches. You can see what is on at a glance from the position, instead of reading a word.
