@@ -20,6 +20,7 @@ const fsp = require('fs/promises')
 const path = require('path')
 
 const { AUDIO_EXT, visibleMounts } = require('./adapters/folder')
+const { entryKind } = require('./dirent')
 
 // Bounded, because a browse click must never turn into a walk of a 4TB disk. Both
 // caps are per DIRECTORY we report on, and hitting either just means we stop looking
@@ -40,12 +41,17 @@ async function hasAudio (dir, budget = { entries: PROBE_MAX_ENTRIES }, depth = 0
     return false
   }
 
+  // A symlinked folder is neither isDirectory() nor isFile() to readdir, so the
+  // picker used to show a linked music folder with no "has music" mark - or, for a
+  // linked album, not show it at all. See host/dirent.js and issue #390. A link
+  // cycle cannot run away here: the depth and entry budgets above bound it.
   const subdirs = []
   for (const e of entries) {
     if (budget.entries-- <= 0) return false
     if (e.name.startsWith('.')) continue
-    if (e.isFile() && isAudio(e.name)) return true // early exit: that is the question
-    if (e.isDirectory()) subdirs.push(path.join(dir, e.name))
+    const kind = await entryKind(dir, e)
+    if (kind === 'file' && isAudio(e.name)) return true // early exit: that is the question
+    if (kind === 'dir') subdirs.push(path.join(dir, e.name))
   }
 
   for (const sub of subdirs) {
@@ -76,8 +82,11 @@ async function browse (target = '/') {
     throw new Error(`${dir} cannot be read inside the PearTune container.`)
   }
 
+  const kinds = new Map()
+  for (const e of entries) kinds.set(e.name, await entryKind(dir, e))
+
   const kids = entries
-    .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+    .filter(e => kinds.get(e.name) === 'dir' && !e.name.startsWith('.'))
     .map(e => e.name)
     .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true }))
 
@@ -92,7 +101,7 @@ async function browse (target = '/') {
     parent: dir === '/' ? null : path.dirname(dir),
     // Audio sitting directly in this directory, which is what makes "Use this
     // folder" meaningful when you are already standing in the album.
-    here: entries.filter(e => e.isFile() && isAudio(e.name)).length,
+    here: entries.filter(e => kinds.get(e.name) === 'file' && isAudio(e.name)).length,
     dirs,
     // Named so a first-time operator, staring at a filesystem they did not expect,
     // has something to click.
