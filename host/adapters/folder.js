@@ -25,6 +25,7 @@ const path = require('path')
 const crypto = require('crypto')
 const { Readable } = require('stream')
 
+const { entryKind } = require('../dirent')
 const { trackId, groupId } = require('../../protocol/ids')
 const { TRACK_CMP, ALBUM_CMP, ARTIST_CMP, GENRE_CMP, FULL_SORTS, sortRows } = require('./sort')
 
@@ -221,7 +222,17 @@ class FolderAdapter {
     return { tracks: count }
   }
 
-  async _walk (dir, out) {
+  // `seen` holds the RESOLVED path of every directory already walked, and it is
+  // load-bearing now that links are followed: a link pointing at one of its own
+  // ancestors is a cycle, and without this the walk would recurse until the stack
+  // gave out. It costs one realpath() per directory, against a readdir() we were
+  // paying anyway. Fresh per root, so two roots that overlap still each contribute
+  // their files - that is what the per-root tag in sourceKey is for.
+  async _walk (dir, out, seen = new Set()) {
+    const real = await fsp.realpath(dir).catch(() => dir)
+    if (seen.has(real)) return
+    seen.add(real)
+
     let entries
     try {
       entries = await fsp.readdir(dir, { withFileTypes: true })
@@ -231,11 +242,15 @@ class FolderAdapter {
     for (const e of entries) {
       if (e.name.startsWith('.')) continue // .git, .Trash-1000, macOS ._ resource forks
       const abs = path.join(dir, e.name)
-      if (e.isDirectory()) {
-        await this._walk(abs, out)
+      // Not e.isDirectory()/e.isFile() directly: those describe a symlink as
+      // NEITHER, which silently lost linked albums and linked tracks. See
+      // host/dirent.js and issue #390.
+      const kind = await entryKind(dir, e)
+      if (kind === 'dir') {
+        await this._walk(abs, out, seen)
         continue
       }
-      if (!e.isFile()) continue
+      if (kind !== 'file') continue
       if (!AUDIO_EXT.has(path.extname(e.name).toLowerCase())) continue
       out.push(abs)
     }
@@ -743,7 +758,13 @@ class FolderAdapter {
     } catch {
       return null
     }
-    const images = entries.filter(e => e.isFile() && COVER_EXT.includes(path.extname(e.name).toLowerCase()))
+    // A linked cover.jpg is a file to everyone except readdir, which calls it a
+    // symlink and so answers false to isFile(). Same trap as _walk (issue #390).
+    const images = []
+    for (const e of entries) {
+      if (!COVER_EXT.includes(path.extname(e.name).toLowerCase())) continue
+      if (await entryKind(dir, e) === 'file') images.push(e)
+    }
     if (!images.length) return null
 
     for (const stem of COVER_STEMS) {
@@ -804,10 +825,16 @@ const SYSTEM_DIRS = new Set([
 async function visibleMounts () {
   try {
     const entries = await fsp.readdir('/', { withFileTypes: true })
-    return entries
-      .filter(e => e.isDirectory() && !e.name.startsWith('.') && !SYSTEM_DIRS.has(e.name))
-      .map(e => '/' + e.name)
-      .sort()
+    const out = []
+    for (const e of entries) {
+      if (e.name.startsWith('.') || SYSTEM_DIRS.has(e.name)) continue
+      // Some distributions ship /lib and friends as links, and a bind-mounted
+      // music disk can arrive as one too. readdir calls a link neither directory
+      // nor file, so ask what it points at (issue #390).
+      if (await entryKind('/', e) !== 'dir') continue
+      out.push('/' + e.name)
+    }
+    return out.sort()
   } catch {
     return []
   }
