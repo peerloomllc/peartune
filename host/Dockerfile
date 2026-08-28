@@ -61,6 +61,30 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && /usr/local/bin/ffmpeg -hide_banner -version | head -1
 
+# WHAT THIS IMAGE IS, in the labels the registry reads.
+#
+# `org.opencontainers.image.source` is the one that does work rather than decorate:
+# GitHub links a container package to a repository from it, and without it the package
+# floats unattached. That is why
+# github.com/peerloomllc/peartune/pkgs/container/peartune-host returns 404 while the
+# image itself is public and pullable - the package exists, it just belongs to nothing.
+# Found while sweeping PearCinema, which had the identical gap.
+#
+# Linking also gives the package page this repo's README instead of a bare listing, puts
+# it in the repo sidebar, and lets it inherit the repo's visibility rather than carrying
+# its own.
+#
+# A LABEL ONLY REACHES THE REGISTRY ON THE NEXT PUSH, so this fixes nothing until the
+# next host image ships.
+#
+# No version label: the tag and the digest already carry that, and a hardcoded one here
+# would be a second place to forget.
+LABEL org.opencontainers.image.source="https://github.com/peerloomllc/peartune" \
+      org.opencontainers.image.url="https://peerloomllc.com/peartune/" \
+      org.opencontainers.image.title="PearTune host" \
+      org.opencontainers.image.description="Serves a self-hosted music library to the PearTune apps over a direct encrypted peer-to-peer connection." \
+      org.opencontainers.image.licenses="MIT"
+
 WORKDIR /app
 
 # THE HOST'S OWN MANIFEST, not the repo root's. The root package.json is the
