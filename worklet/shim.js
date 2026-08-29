@@ -25,6 +25,7 @@
 // unloadable in a Node unit test - and the pure URL router (parseUrl) is exactly what we want to
 // test there. createAudioShim only runs on-device, where the addon is present.
 let http = null
+const { holdUntilDrained } = require('./backpressure')
 
 const RANGE = /^bytes=(\d*)-(\d*)$/
 // URL forms, single-host and merged (multi-host step 2, proposal 2026-07-19 §5):
@@ -136,6 +137,14 @@ function parseRange (header, size) {
 // local disk, so it skips the lease gate (nothing could have authorized it) and the art store's
 // one-size rule (there is no host to fetch a better size from). Defaults to false, which is
 // exactly the behaviour every real library has always had.
+// How much audio one wire request may ask for. The read used to be one open-ended request
+// for the whole range, which handed the host license to ship it at line speed into a queue
+// the player drains at 1x; a bounded window, with the next one requested only after the
+// player has drained what it holds, caps read-ahead at roughly a window plus what the
+// socket absorbs. 2 MB is 16 s of FLAC and nearly a minute of 320k MP3, so the gap between
+// windows never reaches the player, even off-LAN through the relay.
+const STREAM_WINDOW = 2 * 1024 * 1024
+
 function createAudioShim ({ log = () => {}, defaultClient = async () => null, quality = () => null, cache = null, artStore = null, leaseOk = () => true, hostless = () => false, hostClient = null, libForTrack = null, libForCover = null, altCopy = null, onRehost = null, audioGate = () => 'play', artLibrary = null }) {
   if (!http) http = require('bare-http1') // on-device only; see the note at the top of this file
   const meta = new Map() // trackId -> { size, mime }
@@ -326,13 +335,48 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
 
       // streamTo, NOT stream: accumulate nothing. The player asked for a window
       // of audio, not the whole album in RAM.
+      //
+      // AND THE READ IS WINDOWED, NOT OPEN-ENDED, WITH A DRAIN GATE BETWEEN WINDOWS.
+      // Until 2026-08-28 this was one request for the whole range whose chunks went into
+      // res.write() with the return value dropped, so a player draining slower than the
+      // host sent accumulated the difference in memory. Bounded by the range, so for audio
+      // the worst case was about one track resident; the same shape was fatal for
+      // PearCinema's films (see ./backpressure.js). The producer calls onchunk
+      // synchronously and cannot be paused mid-request, so the throttle is between
+      // windows: ask for the next only once the player has drained the last.
+      //
+      // A HANGUP STOPS THE LOOP. The gate releases on close (it must, or a hangup mid-wait
+      // parks it for ever), and the next thing it would do is ask for another window and
+      // write it into a dead response. `dead` is the one flag both read.
+      let dead = false
+      const hangup = () => { dead = true }
+      res.on('close', hangup)
+      res.on('error', hangup)
       let written = 0
+      // Pull [offset, offset+length) from `src` in windows, gated on the response (and the
+      // disk copy, whose queue is the same leak wearing a different hat), until it is all
+      // written or the response has gone. `written` is shared with the failover below,
+      // which splices in at exactly the byte this stopped on.
+      async function pump (src, id, offset, len, tee) {
+        let done = 0
+        while (done < len && !dead) {
+          const before = done
+          await src.streamTo({ trackId: id, offset: offset + done, length: Math.min(STREAM_WINDOW, len - done) }, (chunk) => {
+            if (dead) return
+            done += chunk.length
+            written += chunk.length
+            try { res.write(chunk) } catch { hangup() }
+            if (tee) tee.write(chunk)
+          })
+          // A window that resolves clean but moves nothing would loop for ever; treat it as
+          // the stream failure it is and let the teardown decide.
+          if (done === before && done < len) throw new Error('stream made no progress')
+          await holdUntilDrained(res, () => dead)
+          if (tee && tee.stream) await holdUntilDrained(tee.stream, () => dead)
+        }
+      }
       try {
-        await conn.streamTo({ trackId, offset: start, length }, (chunk) => {
-          written += chunk.length
-          res.write(chunk)
-          if (sink) sink.write(chunk)
-        })
+        await pump(conn, trackId, start, length, sink)
       } catch (e) {
         // MID-SONG FAILOVER (proposal 2026-07-27). The library we were streaming from just went
         // away - a revoke, a reboot, a dropped link. If ANOTHER paired library holds the same
@@ -348,15 +392,13 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
         // The cache entry can never be assembled from two sources: equal size is strong evidence,
         // not proof, of equal bytes, and a corrupt "complete" download outlives the playback.
         if (sink) sink.abort()
-        if (alt && alt.identical && written < length && hostClient) {
+        if (alt && alt.identical && written < length && hostClient && !dead) {
           const spliceAt = start + written // where the first host stopped; fixed before `written` grows again
           try {
             const conn2 = await hostClient(alt.libraryId)
             if (!conn2) throw new Error('no client for the fallback library')
-            await conn2.streamTo({ trackId: alt.id, offset: spliceAt, length: length - written }, (chunk) => {
-              res.write(chunk)
-            })
-            res.end()
+            await pump(conn2, alt.id, spliceAt, length - written, null)
+            if (!dead) res.end()
             log('shim:failover', {
               track: trackId.slice(0, 8),
               from: String(lib || '').slice(0, 8),
@@ -379,6 +421,13 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
         throw e
       }
 
+      if (dead) {
+        // The player hung up part way (a seek, a skip, a stop). Nothing to finish, and a
+        // partial is never stored as complete.
+        if (sink) sink.abort()
+        log('shim:hangup', { track: trackId.slice(0, 8), start, length, written })
+        return
+      }
       res.end()
       if (sink) {
         const stored = await sink.commit()
@@ -624,4 +673,4 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
   }
 }
 
-module.exports = { createAudioShim, mimeFor, parseUrl, DEFAULT_ART_SIZE }
+module.exports = { createAudioShim, mimeFor, parseUrl, DEFAULT_ART_SIZE, STREAM_WINDOW }
