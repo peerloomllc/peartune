@@ -821,6 +821,10 @@ button.icon.big {
 button.icon.close { flex: none; padding: .4rem .5rem; color: var(--color-text-muted); }
 button.icon.mode { color: var(--color-text-muted); }
 button.icon.mode.on { color: var(--color-primary); }
+/* The heart on the expanded player's title row, next to Stop. */
+button.icon.playerfav { flex: none; padding: .4rem .4rem; color: var(--color-text-muted); line-height: 0; }
+button.icon.playerfav.on { color: var(--color-primary); }
+button.icon.playerfav:active { transform: scale(.85); }
 .sub-transport { margin-top: .1rem; justify-content: center; gap: 2.5rem; }
 .sub-transport button.icon {
   flex: none; font-size: .78rem; color: var(--color-text-muted); gap: .25rem;
@@ -932,6 +936,8 @@ button.icon.mode.on { color: var(--color-primary); }
 /* Fixed width so SHUF and REP are equal AND the button does not resize when REP -> REP1. */
 .rt-tg { font-size: 9px; letter-spacing: .5px; width: 46px; min-width: 0; padding: 0; }
 .rt-tg.lit { color: var(--rt-lcd); text-shadow: 0 0 5px rgba(63,224,138,.5); }
+.rt-fav { font-size: 15px; }
+.rt-fav.lit { color: var(--rt-lcd); text-shadow: 0 0 5px rgba(63,224,138,.5); }
 .rt-sp { flex: 1; }
 @media (prefers-reduced-motion: reduce) { .rt-track { animation: none; } }
 
