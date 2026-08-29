@@ -102,6 +102,10 @@ class AudioCache {
     let dead = false
     return {
       write: (chunk) => { if (!dead) { bytes += chunk.length; ws.write(chunk) } },
+      // The underlying file stream, so the shim can wait for flash to catch up before
+      // asking the host for more (worklet/backpressure.js). Flash on a cheap phone is not
+      // always faster than the LAN, and a sink that queues the difference is the same leak.
+      stream: ws,
       // Returns true if a complete file was committed.
       commit: () => new Promise((resolve) => {
         if (dead) return resolve(false)
