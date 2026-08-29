@@ -2865,6 +2865,12 @@ export default function App () {
             canCast={!!(speakers && speakers.length)} castingTo={castingTo}
             castPaused={castPaused} onCastToggle={castToggle}
             onSpeakers={() => { loadSpeakers(); setSpeakerOpen(true) }}
+            // The heart for the track that is PLAYING. Same id space as the row hearts
+            // (play:started carries the library track id as trackId), so favoriting here and
+            // favoriting the row are the same fact, and favorites:changed from another device
+            // refreshes both. Hidden on a host too old for favorites, like every other heart.
+            fav={!!now.trackId && favs.track.has(now.trackId)}
+            onFav={favSupported && now.trackId ? () => onFav('track', { id: now.trackId }) : null}
           />
         )}
         {/* The navbar stays put during a drill-down, unlike PearList's (which
@@ -5592,7 +5598,7 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
 function Player ({
   now, status, expanded, skin, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
   onViewArt, onQueue, onStop, queueItems, queueIndex, onJump, sleep, onSleep,
-  canCast, castingTo, castPaused, onCastToggle, onSpeakers
+  canCast, castingTo, castPaused, onCastToggle, onSpeakers, fav, onFav
 }) {
   // While casting, play/pause drives the SPEAKER and the icon reflects the SPEAKER. The
   // phone is muted and held paused throughout, so `status.playing` is false the whole
@@ -5622,6 +5628,7 @@ function Player ({
           onShuffle={onShuffle} onRepeat={onRepeat} onStop={onStop} onViewArt={onViewArt}
           onCollapse={onCollapse} sleep={sleep} onSleep={onSleep}
           items={queueItems} index={queueIndex} onJump={onJump}
+          fav={fav} onFav={onFav}
         />
       </div>
     )
@@ -5673,13 +5680,28 @@ function Player ({
 
         {expanded
           ? (
-            <button
-              className='icon close'
-              onClick={() => { haptic('light'); onStop() }}
-              aria-label='Stop'
-            >
-              <X size={18} weight='bold' />
-            </button>
+            <>
+              {/* The one place you are actually LISTENING to a track was the one place you
+                  could not favorite it: the heart lived on rows, tiles and headers but not
+                  here (Tim, 2026-08-28). Same optimistic toggle as the rows; null when the
+                  host predates favorites, and then no button at all. */}
+              {onFav && (
+                <button
+                  className={'icon playerfav' + (fav ? ' on' : '')}
+                  onClick={onFav}
+                  aria-label={fav ? 'Remove from favorites' : 'Add to favorites'}
+                >
+                  <Heart size={20} weight={fav ? 'fill' : 'regular'} />
+                </button>
+              )}
+              <button
+                className='icon close'
+                onClick={() => { haptic('light'); onStop() }}
+                aria-label='Stop'
+              >
+                <X size={18} weight='bold' />
+              </button>
+            </>
             )
           : (
             // No queue pill here. The count lives on the Queue TAB, two centimetres
@@ -5887,7 +5909,7 @@ function SpeakerSheet ({ speakers, castingTo, onClose, onPick, onHere, busy }) {
 // a live spectrum, chunky transport. It reads the SAME now/status and drives the SAME controls
 // as the modern player (call('toggle'|'prev'|'next'|'seekTo'), onShuffle/onRepeat/onStop), so it
 // is purely a re-facing. An original look inspired by the classic player, not anyone's artwork.
-function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onStop, onViewArt, onCollapse, sleep, onSleep, items = [], index = 0, onJump }) {
+function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onStop, onViewArt, onCollapse, sleep, onSleep, items = [], index = 0, onJump, fav, onFav }) {
   const dur = status?.durationMs || now.durationMs || 0
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
@@ -6026,6 +6048,11 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
             <button className='rt-btn' onClick={() => { haptic('light'); call('prev') }} aria-label='Previous'>⏮</button>
             <button className={'rt-btn rt-play' + (playing ? ' lit' : '')} onClick={() => { haptic('light'); call('toggle') }} aria-label='Play/pause'>{playing ? '❚❚' : '▶'}</button>
             <button className='rt-btn' onClick={() => { haptic('light'); call('next') }} aria-label='Next'>⏭</button>
+            {/* The favorite key, lit LCD-green when the playing track is a favorite. Sits with
+                the transport (it acts on THIS track) rather than with the mode toggles. */}
+            {onFav && (
+              <button className={'rt-btn rt-fav' + (fav ? ' lit' : '')} onClick={onFav} aria-label={fav ? 'Remove from favorites' : 'Add to favorites'}>♥</button>
+            )}
             <span className='rt-sp' />
             <button className={'rt-btn rt-tg' + (shuffle ? ' lit' : '')} onClick={onShuffle}>SHUF</button>
             <button className={'rt-btn rt-tg' + (repeat ? ' lit' : '')} onClick={onRepeat}>{repeat === 1 ? 'REP1' : 'REP'}</button>
