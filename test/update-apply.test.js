@@ -626,3 +626,26 @@ test('no real desktop artifact is ever a phone build', () => {
     assert.ok(!/\.(apk|aab)$/i.test(plan.name), `${p} was handed ${plan.name}`)
   }
 })
+
+// THE REAL EXEC, NOT A FAKE. Every test above hands parseCodesignTeam captured text
+// through a recorder, which is how the stdout-only defaultExec passed for a month while
+// every real Mac was refused: `codesign -dv --verbose=4` reports on STDERR and prints
+// nothing to stdout. Found 2026-08-29 by clicking Update Now on the mac-mini against the
+// correctly signed v1.0.3 ("signed by team nobody, expected G79ALD29NA"). These run the
+// shipped defaultExec against a process that behaves like codesign.
+test('THE 2026-08-29 MAC FAILURE: defaultExec must carry stderr, where codesign reports', async () => {
+  const { defaultExec, parseCodesignTeam } = require('../host/update-apply')
+  const out = await defaultExec([process.execPath, '-e', "console.error('Identifier=com.peartune.desktop\\nTeamIdentifier=G79ALD29NA')"])
+  assert.equal(parseCodesignTeam(out), 'G79ALD29NA', 'a team printed on stderr must reach the parser')
+})
+
+test('defaultExec still carries stdout, which is where systemctl answers', async () => {
+  const { defaultExec } = require('../host/update-apply')
+  const out = await defaultExec([process.execPath, '-e', "console.log('active')"])
+  assert.equal(String(out).trim(), 'active')
+})
+
+test('defaultExec still rejects on a non-zero exit, which is what "no service" and a failed verify look like', async () => {
+  const { defaultExec } = require('../host/update-apply')
+  await assert.rejects(defaultExec([process.execPath, '-e', 'process.exit(3)']))
+})
