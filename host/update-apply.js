@@ -389,15 +389,25 @@ async function applyUpdate (plan, { file, digest, supervisor, target = process.e
   return { ...r, applier: plan.applier, version: plan.version }
 }
 
-// Run one command, resolving its stdout. Rejects on a non-zero exit, which is what
-// detectSupervisor reads as "no service" and what an applier reads as a failure.
-// Kept here so the daemon and the tray app cannot drift into different behaviour.
+// Run one command, resolving its stdout AND stderr as one string. Rejects on a
+// non-zero exit, which is what detectSupervisor reads as "no service" and what an
+// applier reads as a failure. Kept here so the daemon and the tray app cannot drift
+// into different behaviour.
+//
+// STDERR IS NOT OPTIONAL. `codesign -dv --verbose=4` writes its whole report -
+// including the `TeamIdentifier=` line the macOS applier gates on - to stderr and
+// nothing to stdout. Until 2026-08-29 this resolved stdout alone, so on every real Mac
+// the team check read an empty string, parsed "nobody" and refused the update, while
+// the tests passed because their fake exec handed the parser the captured text
+// directly. Found by clicking Update Now on the mac-mini against the real, correctly
+// signed v1.0.3: "the .app is signed by team nobody, expected G79ALD29NA".
+// test/update-apply.test.js now runs THIS function against a stderr-only command.
 function defaultExec (argv) {
   const { execFile } = require('child_process')
   return new Promise((resolve, reject) => {
-    execFile(argv[0], argv.slice(1), { encoding: 'utf8' }, (err, stdout) => {
+    execFile(argv[0], argv.slice(1), { encoding: 'utf8' }, (err, stdout, stderr) => {
       if (err) reject(err)
-      else resolve(stdout)
+      else resolve(`${stdout || ''}${stderr || ''}`)
     })
   })
 }
