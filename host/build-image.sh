@@ -41,6 +41,14 @@ for f in docs/host-linux.md start9/README.md; do
   sed -i -E "s|${REF}:[0-9]+\.[0-9]+\.[0-9]+|${REF}:${VER}|g" "$f"
 done
 
+# Dotted-version compare: is $1 strictly greater than $2? Numeric per component, so
+# 1.0.10 > 1.0.9, and equal is NOT greater. Extracted to a function so
+# test/build-image-version.test.js can run it without the build.
+_ver_gt() {
+  [ "$1" = "$2" ] && return 1
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+}
+
 # ---------------------------------------------------------------------------
 # The PeerLoom community app store (STORE_DIR), if a clone is pointed at us.
 #
@@ -69,15 +77,22 @@ if [ -n "${STORE_DIR:-}" ] && [ -d "${STORE_DIR}" ]; then
   # move independently; this field is what a user sees and what umbrelOS compares.
   APP_VER=$(node -p "require('./app.json').expo.version")
   sed -i -E "s|^version: \".*\"|version: \"${APP_VER}\"|" "$DEST/umbrel-app.yml"
-  # ...AND THE COST OF THAT CHOICE, said out loud rather than discovered by a user who never
-  # got an update. umbrelOS keys "update available" off `version:` alone. A host-only fix -
-  # new image, unchanged app version - therefore ships to nobody. The host has had forty
-  # image versions to the app's one, so this is not hypothetical.
-  if [ "$PREV_STORE_VER" = "$APP_VER" ]; then
+  # ...AND THE COST OF THAT CHOICE, enforced rather than discovered by a user who never
+  # got an update. umbrelOS keys "update available" off `version:` alone, and offers one
+  # only when the listing is GREATER than what is installed. A host-only fix - new image,
+  # unchanged app version - therefore ships to nobody. So did an app version BEHIND the
+  # store: the listing was bumped by hand to 1.0.4 and 1.0.5 for host-only releases while
+  # app.json sat at 1.0.3, and this check only caught EQUAL, so a 1.0.4 app release would
+  # have synced a listing below the live one without a word (found 2026-08-21). Not greater
+  # is a hard stop: the copy above has already happened, so the store clone is left dirty
+  # for inspection, and nothing is published until the version is right.
+  if [ -n "$PREV_STORE_VER" ] && ! _ver_gt "$APP_VER" "$PREV_STORE_VER"; then
     echo
-    echo "   !! WARNING: the store listing version is still $APP_VER, but the image moved to $VER."
-    echo "      umbrelOS compares `version:` only, so INSTALLED USERS WILL NOT BE OFFERED THIS UPDATE."
-    echo "      Bump the app version, or hand-edit the listing, before publishing."
+    echo "   !! STORE LISTING VERSION $APP_VER IS NOT GREATER THAN THE LIVE $PREV_STORE_VER (image moved to $VER)."
+    echo "      umbrelOS compares \`version:\` only, so INSTALLED USERS WOULD NOT BE OFFERED THIS UPDATE."
+    echo "      Bump the app version past $PREV_STORE_VER before publishing. The store clone is left"
+    echo "      dirty so you can see what would have shipped; nothing has been committed or pushed."
+    exit 1
   fi
   echo
   echo "== community store synced from umbrel/ =="

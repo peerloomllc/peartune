@@ -11,12 +11,12 @@ category: media
 # build-image.sh stamps it from app.json's version on every synced release; the
 # out-of-band bumps past 1.0.0 (1.0.1 catch-up, 1.0.2 wma host, 1.0.3 for the
 # 0.2.46 seekable-transcode host) exist so installs get offered host updates between
-# app releases. THE LIVE LISTING IS AHEAD OF THIS LINE: the store repo is at 1.0.5
-# (1.0.4 host 0.2.49 + USB drives, 1.0.5 the urgent compose fix), because those bumps
-# were made in the store checkout and never synced back here. So the NEXT app release
-# must version past 1.0.5, not past the literal below, or its store sync ships to
-# nobody - build-image.sh warns out loud when that collision happens.
-version: "1.0.3"
+# app releases. Resynced from the live store on 2026-08-29 (1.0.4 = host 0.2.49 + USB
+# drives, 1.0.5 = the urgent compose fix; both bumps were made in the store checkout).
+# build-image.sh refuses to sync a listing whose version is not GREATER than the one
+# the store already carries, so this literal can no longer drift below the store in
+# silence.
+version: "1.0.5"
 port: 8741
 description: >-
   Play the music on your Umbrel from anywhere, without exposing your server to the
