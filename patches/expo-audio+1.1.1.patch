@@ -130,7 +130,20 @@ diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/Au
 index 320062e..51db639 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-@@ -50,6 +50,18 @@ class AudioPlayer(
+@@ -44,6 +44,12 @@ class AudioPlayer(
+   ExoPlayer.Builder(context)
+     .setLooper(context.mainLooper)
+     .setAudioAttributes(AudioAttributes.DEFAULT, false)
++    // PearTune: pause when the audio route is about to fall back to the phone's speaker
++    // (a Bluetooth car or headset dropping, a wired headset unplugged). ExoPlayer defaults
++    // this to false, and nothing else in the stack listens for AUDIO_BECOMING_NOISY, so a
++    // car that cut the link without sending an AVRCP pause first kept the music playing
++    // out loud (Tim, 2026-08-29: "about 30% of the time").
++    .setHandleAudioBecomingNoisy(true)
+     .setSeekForwardIncrementMs(SEEK_JUMP_INTERVAL_MS)
+     .setSeekBackIncrementMs(SEEK_JUMP_INTERVAL_MS)
+     .build(),
+@@ -50,6 +56,18 @@ class AudioPlayer(
    appContext
  ) {
    val id = UUID.randomUUID().toString()
@@ -149,7 +162,7 @@ index 320062e..51db639 100644
    var preservesPitch = true
    var isPaused = false
    var isMuted = false
-@@ -100,6 +112,39 @@ class AudioPlayer(
+@@ -100,6 +118,39 @@ class AudioPlayer(
      startUpdating()
    }
  
@@ -189,7 +202,7 @@ index 320062e..51db639 100644
    fun setActiveForLockScreen(active: Boolean, metadata: Metadata? = null, options: AudioLockScreenOptions? = null) {
      if (active) {
        this.metadata = metadata
-@@ -163,6 +208,8 @@ class AudioPlayer(
+@@ -163,6 +214,8 @@ class AudioPlayer(
      }
  
      override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -198,6 +211,16 @@ index 320062e..51db639 100644
        playerScope.launch {
          sendPlayerUpdate()
        }
+@@ -219,5 +272,8 @@ class AudioPlayer(
+       "playbackRate" to ref.playbackParameters.speed,
+       "shouldCorrectPitch" to preservesPitch,
+-      "isBuffering" to isBuffering
++      // PearTune: the player's INTENT, distinct from `playing` (false while buffering too).
++      // The shell's stall watchdog must not press play on a player that was paused.
++      "isBuffering" to isBuffering,
++      "playWhenReady" to ref.playWhenReady
+     )
+   }
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt
 index 839aaef..e0620a3 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt

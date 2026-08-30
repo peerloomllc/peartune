@@ -54,3 +54,24 @@ test('the buildFromSource list only names packages we actually patch', () => {
     )
   }
 })
+
+// Route loss must pause playback (Tim, 2026-08-29: a Bluetooth car dropping left the music
+// playing on the phone speaker about 30% of the time - the other 70% were cars that sent an
+// AVRCP pause before cutting the link). Nothing in the stack listened for
+// AUDIO_BECOMING_NOISY and ExoPlayer defaults its own handler to off, so the patch turns it
+// on. The second half: the shell's stall watchdog used to press play on a PAUSED player that
+// was still buffering, so the patch exposes playWhenReady and the shell gates the clock on it.
+test('the expo-audio patch turns on pause-on-noisy and exposes playWhenReady', () => {
+  const patch = fs.readFileSync(path.join(__dirname, '..', 'patches', 'expo-audio+1.1.1.patch'), 'utf8')
+  assert.match(patch, /^\+\s+\.setHandleAudioBecomingNoisy\(true\)/m, 'the ExoPlayer builder must handle becoming-noisy')
+  assert.match(patch, /^\+\s+"playWhenReady" to ref\.playWhenReady/m, 'the status must carry playWhenReady')
+  // And the installed module matches the patch, or the build would silently ship the default.
+  const kt = fs.readFileSync(path.join(__dirname, '..', 'node_modules', 'expo-audio', 'android', 'src', 'main', 'java', 'expo', 'modules', 'audio', 'AudioPlayer.kt'), 'utf8')
+  assert.match(kt, /\.setHandleAudioBecomingNoisy\(true\)/)
+  assert.match(kt, /"playWhenReady" to ref\.playWhenReady/)
+})
+
+test('the stall watchdog does not run on a paused player', () => {
+  const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'index.tsx'), 'utf8')
+  assert.match(shell, /dropped: s\.playWhenReady !== false,/, 'decideStarve must be gated on playWhenReady')
+})
