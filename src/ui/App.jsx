@@ -482,6 +482,10 @@ export default function App () {
         loadFavs()
         loadContinue()
         loadHandoff(); setTimeout(loadHandoff, 2000) // retry: the active device may push its queue just after we connect
+        // Bring back a saved queue the mount-time restore could not: an uncached queue needs
+        // the link to resolve its URLs, and a cold start races the dial. The shell ignores
+        // this when a player already exists, so it costs nothing while music is playing.
+        call('restore').then(r => { if (r?.restored && !r.live) setCont(null) }).catch(() => {})
         loadPlaylists(true)
         // Speakers belong here for the same reason as everything above: init connects in the
         // BACKGROUND, so `connected` is false when init resolves and the load it does there
