@@ -462,7 +462,13 @@ export default function App () {
         // second death arrives with tries spent and playback ends as the acceptance
         // test demands.
         const rs = decideStarve({
-          dropped: true, // recovery's clock runs regardless of link state - see recoverStall
+          // Recovery's clock runs regardless of LINK state (see recoverStall) - but not on a
+          // player that is not meant to be playing. `playing` is false while buffering too,
+          // so the gate is ExoPlayer's playWhenReady (exposed by our expo-audio patch): a
+          // Bluetooth car pausing us mid-buffer left isBuffering true at a frozen position,
+          // and 15 s later this clock called it a stall and pressed play - on the phone's
+          // speaker (Tim, 2026-08-29). Undefined (iOS, older status) keeps the old behaviour.
+          dropped: s.playWhenReady !== false,
           playbackState: s.playbackState,
           isBuffering: !!s.isBuffering,
           positionMs: posMs,
