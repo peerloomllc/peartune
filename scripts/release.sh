@@ -2322,7 +2322,12 @@ print(m.get(os.environ['ASSET_NAME'], ''))" 2>/dev/null || echo "")
       --data-binary "@${_a}" \
       -o "${_UPLOAD_DIR}/${_slot}.body" \
       -w '%{http_code} %{speed_upload}' 2>/dev/null) || _res="000 0"
-    printf '%s %s' "$_res" "$_n" > "${_UPLOAD_DIR}/${_slot}.meta"
+    # WITH a trailing newline. `read` returns 1 at end-of-file without one (it still fills
+    # the variables), and under set -e that killed the whole run right after the uploads
+    # - silently, with the release complete on GitHub and every step after it (Zapstore,
+    # Play, App Store, the store gate, the announcement) simply not happening (1.0.6,
+    # 2026-08-29).
+    printf '%s %s\n' "$_res" "$_n" > "${_UPLOAD_DIR}/${_slot}.meta"
     set -- $_res
     if [ "$1" = "201" ]; then
       echo "    done: $_n  ($(python3 -c "print(f'{$2*8/1e6:.1f}')" 2>/dev/null || echo '?') Mbps)"
@@ -2348,7 +2353,7 @@ print(m.get(os.environ['ASSET_NAME'], ''))" 2>/dev/null || echo "")
   _UPLOAD_FAILED=""
   for _m in "${_UPLOAD_DIR}"/*.meta; do
     [ -f "$_m" ] || continue
-    read -r _code _spd _name < "$_m"
+    read -r _code _spd _name < "$_m" || true # a missing newline must not end the run
     if [ "$_code" != "201" ]; then
       _UPLOAD_FAILED="yes"
       echo ""
