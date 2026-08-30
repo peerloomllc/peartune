@@ -123,3 +123,15 @@ test('garbage or empty falls back to the AUTO default, not a broken transcode', 
   assert.deepEqual(streamParams({ streamQuality: '' }, 'cellular'), { format: 'mp3', bitrate: AUTO_CELLULAR_BITRATE })
   assert.equal(streamParams(null, 'wifi'), null)
 })
+
+// Jellyfin/Emby report a .wma's CONTAINER as `asf`. The adapter now prefers the real
+// extension; this is the backstop for an item that has no path (2026-08-29).
+test('a container name that means wma still counts as unplayable', () => {
+  assert.equal(needsTranscode('asf', 'android'), true)
+  assert.equal(needsTranscode('ASF', 'ios'), true)
+  assert.equal(needsTranscode('x-ms-wma', 'android'), true)
+  assert.deepEqual(streamParams({}, 'wifi', 'asf', 'android'), { format: 'mp3', bitrate: UNPLAYABLE_WIFI_BITRATE })
+  // ...and a container that is NOT a codec problem is left alone (Opus-in-Ogg plays).
+  assert.equal(needsTranscode('opus', 'android'), false)
+})
+
