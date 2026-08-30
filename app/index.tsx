@@ -497,7 +497,15 @@ export default function App () {
         // The playlist ran out. Normally that is a stop() - but if we're DRAINING the last
         // track of the old library after a switch, this "end" is the cue to bring up the new
         // library's queue instead (unless a sleep-end-of-track is armed, which wins - stop).
-        if (s.didJustFinish && indexRef.current >= queueRef.current.length - 1) {
+        // On Android didJustFinish is ExoPlayer's STATE_ENDED: the WHOLE playlist ran out, in
+        // shuffle order too. The media-index test is for platforms whose finish fires per item
+        // - and it is wrong under shuffle both ways (the last-played index is random), which
+        // is why it only guards the non-Android side now that shuffle actually reaches the
+        // player (see play()).
+        const playlistEnded = Platform.OS === 'android'
+          ? s.didJustFinish
+          : (s.didJustFinish && indexRef.current >= queueRef.current.length - 1)
+        if (playlistEnded) {
           if (switchDrain.current && !sleepEndOfTrack.current) { finishDrain() } else { stop() }
         }
 
@@ -642,7 +650,7 @@ export default function App () {
   // elsewhere - the UI shows the "Playing on <other>" card instead, and "Play here" re-adopts
   // the session. stop() also clears our now-stale local queue and deactivates our token.
   function onHandedOff () {
-    stop()
+    stop({ forget: true }) // another device owns the session now; our local queue is stale
     toWeb('play:handedoff', {})
   }
 
@@ -655,6 +663,11 @@ export default function App () {
     // library, and queue.json is now the NEW library's. Don't overwrite it with the drain
     // state - finishDrain writes the correct new-library queue once the current track ends.
     if (switchDrain.current) return
+    // An EMPTY queue is never worth saving, and saving it is how the queue got lost: after a
+    // stop() cleared queueRef, a late status tick persisted `items: []` over the snapshot the
+    // stop had deliberately kept (seen on the TCL 2026-08-29: the file survived the stop and
+    // was empty a moment later). Discarding is clearQueueState's job, via stop({ forget }).
+    if (!queueRef.current.length) return
     const t = Date.now()
     if (!force && t - lastPersist.current < 4000) return
     lastPersist.current = t
@@ -676,7 +689,7 @@ export default function App () {
     const q = Array.isArray(queue) ? queue : []
     queueRef.current = q
     indexRef.current = index
-    if (!q.length) return stop()
+    if (!q.length) return stop({ forget: true }) // an explicit empty play IS a discard
 
     try {
       // Resolve every track's loopback URL up front. ExoPlayer needs the whole
@@ -688,6 +701,12 @@ export default function App () {
       }
 
       const p = await ensurePlayer(urls, index)
+      // The UI sends `shuffle` BEFORE `play` (artist -> Shuffle), and setShuffle on a player
+      // that does not exist yet is a no-op - so a cold-start shuffle used to play the array
+      // IN ORDER from a random index, hit the end a few songs later and stop. Every other
+      // path that builds a player re-applies the modes; this one did not (Tim, 2026-08-29).
+      px()?.setShuffle(shuffleRef.current)
+      px()?.setRepeatMode(repeatRef.current)
       announce(index)
       p.play()
       persistQueue(true)
@@ -760,7 +779,7 @@ export default function App () {
     if (!Number.isInteger(i) || i < 0 || i >= q.length) {
       return { items: q, index: indexRef.current }
     }
-    if (q.length === 1) { stop(); return { items: [], index: 0 } }
+    if (q.length === 1) { stop({ forget: true }); return { items: [], index: 0 } }
     const wasCurrent = i === indexRef.current
     px()?.removeQueueItem(i)
     const len = q.length
@@ -785,7 +804,7 @@ export default function App () {
     const cur = indexRef.current
     if (q.length <= 1) return { items: queueRef.current, index: indexRef.current }
     const keep = q[cur]
-    if (!keep) { stop(); return { items: [], index: 0 } }
+    if (!keep) { stop({ forget: true }); return { items: [], index: 0 } }
     for (let i = q.length - 1; i > cur; i--) px()?.removeQueueItem(i)
     for (let i = cur - 1; i >= 0; i--) px()?.removeQueueItem(i)
     queueRef.current = [keep]
@@ -1086,7 +1105,16 @@ export default function App () {
     stop()
   }
 
-  function stop () {
+  // STOP DOES NOT FORGET THE QUEUE unless the caller says so. Until 2026-08-29 every stop()
+  // deleted queue.json, and two of the callers are things the user never asked for: the
+  // starve path (the link dropped behind a locked screen and the NEXT track could not load)
+  // and the end-of-playlist check (which shuffle could trip a few songs in - see play()).
+  // Tim's repro: artist -> Shuffle on Jellyfin, screen off, pause, resume, and when the song
+  // ended the queue was gone for good, with the routine screen-on reload hiding the toast.
+  // Now the snapshot stays on disk, and the next `restore` (UI mount, or host:connected)
+  // brings it back paused where it was. Only a deliberate discard passes { forget: true }:
+  // unpairing, emptying the queue by hand, or another device taking the session.
+  function stop ({ forget = false }: { forget?: boolean } = {}) {
     switchDrain.current = null // a stop cancels any pending switch-drain
     clearSleep() // no queue to fall asleep to
     stopPlayer()
@@ -1094,7 +1122,7 @@ export default function App () {
     indexRef.current = 0
     posRef.current = 0
     wasPlaying.current = false
-    call('clearQueueState').catch(() => {}) // stop discards the queue, so forget it
+    if (forget) call('clearQueueState').catch(() => {})
     call('sessionDeactivate').catch(() => {}) // stop pushing; the host session persists as last-known
     toWeb('play:stopped', {})
   }
@@ -1228,7 +1256,7 @@ export default function App () {
   async function finishDrain () {
     const snap = switchDrain.current
     switchDrain.current = null
-    if (!snap || !Array.isArray(snap.items) || !snap.items.length) { stop(); return }
+    if (!snap || !Array.isArray(snap.items) || !snap.items.length) { stop({ forget: true }); return }
     const r = await loadQueueOnPlayer(snap, true) // the user was listening - come up playing
     if (!r.ok) stop()
   }
@@ -1770,7 +1798,7 @@ export default function App () {
     // Unpairing tears down the player first: the worklet is about to close the
     // connection the audio is streaming over, and a player left pointing at a
     // dead loopback socket just stalls.
-    if (msg.method === 'forget') stop()
+    if (msg.method === 'forget') stop({ forget: true })
 
     try {
       reply({ result: await call(msg.method, msg.args) })

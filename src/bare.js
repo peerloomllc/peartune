@@ -3079,9 +3079,19 @@ const methods = {
   // shell snapshots it here on every change so a force-stop or relaunch can rebuild
   // it, PAUSED, seeked to where you were. IDs + metadata only, never URLs.
   async saveQueueState (snapshot) {
+    // The same rule as the shell's persistQueue, enforced where the file is: a snapshot with
+    // nothing in it never replaces a saved queue. Forgetting is clearQueueState, on purpose.
+    const items = snapshot && Array.isArray(snapshot.items) ? snapshot.items : []
+    if (!items.length) return { ok: true, lostSession: false, skipped: 'empty' }
     try {
-      fs.mkdirSync(libDir(), { recursive: true })
-      fs.writeFileSync(queueFile(), JSON.stringify(snapshot || {}))
+      fs.mkdirSync(path.dirname(queueFile()), { recursive: true })
+      // Temp file + rename, like the identity and hosts files. This is rewritten every few
+      // seconds for as long as anything is queued, paused included, and a kill mid-write
+      // left a TRUNCATED queue.json that loadQueueState reads as "no queue" - so a
+      // several-hundred-track artist shuffle could vanish on any background death.
+      const tmp = queueFile() + '.tmp'
+      fs.writeFileSync(tmp, JSON.stringify(snapshot || {}))
+      fs.renameSync(tmp, queueFile())
     } catch {}
 
     // If we hold the session token, mirror the queue to the host so another device can
