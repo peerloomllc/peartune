@@ -45,9 +45,17 @@ const UNPLAYABLE = {
 // take mp3's ceiling - the source is almost always lossy (wma) already.
 const UNPLAYABLE_WIFI_BITRATE = 320
 
+// A server that reports a CONTAINER where we expect a file suffix. Jellyfin/Emby name a
+// .wma's container `asf` (or the mime-ish `x-ms-wma`); the adapter now prefers the real
+// extension, and this is the backstop for an item with no path. Keyed narrowly on purpose:
+// the list above is about codecs the phone cannot decode, and `ogg` is the reminder that a
+// container name is not a codec.
+const CONTAINER_AS_SUFFIX = { asf: 'wma', 'x-ms-wma': 'wma', wmav2: 'wma' }
+
 function needsTranscode (suffix, platform) {
   const list = UNPLAYABLE[platform] || UNPLAYABLE.android
-  return list.includes(String(suffix || '').toLowerCase())
+  const s = String(suffix || '').toLowerCase()
+  return list.includes(CONTAINER_AS_SUFFIX[s] || s)
 }
 
 //   original  - always the original file

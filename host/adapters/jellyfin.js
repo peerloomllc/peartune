@@ -34,6 +34,16 @@ const VERSION = '0.1.0'
 // song is 1,800,000,000 of them. Divide by 10,000 for milliseconds.
 const TICKS_PER_MS = 10000
 
+// Lower-case extension without the dot, or null. Posix semantics on purpose: a Jellyfin on
+// Windows reports `C:\\Music\\x.wma`, which has no '/' at all, so the whole string is the
+// basename and the extension still comes off the end.
+function extOf (p) {
+  if (!p) return null
+  const base = String(p).split('/').pop().split('\\').pop()
+  const dot = base.lastIndexOf('.')
+  return dot > 0 && dot < base.length - 1 ? base.slice(dot + 1).toLowerCase() : null
+}
+
 // The fields Jellyfin will not send unless asked. `MediaSources` is the load-bearing
 // one: it carries the file SIZE, and the phone's loopback shim needs a content-length
 // before it will let ExoPlayer seek. Without it the player can only play forward.
@@ -190,6 +200,11 @@ class JellyfinAdapter {
     this.itemIds.set(id, item.Id)
 
     const media = item.MediaSources?.[0] || {}
+    // The file's own path. Requested in TRACK_FIELDS since the adapter was written and never
+    // mapped - it is where the real extension lives (below), and it lets the shim's fallbacks
+    // (suffix from the path, a real mime) work for a Jellyfin track the way they do for a
+    // folder one.
+    const filePath = item.Path || media.Path || null
 
     return {
       id,
@@ -209,7 +224,14 @@ class JellyfinAdapter {
       // (a stray single) falls back to its own image, which Jellyfin will happily
       // serve from the embedded tag.
       coverId: item.AlbumId || (item.ImageTags?.Primary ? item.Id : null),
-      suffix: media.Container || item.Container || null
+      path: filePath,
+      // THE EXTENSION, NOT THE CONTAINER. The quality policy's unplayable list keys on the
+      // file suffix (a .wma must transcode whatever the setting says, Android cannot decode
+      // it), and until 2026-08-29 this reported Jellyfin's CONTAINER name - `asf` for a WMA -
+      // which that list has never contained. So a Jellyfin .wma was direct-played as raw ASF
+      // and sat silent, while the same file through a Folder source (which reports `wma`)
+      // played. Tim, 2026-08-29. Container stays as the fallback for an item with no path.
+      suffix: extOf(filePath) || media.Container || item.Container || null
     }
   }
 

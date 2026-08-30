@@ -275,3 +275,31 @@ test('get() answers null when a stale id 400s/404s upstream, and still throws on
   global.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) })
   await assert.rejects(() => a2.get({ id: 'x', type: 'album' }), /HTTP 500/, 'a real failure still throws')
 })
+
+// --- suffix ----------------------------------------------------------------
+//
+// The quality policy's unplayable list keys on the FILE SUFFIX (worklet/quality.js): a .wma
+// must transcode whatever the setting says. This adapter reported Jellyfin's CONTAINER name
+// instead - `asf` for a WMA - so a Jellyfin .wma was direct-played as raw ASF and sat silent
+// while the same file through a Folder source played (Tim, 2026-08-29).
+
+test('suffix is the file EXTENSION when Jellyfin gives a path, not the container name', () => {
+  const a = make()
+  const t = a._track({ Id: 'w', Name: 'Payback', Path: '/music/AC-DC/Payback.wma', MediaSources: [{ Size: 1, Container: 'asf', Path: '/music/AC-DC/Payback.wma' }] })
+  assert.equal(t.suffix, 'wma')
+  assert.equal(t.path, '/music/AC-DC/Payback.wma', 'the path rides along for the shim\'s own fallbacks')
+})
+
+test('a Windows path still yields the extension', () => {
+  const a = make()
+  const t = a._track({ Id: 'w', Name: 'x', MediaSources: [{ Container: 'asf', Path: 'C:\\Music\\x.WMA' }] })
+  assert.equal(t.suffix, 'wma')
+})
+
+test('with no path at all the container is still the fallback', () => {
+  const a = make()
+  assert.equal(a._track({ Id: 'c', Name: 'x', MediaSources: [{ Container: 'flac' }] }).suffix, 'flac')
+  assert.equal(a._track({ Id: 'n', Name: 'x' }).suffix, null)
+  assert.equal(a._track({ Id: 'd', Name: 'x', Path: '/music/no-extension' }).suffix, null, 'a dotless name is not an extension')
+})
+
