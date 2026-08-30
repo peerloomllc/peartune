@@ -66,15 +66,18 @@ gallery:
   - https://peerloomllc.com/assets/gallery-peartune-2.jpg
   - https://peerloomllc.com/assets/gallery-peartune-3.jpg
 releaseNotes: |-
+  New Features
+  - Like the song you're listening to straight from the player. The heart is on the player itself now, in both looks.
   Improvements
-  - The on/off controls in Settings are now proper switches. You can see what is on at a glance from the position, instead of reading a word.
-  - Those switches now tell screen readers which setting they control, rather than just saying "on" or "off".
-  - On iPhone and iPad, the request to use your local network now explains why PearTune is asking. It connects straight to your library across your wifi instead of taking the long way round.
-  Fixes
-  - Songs in .ogg format now play on iPhone and iPad. Before, they appeared in your library and tapping one left the player sitting there in silence, with nothing to explain why.
-  - A library served from a Mac, Windows or Linux computer can now play formats your phone does not understand, such as .wma and .ogg. Those tracks used to be silent. There is nothing extra to install - it is built in now.
-  - On a Mac, choosing "Update now" takes effect straight away. The update used to install correctly while your library quietly kept running the old version until you restarted the computer.
-  - The "Recently added row" switch in Settings now gives the same small buzz as the other switches when you tap it.
+  - The albums grid keeps loading as you scroll. No more "Load more" button.
+  - Uses less memory while playing. The app now fetches music a little at a time instead of pulling a whole song ahead.
+  Bug Fixes
+  - Music now pauses when your Bluetooth car or headset disconnects, or when you unplug wired headphones, instead of sometimes carrying on through the phone's speaker.
+  - Your queue no longer disappears after a pause. If the connection to your library drops while the phone is locked, the queue is kept and comes back as soon as the library is reachable again.
+  - Tapping Shuffle on an artist now really shuffles from the first song, so the list no longer runs out after a few tracks.
+  - WMA files from a Jellyfin library now play, the same as from a folder library. (Needs the updated library host.)
+  - Music folders that use shortcuts or symbolic links are now included in your library. (Needs the updated library host.)
+  - On a Mac, "Update now" works again. Note for Mac users already on 1.0.2 or 1.0.3: install this version by hand once, and updates will apply themselves from then on.
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the

@@ -1,6 +1,6 @@
 {
   "name": "peartune-desktop",
-  "version": "1.0.3",
+  "version": "1.0.6",
   "description": "PearTune host as a desktop tray app (macOS / Windows / Linux).",
   "license": "MIT",
   "private": true,
