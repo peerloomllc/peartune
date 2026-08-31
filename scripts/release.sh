@@ -3017,6 +3017,28 @@ with open('${VERSION_DIR}/$(basename "$f")', 'w') as out:
     echo "    Metadata directory found but asc not available on Linux - skipping."
   fi
 
+  # ── Step 3b: Push the App Review Information notes ──
+  # metadata/ios/review-notes.md is the source of truth for the "Notes" box of App
+  # Review Information. `asc metadata apply` does not carry review details, so without
+  # this push the notes live only on App Store Connect, invisible to review and to a
+  # fresh clone - and they are what pre-empts the automated VPN false positive that
+  # rejected PearCinema 1.1.1 on 2026-08-31. Needs only node + scripts/.env, not asc.
+  if $USE_ASC_REMOTE && [ -f "$REPO_ROOT/metadata/ios/review-notes.md" ]; then
+    echo ""
+    echo "==> App Review notes (metadata/ios/review-notes.md)"
+    if _rn_out=$(node "$REPO_ROOT/scripts/asc-review-notes.mjs" 2>&1); then
+      echo "$_rn_out"
+      if ! grep -q "nothing to do" <<< "$_rn_out"; then
+        _confirm "Push the review notes from metadata/ios/review-notes.md to ${APP_VERSION}?"
+        node "$REPO_ROOT/scripts/asc-review-notes.mjs" --apply || \
+          echo "    WARNING: review-notes push failed - update App Review Information by hand."
+      fi
+    else
+      echo "$_rn_out"
+      echo "    WARNING: review-notes dry run failed - update App Review Information by hand."
+    fi
+  fi
+
   # ── Step 4: Submit for App Review (Linux-side, asc only) ──
   # asc 1.1.1's `publish appstore --submit` requires --ipa even when the
   # build is already uploaded (it used to allow attach-by-version). Use the
