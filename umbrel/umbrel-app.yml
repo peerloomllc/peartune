@@ -67,17 +67,22 @@ gallery:
   - https://peerloomllc.com/assets/gallery-peartune-3.jpg
 releaseNotes: |-
   New Features
-  - Like the song you're listening to straight from the player. The heart is on the player itself now, in both looks.
+  - Share only part of your library. Tick the folders each person should hear, and everything else disappears for them. It applies while they are listening, and widening it back brings their favourites with it.
+  - Sign out every other browser, from the dashboard.
+  - Accept a new name from someone's device without moving it elsewhere.
   Improvements
-  - The albums grid keeps loading as you scroll. No more "Load more" button.
-  - Uses less memory while playing. The app now fetches music a little at a time instead of pulling a whole song ahead.
+  - A device whose access was removed now says so, instead of looking like a network problem. It remembers while offline, stops retrying and reconnects by itself if you let it back in.
+  - Dashboard changes reach a listening phone at once, with no reconnect.
+  - Skipping a track stops your server converting music you skipped past.
+  - Music one owner adds stops showing as an open request on everyone else's dashboard.
   Bug Fixes
-  - Music now pauses when your Bluetooth car or headset disconnects, or when you unplug wired headphones, instead of sometimes carrying on through the phone's speaker.
-  - Your queue no longer disappears after a pause. If the connection to your library drops while the phone is locked, the queue is kept and comes back as soon as the library is reachable again.
-  - Tapping Shuffle on an artist now really shuffles from the first song, so the list no longer runs out after a few tracks.
-  - WMA files from a Jellyfin library now play, the same as from a folder library. (Needs the updated library host.)
-  - Music folders that use shortcuts or symbolic links are now included in your library. (Needs the updated library host.)
-  - On a Mac, "Update now" works again. Note for Mac users already on 1.0.2 or 1.0.3: install this version by hand once, and updates will apply themselves from then on.
+  - Renaming someone no longer changes the name their own phone shows.
+  - A device moved to another person mid-song files its progress under the right one.
+  - The "Continue listening" card no longer lingers after your session is restored.
+  Security
+  - Your desktop dashboard now answers only your own computer. A website you had open could previously send it commands. Servers with a password, like Umbrel, were never exposed.
+  - The app opens only web, email and payment links, and asks for the camera alone.
+  - Your server's identity key and dashboard password are locked down on every read.
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the
