@@ -6774,11 +6774,16 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
             const ml = merged?.merged ? (merged.libraries || []).find(l => l.libraryId === h.libraryId) : null
             const online = ml ? ml.connected : (h.active && state.connected)
             const showDot = ml ? true : h.active // merged: every row has a status; single: only the active one
-            const desc = ml
-              ? (ml.connected ? 'Connected' : 'Offline')
-              : (h.active
-                  ? (state.connected ? 'Active - connected' : 'Active - connecting…')
-                  : 'Tap to switch to this library')
+            // A recorded goodbye outranks the connection guess: "connecting…" on a
+            // library that told this device it is out would be a lie.
+            const saidGoodbye = ml ? ml.revoked : h.revoked
+            const desc = saidGoodbye
+              ? 'Access removed by the owner'
+              : ml
+                ? (ml.connected ? 'Connected' : 'Offline')
+                : (h.active
+                    ? (state.connected ? 'Active - connected' : 'Active - connecting…')
+                    : 'Tap to switch to this library')
             const tappable = !ml && !h.active // only switch libraries in single-host mode
 
             // Editing YOUR OWN name for this library. The row becomes the editor in place rather

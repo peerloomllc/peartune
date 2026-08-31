@@ -1157,10 +1157,20 @@ function clientFor (libraryId) {
 // Ensure ONE library is connected; returns its client. Identical for every library - join its
 // topic, force a discovery lookup, keep nudging, and wait for the connection to land. Single-
 // flight per library via its waiter list, so a burst of callers shares one attempt.
-async function ensureLink (host) {
+async function ensureLink (host, { probe = false } = {}) {
   const libId = host.libraryId
   const live = clientFor(libId)
   if (live) return live
+  // A library that said goodbye fails FAST instead of dialing: the app layer retries
+  // browse/stream every few seconds, and each retry's join+nudge here was the knocking
+  // the goodbye exists to end (watched on the emulator, 2026-08-31 - the host logged a
+  // deny every 15-20s driven entirely by these). `probe: true` is the deliberate
+  // exception: the user's Try again and the watchdog's slow re-admission probe.
+  if (revokedLibs.has(libId) && !probe) {
+    const err = new Error('access removed by the owner')
+    err.code = 'EREVOKED'
+    throw err
+  }
   joinTopic(host)
   nudge(libId)      // force discovery now
   startNudge(host)  // keep punching until it lands
@@ -1255,6 +1265,12 @@ function writeRevoked () {
 // Filled at boot from the file above, before the first dial.
 for (const [lib, reason] of readRevoked()) revokedLibs.set(lib, reason)
 
+// How often a revoked library is probed for re-admission, and how long each probe's
+// topic membership lingers before the watchdog leaves again. One knock per interval,
+// against the every-15-20s Hyperswarm produced when the topic stayed joined.
+const REVOKED_PROBE_MS = 5 * 60_000
+const REVOKED_PROBE_LINGER_MS = 45_000
+
 function markRevoked (libraryId, reason = 'device-revoked') {
   if (!libraryId || revokedLibs.has(libraryId)) return
   revokedLibs.set(libraryId, reason)
@@ -1264,9 +1280,23 @@ function markRevoked (libraryId, reason = 'device-revoked') {
   // the goodbye is rate-limited host-side, so knocking on buys nothing. The swarm's own
   // slow rediscovery and any user-driven ensureLink still dial, which is how a library
   // that changes its mind is noticed without the phone hammering one that has not.
+  //
+  // Destroy the CONNECTION, not the client: attach's close handler is what emits
+  // host:disconnected and clears e.client, and it bails if e.client was already
+  // swapped out from under it. Closing the client here first left the UI reading
+  // `connected` forever - seen on the emulator, 2026-08-31, as the generic
+  // can't-reach banner where the Access-removed wall belonged.
   stopNudge(libraryId)
   const e = links.get(libraryId)
-  if (e && e.client) { try { e.client.close() } catch {} e.client = null }
+  if (e && e.client && e.client.conn) { try { e.client.conn.destroy() } catch {} }
+  // AND LEAVE THE SWARM TOPIC, or the knocking never actually stops: Hyperswarm keeps
+  // retrying a joined peer on its own, and each minute's goodbye admission resets its
+  // backoff - measured on the emulator (2026-08-31) as a knock every 15-20s forever.
+  // The watchdog re-probes every REVOKED_PROBE_MS (below), which is what notices an
+  // extended guest pass or any operator-side re-admission; a re-pair through the app
+  // clears the verdict the moment its connection lands, same as any dial.
+  leaveTopic(libraryId)
+  if (e) e.revokedProbeAt = Date.now()
   const host = loadHostsFile().hosts.find((h) => h.libraryId === libraryId)
   emit('access:revoked', { libraryId, reason, libraryName: host ? labelFor(libraryId, host.libraryName) : null })
   if (mergedMode()) {
@@ -1282,6 +1312,16 @@ function clearRevoked (libraryId) {
   revokedLibs.delete(libraryId)
   writeRevoked()
   log('host:access-restored', { lib: libraryId.slice(0, 8) })
+}
+
+// Stop the swarm reaching for one library without forgetting it: the links entry and
+// hosts.json survive, so joinTopic can bring it back. `discovery` nulled so joinTopic
+// actually re-joins rather than believing the old session still stands.
+function leaveTopic (libId) {
+  const e = links.get(libId)
+  if (!e) return
+  if (swarm && e.host) { try { swarm.leave(hostTopic(z32.decode(e.host.hostKey))) } catch {} }
+  e.discovery = null
 }
 
 function joinTopic (host) {
@@ -1533,7 +1573,25 @@ async function watchdogTick () {
   })
   await Promise.allSettled(actions.map(async ({ host, libraryId: libId, active, action }) => {
     const role = active ? 'default' : 'other'
-    if (revokedLibs.has(libId)) return // it said goodbye; nothing here should knock
+    // A library that said goodbye is not hammered - but it is not abandoned either. One
+    // probe every REVOKED_PROBE_MS notices an extended guest pass or an operator-side
+    // re-admission (a landed dial clears the verdict in attach); the tick after a probe
+    // that changed nothing leaves the topic again, so the steady state is one knock per
+    // probe interval instead of Hyperswarm's own retry storm.
+    if (revokedLibs.has(libId)) {
+      const e = links.get(libId)
+      if (!e) return
+      const now = Date.now()
+      if (!e.revokedProbeAt || now - e.revokedProbeAt >= REVOKED_PROBE_MS) {
+        e.revokedProbeAt = now
+        log('link:revoked-probe', { lib: libId.slice(0, 8) })
+        joinTopic(host)
+        nudge(libId)
+      } else if (e.discovery && now - e.revokedProbeAt >= REVOKED_PROBE_LINGER_MS) {
+        leaveTopic(libId)
+      }
+      return
+    }
     if (action === 'redial') {
       // Idempotent by design: joinTopic re-uses an existing discovery session and startNudge
       // returns early when a loop is already running, so this only DOES anything when nothing was
@@ -2640,6 +2698,17 @@ const methods = {
     if (mergedMode()) {
       await rebuildIndex()
       return { ok: true, connected: mergedConnected.size > 0, merged: true, shimPort }
+    }
+    // Try again on a library that said goodbye is the DELIBERATE dial (ensureLink
+    // otherwise fails fast for it): one real probe, so a device the owner just let
+    // back in reconnects on the spot. Stamped so the watchdog's linger rule leaves
+    // the topic again if the probe changes nothing.
+    const target = loadDefaultHost()
+    if (target && revokedLibs.has(target.libraryId)) {
+      const e = joinTopic(target)
+      e.revokedProbeAt = Date.now()
+      try { await ensureLink(target, { probe: true }) } catch {}
+      return { ok: true, connected: defaultConnected(), shimPort }
     }
     await ensureConnected()
     return { ok: true, connected: defaultConnected(), shimPort }

@@ -2,6 +2,34 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-08-31 - A revoked device is told so once; confirmation is recorded; grant edits reach live connections
+Tier: T3 (the goodbye changes what the auth gate says to a refused peer); the other two parts
+T2. Proposal `proposals/2026-08-31-grant-fixes-trio.md`, approved by Tim the same day. All
+three ported by hand from `../peerloom-host` (#10/#12/#13), where PearCinema shipped and
+hardware-verified them; PearTune does not consume the shared package, so they had not flowed
+back.
+
+The security reasoning that unlocks the goodbye: never explaining a refusal is right for a
+stranger and wrong for a device holding a tombstoned grant - it already proved possession of
+a key this host granted, so "not any more" leaks nothing. `no-grant` stays silent. The
+farewell channel is a separate function with no method table in scope (never a flag on
+serveMedia), rate-limited to one goodbye per key per minute in a capped book. Revoke's
+guarantee is unchanged: nothing NEW after the cut; the acceptance test changes shape from
+"the socket does not open" to "one socket opens, is told why, every method is refused, the
+next knock is refused outright".
+
+`confirmedUser` records the claim the operator agreed to, so renamePerson stops rewriting
+`claimedUser` (the field the device itself sets) and backfills the recorded answer while the
+old name still exists to compare against. Rows without the field fall back to the old name
+comparison - no migration. `settleClaim` is the missing dashboard answer for a device that
+renamed itself while assigned: keep it with its person, granting nothing.
+
+`serveMedia` returns a handle with `setGrant`; `host.assignDevice` swaps the snapshot on
+every live connection and pushes `grant:changed`, so a reassignment is true now rather than
+at the next reconnect. The phone persists a heard goodbye to disk (`revoked.json`) - an
+in-memory verdict forgets on an airplane-mode relaunch - and clears it on the next dial that
+lands, which is also what makes re-pair need no special case.
+
 > Entries below sometimes say a loose end is "logged in TODO.md". **`TODO.md` and `DONE.md`
 > are local working notes and are not in this repository** - they are gitignored. Open work
 > that matters to anyone outside belongs in the issue tracker; those two files are the
