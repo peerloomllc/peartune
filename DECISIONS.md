@@ -2,6 +2,38 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-08-31 - Per-person folders: grant.paths filled, fail-closed, folder source only
+Tier: T3 (a new rule on the authorisation surface). Proposal
+`proposals/2026-08-31-per-person-folders.md`, approved and shipped the same day (PR #405,
+review note in reviews/). The reserved `paths` null on every grant becomes a list of
+`{ root, rel }` prefixes; one module (`host/visibility.js`) answers visibility and the
+adapter is read through a per-dispatch view off the live grant snapshot, so a narrowing
+lands on open connections with no reconnect.
+
+The decisions that would be easy to unmake by accident:
+
+- **Fail closed, twice.** An item the adapter cannot place is hidden from a narrowed
+  grant, and a SOURCE that cannot enforce a narrowing at all (the Subsonic proxy: no
+  paths, upstream cursors, raw art ids) serves a narrowed grant nothing rather than
+  everything. The dashboard refuses to create that state; the empty view is the backstop
+  for a source swapped under an existing narrowing. Jellyfin (which reports real per-item
+  paths) is the designed-in follow-up, not silently half-supported today.
+- **Music is derived entities.** An album/artist/genre is visible when at least one of
+  its tracks is, and its wire row carries recomputed honest counts. The folder adapter
+  answers this as `Object.create(adapter)` over filtered in-memory pools - every existing
+  method filters itself - with the art gate ahead of the shared cover cache, which
+  answers first and would otherwise serve a hidden album's warmed art.
+- **assign() inherits the person's narrowing.** The value lives per grant, so a device
+  joining a narrowed person copies a sibling's paths - an assignment that silently
+  widens is the hole, not the inconvenience.
+- **Pairing windows carry paths and the panel asks**, neither answer preselected, no
+  code until answered; owner windows drop paths (the owner is never filtered). Both are
+  Tim's calls from the PearCinema round, adopted rather than re-asked.
+- **Downloads already on a phone keep playing** after a narrowing, said out loud on the
+  People page when saving - the host cannot reach an offline phone, and a rule enforced
+  "sometimes" reads as a bug. Narrowing is not revoke; revoke is unchanged (pinned by an
+  integration test).
+
 ## 2026-08-31 - A revoked device is told so once; confirmation is recorded; grant edits reach live connections
 Tier: T3 (the goodbye changes what the auth gate says to a refused peer); the other two parts
 T2. Proposal `proposals/2026-08-31-grant-fixes-trio.md`, approved by Tim the same day. All
