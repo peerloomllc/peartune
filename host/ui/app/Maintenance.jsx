@@ -5,7 +5,7 @@
 
 import { useState } from 'react'
 import { api } from './api'
-import { Modal } from './ui'
+import { Modal, askConfirm } from './ui'
 
 export function MaintenanceModal ({ state, onClose, onSaved, toast }) {
   return (
@@ -72,7 +72,36 @@ export function PasswordSection ({ state, onSaved, toast, heading = 'Dashboard p
         onChange={e => setNext(e.target.value)} onKeyDown={e => e.key === 'Enter' && canSave && change()} />
       <div className='srcdiscard'><button className='link' onClick={() => setNext(suggestPassword())}>Suggest a strong one</button></div>
       <button className='block' style={{ marginTop: 4 }} onClick={change} disabled={!canSave}>{busy ? 'Changing…' : 'Change password'}</button>
+      <SignOutOthers toast={toast} />
     </section>
+  )
+}
+
+// The control people look for after handing a laptop back. A session lives a week
+// and survives a password change on purpose, so changing the password is NOT how you
+// end one - which is exactly the assumption this button exists to correct. It spares
+// the browser it is pressed in.
+function SignOutOthers ({ toast }) {
+  const [busy, setBusy] = useState(false)
+  const go = async () => {
+    if (!await askConfirm({
+      title: 'Sign out every other browser?',
+      message: 'Any other browser signed in to this dashboard is signed out at once. This browser stays signed in, and nothing about your library or devices changes.',
+      confirmLabel: 'Sign them out'
+    })) return
+    setBusy(true)
+    const r = await api('/api/sessions/logout-others', {})
+    setBusy(false)
+    if (!r.ok) return toast('Failed: ' + (r.error || 'could not sign the others out'), true)
+    toast(r.dropped
+      ? `Signed out ${r.dropped} other browser${r.dropped === 1 ? '' : 's'}.`
+      : 'No other browser was signed in.')
+  }
+  return (
+    <>
+      <p className='hint' style={{ marginTop: 12 }}>Changing the password above does not sign out a browser that is already in — sessions last a week. This does.</p>
+      <button className='block ghost' onClick={go} disabled={busy}>{busy ? 'Signing out…' : 'Sign out every other browser'}</button>
+    </>
   )
 }
 
