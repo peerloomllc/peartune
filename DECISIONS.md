@@ -2,6 +2,22 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-08-31 - The requester closes the ask: request.resolve admits the row's requester
+Tier: T3 (an auth gate moves). Proposal `proposals/2026-08-31-the-requester-closes-the-ask.md`,
+approved and shipped the same day; review note in reviews/. A request fans out to every
+reachable host by design, but resolving only ever wrote the one host it was called on, so
+two owners on two machines - the case the app is built for - each kept seeing an answered
+ask as pending. The fix is Tim's shape from the PearCinema round, adopted rather than
+re-asked: the REQUESTING DEVICE coordinates, because it is the only party that knows every
+copy exists (it holds them as refs); hosts never learn of each other. The gate becomes
+"the owner, or the row's own requester - and the requester only to mark a still-pending
+copy added": strictly less power than request.delete already grants (a requester can make
+their ask vanish), a decline never travels (another owner may still want to add it), and a
+requester can never flip an owner's decline. Healing, not firing once: the check runs on
+every merged request list, so a device asleep when the answer came settles it on next
+open, and an old host that refuses with owner-only degrades to today's bug rather than an
+error.
+
 ## 2026-08-31 - Per-person folders: grant.paths filled, fail-closed, folder source only
 Tier: T3 (a new rule on the authorisation surface). Proposal
 `proposals/2026-08-31-per-person-folders.md`, approved and shipped the same day (PR #405,

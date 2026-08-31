@@ -290,6 +290,24 @@ function collapseRequests (rows, { pendingWins = false } = {}) {
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
 }
 
+// The pending copies of asks that were ANSWERED somewhere else (proposal
+// 2026-08-31-the-requester-closes-the-ask): a collapsed row that is `added` on any
+// library still carrying `pending` refs names the refs the requester's device should
+// close. Only `added` travels - a decline is one owner's answer about their own
+// library, so a declined-plus-pending row closes nothing and another owner may still
+// add it. Pure, so the decision is testable without a host.
+function answeredElsewhere (collapsedRows) {
+  const out = []
+  for (const row of collapsedRows || []) {
+    if (!row || !Array.isArray(row.refs)) continue
+    if (!row.refs.some((r) => r && r.status === 'added')) continue
+    for (const r of row.refs) {
+      if (r && r.status === 'pending' && r.libraryId && r.id) out.push({ libraryId: r.libraryId, id: r.id })
+    }
+  }
+  return out
+}
+
 // The inverse of the collapse: which per-host copies a RESOLVE should be sent to. Only the ones
 // still pending - an "added" fan-out must never rewrite a copy another owner already declined,
 // and re-resolving a settled copy would move its resolvedAt for nothing. A row with no refs (an
@@ -343,6 +361,7 @@ module.exports = {
   filterByLibrary,
   bestCopy,
   collapseRequests,
+  answeredElsewhere,
   resolveTargets,
   DUR_BUCKET_MS
 }

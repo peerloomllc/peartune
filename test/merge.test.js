@@ -316,3 +316,40 @@ test('sortItems orders tracks by added, both directions', () => {
   assert.deepEqual(M.sortItems(rows, 'added', 'desc').map(r => r.title), ['new', 'mid', 'old'])
   assert.deepEqual(M.sortItems(rows, 'added', 'asc').map(r => r.title), ['old', 'mid', 'new'])
 })
+
+// --- the requester closes the ask (proposal 2026-08-31) ----------------------
+
+test('answeredElsewhere: an ask added on one library names its pending sibling copies', () => {
+  const rows = M.collapseRequests([
+    { kind: 'album', name: 'X', artist: 'Y', status: 'added', libraryId: 'libA', id: 'a1', createdAt: 2 },
+    { kind: 'album', name: 'X', artist: 'Y', status: 'pending', libraryId: 'libB', id: 'b1', createdAt: 1 },
+    { kind: 'album', name: 'X', artist: 'Y', status: 'pending', libraryId: 'libC', id: 'c1', createdAt: 1 }
+  ])
+  assert.deepEqual(M.answeredElsewhere(rows).sort((x, y) => x.id.localeCompare(y.id)), [
+    { libraryId: 'libB', id: 'b1' },
+    { libraryId: 'libC', id: 'c1' }
+  ])
+})
+
+test('answeredElsewhere: a decline does NOT travel - another owner may still add it', () => {
+  const rows = M.collapseRequests([
+    { kind: 'album', name: 'X', artist: 'Y', status: 'declined', libraryId: 'libA', id: 'a1', createdAt: 2 },
+    { kind: 'album', name: 'X', artist: 'Y', status: 'pending', libraryId: 'libB', id: 'b1', createdAt: 1 }
+  ])
+  assert.deepEqual(M.answeredElsewhere(rows), [])
+})
+
+test('answeredElsewhere: nothing to close when nothing is answered, or nothing is pending', () => {
+  const allPending = M.collapseRequests([
+    { kind: 'album', name: 'X', artist: 'Y', status: 'pending', libraryId: 'libA', id: 'a1' },
+    { kind: 'album', name: 'X', artist: 'Y', status: 'pending', libraryId: 'libB', id: 'b1' }
+  ])
+  assert.deepEqual(M.answeredElsewhere(allPending), [])
+  const allDone = M.collapseRequests([
+    { kind: 'album', name: 'X', artist: 'Y', status: 'added', libraryId: 'libA', id: 'a1' },
+    { kind: 'album', name: 'X', artist: 'Y', status: 'added', libraryId: 'libB', id: 'b1' }
+  ])
+  assert.deepEqual(M.answeredElsewhere(allDone), [])
+  assert.deepEqual(M.answeredElsewhere([{ status: 'added' }]), [], 'a row with no refs closes nothing')
+  assert.deepEqual(M.answeredElsewhere(null), [])
+})
