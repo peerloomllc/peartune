@@ -17,6 +17,7 @@ const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const z32 = require('z32')
+const { tighten } = require('../identity')
 
 const COOKIE = 'peartune_session'
 const MAX_FAILURES = 5
@@ -154,6 +155,28 @@ function createAuth (password) {
     // value to disk is the caller's job (server.js /api/password).
     setPassword (next) {
       secret = crypto.createHash('sha256').update(String(next)).digest()
+    },
+
+    // Which session this request is carrying, so a caller can spare it below.
+    sessionIdOf (req) { return sessionOf(req) },
+
+    // LOG OUT EVERYWHERE - the control people look for after handing a laptop back.
+    //
+    // A session lives a week and SURVIVES a password change by design (setPassword
+    // above says why: the operator changing it must not be thrown out mid-change).
+    // The consequence, which had no answer until now: a browser left logged in
+    // somewhere else stays logged in, and there was nothing short of restarting the
+    // host that could end it.
+    //
+    // `keep` spares one session - the caller passes its own, so the operator pressing
+    // the button is not dumped onto the login page of the dashboard they are holding.
+    // Returns how many browsers were logged out, so the page can say it plainly.
+    logoutEverywhere (keep = null) {
+      const kept = keep && sessions.has(keep)
+      const dropped = sessions.size - (kept ? 1 : 0)
+      sessions.clear()
+      if (kept) sessions.add(keep)
+      return dropped
     }
   }
 }
@@ -193,7 +216,14 @@ function resolveDashboardPassword ({ password, bind, dataDir }) {
   const file = path.join(dataDir, PASSWORD_FILE)
   try {
     const saved = fs.readFileSync(file, 'utf8').trim()
-    if (saved) return { password: saved, source: 'file' }
+    if (saved) {
+      // Tightened on READ too, not only at the write below: a password file restored
+      // from a backup or written by an older build arrives with whatever mode it has,
+      // and this one opens the revoke button. Same rule as host.seed
+      // (host/identity.js tighten).
+      tighten(file)
+      return { password: saved, source: 'file' }
+    }
   } catch {}
 
   const minted = generatePassword()

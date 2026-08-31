@@ -18,7 +18,7 @@ const path = require('path')
 
 const {
   createAuth, requireSafeBind, resolveDashboardPassword, generatePassword,
-  MAX_FAILURES, PASSWORD_FILE
+  MAX_FAILURES, PASSWORD_FILE, COOKIE
 } = require('../host/ui/auth')
 
 // --- fail closed -------------------------------------------------------------
@@ -247,4 +247,129 @@ test('the login page parses (it is a template literal, like the dashboard)', () 
   const script = page.match(/<script>([\s\S]*?)<\/script>/)
   assert.ok(script)
   assert.doesNotThrow(() => new Function(script[1])) // eslint-disable-line no-new-func
+})
+
+// --- session hygiene (2026-08-31) -------------------------------------------
+//
+// A session lives a week and SURVIVES a password change on purpose, so changing the
+// password is not how you end one - which is exactly why "sign out every other
+// browser" had to exist. The last test pins that assumption, because if it ever
+// flips, this control's reason for existing goes with it.
+
+// Sign in N browsers against one auth and hand back their session cookies.
+async function signedIn (auth, base, n) {
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const r = await fetch(base + '/api/login', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'hunter2' })
+    })
+    assert.equal(r.status, 200)
+    out.push(r.headers.get('set-cookie').split(';')[0])
+  }
+  return out
+}
+
+// The same auth object the server uses, so a test can call logoutEverywhere on it.
+async function serverExposingAuth (password) {
+  const auth = createAuth(password)
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost')
+    if (auth.handle(req, res, url)) return
+    res.writeHead(auth.guard(req) ? 200 : 401)
+    res.end('x')
+  })
+  await new Promise(r => server.listen(0, '127.0.0.1', r))
+  return { auth, server, base: `http://127.0.0.1:${server.address().port}` }
+}
+
+const reach = (base, cookie) => fetch(base, { headers: cookie ? { cookie } : {} }).then(r => r.status)
+
+test('logoutEverywhere ends every OTHER browser and spares the one it was pressed in', async (t) => {
+  const { auth, server, base } = await serverExposingAuth('hunter2')
+  t.after(() => server.close())
+  const [mine, laptop, phone] = await signedIn(auth, base, 3)
+  for (const c of [mine, laptop, phone]) assert.equal(await reach(base, c), 200, 'all three are in')
+
+  const dropped = auth.logoutEverywhere(auth.sessionIdOf({ headers: { cookie: mine } }))
+  assert.equal(dropped, 2, 'it says how many browsers it signed out')
+  assert.equal(await reach(base, mine), 200, 'the browser it was pressed in stays signed in')
+  assert.equal(await reach(base, laptop), 401, 'the laptop handed back is out')
+  assert.equal(await reach(base, phone), 401)
+})
+
+test('logoutEverywhere with nothing to keep ends them all, and is safe when empty', async (t) => {
+  const { auth, server, base } = await serverExposingAuth('hunter2')
+  t.after(() => server.close())
+  const [only] = await signedIn(auth, base, 1)
+
+  assert.equal(auth.logoutEverywhere(null), 1)
+  assert.equal(await reach(base, only), 401)
+  // Idempotent, and an unknown "keep" cannot resurrect a session.
+  assert.equal(auth.logoutEverywhere('not-a-real-session'), 0)
+  assert.equal(await reach(base, 'peartune_session=not-a-real-session'), 401)
+})
+
+test('sessionIdOf reads exactly the cookie the guard reads', async (t) => {
+  const { auth, server, base } = await serverExposingAuth('hunter2')
+  t.after(() => server.close())
+  const [cookie] = await signedIn(auth, base, 1)
+  const sid = auth.sessionIdOf({ headers: { cookie } })
+  assert.ok(sid)
+  assert.equal(cookie, COOKIE + '=' + sid, 'the id is the cookie value, nothing else')
+  assert.equal(auth.sessionIdOf({ headers: {} }), null)
+})
+
+test('A PASSWORD CHANGE STILL SIGNS NOBODY OUT - the reason this control exists', async (t) => {
+  const { auth, server, base } = await serverExposingAuth('hunter2')
+  t.after(() => server.close())
+  const [cookie] = await signedIn(auth, base, 1)
+
+  auth.setPassword('a-new-password')
+  assert.equal(await reach(base, cookie), 200, 'still signed in after the password change')
+  assert.equal(auth.logoutEverywhere(null), 1, 'and THIS is what ends it')
+  assert.equal(await reach(base, cookie), 401)
+})
+
+// --- secret files are owner-only, on READ as well as write (2026-08-31) ------
+
+test('a seed file restored world-readable is tightened when it is read', () => {
+  const { loadOrCreateSeed } = require('../host/identity')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pt-seed-'))
+  try {
+    // A seed as a backup restore, a scp, or an older build would leave it. The 0600
+    // on the WRITE path never saw this file.
+    const seedFile = path.join(dir, 'host.seed')
+    fs.writeFileSync(seedFile, 'a'.repeat(64), { mode: 0o644 })
+    assert.equal(fs.statSync(seedFile).mode & 0o777, 0o644, 'the fixture really is world-readable')
+
+    loadOrCreateSeed(dir)
+    assert.equal(fs.statSync(seedFile).mode & 0o777, 0o600, 'reading it is what tightens it')
+
+    // And it still returns the seed, unchanged.
+    assert.equal(loadOrCreateSeed(dir).toString('hex'), 'a'.repeat(64))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a dashboard-password file restored world-readable is tightened when it is read', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pt-pw-'))
+  try {
+    const pwFile = path.join(dir, PASSWORD_FILE)
+    fs.writeFileSync(pwFile, 'restored-from-a-backup\n', { mode: 0o644 })
+
+    const out = resolveDashboardPassword({ password: '', bind: '0.0.0.0', dataDir: dir })
+    assert.equal(out.source, 'file')
+    assert.equal(out.password, 'restored-from-a-backup', 'the password is still usable')
+    assert.equal(fs.statSync(pwFile).mode & 0o777, 0o600, 'and the file that opens the revoke button is owner-only now')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('tighten never throws on a filesystem that cannot express the mode', () => {
+  // A Windows volume, a FAT USB drive, some bind mounts. Refusing to run there to
+  // enforce a mode the platform does not have would be the worse failure.
+  const { tighten } = require('../host/identity')
+  assert.equal(tighten(path.join(os.tmpdir(), 'peartune-no-such-file-' + Date.now())), false)
 })

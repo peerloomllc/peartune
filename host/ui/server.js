@@ -391,6 +391,18 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
       // file); if PEARTUNE_PASSWORD is set the platform owns it and a change here would
       // be overwritten on the next restart (env wins in resolveDashboardPassword), so
       // we refuse and say where to change it.
+      // SIGN OUT EVERY OTHER BROWSER. A session lives a week and survives a
+      // password change on purpose, so a laptop left logged in elsewhere stayed
+      // logged in with nothing short of a host restart to end it. This spares the
+      // caller's own session, so pressing it does not log you out of the page you
+      // pressed it on, and answers with the count so the page can say it plainly.
+      if (req.method === 'POST' && url.pathname === '/api/sessions/logout-others') {
+        if (!auth.enabled) return json(res, 400, { error: 'no dashboard password is set (loopback bind)' })
+        const dropped = auth.logoutEverywhere(auth.sessionIdOf(req))
+        host.log('dashboard:logout-others', { dropped })
+        return json(res, 200, { ok: true, dropped })
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/password') {
         if (!auth.enabled) return json(res, 400, { error: 'no dashboard password is set (loopback bind)' })
         if (pwSource === 'explicit') {
