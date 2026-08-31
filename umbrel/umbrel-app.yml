@@ -67,22 +67,20 @@ gallery:
   - https://peerloomllc.com/assets/gallery-peartune-3.jpg
 releaseNotes: |-
   New Features
-  - Share only part of your library. Tick the folders each person should hear, and everything else disappears for them. It applies while they are listening, and widening it back brings their favourites with it.
-  - Sign out every other browser, from the dashboard.
-  - Accept a new name from someone's device without moving it elsewhere.
+  - Owners can now choose which folders each person is allowed to hear. Tick the folders on the People page and the rest of the library disappears for them - not listed, not searchable, not playable. It takes effect straight away, even mid-song. (Folder libraries only for now.)
+  - If your access to a library is taken away, your phone now says so plainly instead of looking like the library is offline.
+  - The library dashboard has a button to sign out every other browser, so a laptop you handed back stops being signed in.
   Improvements
-  - A device whose access was removed now says so, instead of looking like a network problem. It remembers while offline, stops retrying and reconnects by itself if you let it back in.
-  - Dashboard changes reach a listening phone at once, with no reconnect.
-  - Skipping a track stops your server converting music you skipped past.
-  - Music one owner adds stops showing as an open request on everyone else's dashboard.
-  Bug Fixes
-  - Renaming someone no longer changes the name their own phone shows.
-  - A device moved to another person mid-song files its progress under the right one.
-  - The "Continue listening" card no longer lingers after your session is restored.
+  - Skipping or scrubbing a track no longer keeps the library sending music you already skipped past. Less work for the server and less mobile data for you.
+  - If you asked several libraries for the same song, answering it in one now clears it from the others instead of leaving it looking pending forever.
+  - Renaming someone in the dashboard no longer overwrites the name their own device chose.
+  - Moving a device to a different person now reaches that device immediately, without waiting for it to reconnect.
   Security
-  - Your desktop dashboard now answers only your own computer. A website you had open could previously send it commands. Servers with a password, like Umbrel, were never exposed.
-  - The app opens only web, email and payment links, and asks for the camera alone.
-  - Your server's identity key and dashboard password are locked down on every read.
+  - A website open in your browser can no longer send commands to a library dashboard running on the same computer.
+  - The app now only opens ordinary web, email and payment links, and asks for the camera and nothing else.
+  - The library's private key and dashboard password files are re-locked every time they are read, so a copy restored from a backup cannot arrive readable
+  Bug Fixes
+  - When restoring your last listening session fails, the app now tells you instead of silently doing nothing.
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the
