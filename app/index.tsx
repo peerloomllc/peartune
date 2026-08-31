@@ -33,6 +33,8 @@ const bundle = require('../assets/bare-universal.bundle')
 const { reindexAfterMove, reindexAfterRemove } = require('./queue-index')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { decideStarve, decideRecover } = require('./starve')
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { openableUrl } = require('./openable')
 
 // THE DEMO LIBRARY (proposal 2026-07-28-app-review-demo). Five CC0 tracks that ship inside the
 // app so PearTune works with no server at all - see assets/demo-music/LICENSE.md for why they are
@@ -1757,6 +1759,10 @@ export default function App () {
       }
       if (msg.method === 'shell:openUrl') {
         if (!msg.args?.url) return reply({ error: 'url required' })
+        if (!openableUrl(msg.args.url)) {
+          console.warn('[shell] refused to open ' + String(msg.args.url).slice(0, 24))
+          return reply({ error: 'unsupported url scheme' })
+        }
         await Linking.openURL(msg.args.url)
         return reply({ result: { ok: true } })
       }
@@ -1865,7 +1871,33 @@ export default function App () {
           mixedContentMode='always'
           // The QR scanner runs in the WebView (getUserMedia), same as PearList.
           mediaCapturePermissionGrantType='grant'
-          onPermissionRequest={(ev: any) => { try { ev?.grant?.(ev.resources) } catch {} }}
+          // THE CAMERA, AND NOTHING ELSE. This used to grant whatever was asked
+          // (ev.resources verbatim), so a page that could ask - which needs the
+          // bundled UI compromised first, but that is the point of defence in
+          // depth - got the microphone for the asking. The scanner is the only
+          // capture this app has ever wanted.
+          onPermissionRequest={(ev: any) => {
+            try {
+              const asked: string[] = ev?.resources || []
+              const camera = asked.filter((r) => String(r).includes('VIDEO_CAPTURE'))
+              if (camera.length === asked.length && camera.length > 0) ev.grant(camera)
+              else ev.deny?.()
+            } catch {}
+          }}
+          // A NAVIGATION GUARD, because originWhitelist above is ['*']: the UI is
+          // one bundled page that never navigates anywhere, so anything trying to
+          // is either an accident or a redirect somebody injected. Our own document
+          // and about:blank load; every other destination is refused, and an http(s)
+          // one is handed to the browser where it belongs rather than silently lost.
+          onShouldStartLoadWithRequest={(req: any) => {
+            const url = String(req?.url || '')
+            if (url === 'about:blank' || url.startsWith('https://localhost/')) return true
+            if (/^https?:\/\//i.test(url) && req?.navigationType !== 'other') {
+              Linking.openURL(url).catch(() => {})
+            }
+            console.warn('[webview] refused navigation to ' + url.slice(0, 32))
+            return false
+          }}
           style={{ flex: 1, backgroundColor: bg }}
         />
       )}

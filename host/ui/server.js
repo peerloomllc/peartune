@@ -58,6 +58,60 @@ async function readBody (req) {
   }
 }
 
+// WHO IS ALLOWED TO ASK, when there is no password to ask for.
+//
+// Found 2026-08-31 by an audit of PearCinema (proposal-free T2 fix, their PR #238) and
+// VERIFIED present here. The desktop tray app starts this dashboard with no password
+// (loopback bind, so that was reasonable) - and with no password there is no session
+// cookie, so SameSite=Strict guards nothing. Two attacks follow, and each header stops
+// a different one:
+//
+//   - ORIGIN closes plain CSRF, where a page Tim visits blind-POSTs here. readBody
+//     above accepts any content-type, so it is a CORS "simple" request with no
+//     preflight, and the Host header on it is OURS - Host alone would never see it. The
+//     page cannot read the answer, but /api/source, /api/pair/start and /api/revoke all
+//     do their damage on the way IN.
+//   - HOST closes DNS rebinding, where evil.example re-resolves to 127.0.0.1 so the
+//     browser believes the page and the dashboard are one origin and hands the answers
+//     over - a pairing window opened and its link read is full library access. There
+//     Origin says evil.example and looks legitimate to a same-origin check, while the
+//     Host header still carries the attacker's name.
+//
+// ONLY WHEN THERE IS NO PASSWORD, deliberately. With one, the session cookie is
+// SameSite=Strict, which is the control for both cases: a cross-site request never
+// carries it, and a rebound page is a DIFFERENT origin from the one it was set on, so
+// it does not carry it either. And a password means the dashboard may be on a LAN,
+// where the legitimate name is umbrel.local or a bare IP and nothing here can know it.
+// Refusing those would break the Umbrel install to fix the desktop one.
+const LOOPBACK_NAMES = new Set(['localhost', '::1', '[::1]', '0000:0000:0000:0000:0000:0000:0000:0001'])
+
+function isLoopbackName (value) {
+  const name = String(value || '').trim().toLowerCase()
+  if (!name) return false
+  // Strip the port. An IPv6 literal keeps its brackets, which is what the set holds.
+  const hostname = name.startsWith('[') ? name.slice(0, name.indexOf(']') + 1) : name.split(':')[0]
+  if (LOOPBACK_NAMES.has(hostname)) return true
+  // The whole 127/8 block, not just 127.0.0.1 - a rebind to 127.0.0.2 is the same host.
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
+}
+
+// True when the request may proceed. `origin` absent is normal and fine: a browser
+// omits it on same-origin GETs and on <img src>, and a terminal (curl, a script, a
+// test) sends neither header we would object to.
+function sameHostRequest (req) {
+  if (!isLoopbackName(req.headers.host)) return false
+
+  const origin = req.headers.origin
+  if (origin === undefined) return true
+  // A sandboxed iframe and a file:// page both send "null". Neither is our dashboard.
+  if (origin === 'null') return false
+  try {
+    return isLoopbackName(new URL(origin).hostname)
+  } catch {
+    return false
+  }
+}
+
 async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password = '', passwordSource = 'none', version = null, updateChecker = null, applier = null }) {
   // Before anything listens. A control plane on a LAN with no password is not a
   // configuration we are willing to run, so this throws rather than warns.
@@ -74,6 +128,16 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
     const url = new URL(req.url, 'http://localhost')
 
     try {
+      // sameHostRequest: without a password there is no cookie, so SameSite protects
+      // nothing and a visited web page can drive this dashboard. See the note above.
+      // Gated on !auth.enabled so a password-protected LAN install (the Umbrel) is
+      // untouched - it answers 401 to a stranger, as it always has.
+      if (!auth.enabled && !sameHostRequest(req)) {
+        host.log('dashboard:foreign-request', { host: req.headers.host || null, origin: req.headers.origin || null, path: url.pathname })
+        res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+        return res.end('reach this dashboard at http://127.0.0.1 or http://localhost\n')
+      }
+
       // Login, logout, and the 401 for everything else. Returns true if it dealt
       // with the request itself.
       if (auth.enabled && auth.handle(req, res, url)) return
