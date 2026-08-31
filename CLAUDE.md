@@ -32,8 +32,14 @@ validated on real hardware - TCL + Umbrel + Navidrome, 1358 tracks. Gapless
 playback, shuffle/repeat, per-person grants, the app shell (bottom navbar, nav
 stack, Android back, Settings, About) and artist browsing all shipped.
 
-Next up is milestone 3 (offline + Autobase ledger) and milestone 4 (ship it).
-Work tracked in `TODO.md`, newest decisions in `DECISIONS.md`.
+Milestones 3 and 4 shipped too, and NOT the way the original plan said: user state
+(favorites, resume, counts, playlists) is stored ON THE HOST (host/state.js,
+host-as-hub), which superseded the 2026-07-13 Autobase-ledger design - there is no
+Autobase anywhere in this tree. The app is released: App Store, Play, Zapstore, the
+Umbrel community store and GitHub, one version number across all of them (1.0.6 as
+of 2026-08-29). Work tracked in `TODO.md`, newest decisions in `DECISIONS.md`.
+test/claude-md.test.js holds this file's claims against the code, so update both
+together.
 
 ## Architecture
 
@@ -45,7 +51,7 @@ Work tracked in `TODO.md`, newest decisions in `DECISIONS.md`.
 │  Bare worklet          worklet/          │
 │    - device identity (@peerloom/core)    │
 │    - HyperDHT client -> host             │
-│    - Autobase ledger (resume/fav/counts) │
+│    - offline outbox (fav/resume writes)  │
 │    - pin + LRU audio cache               │
 └──────────────────────────────────────────┘
                     │ HyperDHT, Noise-authenticated
@@ -56,8 +62,9 @@ Work tracked in `TODO.md`, newest decisions in `DECISIONS.md`.
 │  - grant store (local, NOT replicated)   │
 │  - source adapters:                      │
 │      Navidrome (Subsonic API)            │
-│      raw folder (tag scan)               │
-│  - Autobase writer + seeder              │
+│      Jellyfin, raw folder (tag scan)     │
+│  - user state store (host-as-hub:        │
+│      favs, resume, counts, playlists)    │
 │  - Preact dashboard (pair, grant, revoke)│
 └──────────────────────────────────────────┘
 ```

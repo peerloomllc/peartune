@@ -33,3 +33,15 @@ test('every volume in the Umbrel compose is a SHORT-syntax string (umbreld patch
     'the external-drive mount must stay short-syntax with ro,rslave'
   )
 })
+
+// A floating tag means an install cannot be reproduced and a bad release cannot be
+// rolled back by re-pinning the previous one - which is the whole rollback plan.
+// build-image.sh pins the digest when it syncs the store, but nothing stopped a hand
+// edit from committing a bare tag here; this does.
+test('the Umbrel compose image is pinned by digest, not a floating tag', () => {
+  const text = fs.readFileSync(FILE, 'utf8')
+  const image = text.match(/^\s*image:\s*(.+)$/m)
+  assert.ok(image, 'no image: line in umbrel/docker-compose.yml')
+  assert.match(image[1], /@sha256:[0-9a-f]{64}/,
+    `the image must be pinned by digest, got: ${image[1].trim()}`)
+})

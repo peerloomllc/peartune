@@ -30,7 +30,7 @@ There is no account to sign in to. That is the design, not an omission - PearTun
 
   1. Open the app. On the first card, tap "Get started".
   2. "Who is this?" - type anything into both fields, for example "Alex" and "iPhone". The Continue button stays disabled until both are filled. Tap "Continue".
-  3. "Where is your music?" - tap the third option, "I don't have one yet".
+  3. When it asks where your music is, tap the third option, "I don't have one yet".
   4. It says "Setting up..." for a few seconds while it copies the bundled audio out of the app, then opens the library.
 
   You will then have five real tracks and can browse by album, artist and genre, search, play, pause, seek, use gapless playback, shuffle, repeat, the sleep timer, the lock screen controls and background audio. This works with no network at all - it has been tested in airplane mode on a device that has never been paired to anything.
