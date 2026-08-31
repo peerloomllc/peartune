@@ -201,4 +201,26 @@ const paired = {
   }
 }
 
-module.exports = { json, req, res, chunk, end, err, push, deviceHello, paired }
+// Client -> host. Stop answering request `id` - the requester has forgotten it
+// (the player abandoned a range, the response closed, a scrub moved on). No
+// reply: the host stops sending and never emits end or err for a cancelled id.
+// Both ends already tolerate frames for ids they no longer know, so a cancel
+// racing the stream's natural end is harmless in either order. Appended LAST
+// (type 6), the same rule push above followed: an old host that never registered
+// it drops the frame and streams to completion, which is exactly today's
+// behaviour. Approved in proposals/2026-08-31-stream-cancel.md.
+const cancel = {
+  preencode (state, m) {
+    c.uint.preencode(state, m.id)
+  },
+  encode (state, m) {
+    c.uint.encode(state, m.id)
+  },
+  decode (state) {
+    return {
+      id: c.uint.decode(state)
+    }
+  }
+}
+
+module.exports = { json, req, res, chunk, end, err, push, cancel, deviceHello, paired }

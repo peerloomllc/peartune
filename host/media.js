@@ -50,6 +50,18 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
   // sender from the presence registry, so a dead channel is never pushed to.
   let unregisterPresence = () => {}
 
+  // The streamed responses currently in flight, request id -> { source, cancelled }.
+  // This is what a cancel frame reaches for: destroy the source, flag the pipe
+  // (proposal 2026-08-31-stream-cancel).
+  const liveStreams = new Map()
+
+  // Cancels that arrived BEFORE their stream started piping. The window is real: a
+  // scrub cancels milliseconds after requesting, and the request may still be inside
+  // the adapter's stream() - for a transcoded format that is an ffmpeg spawn.
+  // Bounded, because a peer could send cancels for ids that will never exist.
+  const preCancelled = new Set()
+  const PRE_CANCELLED_MAX = 128
+
   // Registration order is fixed in protocol/channels.js and MUST match the
   // client's. Do not hand-roll addMessage here - see the note in that file.
   const built = mediaChannel(mux, {
@@ -62,6 +74,23 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         log('media:dispatch-failed', { method: m?.method, err: e?.message })
         safeErr(m?.id ?? 0, ERR.INTERNAL, 'internal error')
       }
+    },
+    oncancel: (m) => {
+      const live = liveStreams.get(m.id)
+      if (!live) {
+        // Not piping yet - remember the id so a stream still opening dies at birth
+        // instead of streaming to a player that already hung up.
+        preCancelled.add(m.id)
+        if (preCancelled.size > PRE_CANCELLED_MAX) {
+          preCancelled.delete(preCancelled.values().next().value)
+        }
+        return
+      }
+      // Destroy the SOURCE, not just the pipe: closing a file read stops the disk,
+      // and EPIPEing a transcoding ffmpeg frees the engine slot at the scrub.
+      live.cancelled = true
+      try { live.source.destroy?.() } catch {}
+      log('media:cancelled', { id: m.id })
     }
   })
 
@@ -127,24 +156,40 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
   }
 
   async function pipeStream (id, stream) {
+    // The cancel already arrived while the stream was opening. Kill it at birth.
+    if (preCancelled.delete(id)) {
+      try { stream.destroy?.() } catch {}
+      log('media:cancelled', { id, at: 'open' })
+      return
+    }
     let seq = 0
     let total = 0
+    const live = { source: stream, cancelled: false }
+    liveStreams.set(id, live)
     try {
       for await (const buf of stream) {
         // Frames are capped so a seek is never stuck behind one fat in-flight
         // chunk, regardless of what the source hands us.
         for (let off = 0; off < buf.length; off += CHUNK_SIZE) {
+          // Cancelled mid-pipe: no more chunks, and no end frame either - the
+          // client forgot this id the moment it hung up.
+          if (live.cancelled) return
           const slice = buf.subarray(off, Math.min(off + CHUNK_SIZE, buf.length))
           const ok = send.chunk.send({ id, seq: seq++, data: slice })
           total += slice.length
           if (!ok) await drain()
-          if (channel.closed) return
+          if (channel.closed || live.cancelled) return
         }
       }
       send.end.send({ id, total })
     } catch (e) {
+      // A destroyed source throws out of the iterator - that is the cancel
+      // WORKING, not a failure to report to a client that already hung up.
+      if (live.cancelled) return
       log('media:stream-failed', { id, err: e?.message })
       safeErr(id, ERR.INTERNAL, 'stream failed')
+    } finally {
+      liveStreams.delete(id)
     }
   }
 

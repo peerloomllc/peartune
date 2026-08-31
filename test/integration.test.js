@@ -1772,3 +1772,63 @@ test('two hosts, one ask: a DECLINE on one leaves the other pending', async (t) 
   assert.deepEqual(merge.answeredElsewhere(merge.collapseRequests(tagged)), [], 'a decline does not travel')
   assert.equal((await hostB.userState.listRequests()).find(r => r.id === filedB.id).status, 'pending')
 })
+
+// --- stream cancel (proposal 2026-08-31-stream-cancel) -----------------------
+
+test('stream cancel: the host stops at the scrub, and the channel stays healthy', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  const { items } = await client.list({ type: 'tracks' })
+  const id = items[0].id
+
+  // Cancel a quarter of the way in - the scrub. The promise RESOLVES with the
+  // marker (never rejects: failover keys on stream failure, and a player hanging
+  // up is the opposite of a host dying).
+  let received = 0
+  const p = client.stream({ trackId: id }, (chunk) => {
+    received += chunk.length
+    if (received > 256 * 1024) p.cancel()
+  })
+  const out = await withTimeout(p, 5000)
+  assert.equal(out.cancelled, true)
+  assert.ok(received < TRACK_BYTES, `the stream must not have completed (got ${received} of ${TRACK_BYTES})`)
+
+  // The host forgot the pipe, and late chunks (if any raced the cancel) were
+  // dropped without a pending entry to corrupt. A settle beat, then prove the
+  // count stopped moving.
+  const at = received
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  assert.equal(received, at, 'no chunks after the cancel settled')
+
+  // The same channel serves the next request in full - a cancel is one request
+  // hanging up, not the connection.
+  const whole = await withTimeout(client.stream({ trackId: id }), 15000)
+  assert.equal(whole.length, TRACK_BYTES, 'a fresh stream on the same channel completes intact')
+
+  // Cancelling a request that already finished is a harmless no-op.
+  const done = client.stream({ trackId: id })
+  await withTimeout(done, 15000)
+  assert.equal(done.cancel(), false)
+})
+
+test('stream cancel: a cancel racing the open kills the stream at birth', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+
+  const { items } = await client.list({ type: 'tracks' })
+  const id = items[0].id
+
+  // The id the NEXT request will use, cancelled before the request exists - the
+  // host must remember it (bounded) and kill the stream as it opens. The client
+  // side then hears nothing at all: no chunks, no end, no err.
+  client.send.cancel.send({ id: client._nextId })
+  let received = 0
+  const p = client.stream({ trackId: id }, (c) => { received += c.length })
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+  assert.equal(received, 0, 'a pre-cancelled stream delivers nothing')
+  assert.equal(p.cancel(), true, 'the local pending entry is still ours to clean up')
+  assert.deepEqual(await p, { cancelled: true })
+})
