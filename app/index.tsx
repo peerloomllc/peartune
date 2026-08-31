@@ -1728,8 +1728,25 @@ export default function App () {
     }
 
     if (local[msg.method]) {
-      const result = local[msg.method]()
-      return reply({ result: result ?? { ok: true } })
+      // AWAIT A THENABLE BEFORE REPLYING. Several of these are async (play,
+      // enqueue, restore, switchQueue, playHere), and replying with the Promise
+      // itself serialized it: the UI got `{"_h":0,"_i":0,...}` on Hermes instead of
+      // the answer, so `call('restore').then(r => r?.restored)` in src/ui/App.jsx
+      // had never once seen `restored` - on mount or on host:connected. The restore
+      // ran; only its answer was lost, which is why nothing looked broken (found
+      // 2026-08-29 while fixing the queue loss).
+      //
+      // A rejection becomes an error the UI can show, rather than an unhandled one:
+      // the bridge's `call` rejects on { error }, and every caller of these already
+      // catches. Sync methods are unchanged - `await` on a non-thenable is the same
+      // value, one microtask later.
+      try {
+        const result = await local[msg.method]()
+        return reply({ result: result ?? { ok: true } })
+      } catch (e: any) {
+        console.warn('[shell] ' + msg.method + ' failed: ' + (e?.message || e))
+        return reply({ error: e?.message || String(e) })
+      }
     }
 
     // Shell services the WebView cannot do for itself: the OS share sheet, opening
