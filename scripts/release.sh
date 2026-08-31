@@ -172,6 +172,39 @@ _confirm() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: publish the community app store listing (step 13c)
+#
+# Everything the manual publish used to be: branch from the branch the store
+# actually serves, commit the synced listing, push, open the PR and merge it.
+# Asked for first by 13c, never run unprompted.
+#
+# Returns non-zero on the first thing that fails, leaving the clone wherever it
+# got to. That is deliberate: 13c's gate then reports the release as incomplete
+# with the state visible, rather than a half-publish passing as clean.
+#
+# Usage: _publish_umbrel_store <dir> <default-branch> <branch> <title> <body>
+# ---------------------------------------------------------------------------
+_publish_umbrel_store() {
+  local dir="$1" base="$2" branch="$3" title="$4" body="$5"
+
+  git -C "$dir" fetch --quiet origin || return 1
+  # A branch cut from origin/$base, so a clone left on some other branch still
+  # publishes. The uncommitted listing files come along unless they conflict,
+  # and a conflict fails here rather than committing the wrong tree.
+  git -C "$dir" checkout -q -b "$branch" "origin/$base" || return 1
+  git -C "$dir" add -- '*peartune*' || return 1
+  git -C "$dir" commit -q -m "$title" -m "$body" || return 1
+  git -C "$dir" push -q -u origin "$branch" || return 1
+
+  ( cd "$dir" && gh pr create --base "$base" --head "$branch" \
+      --title "$title" --body "$body" ) || return 1
+  ( cd "$dir" && gh pr merge "$branch" --squash --delete-branch ) || return 1
+
+  git -C "$dir" checkout -q "$base" 2>/dev/null || true
+  git -C "$dir" pull -q --ff-only || true
+}
+
+# ---------------------------------------------------------------------------
 # Helper: fetch latest version from GitHub releases (returns bare X.Y.Z or "")
 # ---------------------------------------------------------------------------
 _github_latest_version() {
@@ -3393,7 +3426,7 @@ if $APP_STORE_DEFERRED; then
 fi
 
 # ---------------------------------------------------------------------------
-# 13c. Community app store gate
+# 13c. Community app store: publish it, then gate on it being published
 #
 # The PeerLoom community store served PearCircle's seeder at 1.0.19 for SEVEN
 # releases. Not because anything failed - because the image step bumps the
@@ -3408,19 +3441,62 @@ fi
 # already succeeded and must not be rolled back. This only refuses to call the
 # run clean.
 #
-# Two distinct traps are checked, because both have actually happened:
+# Three distinct traps are checked, because all three have actually happened:
 #   1. uncommitted bumps  - the manifests were edited but never committed
 #   2. wrong branch       - the clone was sitting on a feature branch, so even
 #                           committing in place would not publish; the store
 #                           serves its default branch
+#   3. committed, not merged - the bump reached a branch or an open PR, so the
+#                           clone is clean while the store still serves the old
+#                           version. Checked against origin's default branch,
+#                           which is what a user's umbrelOS actually reads.
+#
+# Since 1.0.7 the script also OFFERS to do the publish, because the gate on its
+# own could only ever refuse the run: it caught 1.0.7 exactly as designed and
+# still left the store on 1.0.6 until someone finished the job by hand. One y/N,
+# then branch + commit + push + PR + merge. Answering no falls straight through
+# to the gate below, so declining still fails the release rather than passing it.
 # ---------------------------------------------------------------------------
 if [ -n "${UMBREL_STORE_DIR:-}" ] && [ -d "${UMBREL_STORE_DIR}/.git" ]; then
+  git -C "$UMBREL_STORE_DIR" fetch --quiet origin 2>/dev/null || true
   _store_dirty=$(git -C "$UMBREL_STORE_DIR" status --porcelain -- '*peartune*' 2>/dev/null)
   _store_branch=$(git -C "$UMBREL_STORE_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
   # The branch the store actually serves, straight from the remote rather than
   # assumed to be "master" - it differs between forks.
   _store_default=$(git -C "$UMBREL_STORE_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
   _store_default="${_store_default:-master}"
+
+  # --- the offer -----------------------------------------------------------
+  # Not _confirm: that exits 0 on "n", which here would end the run clean with
+  # the store unpublished - the exact failure this section exists to prevent.
+  if [ -n "$_store_dirty" ] && [ -t 0 ] && command -v gh > /dev/null 2>&1; then
+    echo ""
+    echo "==> Community app store: $UMBREL_STORE_DIR carries the $RELEASE_TAG listing."
+    git -C "$UMBREL_STORE_DIR" diff --stat -- '*peartune*' 2>/dev/null | sed 's/^/      /'
+    echo ""
+    echo "    Publishing branches from origin/$_store_default, commits, pushes, opens"
+    echo "    the PR and merges it. Umbrel users are offered $RELEASE_TAG once it lands."
+    _store_reply=""
+    read -rp "    Publish the community app store listing for $RELEASE_TAG? [y/N] " _store_reply || true
+    echo ""
+    case "$_store_reply" in
+      [Yy])
+        _store_title="peartune: ${APP_VERSION}"
+        [ -n "$HOST_IMAGE_BUILT" ] && _store_title="$_store_title - host image ${HOST_IMAGE_BUILT}"
+        _store_body="Listing sync for the PearTune ${RELEASE_TAG} release, written by scripts/release.sh from the in-repo umbrel/ manifests."
+        if _publish_umbrel_store "$UMBREL_STORE_DIR" "$_store_default" \
+             "peartune-${APP_VERSION}" "$_store_title" "$_store_body"; then
+          echo "    Community app store published (${_store_default} now serves ${APP_VERSION})."
+          git -C "$UMBREL_STORE_DIR" fetch --quiet origin 2>/dev/null || true
+          _store_dirty=$(git -C "$UMBREL_STORE_DIR" status --porcelain -- '*peartune*' 2>/dev/null)
+          _store_branch=$(git -C "$UMBREL_STORE_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
+        else
+          echo "    WARNING: the automatic publish did not finish. The gate below has the details."
+        fi
+        ;;
+      *) echo "    Skipped. The gate below will report the release as incomplete." ;;
+    esac
+  fi
 
   if [ -n "$_store_dirty" ]; then
     echo ""
@@ -3442,6 +3518,30 @@ if [ -n "${UMBREL_STORE_DIR:-}" ] && [ -d "${UMBREL_STORE_DIR}/.git" ]; then
     fi
     echo "  Everything else in this release succeeded and is live. Publish the"
     echo "  store, then this is done."
+    echo ""
+    exit 1
+  fi
+
+  # --- trap 3: clean clone, still-unpublished store ------------------------
+  # A committed bump sitting on a branch, or in a PR nobody merged, leaves the
+  # clone clean while every umbrelOS still reads the old listing off origin's
+  # default branch. Scoped to runs that actually synced the listing: the local
+  # copy naming THIS version is what says the sync happened, so a release that
+  # never touched the store cannot trip this.
+  _store_local_ver=$(grep -m1 -E '^version:' "$UMBREL_STORE_DIR/peerloom-peartune/umbrel-app.yml" 2>/dev/null | sed -E 's|^version: "?([^"]*)"?|\1|')
+  _store_live_ver=$(git -C "$UMBREL_STORE_DIR" show "origin/${_store_default}:peerloom-peartune/umbrel-app.yml" 2>/dev/null | grep -m1 -E '^version:' | sed -E 's|^version: "?([^"]*)"?|\1|')
+  if [ "$_store_local_ver" = "$APP_VERSION" ] && [ -n "$_store_live_ver" ] \
+     && [ "$_store_live_ver" != "$APP_VERSION" ]; then
+    echo ""
+    echo "=========================================================================="
+    echo "  RELEASE INCOMPLETE: the community app store was NOT published"
+    echo "=========================================================================="
+    echo ""
+    echo "  $UMBREL_STORE_DIR has no uncommitted changes, but origin/$_store_default"
+    echo "  still serves version $_store_live_ver, not $APP_VERSION. The bump is"
+    echo "  committed somewhere that users never read - a branch, or a PR left open."
+    echo ""
+    echo "  Merge it into $_store_default. Everything else in this release is live."
     echo ""
     exit 1
   fi

@@ -63,8 +63,9 @@ _ver_gt() {
 # So the in-repo umbrel/ is the source of truth and the store copy is overwritten from it
 # wholesale. Anything stale in the store cannot survive a release.
 #
-# Committing + pushing that repo stays manual (it publishes to real users); release.sh's
-# step 13c refuses to call the run clean until it is done.
+# Publishing that repo is release.sh's step 13c: it asks once, then commits, pushes, opens
+# the PR and merges it, and refuses to call the run clean until origin's default branch
+# actually serves this version. Committing here by hand still works and 13c will see it.
 # ---------------------------------------------------------------------------
 if [ -n "${STORE_DIR:-}" ] && [ -d "${STORE_DIR}" ]; then
   DEST="${STORE_DIR}/peerloom-peartune"
@@ -98,7 +99,7 @@ if [ -n "${STORE_DIR:-}" ] && [ -d "${STORE_DIR}" ]; then
   echo "== community store synced from umbrel/ =="
   echo "   $DEST  (version: ${VER}, image pinned to ${VER}@${DIGEST})"
   git -C "$STORE_DIR" status --porcelain -- '*peartune*' | sed 's/^/   /'
-  echo "   commit + push that repo to publish - release.sh step 13c checks it"
+  echo "   release.sh step 13c publishes that repo (asks first) and gates on it"
 else
   echo
   echo "== community store NOT synced (set STORE_DIR to a local clone to auto-sync) =="
