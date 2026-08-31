@@ -218,6 +218,12 @@ export default function App () {
   // 2026-07-24). This is the missing third state - trying - and it is not a guess:
   // the worklet says how the attempt ended, host:connected or host:disconnected.
   const [firstConnect, setFirstConnect] = useState(false)
+  // A library that said goodbye: { libraryId, libraryName, reason }. The host now TELLS a
+  // once-granted device it was revoked (access:revoked), so the not-connected wall can say
+  // the truth instead of guessing between "off" and "revoked". Seeded from init (the
+  // worklet persists the verdict) and cleared when that library connects again - a dial
+  // that lands is a grant existing.
+  const [revoked, setRevoked] = useState(null)
   const [shuffle, setShuffle] = useState(false)
   const [repeat, setRepeat] = useState(0) // 0 off, 1 one, 2 all
   const [sleep, setSleep] = useState(null) // sleep timer: { active, endOfTrack, deadline } from the shell
@@ -328,6 +334,10 @@ export default function App () {
     call('init')
       .then((s) => {
         setState({ ...s, loading: false })
+        // A goodbye heard in an earlier run survives the relaunch (the worklet writes it to
+        // disk), so the wall is truthful from the first paint, airplane mode included.
+        const rv = (s.hosts || []).find(h => h.active && h.revoked)
+        if (rv) setRevoked({ libraryId: rv.libraryId, libraryName: rv.libraryName, reason: rv.revoked })
         // Paired according to the worklet a moment later, but not according to the answer we
         // just got. Look again rather than showing onboarding forever.
         if (!s.host) recheckHostOnce()
@@ -469,8 +479,28 @@ export default function App () {
         const regrey = () => { if (mergedRef.current?.merged) call('mergedStatus').then(st => { if (st?.libraries) setMerged(st) }).catch(() => {}) }
         regrey(); setTimeout(regrey, 1200)
       }),
+      // The host said goodbye: this device's grant is gone, and unlike a dropped link that
+      // is a fact, not a guess. A standing note rather than an error line - the next
+      // successful list would wipe an error a second later - and the wall reads it to say
+      // the truth. The worklet has already hung up and stopped redialing.
+      on('access:revoked', (d) => {
+        setRevoked({ libraryId: d.libraryId, libraryName: d.libraryName, reason: d.reason })
+        toast(`Your access to ${d.libraryName || 'a library'} was removed by its owner.`, true)
+      }),
+      // A device reassigned or confirmed on the dashboard mid-connection: the host already
+      // swapped this connection's grant, so favorites/resume/playlists may now belong to a
+      // different person. Re-read the person-scoped state instead of serving the old one.
+      on('grant:changed', () => {
+        loadIdentity()
+        loadFavs()
+        loadPlaylists(true)
+        loadContinue()
+      }),
       on('host:connected', (d) => {
         setState(s => ({ ...s, connected: true, host: { ...s.host, ...d } }))
+        // They let us back in - a dial that lands IS a grant existing (the worklet
+        // clears its persisted verdict the same way).
+        setRevoked(r => (r && r.libraryId === d.libraryId ? null : r))
         // ...unless a pairing screen owns the error (see pairUiRef): a rejected code
         // connects to the host that rejected it, so this would erase its own explanation.
         if (!pairUiRef.current) setError(null)
@@ -2816,6 +2846,7 @@ export default function App () {
         browse={browse} query={query} results={results} now={now} error={error}
         onDismissError={() => setError(null)}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting} firstConnect={firstConnect} updating={busy}
+        revoked={revoked && revoked.libraryId === state.host?.libraryId ? revoked : null}
         favs={favs} onFav={favSupported ? onFav : null}
         cont={now ? null : cont}
         onContinue={() => { if (cont?.track) { playFrom([cont.track], cont.track); setCont(null) } }}
@@ -3516,7 +3547,7 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 function Library ({
   state, albums, artists, genres, songs, recent, showRecent, merged, filter, onFilter, onAddLibrary, cursor, songCursor, density, updating,
   moreFailed,
-  browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting, firstConnect,
+  browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting, firstConnect, revoked,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
   onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
   onOpenAlbum, onOpenArtist, onOpenGenre, onPlay, onLong, onRequest
@@ -3642,11 +3673,27 @@ function Library ({
     return (
       <div className='app'>
         <header><h1>{state.host.libraryName || 'Library'}</h1></header>
-        {/* Trying, not failed. A cold launch lands here first (firstConnect), and a
-            manual retry lands here too (reconnecting) - the wall below is only for
-            an attempt that has actually concluded. */}
-        {reconnecting || firstConnect
+        {/* The one case where "revoked" is a FACT, not a guess: the host said goodbye
+            (access:revoked). It outranks the spinner - the worklet has stopped
+            redialing, so "Connecting…" would be a lie. */}
+        {revoked
           ? (
+            <div className='blank'>
+              <PlugsConnected size={40} weight='thin' />
+              <h2>Access removed</h2>
+              <p className='muted sm'>
+                {revoked.reason === 'grant-expired'
+                  ? 'This device\'s guest access to this library has expired. Its owner can let you back in by pairing you again or extending your pass.'
+                  : 'The owner of this library removed this device\'s access. If they let you back in, it reconnects on its own.'}
+              </p>
+              <button className='primary' onClick={onReconnect}>
+                <ArrowsClockwise size={16} weight='bold' />
+                Try again
+              </button>
+            </div>
+            )
+          : reconnecting || firstConnect
+            ? (
             <div className='blank'>
               <ArrowsClockwise size={40} weight='thin' className='spin' />
               <h2>{reconnecting ? 'Reconnecting…' : 'Connecting…'}</h2>
@@ -6727,11 +6774,16 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
             const ml = merged?.merged ? (merged.libraries || []).find(l => l.libraryId === h.libraryId) : null
             const online = ml ? ml.connected : (h.active && state.connected)
             const showDot = ml ? true : h.active // merged: every row has a status; single: only the active one
-            const desc = ml
-              ? (ml.connected ? 'Connected' : 'Offline')
-              : (h.active
-                  ? (state.connected ? 'Active - connected' : 'Active - connecting…')
-                  : 'Tap to switch to this library')
+            // A recorded goodbye outranks the connection guess: "connecting…" on a
+            // library that told this device it is out would be a lie.
+            const saidGoodbye = ml ? ml.revoked : h.revoked
+            const desc = saidGoodbye
+              ? 'Access removed by the owner'
+              : ml
+                ? (ml.connected ? 'Connected' : 'Offline')
+                : (h.active
+                    ? (state.connected ? 'Active - connected' : 'Active - connecting…')
+                    : 'Tap to switch to this library')
             const tappable = !ml && !h.active // only switch libraries in single-host mode
 
             // Editing YOUR OWN name for this library. The row becomes the editor in place rather

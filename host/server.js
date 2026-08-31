@@ -39,7 +39,7 @@ const z32 = require('z32')
 const { createIdentity } = require('./identity')
 const { Grants } = require('./grants')
 const { UserState } = require('./state')
-const { decide, sweepKills, Connections } = require('./gate')
+const { decide, mayBeToldWhy, FarewellBook, sweepKills, Connections } = require('./gate')
 const { Presence, notifyOwners } = require('./presence')
 const { AvatarStore } = require('./avatars')
 
@@ -62,7 +62,7 @@ const EXPIRY_SWEEP_MS = 30_000
 // dashboards claiming two different songs, both "now playing". A host sees requests, not
 // playback; only the phone knows.
 const NOWPLAYING_STALE_MS = 20 * 1000
-const { serveMedia } = require('./media')
+const { serveMedia, serveFarewell } = require('./media')
 const { Speakers, canWriteHaConfig } = require('./speakers')
 const { CastSessions } = require('./cast')
 const { PairSession, tokenEquals } = require('./pair')
@@ -141,6 +141,16 @@ class PearTuneHost {
     this.userState = new UserState(this.stateBee)
 
     this.connections = new Connections()
+    // The goodbye rate limit (gate.js): which refused-but-once-granted keys have already
+    // been told why, so a revoked phone that keeps knocking is denied silently after its
+    // one explanation per minute. `_farewellReasons` carries the reason from the firewall
+    // (which decides a goodbye is owed) to the media handshake (which delivers it).
+    this._farewells = new FarewellBook()
+    this._farewellReasons = new Map()
+    // deviceKey -> Set<serveMedia handle>: the live media channels per device, so a grant
+    // edit can refresh a connection IN PLACE (handle.setGrant) instead of waiting for the
+    // phone to reconnect. Pruned when the connection closes.
+    this._mediaHandles = new Map()
     // deviceKey -> { trackId, at }: the last track THIS host served that device. In memory on
     // purpose - it describes right now, not history, and a restart should forget it. One entry per
     // paired device at most, overwritten per request.
@@ -471,6 +481,23 @@ class PearTuneHost {
       return false
     }
 
+    // A DEVICE WE ONCE LET IN IS TOLD SO, ONCE, and then refused like anybody else.
+    //
+    // Without this a revoked phone says "could not reach the host" and knocks every
+    // few seconds forever, and the person blames their network. Admitting the
+    // connection is what makes a goodbye possible at all; _onconnection gives it a
+    // channel with NO methods on it and destroys it (media.serveFarewell).
+    //
+    // RATE-LIMITED, because this is a socket a refused peer can open. One goodbye per
+    // key per minute (gate.FarewellBook); every other attempt is denied exactly as
+    // before, so a phone that ignores the goodbye cannot use it to keep a host
+    // answering.
+    if (mayBeToldWhy(reason) && this._farewells.shouldSay(z32.encode(remotePublicKey))) {
+      this.log('gate:farewell', { device: short, reason })
+      this._farewellReasons.set(z32.encode(remotePublicKey), reason)
+      return false
+    }
+
     this.log('gate:deny', { device: short, reason })
     return true
   }
@@ -522,6 +549,19 @@ class PearTuneHost {
       // pairing exemption. Reaching the MEDIA api requires a real grant.
       if (!allow) {
         this.log('host:media-denied', { device: short, reason })
+        // The firewall admitted this one to say goodbye. The channel it gets here
+        // has no method table on it, so the device can be told and nothing else.
+        const farewell = this._farewellReasons.get(z32.encode(remoteKey))
+        if (farewell && mayBeToldWhy(reason)) {
+          this._farewellReasons.delete(z32.encode(remoteKey))
+          serveFarewell({
+            conn,
+            libraryId: this.libraryId,
+            reason,
+            log: (m, d) => this.log(m, { device: short, ...d })
+          })
+          return
+        }
         conn.destroy()
         return
       }
@@ -529,7 +569,7 @@ class PearTuneHost {
       await this.grants.touch(remoteKey)
       this.log('host:connected', { device: short, live: this.connections.size })
 
-      serveMedia({
+      const handle = serveMedia({
         conn,
         libraryId: this.libraryId,
         // A GETTER, not the adapter itself. A connection outlives a source change,
@@ -599,7 +639,46 @@ class PearTuneHost {
         },
         log: (msg, data) => this.log(msg, { device: short, ...data })
       })
+
+      // Remembered so a grant edit can refresh this connection's snapshot in place
+      // (handle.setGrant, proposal 2026-08-31-grant-fixes-trio). Keyed the way the
+      // grant store keys devices, pruned when the connection closes.
+      if (handle) {
+        const dk = lookup.grant.deviceKey
+        let set = this._mediaHandles.get(dk)
+        if (!set) { set = new Set(); this._mediaHandles.set(dk, set) }
+        set.add(handle)
+        conn.once('close', () => {
+          set.delete(handle)
+          if (set.size === 0 && this._mediaHandles.get(dk) === set) this._mediaHandles.delete(dk)
+        })
+      }
     })
+  }
+
+  // Change which person a device belongs to, THROUGH the host rather than straight at
+  // the store: the store write alone leaves every live connection filing state under
+  // the old owner until the phone happens to reconnect. This refreshes each live
+  // connection's grant snapshot in place and pushes 'grant:changed' so the phone can
+  // refresh whatever it derived from the old grant.
+  async assignDevice (deviceKey, personId) {
+    const row = await this.grants.assign(deviceKey, personId)
+    if (!row) return null
+    const refreshed = this.refreshGrant(row)
+    const notified = this.presence.notify(row.deviceKey, 'grant:changed', { libraryId: this.libraryId, personId: row.personId || null })
+    this.log('host:grant-changed', { device: String(row.deviceKey).slice(0, 8), refreshed, notified })
+    return { grant: row, refreshed }
+  }
+
+  // Swap the stored row into every live media handle for its device. Returns how many
+  // connections took it.
+  refreshGrant (row) {
+    if (!row) return 0
+    let n = 0
+    for (const h of this._mediaHandles.get(row.deviceKey) || []) {
+      if (h.setGrant(row)) n++
+    }
+    return n
   }
 
   // --- operator actions (the dashboard drives these) -----------------------

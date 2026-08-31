@@ -71,9 +71,11 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
 
   channel.open()
 
+  const pushToDevice = (evt) => { try { send.push.send(evt) } catch {} }
+
   // This connection is now reachable by an unsolicited push. Keyed by the grant's device -
   // the one the firewall authenticated - so a session.claim on ANOTHER connection can reach it.
-  if (presence) unregisterPresence = presence.register(grant.deviceKey, (evt) => { try { send.push.send(evt) } catch {} }, ownerOf(grant))
+  if (presence) unregisterPresence = presence.register(grant.deviceKey, pushToDevice, ownerOf(grant))
 
   function safeErr (id, code, message) {
     try {
@@ -749,7 +751,63 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
     }
   }
 
-  return channel
+  return {
+    channel,
+
+    // A grant is a row in a store the operator can change while this connection is
+    // live. This swaps the snapshot the dispatch above reads, so a device reassigned
+    // mid-song files its next resume point under the new owner instead of filing
+    // under the old one until it happens to reconnect (proposal
+    // 2026-08-31-grant-fixes-trio). The server calls it on every live connection of
+    // the device it just changed; the presence registration moves to the new owner
+    // in the same breath, so person-wide pushes reach the right devices immediately.
+    //
+    // The device key never changes here by construction - it is the Noise-
+    // authenticated remote key, and a row for a DIFFERENT device is refused rather
+    // than half-applied.
+    setGrant (row) {
+      if (!row || row.deviceKey !== grant.deviceKey) return false
+      grant = row
+      if (presence) {
+        unregisterPresence()
+        unregisterPresence = presence.register(grant.deviceKey, pushToDevice, ownerOf(grant))
+      }
+      return true
+    }
+  }
 }
 
-module.exports = { serveMedia, ownerOf }
+// A GOODBYE, AND NOTHING ELSE.
+//
+// The media channel, opened with no dispatch on it at all: one push frame saying the
+// grant is gone, then the connection is destroyed. A device that reaches this cannot
+// browse, cannot stream and cannot call a method, because the method table was never
+// wired to this channel - which is the property that keeps revoke's guarantee intact
+// (proposal 2026-08-31-grant-fixes-trio).
+//
+// IT IS NOT serveMedia WITH A FLAG, and that is deliberate. A flag on a function that
+// builds the whole API is one `if` away from admitting a revoked device to all of it;
+// a separate function with no method table in scope cannot make that mistake.
+//
+// `linger` is how long the frame gets to leave before the socket dies. Protomux writes
+// asynchronously, so destroying in the same tick would race the frame out of existence.
+function serveFarewell ({ conn, libraryId, reason = 'device-revoked', linger = 250, log = () => {} }) {
+  let sent = false
+  try {
+    const mux = Protomux.from(conn)
+    const built = mediaChannel(mux, { id: b4a.from(libraryId) })
+    if (built) {
+      built.channel.open()
+      built.messages.push.send({ kind: 'access:revoked', data: { libraryId, reason } })
+      sent = true
+    }
+  } catch (e) {
+    log('media:farewell-failed', { err: e?.message })
+  }
+  const timer = setTimeout(() => { try { conn.destroy() } catch {} }, linger)
+  if (timer.unref) timer.unref()
+  log('media:farewell', { reason, sent })
+  return sent
+}
+
+module.exports = { serveMedia, serveFarewell, ownerOf }

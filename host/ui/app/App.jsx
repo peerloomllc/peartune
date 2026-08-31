@@ -347,6 +347,10 @@ function AccessPanel ({ state, refresh, toast, online }) {
   // pulled out of the normal lists, so every device row stays uniform.
   const claimMismatch = d => {
     if (d.revokedAt || !d.claimedUser) return false
+    // Confirmation is RECORDED (confirmedUser = the claim the operator agreed to), so a
+    // renamed person no longer needs the claim rewritten to keep its devices confirmed.
+    // Rows written before the field exists fall back to the old name comparison.
+    if (d.confirmedUser != null) return d.confirmedUser.toLowerCase() !== d.claimedUser.toLowerCase()
     const holder = persons.find(p => p.id === d.personId)
     return !holder || holder.name.toLowerCase() !== d.claimedUser.toLowerCase()
   }
@@ -436,6 +440,11 @@ function AccessPanel ({ state, refresh, toast, online }) {
   // join. Plain confirm (no opts) keeps the old behaviour - join the one holder, or mint.
   const confirmClaim = (d, opts = {}) =>
     mutate('/api/person/confirm', { deviceKey: d.deviceKey, ...opts }, r => `${d.label} now belongs to ${r.person.label}.`)
+  // "I have seen the new name, and this device is still whose it was." The way out of
+  // Needs confirmation for a device that renamed ITSELF while already assigned - the
+  // operator accepts the new name without moving the device anywhere.
+  const keepClaim = (d, personName) =>
+    mutate('/api/device/claim/keep', { deviceKey: d.deviceKey }, () => `${d.label} stays with ${personName}.`)
   const assign = (d, personId) => mutate('/api/assign', { deviceKey: d.deviceKey, personId: personId || null })
   // Edit a guest's expiry: a duration re-limits (from now), 'permanent' clears it. This is
   // how you promote a guest to permanent, or extend a pass without making them re-scan.
@@ -458,7 +467,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
               {pending.length > 0 &&
                 <>
                   <div className='pend-hdr'>⚑ Needs confirmation</div>
-                  {pending.map(d => <PendingCard key={d.deviceKey} d={d} holders={holdersOf(d.claimedUser)} onConfirm={confirmClaim} onRevoke={revoke} />)}
+                  {pending.map(d => <PendingCard key={d.deviceKey} d={d} holders={holdersOf(d.claimedUser)} currentPerson={persons.find(p => p.id === d.personId) || null} onConfirm={confirmClaim} onKeep={keepClaim} onRevoke={revoke} />)}
                 </>}
               {persons.map(p => {
                 const live = byPerson(p.id).filter(d => !d.revokedAt && !claimMismatch(d))
@@ -716,9 +725,14 @@ function DeviceRow ({ d, persons, onAssign, onRevoke, onDelete, onExpiry, onCopi
 //
 // Only the operator is ever offered these. A device saying "I'm Sam" must never be able to seat
 // itself beside the real Sam - that is the rule the whole confirmation step exists to enforce.
-function PendingCard ({ d, holders = [], onConfirm, onRevoke }) {
+function PendingCard ({ d, holders = [], currentPerson = null, onConfirm, onKeep, onRevoke }) {
   const [pick, setPick] = useState('')
   const many = holders.length > 1
+  // A device that renamed ITSELF while already assigned. The first offer is the one
+  // the operator most often wants and used to be missing entirely: accept the new
+  // name and leave the device where it is (settleClaim). Moving or minting stay
+  // available beneath it.
+  const renamed = !!currentPerson
   return (
     <div className='pending'>
       <div className='pend-top'>
@@ -727,7 +741,12 @@ function PendingCard ({ d, holders = [], onConfirm, onRevoke }) {
       </div>
       <div className='pend-claim'>Claims to be <b>{d.claimedUser}</b></div>
       <div className='pend-key' title={d.deviceKey}>{shortKey(d.deviceKey)}</div>
-      {holders.length > 0 && (
+      {renamed && (
+        <div className='pend-note'>
+          {`${currentPerson.name}'s device now calls itself ${d.claimedUser}. Keep it with ${currentPerson.name}, or move it.`}
+        </div>
+      )}
+      {!renamed && holders.length > 0 && (
         <div className='pend-note'>
           {many
             ? `${holders.length} people are called ${d.claimedUser}. Pick who this device belongs to, or add another.`
@@ -741,11 +760,12 @@ function PendingCard ({ d, holders = [], onConfirm, onRevoke }) {
         </select>
       )}
       <div className='pend-acts'>
+        {renamed && <button onClick={() => onKeep(d, currentPerson.name)}>Keep with {currentPerson.name}</button>}
         {holders.length === 0
-          ? <button onClick={() => onConfirm(d)}>Confirm</button>
+          ? !renamed && <button onClick={() => onConfirm(d)}>Confirm</button>
           : many
-            ? <button disabled={!pick} onClick={() => onConfirm(d, { personId: pick })}>Join</button>
-            : <button onClick={() => onConfirm(d, { personId: holders[0].id })}>Join {holders[0].label || holders[0].name}</button>}
+            ? <button className={renamed ? 'ghost' : ''} disabled={!pick} onClick={() => onConfirm(d, { personId: pick })}>Join</button>
+            : <button className={renamed ? 'ghost' : ''} onClick={() => onConfirm(d, { personId: holders[0].id })}>Join {holders[0].label || holders[0].name}</button>}
         {holders.length > 0 && <button className='ghost' onClick={() => onConfirm(d, { asNew: true })}>New person</button>}
         <button className='ghost danger' onClick={() => onRevoke(d)}>Revoke</button>
       </div>

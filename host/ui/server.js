@@ -191,6 +191,10 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
             // (proposal 2026-07-14) - the dashboard shows it with a Confirm button.
             claimedUser: d.claimedUser || null,
             claimedAt: d.claimedAt || null,
+            // The claim the operator AGREED to (null on rows from before the field
+            // existed). The page reads this instead of comparing names, so renaming
+            // a person no longer touches what a device calls itself.
+            confirmedUser: d.confirmedUser ?? null,
             // Who the device actually belongs to, disambiguated where two people share a name
             // (grants.personLabels). claimedUser above is only what the device SAID.
             belongsTo: d.belongsTo || null,
@@ -457,17 +461,46 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
           return json(res, 400, { error: e.message || 'could not confirm' })
         }
         if (!row) return json(res, 400, { error: 'no claim to confirm' })
+        // Confirming ends in an assignment, so the same live-connection refresh and
+        // push apply as for /api/assign - the phone's next state write must land
+        // under the person it just became.
+        host.refreshGrant(row)
+        host.presence.notify(row.deviceKey, 'grant:changed', { libraryId: host.libraryId, personId: row.personId || null })
         const person = await host.grants.getPerson(row.personId)
         const labels = await host.grants.personLabels()
         return json(res, 200, { ok: true, person: { ...person, label: labels.get(person.id) || person.name } })
       }
 
+      // "I have seen the new name, and this device is still whose it was." The way out
+      // of Needs confirmation for a device that renamed ITSELF while already assigned.
+      // It grants nothing - personId is untouched (grants.settleClaim).
+      if (req.method === 'POST' && url.pathname === '/api/device/claim/keep') {
+        const { deviceKey } = await readBody(req)
+        if (!deviceKey) return json(res, 400, { error: 'deviceKey required' })
+        const row = await host.grants.settleClaim(deviceKey)
+        if (!row) return json(res, 404, { error: 'no such device, or it claims nothing' })
+        return json(res, 200, { ok: true })
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/assign') {
         const { deviceKey, personId } = await readBody(req)
         if (!deviceKey) return json(res, 400, { error: 'deviceKey required' })
-        const row = await host.grants.assign(deviceKey, personId || null)
-        if (!row) return json(res, 404, { error: 'no such device' })
-        return json(res, 200, row)
+        // Through the host, not the store: assignDevice also refreshes the device's
+        // LIVE connections and pushes grant:changed, so the change is true now rather
+        // than at its next reconnect (proposal 2026-08-31-grant-fixes-trio).
+        let out
+        try {
+          out = await host.assignDevice(deviceKey, personId || null)
+        } catch (e) {
+          return json(res, 400, { error: e.message || 'could not assign' })
+        }
+        if (!out) return json(res, 404, { error: 'no such device' })
+        // Picking a person answers the claim too: choosing who a device belongs to is
+        // the operator deciding exactly what "Needs confirmation" asks, so it must not
+        // leave the row sitting in that list. Detaching does the opposite - with
+        // nobody to belong to there is nothing settled.
+        if (personId) await host.grants.settleClaim(deviceKey)
+        return json(res, 200, out.grant)
       }
 
       // Revoke a PERSON: every device they hold, in one action, with every live
