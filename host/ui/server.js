@@ -170,6 +170,9 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
           persons,
           requests,
           source: host.sourceView,
+          // Whether the ACTIVE source can enforce per-person folders (folder: yes,
+          // proxies: no). The People page offers the control only when true.
+          canNarrow: !!(host.adapter && host.adapter.canNarrow),
           sourceError: host.sourceError || null,
           libraryName: host.libraryName,
           libraryId: host.libraryId,
@@ -195,6 +198,9 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
             // existed). The page reads this instead of comparing names, so renaming
             // a person no longer touches what a device calls itself.
             confirmedUser: d.confirmedUser ?? null,
+            // Chosen folders (proposal 2026-08-31): null = everything. The People page
+            // derives a person's "Can hear" line from their devices' rows.
+            paths: d.paths ?? null,
             // Who the device actually belongs to, disambiguated where two people share a name
             // (grants.personLabels). claimedUser above is only what the device SAID.
             belongsTo: d.belongsTo || null,
@@ -415,7 +421,15 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         // owner:true opens an OWNER window (scope 'owner', proposal 2026-07-24 P2). Only the
         // dashboard - which is password-gated - can ask for it, so owner scope stays rooted in
         // dashboard access. startPairing enforces owner XOR guest.
-        const link = host.startPairing({ expiresMs, owner: !!body.owner })
+        // paths: chosen folders for devices pairing through this window (proposal
+        // 2026-08-31); null/absent = everything. startPairing refuses it on a source
+        // that cannot enforce it, and on an owner window.
+        let link
+        try {
+          link = host.startPairing({ expiresMs, owner: !!body.owner, paths: body.paths ?? null })
+        } catch (e) {
+          return json(res, 400, { error: e.message || 'could not open a pairing window' })
+        }
         // margin 4 = the spec's full quiet zone, matching what the dashboard renders (App.jsx also
         // generates its own QR at margin 4). Nothing renders THIS svg today - the dashboard uses its
         // client-side one - but an API that hands out a harder-to-scan code than the UI shows is a
@@ -480,6 +494,35 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
         const row = await host.grants.settleClaim(deviceKey)
         if (!row) return json(res, 404, { error: 'no such device, or it claims nothing' })
         return json(res, 200, { ok: true })
+      }
+
+      // The folder tree for the People page's sharing picker, one level per call
+      // (proposal 2026-08-31). Answered from the adapter's in-memory catalog, so it
+      // only ever names folders that actually hold audio. Empty + unsupported for
+      // sources that cannot narrow - the page then never offers the control.
+      if (req.method === 'POST' && url.pathname === '/api/sharing/folders') {
+        const { root, rel } = await readBody(req)
+        const adapter = host.adapter
+        if (!adapter || !adapter.canNarrow || typeof adapter.rootsForSharing !== 'function') {
+          return json(res, 200, { roots: [], folders: [], supported: false })
+        }
+        const roots = adapter.rootsForSharing()
+        if (!root) return json(res, 200, { roots, folders: [], supported: true })
+        return json(res, 200, { roots, folders: adapter.foldersUnder({ root: String(root), rel: String(rel || '') }), supported: true })
+      }
+
+      // Save the narrowing, for every device this person holds at once. null is
+      // everything. Through the host, so every LIVE connection of theirs is narrowed
+      // now rather than at its next reconnect - the same reason assign goes this way.
+      if (req.method === 'POST' && url.pathname === '/api/sharing/set') {
+        const { personId, paths } = await readBody(req)
+        if (!personId) return json(res, 400, { error: 'personId required' })
+        try {
+          const out = await host.setPersonPaths(personId, paths ?? null)
+          return json(res, 200, { ok: true, devices: out.grants.length, refreshed: out.refreshed })
+        } catch (e) {
+          return json(res, 400, { error: e.message })
+        }
       }
 
       if (req.method === 'POST' && url.pathname === '/api/assign') {

@@ -20,6 +20,7 @@ const z32 = require('z32')
 const hcrypto = require('hypercore-crypto')
 const b4a = require('b4a')
 const { SCOPE } = require('../protocol/constants')
+const { normalisePaths } = require('./visibility')
 
 const NAME_MAX = 64
 
@@ -112,7 +113,7 @@ class Grants {
   // name afterwards, over the media channel. They are parameters only so a device returning
   // to its own person (proposal 2026-07-21-person-carryover-on-repair) comes back with the
   // claim it already had, rather than reading as assigned-but-unclaimed on the dashboard.
-  async grant ({ deviceKey, personId = null, label = '', platform = '', scope = SCOPE.FULL, grantedBy = 'operator', expiresAt = null, claimedUser = null, claimedAt = null, confirmedUser = null }) {
+  async grant ({ deviceKey, personId = null, label = '', platform = '', scope = SCOPE.FULL, grantedBy = 'operator', expiresAt = null, claimedUser = null, claimedAt = null, confirmedUser = null, paths = null }) {
     const key = Grants.keyOf(deviceKey)
     const row = {
       deviceKey: key,
@@ -123,7 +124,10 @@ class Grants {
       grantedAt: Date.now(),
       grantedBy,
       expiresAt, // null = never; a timestamp = a time-limited GUEST grant (gate.decide denies past it)
-      paths: null, // reserved: v2 library-subset scopes
+      // null = everything; a list of { root, rel } prefixes narrows this person to
+      // chosen folders (proposal 2026-08-31-per-person-folders). Settable at pairing
+      // time so a person let in narrowly never has a wide window.
+      paths: normalisePaths(paths),
       claimedUser,
       claimedAt,
       // The claim the OPERATOR agreed to, written down (proposal 2026-08-31-grant-fixes-trio).
@@ -284,6 +288,25 @@ class Grants {
     return person
   }
 
+  // Narrow (or widen, with paths = null) every LIVE grant a person holds, in one
+  // action - the value lives per grant so the gate never joins across rows, but the
+  // People page speaks per person, and two devices of one person seeing different
+  // libraries would read as a bug. Returns the rows written. Host-only writer; the
+  // caller (host.setPersonPaths) is what refreshes live connections and pushes.
+  async setPersonPaths (personId, paths) {
+    const clean = normalisePaths(paths)
+    const person = await this.getPerson(personId)
+    if (!person) throw new Error('no such person')
+    const out = []
+    for (const g of await this.list()) {
+      if (g.personId !== personId || g.revokedAt) continue
+      g.paths = clean
+      await this.bee.put('grant:' + Grants.keyOf(g.deviceKey), g, { valueEncoding: 'json' })
+      out.push(g)
+    }
+    return out
+  }
+
   // Attach a device to a person (or detach, with personId = null). This is what
   // makes "revoke that friend, not my tablet" possible: revocation then has a
   // subject a human recognises instead of a 52-character key.
@@ -298,6 +321,14 @@ class Grants {
       // Assigning a device to a REVOKED person would silently lock it out, which
       // looks like a bug to whoever just did it. Refuse instead.
       if (person.revokedAt) throw new Error('that person is revoked')
+      // JOINING A NARROWED PERSON MEANS HEARING WHAT THEY HEAR. The narrowing lives
+      // per grant (the gate never joins across rows), so without this copy a device
+      // moved under a narrowed person would keep its own null and hear everything -
+      // an assignment that silently WIDENS is the hole, not the inconvenience.
+      const sibling = (await this.list()).find(
+        (g) => g.personId === personId && !g.revokedAt && Grants.keyOf(g.deviceKey) !== key
+      )
+      row.paths = sibling ? (sibling.paths ?? null) : (row.paths ?? null)
     }
 
     row.personId = personId || null

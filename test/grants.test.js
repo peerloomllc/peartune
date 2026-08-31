@@ -555,3 +555,55 @@ test('personsByName lists the live holders a pending claim must choose between',
   assert.deepEqual((await g.personsByName('Sam')).map(p => p.id), [(await g.personsByName('Sam'))[0].id])
   assert.equal((await g.personsByName('Sam')).length, 1)
 })
+
+// --- per-person folders (proposal 2026-08-31) --------------------------------
+
+test('setPersonPaths narrows every LIVE grant of the person, and only theirs', async (t) => {
+  const g = await store(t)
+  const sam = await g.addPerson('Sam')
+  const phone = await g.grant({ deviceKey: key(), label: 'phone', personId: sam.id })
+  const tablet = await g.grant({ deviceKey: key(), label: 'tablet', personId: sam.id })
+  const gone = await g.grant({ deviceKey: key(), label: 'old', personId: sam.id })
+  await g.revoke(gone.deviceKey)
+  const bystander = await g.grant({ deviceKey: key(), label: 'mine' })
+
+  const rows = await g.setPersonPaths(sam.id, [{ root: '/m', rel: '/Kids/' }])
+  assert.equal(rows.length, 2, 'both live devices, not the tombstone')
+  for (const k of [phone.deviceKey, tablet.deviceKey]) {
+    assert.deepEqual((await g.get(k)).paths, [{ root: '/m', rel: 'Kids' }], 'stored normalised')
+  }
+  assert.equal((await g.get(gone.deviceKey)).paths, null, 'a revoked row is left alone')
+  assert.equal((await g.get(bystander.deviceKey)).paths, null, 'another person is untouched')
+
+  // Widening back is null, the same value every grant has always had.
+  await g.setPersonPaths(sam.id, null)
+  assert.equal((await g.get(phone.deviceKey)).paths, null)
+})
+
+test('setPersonPaths refuses a malformed narrowing and a missing person', async (t) => {
+  const g = await store(t)
+  const sam = await g.addPerson('Sam')
+  await assert.rejects(() => g.setPersonPaths(sam.id, []), /non-empty/)
+  await assert.rejects(() => g.setPersonPaths('nope', [{ root: '/m', rel: 'a' }]), /no such person/)
+})
+
+test('assigning a device to a narrowed person makes it hear what they hear', async (t) => {
+  // The narrowing lives per grant, so without the copy a device moved under a
+  // narrowed person would keep its own null and hear EVERYTHING - an assignment
+  // that silently widens is the hole.
+  const g = await store(t)
+  const sam = await g.addPerson('Sam')
+  await g.grant({ deviceKey: key(), label: 'phone', personId: sam.id })
+  await g.setPersonPaths(sam.id, [{ root: '/m', rel: 'Kids' }])
+
+  const newcomer = await g.grant({ deviceKey: key(), label: 'tablet' })
+  const row = await g.assign(newcomer.deviceKey, sam.id)
+  assert.deepEqual(row.paths, [{ root: '/m', rel: 'Kids' }])
+})
+
+test('a grant minted with paths keeps them; pairing-time narrowing has no wide window', async (t) => {
+  const g = await store(t)
+  const row = await g.grant({ deviceKey: key(), label: 'guest phone', paths: [{ root: '/m', rel: '/Kids' }] })
+  assert.deepEqual(row.paths, [{ root: '/m', rel: 'Kids' }])
+  assert.equal((await g.grant({ deviceKey: key(), label: 'plain' })).paths, null, 'no paths means everything, as ever')
+})

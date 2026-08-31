@@ -656,3 +656,10 @@ button.destructive { background: var(--bad); color: #fff; }
   /* Both still equal, just narrow enough that Back + Skip + Continue fit one row. */
   .wiznav button:not(.link) { min-width: 104px; }
 }
+
+/* Per-person folders (proposal 2026-08-31): the sharing picker's tree. */
+.share-tree { max-height: 320px; overflow-y: auto; text-align: left; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.share-row { display: flex; align-items: center; gap: 4px; padding: 2px 0; }
+.share-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; min-width: 0; }
+.share-row label.muted { opacity: 0.55; }
+.share-row .caretbtn { padding: 2px 4px; min-width: 0; }

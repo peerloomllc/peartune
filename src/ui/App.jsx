@@ -495,6 +495,13 @@ export default function App () {
         loadFavs()
         loadPlaylists(true)
         loadContinue()
+        // A narrowing changes what the library IS, not just whose state this is:
+        // whatever browse view is OPEN must come from the filtered catalog, or it
+        // keeps offering tracks the host now refuses - the first emulator run left a
+        // 4-song list on screen with 2 of them dead (the worklet already rebuilds
+        // the blend in merged mode).
+        if (mergedRef.current?.merged) call('refreshMerged').catch(() => {})
+        else { reloadBrowse(); loadRecent() }
       }),
       on('host:connected', (d) => {
         setState(s => ({ ...s, connected: true, host: { ...s.host, ...d } }))
