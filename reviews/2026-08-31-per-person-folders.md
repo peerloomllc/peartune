@@ -11,5 +11,8 @@ asks, nothing preselected), the People page's Can-hear line + folder picker, and
 phone-side browse/blend rebuild on `grant:changed`. Verified by `npm run verify`
 (1058/1058, 19 new tests including three over a real DHT testnet) and an emulator
 end-to-end run (Songs 4->2->4->1 in place, no reconnect), which also caught the
-stale-open-list bug fixed in the same PR. The TCL hardware smoke remains open, logged in
+stale-open-list bug fixed in the same PR. The TCL hardware smoke ran the same evening
+and passed: paired by link over the real DHT, the phone's open Songs view narrowed 4->2
+in place with no reconnect, a permitted track played while narrowed and widening
+restored the list in place with the music still playing. The Jellyfin follow-up stays in
 TODO.
