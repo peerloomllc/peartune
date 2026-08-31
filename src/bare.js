@@ -94,6 +94,10 @@ const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
 // library: removing a library deletes that directory, which is precisely when this is
 // written.
 const LEAVES_FILE = path.join(DATA_DIR, 'pending-leaves.json')
+// Libraries that told this device it is no longer welcome (the host's goodbye,
+// proposal 2026-08-31-grant-fixes-trio). At the ROOT for the same reason as leaves:
+// it is a verdict about a library, not state inside one. See markRevoked below.
+const REVOKED_FILE = path.join(DATA_DIR, 'revoked.json')
 
 // PER-HOST state lives under DATA_DIR/lib/<libraryId>/ (multi-host, proposal 2026-07-19),
 // so switching libraries shows the right favorites, queue, playlists, pins, lease and
@@ -1029,6 +1033,17 @@ function makeClient () {
       // the UI is about to make. The host does not send us our own writes.
       log('favorites:changed', { kind: m.data?.kind ?? null, on: m.data?.on ?? null })
       emit('favorites:changed', m.data || {})
+    } else if (m?.kind === 'access:revoked') {
+      // The host's goodbye: this device's grant is gone (proposal 2026-08-31-grant-fixes-
+      // trio). THE CONNECTION'S OWN libraryId, never the payload's - a host may only ever
+      // speak about itself, or a malicious one could shut off a library it does not hold.
+      markRevoked(c.libraryId, m.data?.reason)
+    } else if (m?.kind === 'grant:changed') {
+      // The operator reassigned or confirmed this device mid-connection. The host already
+      // swapped this connection's grant server-side, so person-scoped state (favorites,
+      // resume, playlists) may now answer as somebody else - tell the UI to re-read.
+      log('grant:changed', { lib: String(c.libraryId || '').slice(0, 8) })
+      emit('grant:changed', { libraryId: c.libraryId })
     } else if (m?.kind === 'speaker:ended') {
       // A track we sent to a Home Assistant speaker finished (proposal 2026-08-01). The
       // speaker has no queue of its own, so THIS is the only signal that it is time to
@@ -1210,6 +1225,65 @@ async function ensureAll () {
 // only to MOVE a connection between the two tiers, and both were written to fix a bug that move
 // caused (the 2026-07-23 orphan and the 2026-07-24 strand). With one tier there is nothing to move.
 
+// --- revoked libraries (the host's goodbye) ----------------------------------
+//
+// A host whose grant for this device is gone now says so, once, instead of leaving the
+// phone to guess ('access:revoked', proposal 2026-08-31-grant-fixes-trio, ported from
+// PearCinema). Before this, being removed looked exactly like a server that was
+// switched off: "could not reach the host", a library stuck on connecting, and a dial
+// every few seconds for as long as the app was open.
+//
+// WRITTEN TO DISK, because in-memory forgets on a relaunch and the phone would knock
+// again on every app open. Cleared the moment that library lets this device in again -
+// a dial that lands IS a grant existing (see attach) - so it is a note about right now
+// rather than a permanent judgement, and a re-pair needs no special case.
+const revokedLibs = new Map() // libraryId -> reason
+
+function readRevoked () {
+  try {
+    const raw = JSON.parse(fs.readFileSync(REVOKED_FILE, 'utf8'))
+    return new Map(Object.entries(raw && typeof raw === 'object' ? raw : {}))
+  } catch { return new Map() }
+}
+function writeRevoked () {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true })
+    fs.writeFileSync(REVOKED_FILE, JSON.stringify(Object.fromEntries(revokedLibs)))
+  } catch (e) { log('revoke:save-failed', { err: e.message }) }
+}
+
+// Filled at boot from the file above, before the first dial.
+for (const [lib, reason] of readRevoked()) revokedLibs.set(lib, reason)
+
+function markRevoked (libraryId, reason = 'device-revoked') {
+  if (!libraryId || revokedLibs.has(libraryId)) return
+  revokedLibs.set(libraryId, reason)
+  writeRevoked()
+  log('host:access-revoked', { lib: libraryId.slice(0, 8), reason })
+  // Hang up rather than sit on a socket that can do nothing, and stop the nudge loop -
+  // the goodbye is rate-limited host-side, so knocking on buys nothing. The swarm's own
+  // slow rediscovery and any user-driven ensureLink still dial, which is how a library
+  // that changes its mind is noticed without the phone hammering one that has not.
+  stopNudge(libraryId)
+  const e = links.get(libraryId)
+  if (e && e.client) { try { e.client.close() } catch {} e.client = null }
+  const host = loadHostsFile().hosts.find((h) => h.libraryId === libraryId)
+  emit('access:revoked', { libraryId, reason, libraryName: host ? labelFor(libraryId, host.libraryName) : null })
+  if (mergedMode()) {
+    emit('merged:updated', mergedStatusData())
+    rebuildIndex().catch(() => {})
+  }
+}
+
+// They let us back in. The next dial that lands is the proof, and it is the only thing
+// that clears the verdict - so a library that changes its mind needs no action here.
+function clearRevoked (libraryId) {
+  if (!revokedLibs.has(libraryId)) return
+  revokedLibs.delete(libraryId)
+  writeRevoked()
+  log('host:access-restored', { lib: libraryId.slice(0, 8) })
+}
+
 function joinTopic (host) {
   const libId = host.libraryId
   const s = ensureSwarm()
@@ -1237,6 +1311,11 @@ async function attach (host, conn) {
   if (e.client && e.client !== c) { try { e.client.close() } catch {} }
   e.client = c
   stopNudge(libId)
+  // A dial that lands IS a grant existing, so it is the one thing that clears a
+  // recorded goodbye. A connection admitted only TO say goodbye lands here too, but
+  // its access:revoked push arrives moments later and marks it again - the verdict
+  // always ends where the host left it.
+  clearRevoked(libId)
   stampAuthFor(libId) // a live connection is a fresh authorization for THIS library's lease
   flushOutboxFor(libId, c).catch(() => {})
 
@@ -1257,7 +1336,9 @@ async function attach (host, conn) {
     }
     // Every library's drop refreshes the blend - host:disconnected only speaks for the default one.
     if (mergedMode()) emit('merged:updated', mergedStatusData())
-    startNudge(host) // the swarm redials on its own, but its backoff is far too slow off-LAN
+    // A library that said goodbye gets no nudge loop: the host is answering, it just said
+    // no, and knocking every few seconds is the behaviour the goodbye exists to end.
+    if (!revokedLibs.has(libId)) startNudge(host) // the swarm redials on its own, but its backoff is far too slow off-LAN
   })
 
   hostCaps.delete(libId) // the host may have upgraded across the reconnect - re-ask
@@ -1378,9 +1459,11 @@ function startNudge (host) {
   const libId = host.libraryId
   const e = links.get(libId)
   if (!e || e.nudgeTimer) return
+  if (revokedLibs.has(libId)) return // it said goodbye; see markRevoked
   const tick = () => {
     e.nudgeTimer = null
     if (!loadHostsFile().hosts.some((h) => h.libraryId === libId)) return // library removed
+    if (revokedLibs.has(libId)) return // the goodbye arrived while this loop was running
     if (clientFor(libId)) return // landed
     log('nudge:link', { lib: libId.slice(0, 8), net: networkType, ...swarmDiag(host.hostKey) })
     // Clear a stuck dial before nudging, or the nudge is a no-op (see stuckDial).
@@ -1450,6 +1533,7 @@ async function watchdogTick () {
   })
   await Promise.allSettled(actions.map(async ({ host, libraryId: libId, active, action }) => {
     const role = active ? 'default' : 'other'
+    if (revokedLibs.has(libId)) return // it said goodbye; nothing here should knock
     if (action === 'redial') {
       // Idempotent by design: joinTopic re-uses an existing discovery session and startNudge
       // returns early when a loop is already running, so this only DOES anything when nothing was
@@ -1721,7 +1805,11 @@ function listHostsData () {
       //                can stay quiet on a library that never needs the choice
       //   relayConsent the three-way, with absent normalised to 'ask' so the UI has no special case
       relayed: libraryRelayed(h.libraryId),
-      relayConsent: h.relayAudio || 'ask'
+      relayConsent: h.relayAudio || 'ask',
+      // The host's goodbye, when one stands (the reason string, else null). Persisted by
+      // the worklet, so a relaunch - airplane mode included - still knows to say
+      // "access removed" rather than "connecting".
+      revoked: revokedLibs.get(h.libraryId) || null
     })),
     activeHostKey: f.activeHostKey
   }
@@ -1750,7 +1838,8 @@ function mergedStatusData () {
       libraryId: h.libraryId,
       libraryName: labels.get(h.libraryId) || h.libraryName,
       connected: live.has(h.libraryId),
-      trackCount: perLib[h.libraryId] || 0
+      trackCount: perLib[h.libraryId] || 0,
+      revoked: revokedLibs.get(h.libraryId) || null
     })),
     counts: mergedIndex
       ? { artists: mergedIndex.artists.length, albums: mergedIndex.albums.length, tracks: mergedIndex.tracks.length, genres: mergedIndex.genres.length }
@@ -4304,6 +4393,9 @@ const methods = {
     saveHostsFile(file)
     if (removed) {
       purgeLibrary(removed.libraryId)
+      // A recorded goodbye goes with the library: keeping a verdict about a library the
+      // user no longer follows would make a later re-pair boot up already "revoked".
+      clearRevoked(removed.libraryId)
       // Leave its topic (stops the swarm trying it + its nudge) and drop its pool connection - the
       // proposal's retry-storm mitigation: remove-library must stop reaching for that host.
       dropLink(removed.libraryId)

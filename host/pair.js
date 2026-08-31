@@ -174,7 +174,10 @@ class PairSession {
           // Carried with the person, so the dashboard does not show it assigned yet
           // claiming nobody (claimMismatch reads these two together).
           claimedUser: restored ? (existing.claimedUser ?? null) : null,
-          claimedAt: restored ? (existing.claimedAt ?? null) : null
+          claimedAt: restored ? (existing.claimedAt ?? null) : null,
+          // The settled answer travels with the claim, or a self-departed device would
+          // come back reading as pending even though nothing about it changed.
+          confirmedUser: restored ? (existing.confirmedUser ?? null) : null
         })
         this.log('pair:granted', {
           device: z32.encode(remoteKey).slice(0, 8),

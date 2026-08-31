@@ -250,3 +250,43 @@ test('Connections: deviceKeys lists exactly the devices holding a live connectio
   a.emit('close')
   assert.deepEqual(conns.deviceKeys(), [tablet])
 })
+
+// --- the goodbye (proposal 2026-08-31-grant-fixes-trio) ----------------------
+
+const { mayBeToldWhy, FarewellBook } = require('../host/gate')
+
+test('mayBeToldWhy: exactly the once-granted refusals, never no-grant', () => {
+  // A tombstoned grant proved possession of a key this host issued - saying "not
+  // any more" leaks nothing it does not already know.
+  assert.equal(mayBeToldWhy('device-revoked'), true)
+  assert.equal(mayBeToldWhy('person-revoked'), true)
+  assert.equal(mayBeToldWhy('grant-expired'), true)
+  // A stranger learns nothing, exactly as before.
+  assert.equal(mayBeToldWhy('no-grant'), false)
+  assert.equal(mayBeToldWhy('ok'), false)
+  assert.equal(mayBeToldWhy(''), false)
+  assert.equal(mayBeToldWhy(undefined), false)
+})
+
+test('FarewellBook: one goodbye per key per interval, denied silently in between', () => {
+  const book = new FarewellBook({ everyMs: 60_000 })
+  assert.equal(book.shouldSay('k1', NOW), true, 'first knock gets the goodbye')
+  assert.equal(book.shouldSay('k1', NOW + 1000), false, 'the next knock does not')
+  assert.equal(book.shouldSay('k1', NOW + 59_999), false, 'still inside the minute')
+  assert.equal(book.shouldSay('k1', NOW + 60_000), true, 'a minute later it may be told again')
+  assert.equal(book.shouldSay('k2', NOW + 1000), true, 'another key has its own budget')
+})
+
+test('FarewellBook: the book is capped, so minted keys cannot grow it without bound', () => {
+  const book = new FarewellBook({ everyMs: 60_000, capacity: 3 })
+  assert.equal(book.shouldSay('a', NOW), true)
+  assert.equal(book.shouldSay('b', NOW + 1), true)
+  assert.equal(book.shouldSay('c', NOW + 2), true)
+  // A fourth key evicts the oldest instead of growing the map.
+  assert.equal(book.shouldSay('d', NOW + 3), true)
+  assert.equal(book.at.size, 3)
+  assert.equal(book.at.has('a'), false, 'the oldest entry was evicted')
+  // The evicted key would be told again - one extra goodbye is the cost of a
+  // bounded map, not a hole: it is still one per key per interval among live keys.
+  assert.equal(book.shouldSay('b', NOW + 4), false, 'a surviving entry still holds its budget')
+})

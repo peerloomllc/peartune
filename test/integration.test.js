@@ -737,8 +737,11 @@ test('HEADLINE: revoke kills the music mid-stream, and denies reconnect', async 
   assert.ok(received < TRACK_BYTES, `the stream must NOT have completed (got ${received} of ${TRACK_BYTES})`)
   assert.equal(host.connections.count(deviceKey), 0, 'the killed connection must be deregistered')
 
-  // And it stays out: the grant is tombstoned, so the firewall refuses the
-  // reconnect too.
+  // And it stays out - but a device this host ONCE GRANTED is told so, once
+  // (proposal 2026-08-31-grant-fixes-trio). The acceptance test changes shape:
+  // one socket opens, it is told why, every method is refused, the host hangs
+  // up, and the next knock inside the minute is refused outright. Nothing NEW
+  // is ever served - the goodbye channel has no method table.
   const again = new PearTuneClient({
     keyPair: client.keyPair, // same device identity
     bootstrap: testnet.bootstrap,
@@ -746,14 +749,71 @@ test('HEADLINE: revoke kills the music mid-stream, and denies reconnect', async 
   })
   t.after(() => again.close())
 
+  const goodbye = new Promise((resolve) => { again.onPush = (m) => { if (m?.kind === 'access:revoked') resolve(m) } })
+  await withTimeout(again.connect({ hostKey: host.publicKey, libraryId: host.libraryId }), 8000)
+
+  const told = await withTimeout(goodbye, 4000)
+  assert.equal(told.data.reason, 'device-revoked', 'the goodbye names the reason')
+  assert.equal(told.data.libraryId, host.libraryId)
+
+  // The channel it was told on can DO nothing, and the host hangs up on its own.
   await assert.rejects(
-    withTimeout(again.connect({ hostKey: host.publicKey, libraryId: host.libraryId }), 4000),
-    'a revoked device must not be able to reconnect'
+    withTimeout(again.ping(), 4000),
+    'the goodbye channel must refuse every method'
+  )
+
+  // The next knock inside the rate limit is refused at the firewall, exactly as
+  // before the goodbye existed - saying it once is not a channel that stays open.
+  const third = new PearTuneClient({
+    keyPair: client.keyPair,
+    bootstrap: testnet.bootstrap,
+    log: QUIET
+  })
+  t.after(() => third.close())
+  await assert.rejects(
+    withTimeout(third.connect({ hostKey: host.publicKey, libraryId: host.libraryId }), 4000),
+    'a revoked device must not reconnect once the goodbye is spent'
   )
 
   const devices = await host.listDevices()
   assert.ok(devices[0].revokedAt, 'the grant must be tombstoned, not deleted')
   assert.equal(devices[0].online, false)
+})
+
+test('reassigning a device reaches its LIVE connection: no reconnect needed', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const a = await pairAndConnect(testnet, host)
+  const b = await pairAndConnect(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  const aKey = z32.encode(a.client.keyPair.publicKey)
+  const bKey = z32.encode(b.client.keyPair.publicKey)
+
+  // A favorite set while unassigned belongs to the DEVICE.
+  const { items } = await a.client.list({ type: 'tracks' })
+  await a.client.favSet({ id: items[0].id, on: true })
+
+  // The operator assigns both devices to one person, mid-connection, through the
+  // host (the path the dashboard takes). The push and the in-place grant swap are
+  // the fix: before it, A kept filing under its device owner until it reconnected.
+  const changed = new Promise((resolve) => { a.client.onPush = (m) => { if (m?.kind === 'grant:changed') resolve(m) } })
+  const sam = await host.grants.addPerson('Sam')
+  const outA = await host.assignDevice(aKey, sam.id)
+  assert.equal(outA.refreshed, 1, "A's live connection took the new grant")
+  const pushed = await withTimeout(changed, 4000)
+  assert.equal(pushed.data.personId, sam.id, 'the device is told its grant changed')
+  await host.assignDevice(bKey, sam.id)
+
+  // A write from A AFTER the reassignment must land under Sam - proved by B, a
+  // different device of the same person, seeing it WITHOUT A ever reconnecting.
+  await a.client.favSet({ kind: 'album', id: 'album-7', on: true })
+  assert.deepEqual((await b.client.favList()).album, ['album-7'], "Sam's other device sees the post-assign write")
+
+  // The device-era favorite did not follow: it belongs to the old owner. That is
+  // today's ownerOf rule, not a regression - the test pins that the SNAPSHOT
+  // moved, not that history migrated.
+  assert.deepEqual((await a.client.favList()).track, [], 'reads now answer as Sam too')
 })
 
 test('revoking one device does not disturb another', async (t) => {

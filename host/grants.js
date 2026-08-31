@@ -112,7 +112,7 @@ class Grants {
   // name afterwards, over the media channel. They are parameters only so a device returning
   // to its own person (proposal 2026-07-21-person-carryover-on-repair) comes back with the
   // claim it already had, rather than reading as assigned-but-unclaimed on the dashboard.
-  async grant ({ deviceKey, personId = null, label = '', platform = '', scope = SCOPE.FULL, grantedBy = 'operator', expiresAt = null, claimedUser = null, claimedAt = null }) {
+  async grant ({ deviceKey, personId = null, label = '', platform = '', scope = SCOPE.FULL, grantedBy = 'operator', expiresAt = null, claimedUser = null, claimedAt = null, confirmedUser = null }) {
     const key = Grants.keyOf(deviceKey)
     const row = {
       deviceKey: key,
@@ -126,6 +126,10 @@ class Grants {
       paths: null, // reserved: v2 library-subset scopes
       claimedUser,
       claimedAt,
+      // The claim the OPERATOR agreed to, written down (proposal 2026-08-31-grant-fixes-trio).
+      // Null on rows written before it existed; confirmedClaim then falls back to comparing
+      // names, so nothing on disk changes behaviour until a confirm/settle/rename writes it.
+      confirmedUser,
       revokedAt: null,
       lastSeenAt: null
     }
@@ -249,13 +253,13 @@ class Grants {
   // 1. The name is the JOIN KEY personByName uses to turn a claim into an assignment
   //    ("one Tim, not two"). So a blank name is refused, and a name that collides with
   //    a DIFFERENT live person is refused - otherwise a later claim would be ambiguous.
-  // 2. Assigned devices carry a claimedUser (the name they claimed). If we renamed the
-  //    person and left those alone, the dashboard's claimMismatch would fire and the
-  //    devices would drop out of the person and reappear under "Needs confirmation" - and
-  //    the phone would read as unconfirmed. So we sync claimedUser on this person's live
-  //    devices to the new name. This is safe here BECAUSE it is the OPERATOR renaming a
-  //    person, not a device self-claiming (which must still stay pending) - the operator
-  //    is the authority on who a confirmed device belongs to.
+  // 2. Confirmation is RECORDED, not derived. This used to sync claimedUser on the
+  //    person's live devices to the new name so claimMismatch would not fire - which
+  //    meant an operator fixing a typo silently rewrote what somebody's own phone
+  //    called them, in the field the phone set (the bug PearCinema found on
+  //    2026-08-20; proposal 2026-08-31-grant-fixes-trio). Now the rename BACKFILLS
+  //    `confirmedUser` on any grant whose claim matched the OLD name - while that
+  //    name still exists to compare against - and then touches no grant at all.
   async renamePerson (personId, name) {
     const person = await this.getPerson(personId)
     if (!person) return null
@@ -267,15 +271,16 @@ class Grants {
     )
     if (clash) throw new Error('another person already has that name')
 
+    for (const g of await this.list()) {
+      if (g.personId !== personId || g.revokedAt || !g.claimedUser) continue
+      if (g.confirmedUser != null) continue
+      if (!confirmedClaim(g, person)) continue
+      g.confirmedUser = g.claimedUser
+      await this.bee.put('grant:' + Grants.keyOf(g.deviceKey), g, { valueEncoding: 'json' })
+    }
+
     person.name = clean
     await this.bee.put('person:' + personId, person, { valueEncoding: 'json' })
-
-    for (const g of await this.list()) {
-      if (g.personId === personId && !g.revokedAt && g.claimedUser && g.claimedUser !== clean) {
-        g.claimedUser = clean
-        await this.bee.put('grant:' + Grants.keyOf(g.deviceKey), g, { valueEncoding: 'json' })
-      }
-    }
     return person
   }
 
@@ -356,6 +361,11 @@ class Grants {
       if (clean && !row.personId && !(await this.personByName(clean))) {
         const person = await this.addPerson(clean)
         row.personId = person.id
+        // Nothing was inherited and no operator click was needed, so this claim is
+        // settled at the moment it is made - and it has to be RECORDED, or the
+        // dashboard would show a device that never needed confirming as pending
+        // the first time its person is renamed.
+        row.confirmedUser = clean
       }
     }
 
@@ -398,7 +408,34 @@ class Grants {
       person = (await this.personByName(row.claimedUser)) || (await this.addPerson(row.claimedUser))
     }
 
-    return this.assign(key, person.id)
+    // WHAT WAS AGREED TO, written down. Everything downstream reads this rather
+    // than comparing the person's name with the claim, which is what frees an
+    // operator's label from a device's own name.
+    const out = await this.assign(key, person.id)
+    if (out) {
+      out.confirmedUser = cleanName(row.claimedUser)
+      await this.bee.put('grant:' + key, out, { valueEncoding: 'json' })
+    }
+    return out
+  }
+
+  // "I HAVE SEEN THE NEW NAME, AND THIS DEVICE IS STILL WHOSE IT WAS."
+  //
+  // The answer the store had no way to express. confirmClaim only ever means "turn
+  // this claim into an assignment", so a device that renames ITSELF while already
+  // assigned was stuck pending forever: the operator could either move it to a
+  // person of the new name or detach it and start again, and nothing else.
+  //
+  // It grants nothing. personId is untouched, so this can never become a route by
+  // which a device joins somebody - the checkpoint from proposal 2026-07-14 is that
+  // a device may not pick which person it is, and this does not let it.
+  async settleClaim (deviceKey) {
+    const key = Grants.keyOf(deviceKey)
+    const row = await this.get(key)
+    if (!row || !row.claimedUser) return null
+    row.confirmedUser = cleanName(row.claimedUser)
+    await this.bee.put('grant:' + key, row, { valueEncoding: 'json' })
+    return row
   }
 
   // Every LIVE person holding this name - what the dashboard needs to know whether confirming is
@@ -427,4 +464,25 @@ class Grants {
   }
 }
 
-module.exports = { Grants, personLabels, b4a }
+// IS THIS DEVICE'S CURRENT CLAIM CONFIRMED?
+//
+// It used to be answered by comparing the person's name with the device's claim,
+// which forced renamePerson to rewrite the claim on every device it held - so an
+// operator fixing a typo silently changed what somebody's own phone called them.
+// Confirmation is RECORDED now: `confirmedUser` on the grant is the claim the
+// operator agreed to, so the two names are free to differ and a rename touches
+// nothing a device wrote.
+//
+// A device changing its OWN name still lands as pending, which is the point of the
+// checkpoint - claimedUser moves and confirmedUser does not.
+//
+// GRANTS WRITTEN BEFORE THIS FALL BACK TO THE OLD COMPARISON, so an existing box
+// reads exactly as it did until the next rename or confirm backfills it.
+function confirmedClaim (row, person) {
+  if (!row || !row.claimedUser || !person || person.revokedAt) return false
+  const claim = cleanName(row.claimedUser).toLowerCase()
+  if (row.confirmedUser != null) return cleanName(row.confirmedUser).toLowerCase() === claim
+  return cleanName(person.name).toLowerCase() === claim
+}
+
+module.exports = { Grants, personLabels, confirmedClaim, b4a }
