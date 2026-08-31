@@ -3798,7 +3798,22 @@ const methods = {
         anySupported = true
         for (const req of r.value.requests) tagged.push({ ...req, libraryId: r.value.lib, libraryName: names.get(r.value.lib) || null })
       }
-      return { requests: merge.collapseRequests(tagged), supported: anySupported }
+      const collapsed = merge.collapseRequests(tagged)
+      // THE REQUESTER CLOSES THE ASK (proposal 2026-08-31): an ask answered on one
+      // library while pending on siblings gets its pending copies closed HERE, by the
+      // one party that knows every copy exists. Fire and forget, errors swallowed - an
+      // old host refuses with 'owner only' and simply stays pending (today's bug, not
+      // an error). This runs on every list, so it HEALS: a device asleep when the
+      // answer came settles it the next time the app opens its requests.
+      const stale = merge.answeredElsewhere(collapsed)
+      if (stale.length) {
+        log('request:closing-answered', { copies: stale.length })
+        Promise.allSettled(stale.map(({ libraryId, id }) => {
+          const c = clientFor(libraryId)
+          return c ? c.ownerResolveRequest({ id, status: 'added' }) : Promise.reject(new Error('offline'))
+        })).catch(() => {})
+      }
+      return { requests: collapsed, supported: anySupported }
     }
     try {
       await ensureConnected()

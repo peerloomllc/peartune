@@ -24,6 +24,7 @@ const { parseLink, encodeLink } = require('../protocol/link')
 const { libraryId } = require('../protocol/ids')
 const { PAIR_PROTOCOL, SCOPE } = require('../protocol/constants')
 const framing = require('../protocol/framing')
+const merge = require('../worklet/merge')
 
 const QUIET = () => {}
 
@@ -1642,4 +1643,132 @@ test('per-person folders: a window opened with paths mints an already-narrow gra
   const ownerLink = host.startPairing({ owner: true, paths: [{ root: host.adapter.roots[0], rel: 'Kids' }] })
   assert.ok(ownerLink, 'owner + paths opens, with the paths dropped')
   assert.equal(host.pairSession.paths, null)
+})
+
+// --- the requester closes the ask (proposal 2026-08-31) ----------------------
+
+test('request gate: the row\'s requester may mark it added; nobody else, nothing else', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const asker = await pairAndConnect(testnet, host)
+  const stranger = await pairAndConnect(testnet, host)
+  t.after(() => asker.client.close())
+  t.after(() => stranger.client.close())
+
+  const filed = await asker.client.requestAdd({ kind: 'album', name: 'Kind of Blue', artist: 'Miles Davis' })
+  assert.equal(filed.ok, true)
+
+  // A stranger holding a full (non-owner) grant may not resolve somebody else's row.
+  await assert.rejects(stranger.client.ownerResolveRequest({ id: filed.id, status: 'added' }), /owner only/)
+  // The requester may not decline their own row through this gate - a decline is an
+  // owner's answer, and withdrawing is what request.delete is for.
+  await assert.rejects(asker.client.ownerResolveRequest({ id: filed.id, status: 'declined' }), /owner only/)
+
+  // The requester marking their own pending row added is the whole feature.
+  const closed = await asker.client.ownerResolveRequest({ id: filed.id, status: 'added' })
+  assert.equal(closed.ok, true)
+  assert.equal(closed.status, 'added')
+
+  // Idempotence: a copy that is no longer pending is not rewritten.
+  const again = await asker.client.ownerResolveRequest({ id: filed.id, status: 'added' })
+  assert.equal(again.ok, false)
+
+  const rows = await host.userState.listRequests()
+  assert.equal(rows.find(r => r.id === filed.id).status, 'added')
+})
+
+test('two hosts, one ask: the answer on one closes the pending copy on the other', async (t) => {
+  const { testnet, host } = await scaffold(t)
+
+  // A second, independent host on the same testnet - a friend's machine.
+  const dirB = await fsp.mkdtemp(path.join(os.tmpdir(), 'peartune-b-'))
+  const musicB = path.join(dirB, 'music')
+  await fsp.mkdir(musicB, { recursive: true })
+  await fsp.writeFile(path.join(musicB, 'b-track.flac'), b4a.alloc(64 * 1024, 3))
+  const hostB = new PearTuneHost({
+    dataDir: path.join(dirB, 'host-data'),
+    musicDir: musicB,
+    libraryName: 'Library B',
+    bootstrap: testnet.bootstrap,
+    log: QUIET
+  })
+  await hostB.ready()
+  t.after(async () => { await hostB.close(); await fsp.rm(dirB, { recursive: true, force: true }) })
+
+  // One person, one device, paired to BOTH libraries; the same ask filed with both -
+  // exactly what the worklet's merged requestAdd fan-out does.
+  const keyPair = hcrypto.keyPair()
+  const clients = []
+  for (const h of [host, hostB]) {
+    const c = new PearTuneClient({ keyPair, bootstrap: testnet.bootstrap, log: QUIET })
+    const link = h.startPairing()
+    const paired = await c.pair(link, { label: 'phone', platform: 'android' })
+    await c.connect({ hostKey: paired.hostKey, libraryId: paired.libraryId })
+    clients.push(c)
+    t.after(() => c.close())
+  }
+  const [onA, onB] = clients
+  const filedA = await onA.requestAdd({ kind: 'album', name: 'Blue Train', artist: 'Coltrane' })
+  const filedB = await onB.requestAdd({ kind: 'album', name: 'Blue Train', artist: 'Coltrane' })
+
+  // The owner of A answers on A ONLY - the dashboard path, which never reaches B.
+  await host.resolveRequestAndNotify(filedA.id, 'added')
+
+  // The requester's device collapses its per-host lists and closes what was
+  // answered elsewhere - the exact steps src/bare.js requestList runs.
+  const tagged = []
+  for (const [lib, c] of [[host.libraryId, onA], [hostB.libraryId, onB]]) {
+    for (const r of (await c.requestList()).requests) tagged.push({ ...r, libraryId: lib })
+  }
+  const collapsed = merge.collapseRequests(tagged)
+  assert.equal(collapsed.length, 1, 'one ask, however many hosts it was filed with')
+  const stale = merge.answeredElsewhere(collapsed)
+  assert.deepEqual(stale, [{ libraryId: hostB.libraryId, id: filedB.id }])
+  for (const s of stale) {
+    const c = s.libraryId === hostB.libraryId ? onB : onA
+    assert.equal((await c.ownerResolveRequest({ id: s.id, status: 'added' })).ok, true)
+  }
+
+  // Host B's owner queue no longer shows a pending copy of an answered ask.
+  assert.equal((await hostB.userState.listRequests()).find(r => r.id === filedB.id).status, 'added')
+
+  // And after the close, a re-list finds nothing left to heal.
+  const tagged2 = []
+  for (const [lib, c] of [[host.libraryId, onA], [hostB.libraryId, onB]]) {
+    for (const r of (await c.requestList()).requests) tagged2.push({ ...r, libraryId: lib })
+  }
+  assert.deepEqual(merge.answeredElsewhere(merge.collapseRequests(tagged2)), [])
+})
+
+test('two hosts, one ask: a DECLINE on one leaves the other pending', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const dirB = await fsp.mkdtemp(path.join(os.tmpdir(), 'peartune-b2-'))
+  const musicB = path.join(dirB, 'music')
+  await fsp.mkdir(musicB, { recursive: true })
+  await fsp.writeFile(path.join(musicB, 'b.flac'), b4a.alloc(64 * 1024, 3))
+  const hostB = new PearTuneHost({ dataDir: path.join(dirB, 'host-data'), musicDir: musicB, libraryName: 'B', bootstrap: testnet.bootstrap, log: QUIET })
+  await hostB.ready()
+  t.after(async () => { await hostB.close(); await fsp.rm(dirB, { recursive: true, force: true }) })
+
+  const keyPair = hcrypto.keyPair()
+  const clients = []
+  for (const h of [host, hostB]) {
+    const c = new PearTuneClient({ keyPair, bootstrap: testnet.bootstrap, log: QUIET })
+    const paired = await c.pair(h.startPairing(), { label: 'phone', platform: 'android' })
+    await c.connect({ hostKey: paired.hostKey, libraryId: paired.libraryId })
+    clients.push(c)
+    t.after(() => c.close())
+  }
+  const [onA, onB] = clients
+  await onA.requestAdd({ kind: 'album', name: 'X', artist: 'Y' })
+  const filedB = await onB.requestAdd({ kind: 'album', name: 'X', artist: 'Y' })
+
+  const filedA = (await onA.requestList()).requests[0]
+  await host.resolveRequestAndNotify(filedA.id, 'declined')
+
+  const tagged = []
+  for (const [lib, c] of [[host.libraryId, onA], [hostB.libraryId, onB]]) {
+    for (const r of (await c.requestList()).requests) tagged.push({ ...r, libraryId: lib })
+  }
+  assert.deepEqual(merge.answeredElsewhere(merge.collapseRequests(tagged)), [], 'a decline does not travel')
+  assert.equal((await hostB.userState.listRequests()).find(r => r.id === filedB.id).status, 'pending')
 })

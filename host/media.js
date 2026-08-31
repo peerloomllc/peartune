@@ -560,11 +560,28 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
 
       case 'owner.requestResolve': {
         if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
         if (!params?.id || !['added', 'declined'].includes(params?.status)) return safeErr(id, ERR.BAD_PARAMS, 'id and status (added|declined) required')
+        // The library's owner may resolve any row, and THE PERSON WHO FILED A ROW may
+        // resolve that row (proposal 2026-08-31-the-requester-closes-the-ask): when
+        // another library answers the same ask, the requester's device closes this
+        // copy so the queue stops showing an answered ask as pending. The requester
+        // is ownerOf(grant) off the Noise-authenticated connection compared to the
+        // host-derived row.requester - the exact test request.delete already uses,
+        // and marking answered is strictly less power than the delete it allows.
+        if (grant?.scope !== SCOPE.OWNER) {
+          if (!state) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+          const mine = await state.getRequest(params.id)
+          if (!mine) return send.res.send({ id, body: { ok: false, notFound: true } })
+          if (mine.requester !== ownerOf(grant)) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+          // And only the mirror of an answer: 'added' onto a still-pending copy. A
+          // requester cannot flip an owner's decline, and a decline never travels -
+          // withdrawing entirely is what request.delete is for.
+          if (params.status !== 'added') return safeErr(id, ERR.FORBIDDEN, 'owner only')
+          if (mine.status !== 'pending') return send.res.send({ id, body: { ok: false, notFound: true } })
+        }
         const row = await owner.resolveRequest(params.id, params.status)
         if (!row) return send.res.send({ id, body: { ok: false, notFound: true } })
-        log('owner:request-resolve', { status: row.status })
+        log('owner:request-resolve', { status: row.status, by: grant?.scope === SCOPE.OWNER ? 'owner' : 'requester' })
         return send.res.send({ id, body: { ok: true, status: row.status } })
       }
 
