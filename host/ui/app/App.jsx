@@ -12,6 +12,7 @@ import { Collapse, ConfirmHost, Modal, askConfirm } from './ui'
 import { SourcePanel } from './SourcePanel'
 import { SpeakersPanel } from './SpeakersPanel'
 import { PairModal, DAY_MS } from './Pair'
+import { SharingModal, pathsSummary } from './Sharing'
 import { MaintenanceModal } from './Maintenance'
 import SetupWizard from './Wizard'
 import { needsSetup, setupDismissed, dismissSetup, undismissSetup } from './setup'
@@ -319,6 +320,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
   const [open, setOpen] = useState({})
   const [showRevoked, setShowRevoked] = useState(false)
   const [renaming, setRenaming] = useState(null) // { id, draft } while editing a person's name
+  const [sharing, setSharing] = useState(null) // the person whose folders are being edited
 
   const devices = state.devices || []
   const byPerson = id => devices.filter(d => d.personId === id)
@@ -519,6 +521,15 @@ function AccessPanel ({ state, refresh, toast, online }) {
                                   ? (emptySince(p) ? `since ${ago(emptySince(p))}` : '')
                                   : `${live.length} device${live.length === 1 ? '' : 's'}${on ? ` · ${on} online` : ''}${p.createdAt ? ` · added ${ago(p.createdAt)}` : ''}`}</span>
                               </div>
+                              {/* Per-person folders (proposal 2026-08-31): what this person can
+                                  hear, and the way to change it. Only where the source can
+                                  enforce it, and never for a person holding an owner device -
+                                  the owner is the library and is never filtered. */}
+                              {!gone && state.canNarrow && !live.some(d => d.scope === 'owner') && (
+                                <div className='sub'>
+                                  <span>Can hear: {pathsSummary(live[0]?.paths)} · <button className='link' onClick={e => { e.stopPropagation(); setSharing(p) }}>change</button></span>
+                                </div>
+                              )}
                               {!isOpen && playing && <NowPlaying np={playing} />}
                             </div>
                             <button className='ghost small' onClick={e => { e.stopPropagation(); startRename(p) }}>Rename</button>
@@ -557,6 +568,15 @@ function AccessPanel ({ state, refresh, toast, online }) {
                 </> : null}
             </>}
       </div>
+      {sharing && (
+        <SharingModal
+          person={sharing}
+          initialPaths={heldBy(sharing.id)[0]?.paths || []}
+          toast={toast}
+          onSaved={refresh}
+          onClose={() => setSharing(null)}
+        />
+      )}
       <div style={{ padding: '0 16px 14px' }}>
         {revokedCount ?
           <div className='footer-toggle'>{revokedCount} revoked · <button className='link' onClick={() => setShowRevoked(v => !v)}>{showRevoked ? 'hide' : 'show'}</button></div>

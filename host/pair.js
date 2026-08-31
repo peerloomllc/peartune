@@ -45,7 +45,7 @@ function tokenEquals (a, b) {
 }
 
 class PairSession {
-  constructor ({ identity, grants, libraryName, ttl = PAIR_TTL_MS, expiresMs = null, owner = false, log = () => {}, onpaired = null }) {
+  constructor ({ identity, grants, libraryName, ttl = PAIR_TTL_MS, expiresMs = null, owner = false, paths = null, log = () => {}, onpaired = null }) {
     this.identity = identity
     this.grants = grants
     this.libraryName = libraryName
@@ -58,6 +58,10 @@ class PairSession {
     // 'owner', not 'full'. Set host-side by the dashboard only - a phone never asserts
     // its own scope, same rule as the guest expiry above. Mutually exclusive with guest.
     this.owner = !!owner
+    // Chosen folders for devices pairing through THIS window (proposal 2026-08-31):
+    // null = everything. Operator-set, host-side - never read from the device's
+    // hello, same rule as the guest expiry and the owner scope above.
+    this.paths = paths ?? null
     this.log = log
     this.onpaired = onpaired
 
@@ -175,6 +179,9 @@ class PairSession {
           // claiming nobody (claimMismatch reads these two together).
           claimedUser: restored ? (existing.claimedUser ?? null) : null,
           claimedAt: restored ? (existing.claimedAt ?? null) : null,
+          // A device restored to its person keeps the narrowing it had (which is the
+          // person's); a stranger gets whatever this window was opened with.
+          paths: restored ? (existing.paths ?? null) : this.paths,
           // The settled answer travels with the claim, or a self-departed device would
           // come back reading as pending even though nothing about it changed.
           confirmedUser: restored ? (existing.confirmedUser ?? null) : null

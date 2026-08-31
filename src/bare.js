@@ -1039,10 +1039,14 @@ function makeClient () {
       // speak about itself, or a malicious one could shut off a library it does not hold.
       markRevoked(c.libraryId, m.data?.reason)
     } else if (m?.kind === 'grant:changed') {
-      // The operator reassigned or confirmed this device mid-connection. The host already
-      // swapped this connection's grant server-side, so person-scoped state (favorites,
-      // resume, playlists) may now answer as somebody else - tell the UI to re-read.
+      // The operator reassigned, confirmed or NARROWED this device mid-connection. The
+      // host already swapped this connection's grant server-side, so person-scoped
+      // state may now answer as somebody else - and after a narrowing the catalog this
+      // phone holds is a list of things the host will refuse. Rebuild the blend from
+      // the (now filtered) live catalogs, not just tell the UI - PearCinema's lesson:
+      // without the rebuild the grid keeps drawing tracks that no longer open.
       log('grant:changed', { lib: String(c.libraryId || '').slice(0, 8) })
+      if (mergedMode()) rebuildIndex().catch(() => {})
       emit('grant:changed', { libraryId: c.libraryId })
     } else if (m?.kind === 'speaker:ended') {
       // A track we sent to a Home Assistant speaker finished (proposal 2026-08-01). The

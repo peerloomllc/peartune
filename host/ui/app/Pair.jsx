@@ -8,6 +8,7 @@ import { CheckCircle, Clock, Copy } from '@phosphor-icons/react'
 import QRCode from 'qrcode'
 import { api, copyText, fmtDur } from './api'
 import { Modal } from './ui'
+import { FolderPicker } from './Sharing'
 
 export const DAY_MS = 86400000
 const GUEST_DURATIONS = [
@@ -25,6 +26,16 @@ export function PairFlow ({ toast, onDone, guestOption = true, owner = false }) 
   const [busy, setBusy] = useState(false)
   const [guest, setGuest] = useState(false)
   const [durMs, setDurMs] = useState(DAY_MS)
+  // Per-person folders at pairing time (proposal 2026-08-31). `hears` is a QUESTION,
+  // not a default: null until the operator answers, and no pairing code until they
+  // do - "Can hear: everything" is a line somebody has to notice and disagree with
+  // (Tim, on the PearCinema round). Only asked where the source can enforce it.
+  const [canNarrow, setCanNarrow] = useState(false)
+  const [hears, setHears] = useState(null) // null | 'all' | 'folders'
+  const [paths, setPaths] = useState([])
+  useEffect(() => {
+    api('/api/state').then(st => setCanNarrow(!!st.canNarrow && !owner)).catch(() => {})
+  }, [owner])
   const [copied, setCopied] = useState(false)
   const [outcome, setOutcome] = useState(null) // { ok: true, label } | { ok: false } once the window ends
   // deviceKey -> "grantedAt|scope" BEFORE the window opened. Success is a device whose signature
@@ -86,7 +97,10 @@ export function PairFlow ({ toast, onDone, guestOption = true, owner = false }) 
     seenGrants.current = new Map((before?.devices || []).map(d => [d.deviceKey, sig(d)]))
     // An OWNER window mints scope 'owner' (P2); a guest window carries the chosen duration;
     // a full window sends nothing. Owner and guest are mutually exclusive host-side.
-    const r = await api('/api/pair/start', owner ? { owner: true } : guest ? { expiresMs: durMs } : {})
+    const opts = owner ? { owner: true } : guest ? { expiresMs: durMs } : {}
+    if (canNarrow && hears === 'folders') opts.paths = paths
+    const r = await api('/api/pair/start', opts)
+    if (r.error) { setBusy(false); if (toast) toast('Failed: ' + r.error, true); return }
     // margin 4 = the spec's full quiet zone (was 1). A too-thin quiet zone hurts scanning, and it
     // bites hardest in DARK mode: the white QR card is a bright island in a dark page, so the phone
     // camera meters the dark surroundings and blows out the card, washing out the modules. A proper
@@ -114,7 +128,17 @@ export function PairFlow ({ toast, onDone, guestOption = true, owner = false }) 
                 </select>
               </label>
             : <p className='hint center'>Permanent access. Scan the code in PearTune on your phone.</p>}
-        <button onClick={start} disabled={busy}>{busy ? 'Starting…' : 'Show pairing code'}</button>
+        {canNarrow && (
+          <>
+            <div className='seg wide'>
+              <button className={hears === 'all' ? 'on' : ''} onClick={() => setHears('all')}>Hears everything</button>
+              <button className={hears === 'folders' ? 'on' : ''} onClick={() => setHears('folders')}>Chosen folders</button>
+            </div>
+            {hears === 'folders' && <FolderPicker value={paths} onChange={setPaths} />}
+            {hears === null && <p className='hint center'>Say what this device may hear before the code appears.</p>}
+          </>
+        )}
+        <button onClick={start} disabled={busy || (canNarrow && (hears === null || (hears === 'folders' && !paths.length)))}>{busy ? 'Starting…' : 'Show pairing code'}</button>
       </div>
     )
   }

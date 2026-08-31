@@ -40,6 +40,7 @@ const { createIdentity } = require('./identity')
 const { Grants } = require('./grants')
 const { UserState } = require('./state')
 const { decide, mayBeToldWhy, FarewellBook, sweepKills, Connections } = require('./gate')
+const { normalisePaths } = require('./visibility')
 const { Presence, notifyOwners } = require('./presence')
 const { AvatarStore } = require('./avatars')
 
@@ -670,6 +671,26 @@ class PearTuneHost {
     return { grant: row, refreshed }
   }
 
+  // Narrow (or widen) a person to chosen folders, THROUGH the host: the store write
+  // plus the live refresh plus the push, so the very next request from any of their
+  // connected devices is already filtered (proposal 2026-08-31-per-person-folders).
+  async setPersonPaths (personId, paths) {
+    // A source that cannot enforce a narrowing must not accept one - the People page
+    // never offers it, and this refusal is the API's word for the same rule. An
+    // EXISTING narrowing under a swapped source fails closed in visibility.viewOf.
+    if (paths != null && !(this.adapter && this.adapter.canNarrow)) {
+      throw new Error('this music source cannot narrow by folder (folder libraries only)')
+    }
+    const rows = await this.grants.setPersonPaths(personId, paths)
+    let refreshed = 0
+    for (const row of rows) {
+      refreshed += this.refreshGrant(row)
+      this.presence.notify(row.deviceKey, 'grant:changed', { libraryId: this.libraryId, personId: row.personId || null })
+    }
+    this.log('host:paths-changed', { person: String(personId).slice(0, 8), devices: rows.length, refreshed, narrowed: paths != null })
+    return { grants: rows, refreshed }
+  }
+
   // Swap the stored row into every live media handle for its device. Returns how many
   // connections took it.
   refreshGrant (row) {
@@ -687,16 +708,25 @@ class PearTuneHost {
   // expires that many ms after pairing. owner:true opens an OWNER window (scope 'owner',
   // proposal 2026-07-24, P2) - mutually exclusive with guest, so an owner is never
   // time-limited. Omitted = a normal permanent window.
-  startPairing ({ expiresMs = null, owner = false } = {}) {
+  startPairing ({ expiresMs = null, owner = false, paths = null } = {}) {
     // Owner XOR guest: an owner window ignores any expiry (an owner is permanent by
-    // definition; a time-limited owner would be a footgun).
-    if (owner) expiresMs = null
-    // A window is already open. Reuse it only if its KIND (guest-ness AND owner-ness)
-    // matches what was asked; otherwise close it and open the requested kind, so the
-    // three window types never silently hand back the wrong one.
+    // definition; a time-limited owner would be a footgun). An owner window carries
+    // no paths either - the owner is never filtered, so accepting a narrowing here
+    // would only record a lie.
+    if (owner) { expiresMs = null; paths = null }
+    // Fail at the OPEN, not at the scan: a window that would mint an unenforceable
+    // narrowing (or a malformed one) should never show a QR code.
+    if (paths != null && !(this.adapter && this.adapter.canNarrow)) {
+      throw new Error('this music source cannot narrow by folder (folder libraries only)')
+    }
+    const cleanPaths = normalisePaths(paths)
+    // A window is already open. Reuse it only if its KIND (guest-ness AND owner-ness
+    // AND narrowing) matches what was asked; otherwise close it and open the requested
+    // kind, so the window types never silently hand back the wrong one.
     if (this.pairing) {
       const openMs = this.pairSession.expiresMs || null
-      const sameKind = (openMs ? 1 : 0) === (expiresMs ? 1 : 0) && !!this.pairSession.owner === !!owner
+      const sameKind = (openMs ? 1 : 0) === (expiresMs ? 1 : 0) && !!this.pairSession.owner === !!owner &&
+        JSON.stringify(this.pairSession.paths ?? null) === JSON.stringify(cleanPaths)
       if (sameKind) return this.pairSession.link
       this.pairSession.close('operator')
     }
@@ -707,6 +737,7 @@ class PearTuneHost {
       libraryName: this.libraryName,
       expiresMs: expiresMs && expiresMs > 0 ? expiresMs : null,
       owner: !!owner,
+      paths: cleanPaths,
       log: this.log,
       // A device pairing in changes the roster every owner sees, so refresh their live Manage view.
       onpaired: () => this.notifyOwnersDevicesChanged()

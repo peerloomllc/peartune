@@ -1549,3 +1549,97 @@ test('SOURCE SWAP: setSource pushes "library:changed" to a connected device', as
   const { items } = await client.list({ type: 'tracks' })
   assert.equal(items.length, 1)
 })
+
+test('per-person folders: a narrowing lands on a LIVE connection, and only that person shrinks', async (t) => {
+  const { testnet, host, dir } = await scaffold(t)
+  const musicDir = path.join(dir, 'music')
+  await fsp.mkdir(path.join(musicDir, 'Kids'), { recursive: true })
+  await fsp.mkdir(path.join(musicDir, 'Rock'), { recursive: true })
+  await fsp.writeFile(path.join(musicDir, 'Kids', 'lullaby.mp3'), b4a.alloc(64 * 1024, 7))
+  await fsp.writeFile(path.join(musicDir, 'Rock', 'anthem.mp3'), b4a.alloc(64 * 1024, 9))
+  await host.adapter.scan()
+
+  const a = await pairAndConnect(testnet, host) // to be narrowed
+  const b = await pairAndConnect(testnet, host) // bystander
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  const aKey = z32.encode(a.client.keyPair.publicKey)
+  const wide = await a.client.list({ type: 'tracks' })
+  assert.equal(wide.items.length, 3, 'the wide library: root track + Kids + Rock')
+  const rock = wide.items.find(x => x.path === 'Rock/anthem.mp3')
+
+  const sam = await host.grants.addPerson('Sam')
+  await host.assignDevice(aKey, sam.id)
+
+  // A favorite of a soon-hidden track, filed AS SAM (after the assignment - state
+  // follows the owner), to watch it leave the list (not the store).
+  await a.client.favSet({ id: rock.id, on: true })
+
+  const changed = new Promise((resolve) => { a.client.onPush = (m) => { if (m?.kind === 'grant:changed') resolve(m) } })
+  const out = await host.setPersonPaths(sam.id, [{ root: host.adapter.roots[0], rel: 'Kids' }])
+  assert.equal(out.refreshed, 1, "A's live connection took the narrowing in place")
+  await withTimeout(changed, 4000)
+
+  // The very next call is filtered - A never reconnected.
+  const narrow = await a.client.list({ type: 'tracks' })
+  assert.deepEqual(narrow.items.map(x => x.path), ['Kids/lullaby.mp3'])
+  assert.equal(await a.client.get({ id: rock.id }), null, 'a hidden id is no such track')
+  await assert.rejects(
+    withTimeout(a.client.stream({ trackId: rock.id }), 4000),
+    'the hidden bytes themselves are refused'
+  )
+  assert.deepEqual((await a.client.favList()).track, [], 'the hidden favorite left the list on the way out')
+
+  // The bystander is untouched, and so is the owner's view of the store.
+  assert.equal((await b.client.list({ type: 'tracks' })).items.length, 3)
+
+  // Widening back is one write, and the favorite comes back whole - it was
+  // filtered, never deleted.
+  await host.setPersonPaths(sam.id, null)
+  assert.equal((await a.client.list({ type: 'tracks' })).items.length, 3)
+  assert.deepEqual((await a.client.favList()).track, [rock.id])
+})
+
+test('per-person folders: revoke still cuts a narrowed device off within a second', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const a = await pairAndConnect(testnet, host)
+  t.after(() => a.client.close())
+  const aKey = z32.encode(a.client.keyPair.publicKey)
+
+  const sam = await host.grants.addPerson('Sam')
+  await host.assignDevice(aKey, sam.id)
+  await host.setPersonPaths(sam.id, [{ root: host.adapter.roots[0], rel: 'nowhere' }])
+
+  assert.equal(host.connections.count(aKey), 1)
+  await host.revokeDevice(aKey)
+  assert.equal(host.connections.count(aKey), 0, 'narrowed or not, the teeth are the same')
+})
+
+test('per-person folders: a window opened with paths mints an already-narrow grant - no wide moment', async (t) => {
+  const { testnet, host, dir } = await scaffold(t)
+  const musicDir = path.join(dir, 'music')
+  await fsp.mkdir(path.join(musicDir, 'Kids'), { recursive: true })
+  await fsp.writeFile(path.join(musicDir, 'Kids', 'lullaby.mp3'), b4a.alloc(64 * 1024, 7))
+  await host.adapter.scan()
+
+  const client = newClient(testnet)
+  t.after(() => client.close())
+  const link = host.startPairing({ paths: [{ root: host.adapter.roots[0], rel: 'Kids' }] })
+  const paired = await client.pair(link, { label: 'guest-phone', platform: 'android' })
+  await client.connect({ hostKey: paired.hostKey, libraryId: paired.libraryId })
+
+  // The FIRST thing this device ever hears is already the narrow library.
+  const { items } = await client.list({ type: 'tracks' })
+  assert.deepEqual(items.map(x => x.path), ['Kids/lullaby.mp3'])
+
+  const row = await host.grants.get(z32.encode(client.keyPair.publicKey))
+  assert.deepEqual(row.paths, [{ root: host.adapter.roots[0], rel: 'Kids' }], 'the narrowing is on the grant from birth')
+
+  // An owner window refuses to carry a narrowing - the owner is never filtered,
+  // so accepting one would only record a lie.
+  host.stopPairing()
+  const ownerLink = host.startPairing({ owner: true, paths: [{ root: host.adapter.roots[0], rel: 'Kids' }] })
+  assert.ok(ownerLink, 'owner + paths opens, with the paths dropped')
+  assert.equal(host.pairSession.paths, null)
+})

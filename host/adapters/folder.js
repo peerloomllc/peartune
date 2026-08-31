@@ -28,6 +28,7 @@ const { Readable } = require('stream')
 const { entryKind } = require('../dirent')
 const { trackId, groupId } = require('../../protocol/ids')
 const { TRACK_CMP, ALBUM_CMP, ARTIST_CMP, GENRE_CMP, FULL_SORTS, sortRows } = require('./sort')
+const { visibleTo, locate, normalRel } = require('../visibility')
 
 
 // format -> ffmpeg codec + CONTAINER. The container is the trap: `-f aac` is not a
@@ -138,6 +139,14 @@ class FolderAdapter {
     this.artCache = new Map() // coverId -> Buffer | null  (null = looked, found nothing)
     this.scannedAt = null
     this.scanning = null
+
+    // This source can enforce per-person folders (proposal 2026-08-31): every track
+    // has a path the host owns. viewOf() reads this; a proxy source without it serves
+    // a narrowed grant nothing rather than everything.
+    this.canNarrow = true
+    // Memoized narrowed views, keyed by the paths value. Cleared on every rebuild -
+    // a view is filtered POOLS, so it goes stale the moment the catalog changes.
+    this._narrowCache = new Map()
   }
 
   // THROWS if the folder is not there, and that is the whole point.
@@ -374,6 +383,7 @@ class FolderAdapter {
     this.artists.clear()
     this.genres.clear()
     this._sortCache = new Map() // the library changed; old sorted permutations are stale
+    this._narrowCache.clear() // narrowed views are filtered pools of the OLD catalog
 
     // Pass 1: bucket the files into albums.
     const buckets = new Map() // albumKey -> { rows, dir, root }
@@ -525,6 +535,98 @@ class FolderAdapter {
     if (!t) return null
     const { absPath, ...pub } = t
     return pub
+  }
+
+  // --- per-person folders (proposal 2026-08-31) ------------------------------
+  //
+  // The library as ONE NARROWED PERSON hears it: the same adapter methods over
+  // filtered pools. Object.create(this) + shadowed data fields means list, get,
+  // search, stats, sorting and streaming all filter themselves - a method that
+  // reads this.tracks reads the smaller map and cannot reach past it. The rows
+  // that carry membership (albums, artists, genres) are COPIES with their
+  // trackIds/albumIds cut down and their counts recomputed, so a "12 songs"
+  // album a person can hear 3 of says 3; the track objects themselves are shared
+  // by reference (never mutated).
+  narrowedView (paths) {
+    const key = JSON.stringify(paths)
+    let view = this._narrowCache.get(key)
+    if (view) return view
+
+    const grantLike = { paths }
+    const seeTrack = (t) => !!t && visibleTo(grantLike, locate(t.absPath, this.roots))
+
+    view = Object.create(this)
+    view.tracks = new Map()
+    for (const [id, t] of this.tracks) if (seeTrack(t)) view.tracks.set(id, t)
+
+    view.albums = new Map()
+    for (const [id, a] of this.albums) {
+      const trackIds = a.trackIds.filter((tid) => view.tracks.has(tid))
+      if (trackIds.length) view.albums.set(id, { ...a, trackIds, songCount: trackIds.length })
+    }
+    view.artists = new Map()
+    for (const [id, a] of this.artists) {
+      const trackIds = a.trackIds.filter((tid) => view.tracks.has(tid))
+      if (!trackIds.length) continue
+      const albumIds = a.albumIds.filter((x) => view.albums.has(x))
+      view.artists.set(id, { ...a, trackIds, albumIds, albumCount: albumIds.length, coverId: albumIds[0] || null })
+    }
+    view.genres = new Map()
+    for (const [id, g] of this.genres) {
+      const trackIds = g.trackIds.filter((tid) => view.tracks.has(tid))
+      if (!trackIds.length) continue
+      const albumIds = g.albumIds.filter((x) => view.albums.has(x))
+      view.genres.set(id, { ...g, trackIds, albumIds, albumCount: albumIds.length, coverId: albumIds[0] || null })
+    }
+
+    // The parent's shelf order survives filtering, so pages stay stable; rows are
+    // the view's own copies where copies exist.
+    view._sortedAlbums = this._sortedAlbums.filter((a) => view.albums.has(a.id)).map((a) => view.albums.get(a.id))
+    view._sortedArtists = this._sortedArtists.filter((a) => view.artists.has(a.id)).map((a) => view.artists.get(a.id))
+    view._sortedGenres = this._sortedGenres.filter((g) => view.genres.has(g.id)).map((g) => view.genres.get(g.id))
+    view._sortedTracks = this._sortedTracks.filter((t) => view.tracks.has(t.id))
+    view._sortCache = new Map() // its OWN memo - sharing the parent's would mix filtered and full rows
+
+    // The art gate has to come BEFORE the shared cache: _cover answers from
+    // artCache first, so an ungated delegate would serve a hidden album's cover
+    // the moment anyone else had warmed it.
+    view._cover = (coverId) => (view.albums.has(coverId) ? this._cover(coverId) : Promise.resolve(null))
+
+    // A view is a read surface. Rescans happen on the real adapter, and running
+    // _build against shadowed maps would corrupt the view silently - fail loudly.
+    view.scan = view.probe = () => { throw new Error('a narrowed view cannot scan; scan the adapter') }
+
+    if (this._narrowCache.size >= 32) this._narrowCache.delete(this._narrowCache.keys().next().value)
+    this._narrowCache.set(key, view)
+    return view
+  }
+
+  // The roots as the People page's folder picker names them. `root` is the value
+  // grant.paths anchors to, so it is the resolved absolute path, not the label.
+  rootsForSharing () {
+    return this.roots.map((r, i) => ({ root: r, label: path.basename(r) || r, primary: i === 0 }))
+  }
+
+  // One level of folders under (root, rel), derived from the in-memory catalog so
+  // it never touches the disk and only ever names folders that actually hold
+  // audio. rel '' is the root itself. Called per opened branch by the picker - a
+  // 16,000-file library cannot ship its whole tree as one payload.
+  foldersUnder ({ root, rel = '' } = {}) {
+    const want = normalRel(rel)
+    const counts = new Map() // first segment below `want` -> visible track count
+    for (const t of this.tracks.values()) {
+      const loc = locate(t.absPath, [root])
+      if (!loc) continue
+      const dir = normalRel(path.dirname(loc.rel) === '.' ? '' : path.dirname(loc.rel))
+      if (want && dir !== want && !dir.startsWith(want + '/')) continue
+      const remainder = want ? dir.slice(want.length + 1) : dir
+      const segment = remainder.split('/')[0]
+      if (!segment) continue // the track sits directly in `want`; no subfolder to offer
+      counts.set(segment, (counts.get(segment) || 0) + 1)
+    }
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], undefined, { sensitivity: 'base' }))
+      .map(([name, tracks]) => ({ name, rel: want ? `${want}/${name}` : name, tracks }))
   }
 
   async stats () {

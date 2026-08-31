@@ -13,6 +13,7 @@ const { mediaChannel } = require('../protocol/channels')
 const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
 const { REQUEST_KINDS } = require('./state')
 const { notifyOwners } = require('./presence')
+const { viewOf } = require('./visibility')
 
 // Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
 // so a new mutating method cannot accidentally ship without a scope check.
@@ -70,6 +71,26 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
   const send = built.messages
 
   channel.open()
+
+  // The adapter as THIS connection may see it (proposal 2026-08-31-per-person-folders).
+  // Built per call off the LIVE grant snapshot - setGrant swaps `grant`, so a narrowing
+  // saved on the dashboard filters the very next request with no reconnect, the same way
+  // a reassignment lands. Unnarrowed grants get the real adapter back (viewOf fast path),
+  // so the common case costs nothing.
+  const adapterFor = () => viewOf(getAdapter(), grant)
+
+  // Hidden ids leave the person's OWN lists on the way out, never their store: a
+  // favorite of a hidden track is filtered here and comes back whole when the person
+  // is widened (proposal 2026-08-31). No-op for an unnarrowed grant.
+  async function visibleIds (ids, type) {
+    const v = adapterFor()
+    if (v === getAdapter()) return ids || []
+    const out = []
+    for (const x of ids || []) {
+      if (await v.get({ id: x, type })) out.push(x)
+    }
+    return out
+  }
 
   const pushToDevice = (evt) => { try { send.push.send(evt) } catch {} }
 
@@ -181,16 +202,16 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         return send.res.send({ id, body: { protocol: 1, libraryId, caps: { timeOffset: await hasFfmpeg() } } })
 
       case 'library.stats':
-        return send.res.send({ id, body: await getAdapter().stats() })
+        return send.res.send({ id, body: await adapterFor().stats() })
 
       case 'library.list':
-        return send.res.send({ id, body: await getAdapter().list(params || {}) })
+        return send.res.send({ id, body: await adapterFor().list(params || {}) })
 
       case 'library.get':
-        return send.res.send({ id, body: await getAdapter().get(params || {}) })
+        return send.res.send({ id, body: await adapterFor().get(params || {}) })
 
       case 'library.search':
-        return send.res.send({ id, body: await getAdapter().search(params || {}) })
+        return send.res.send({ id, body: await adapterFor().search(params || {}) })
 
       // --- identity (proposal 2026-07-14) ------------------------------------
       //
@@ -270,7 +291,15 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       case 'fav.list': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         // Grouped { track:[ids], album:[ids], artist:[ids] }.
-        return send.res.send({ id, body: await state.listFavs(ownerOf(grant)) })
+        const favs = await state.listFavs(ownerOf(grant))
+        return send.res.send({
+          id,
+          body: {
+            track: await visibleIds(favs.track, 'track'),
+            album: await visibleIds(favs.album, 'album'),
+            artist: await visibleIds(favs.artist, 'artist')
+          }
+        })
       }
 
       case 'fav.set': {
@@ -313,7 +342,9 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
 
       case 'count.top': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        return send.res.send({ id, body: { items: await state.topCounts(ownerOf(grant), Number(params?.limit) || 50) } })
+        const top = await state.topCounts(ownerOf(grant), Number(params?.limit) || 50)
+        const topVisible = new Set(await visibleIds(top.map((r) => r.trackId), 'track'))
+        return send.res.send({ id, body: { items: top.filter((r) => topVisible.has(r.trackId)) } })
       }
 
       // --- resume positions (milestone 3, phase 2) --------------------------
@@ -329,7 +360,8 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         // Scoped to the asking device (proposal 2026-07-30-one-device-plays): the card answers
         // "what was I playing on THIS phone", with the person-wide newest as a fallback.
-        const row = await state.latestResume(ownerOf(grant), grant.deviceKey)
+        let row = await state.latestResume(ownerOf(grant), grant.deviceKey)
+        if (row && (await visibleIds([row.trackId], 'track')).length === 0) row = null
         // updatedAt lets the merged client pick the globally-newest resume across hosts, and
         // playedAt lets it order by when the device LISTENED rather than when the write landed
         // (an outbox flush lands late). An old host sends no playedAt; the client falls back.
@@ -367,7 +399,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
         const row = await state.getPlaylist(ownerOf(grant), params.id)
         if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
-        return send.res.send({ id, body: { id: row.id, name: row.name, trackIds: row.trackIds || [] } })
+        return send.res.send({ id, body: { id: row.id, name: row.name, trackIds: await visibleIds(row.trackIds, 'track') } })
       }
 
       case 'playlist.create': {
@@ -717,7 +749,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       }
 
       case 'art.get': {
-        const stream = await getAdapter().art(params || {})
+        const stream = await adapterFor().art(params || {})
         if (!stream) return safeErr(id, ERR.NOT_FOUND, 'no artwork')
         return pipeStream(id, stream)
       }
@@ -733,7 +765,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
 
       case 'media.stream': {
         if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
-        const stream = await getAdapter().stream(params)
+        const stream = await adapterFor().stream(params)
         if (!stream) return safeErr(id, ERR.NOT_FOUND, 'no such track')
         // THIS host is the one serving these bytes, which is the only thing it knows for certain
         // about what a device is listening to (Tim, 2026-07-28: show now-playing where the music
