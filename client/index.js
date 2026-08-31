@@ -412,7 +412,7 @@ class PearTuneClient {
     })
     if (!built) throw new Error('could not open media channel')
 
-    this.send = { req: built.messages.req }
+    this.send = { req: built.messages.req, cancel: built.messages.cancel }
     built.channel.open()
     this.channel = built.channel
 
@@ -431,7 +431,7 @@ class PearTuneClient {
   _request (method, params, { stream = false, onchunk = null, buffer = true } = {}) {
     if (!this.send) return Promise.reject(new Error('not connected'))
     const id = this._nextId++
-    return new Promise((resolve, reject) => {
+    const promise = new Promise((resolve, reject) => {
       this._pending.set(id, {
         resolve,
         reject,
@@ -445,6 +445,24 @@ class PearTuneClient {
       })
       this.send.req.send({ id, method, params: params ?? null })
     })
+    // The requester's way of hanging up (proposal 2026-08-31-stream-cancel).
+    // Sends cancel(6) so the host stops READING as well as sending, forgets the
+    // pending entry - late chunks for the id are dropped on arrival - and
+    // RESOLVES with a cancelled marker rather than rejecting: the shim's
+    // failover keys on stream FAILURE, and a player hanging up is the opposite
+    // of a host dying. Against an old host the frame is dropped unread and the
+    // bytes still arrive; they are dropped here, which is today's behaviour.
+    promise.cancel = () => this._cancelRequest(id)
+    return promise
+  }
+
+  _cancelRequest (id) {
+    const p = this._pending.get(id)
+    if (!p) return false
+    this._pending.delete(id)
+    try { this.send?.cancel.send({ id }) } catch {}
+    p.resolve({ cancelled: true })
+    return true
   }
 
   ping () { return this._request('ping') }

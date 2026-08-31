@@ -2,6 +2,20 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-08-31 - cancel(6) on the media channel: the requester's way of hanging up
+Tier: T2 (a new wire message, strictly appended - old peers drop it and stream to
+completion, today's behaviour in both mixed directions). Proposal
+`proposals/2026-08-31-stream-cancel.md`, approved and shipped the same day. Every scrub
+and skip used to leave the host reading, transcoding and sending up to a full 2 MB
+window nobody would hear; the shim's hangup now cancels the in-flight window, the host
+destroys the SOURCE (a file read closes, a transcoding ffmpeg EPIPEs and frees its slot
+at the scrub), and no end or err is ever sent for a cancelled id. Client-side `.cancel()`
+RESOLVES with a marker rather than rejecting, because the shim's mid-song failover keys
+on stream failure and a player hanging up is the opposite of a host dying. A bounded
+pre-cancel set (128) catches a cancel racing the open. Deliberately NOT ported:
+PearCinema's time-governed player buffer - that knob is expo-video's, expo-audio has
+none, and audio does not need it.
+
 ## 2026-08-31 - The requester closes the ask: request.resolve admits the row's requester
 Tier: T3 (an auth gate moves). Proposal `proposals/2026-08-31-the-requester-closes-the-ask.md`,
 approved and shipped the same day; review note in reviews/. A request fans out to every

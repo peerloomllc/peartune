@@ -349,7 +349,13 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
       // parks it for ever), and the next thing it would do is ask for another window and
       // write it into a dead response. `dead` is the one flag both read.
       let dead = false
-      const hangup = () => { dead = true }
+      // The window currently in flight, so a hangup can CANCEL it (proposal
+      // 2026-08-31-stream-cancel): the host stops reading and transcoding at the
+      // scrub instead of streaming the rest of a window nobody will hear. Against
+      // an old host .cancel is still there (the client adds it), the frame is
+      // dropped unread and the window arrives and is discarded - today's behaviour.
+      let inFlight = null
+      const hangup = () => { dead = true; try { inFlight?.cancel?.() } catch {} }
       res.on('close', hangup)
       res.on('error', hangup)
       let written = 0
@@ -361,13 +367,17 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
         let done = 0
         while (done < len && !dead) {
           const before = done
-          await src.streamTo({ trackId: id, offset: offset + done, length: Math.min(STREAM_WINDOW, len - done) }, (chunk) => {
+          inFlight = src.streamTo({ trackId: id, offset: offset + done, length: Math.min(STREAM_WINDOW, len - done) }, (chunk) => {
             if (dead) return
             done += chunk.length
             written += chunk.length
             try { res.write(chunk) } catch { hangup() }
             if (tee) tee.write(chunk)
           })
+          const out = await inFlight
+          inFlight = null
+          // Cancelled mid-window: the hangup already happened, nothing more to pull.
+          if (out && out.cancelled) return
           // A window that resolves clean but moves nothing would loop for ever; treat it as
           // the stream failure it is and let the teardown decide.
           if (done === before && done < len) throw new Error('stream made no progress')
