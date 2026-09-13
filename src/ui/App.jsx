@@ -5341,8 +5341,8 @@ function BookmarkList ({ marks, tracks = [], onJump, onRemove }) {
                 {b.note && <span className='muted sm bmnote'>{b.note}</span>}
               </span>
             </button>
-            <button className='icon' onClick={() => onRemove(b)} aria-label='Remove bookmark'>
-              <X size={16} />
+            <button className='icon bmdel' onClick={() => onRemove(b)} aria-label='Remove bookmark'>
+              <Trash size={17} />
             </button>
           </li>
         )
