@@ -314,7 +314,7 @@ export default function App () {
   // would drop the MediaSession, and the lock-screen controls would flicker away
   // between songs.
 
-  const SEEK_STEP = 15 // seconds, matching the lock-screen rewind/FF buttons
+  const SEEK_STEP = 15 // seconds; the lock-screen and media-key skips are patched to 15 to match (patches/expo-audio)
 
   // GAPLESS. The queue lives inside ExoPlayer, not here.
   //
