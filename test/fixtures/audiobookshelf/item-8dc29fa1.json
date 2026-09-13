@@ -1,0 +1,215 @@
+{
+ "id": "8dc29fa1-016d-4141-ad9f-6576a2fcaee5",
+ "ino": "629454",
+ "oldLibraryItemId": null,
+ "libraryId": "95bc12ae-4de6-4dba-b2ea-82fe2b1003a1",
+ "folderId": "9552e4cf-4841-440a-ad19-c1678e963bcd",
+ "path": "/audiobooks/The Short Book",
+ "relPath": "The Short Book",
+ "isFile": false,
+ "mtimeMs": 1789309821000,
+ "ctimeMs": 1789309823000,
+ "birthtimeMs": 0,
+ "addedAt": 1789309840032,
+ "updatedAt": 1789309840032,
+ "isMissing": false,
+ "isInvalid": false,
+ "mediaType": "book",
+ "media": {
+  "id": "4215662a-70c0-4dba-863b-6a6dfe845f66",
+  "metadata": {
+   "title": "The Short Book",
+   "subtitle": null,
+   "authors": [
+    {
+     "id": "24430bb7-e955-4707-a397-523fa7a2bdc4",
+     "name": "PearTune Test Author"
+    }
+   ],
+   "narrators": [],
+   "series": [],
+   "genres": [
+    "Audiobook"
+   ],
+   "publishedYear": "2026",
+   "publishedDate": null,
+   "publisher": null,
+   "description": null,
+   "isbn": null,
+   "asin": null,
+   "language": null,
+   "explicit": false,
+   "abridged": false,
+   "titleIgnorePrefix": "Short Book, The",
+   "authorName": "PearTune Test Author",
+   "authorNameLF": "Author, PearTune Test",
+   "narratorName": "",
+   "seriesName": "",
+   "descriptionPlain": null
+  },
+  "coverPath": "/home/node/metadata/items/8dc29fa1-016d-4141-ad9f-6576a2fcaee5/cover.jpg",
+  "tags": [],
+  "numTracks": 1,
+  "numAudioFiles": 1,
+  "numChapters": 3,
+  "duration": 540.04644,
+  "size": 4425562,
+  "libraryItemId": "8dc29fa1-016d-4141-ad9f-6576a2fcaee5",
+  "audioFiles": [
+   {
+    "index": 1,
+    "ino": "630177",
+    "metadata": {
+     "filename": "The Short Book.m4b",
+     "ext": ".m4b",
+     "path": "/audiobooks/The Short Book/The Short Book.m4b",
+     "relPath": "The Short Book.m4b",
+     "size": 4425562,
+     "mtimeMs": 1789309821000,
+     "ctimeMs": 1789309821000,
+     "birthtimeMs": 0
+    },
+    "addedAt": 1789309839893,
+    "updatedAt": 1789309839893,
+    "trackNumFromMeta": null,
+    "discNumFromMeta": null,
+    "trackNumFromFilename": null,
+    "discNumFromFilename": null,
+    "manuallyVerified": false,
+    "exclude": false,
+    "error": null,
+    "format": "QuickTime / MOV",
+    "duration": 540.04644,
+    "bitRate": 64805,
+    "language": "und",
+    "codec": "aac",
+    "timeBase": "1/22050",
+    "channels": 1,
+    "channelLayout": "mono",
+    "chapters": [
+     {
+      "start": 0,
+      "end": 180,
+      "title": "Chapter 1",
+      "id": 0
+     },
+     {
+      "start": 180,
+      "end": 360,
+      "title": "Chapter 2",
+      "id": 1
+     },
+     {
+      "start": 360,
+      "end": 540,
+      "title": "Chapter 3",
+      "id": 2
+     }
+    ],
+    "embeddedCoverArt": "mjpeg",
+    "metaTags": {
+     "tagAlbum": "The Short Book",
+     "tagArtist": "PearTune Test Author",
+     "tagGenre": "Audiobook",
+     "tagTitle": "The Short Book",
+     "tagAlbumArtist": "PearTune Test Author",
+     "tagDate": "2026",
+     "tagEncoder": "Lavf62.12.102"
+    },
+    "mimeType": "audio/mp4"
+   }
+  ],
+  "chapters": [
+   {
+    "start": 0,
+    "end": 180,
+    "title": "Chapter 1",
+    "id": 0
+   },
+   {
+    "start": 180,
+    "end": 360,
+    "title": "Chapter 2",
+    "id": 1
+   },
+   {
+    "start": 360,
+    "end": 540,
+    "title": "Chapter 3",
+    "id": 2
+   }
+  ],
+  "ebookFile": null,
+  "tracks": [
+   {
+    "index": 1,
+    "ino": "630177",
+    "metadata": {
+     "filename": "The Short Book.m4b",
+     "ext": ".m4b",
+     "path": "/audiobooks/The Short Book/The Short Book.m4b",
+     "relPath": "The Short Book.m4b",
+     "size": 4425562,
+     "mtimeMs": 1789309821000,
+     "ctimeMs": 1789309821000,
+     "birthtimeMs": 0
+    },
+    "addedAt": 1789309839893,
+    "updatedAt": 1789309839893,
+    "trackNumFromMeta": null,
+    "discNumFromMeta": null,
+    "trackNumFromFilename": null,
+    "discNumFromFilename": null,
+    "manuallyVerified": false,
+    "exclude": false,
+    "error": null,
+    "format": "QuickTime / MOV",
+    "duration": 540.04644,
+    "bitRate": 64805,
+    "language": "und",
+    "codec": "aac",
+    "timeBase": "1/22050",
+    "channels": 1,
+    "channelLayout": "mono",
+    "chapters": [
+     {
+      "start": 0,
+      "end": 180,
+      "title": "Chapter 1",
+      "id": 0
+     },
+     {
+      "start": 180,
+      "end": 360,
+      "title": "Chapter 2",
+      "id": 1
+     },
+     {
+      "start": 360,
+      "end": 540,
+      "title": "Chapter 3",
+      "id": 2
+     }
+    ],
+    "embeddedCoverArt": "mjpeg",
+    "metaTags": {
+     "tagAlbum": "The Short Book",
+     "tagArtist": "PearTune Test Author",
+     "tagGenre": "Audiobook",
+     "tagTitle": "The Short Book",
+     "tagAlbumArtist": "PearTune Test Author",
+     "tagDate": "2026",
+     "tagEncoder": "Lavf62.12.102"
+    },
+    "mimeType": "audio/mp4",
+    "title": "The Short Book.m4b",
+    "startOffset": 0,
+    "contentUrl": "/api/items/8dc29fa1-016d-4141-ad9f-6576a2fcaee5/file/630177"
+   }
+  ]
+ },
+ "numFiles": 1,
+ "size": 4425562,
+ "lastScan": 1789309839897,
+ "scanVersion": "2.36.0"
+}

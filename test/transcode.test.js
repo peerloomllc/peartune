@@ -50,3 +50,30 @@ test('a FILE input with an offset matches the folder adapter contract', { skip: 
   const tail = await drain(spawnTranscode(file, { format: 'mp3', bitrate: 128, timeOffsetMs: 500 }))
   assert.ok(tail.length > 0 && tail.length < full.length)
 })
+
+// An Audiobookshelf file is behind a Bearer token, and a book's index is often at the END of
+// its m4b, which ffmpeg can only reach by seeking. So the transcode reads the URL itself (not a
+// pipe) and sends the header (proposal 2026-09-13-audiobookshelf-books-source).
+test('an HTTP input with headers transcodes an index-at-the-end m4b, and seeks', { skip: !HAS_FFMPEG && 'ffmpeg not installed' }, async (t) => {
+  const http = require('http')
+  const m4b = fs.readFileSync(path.join(__dirname, 'fixtures', 'chapters', 'end-index.m4b'))
+  const server = http.createServer((req, res) => {
+    if (req.headers.authorization !== 'Bearer secret') { res.writeHead(401); return res.end() }
+    const r = (req.headers.range || '').match(/bytes=(\d+)-(\d*)/)
+    if (!r) { res.writeHead(200, { 'content-type': 'audio/mp4', 'content-length': m4b.length, 'accept-ranges': 'bytes' }); return res.end(m4b) }
+    const start = Number(r[1]); const end = r[2] ? Number(r[2]) : m4b.length - 1
+    res.writeHead(206, { 'content-type': 'audio/mp4', 'content-range': `bytes ${start}-${end}/${m4b.length}`, 'content-length': end - start + 1, 'accept-ranges': 'bytes' })
+    res.end(m4b.subarray(start, end + 1))
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const url = `http://127.0.0.1:${server.address().port}/api/items/x/file/1`
+  const headers = { Authorization: 'Bearer secret' }
+
+  const full = await drain(spawnTranscode(url, { format: 'mp3', bitrate: 64, headers }))
+  const tail = await drain(spawnTranscode(url, { format: 'mp3', bitrate: 64, headers, timeOffsetMs: 2000 }))
+  assert.ok(full.length > 0, 'nothing came out with the header')
+  assert.ok(tail.length > 0 && tail.length < full.length, `seek did not shorten it: ${tail.length} vs ${full.length}`)
+  const refused = await drain(spawnTranscode(url, { format: 'mp3', bitrate: 64 }))
+  assert.equal(refused.length, 0, 'without the header the server refuses and nothing plays')
+})

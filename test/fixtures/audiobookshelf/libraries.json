@@ -1,0 +1,24 @@
+{
+ "libraries": [
+  {
+   "id": "95bc12ae-4de6-4dba-b2ea-82fe2b1003a1",
+   "name": "Audiobooks",
+   "mediaType": "book",
+   "displayOrder": 1,
+   "icon": "audiobookshelf",
+   "provider": "google",
+   "createdAt": 1789309632007,
+   "lastUpdate": 1789309841138
+  },
+  {
+   "id": "pod-lib-1",
+   "name": "Podcasts",
+   "mediaType": "podcast",
+   "displayOrder": 2,
+   "icon": "podcast",
+   "provider": "itunes",
+   "createdAt": 0,
+   "lastUpdate": 0
+  }
+ ]
+}
