@@ -68,7 +68,7 @@ const { Speakers, canWriteHaConfig } = require('./speakers')
 const { CastSessions } = require('./cast')
 const { PairSession, tokenEquals } = require('./pair')
 const { SCOPE } = require('../protocol/constants')
-const { SourceStore, buildAdapter } = require('./source')
+const { SourceStore, buildAdapter, buildBooksAdapter, composeAdapter } = require('./source')
 const { pruneRocksLogs } = require('./logprune')
 const { hostTopic } = require('../protocol/ids')
 const { PAIR_PROTOCOL, MEDIA_PROTOCOL } = require('../protocol/constants')
@@ -189,7 +189,13 @@ class PearTuneHost {
       musicDir: this.musicDir
     })
     this.source = this.sources.active()
-    this.adapter = this._build(this.source)
+    // The library is the music adapter, combined with an Audiobookshelf books source when one
+    // is configured (proposal 2026-09-13-audiobookshelf-books-source). Both are kept so either
+    // side can be swapped without rebuilding the other.
+    this.musicAdapter = this._build(this.source)
+    const booksCfg = this.sources.books()
+    this.booksAdapter = booksCfg ? buildBooksAdapter(booksCfg, { libraryId: this.libraryId, log: this.log }) : null
+    this.adapter = composeAdapter(this.musicAdapter, this.booksAdapter, { log: this.log })
     this.sourceError = null
     this.server = null
     this.pairSession = null
@@ -237,7 +243,9 @@ class PearTuneHost {
     const next = this._build(cfg)
     const tracks = await next.scan() // throws on a bad URL, bad credentials, no folder
 
-    this.adapter = next
+    // The books source (if any) is already scanned and keeps serving across a music swap.
+    this.musicAdapter = next
+    this.adapter = composeAdapter(next, this.booksAdapter, { log: this.log })
     this.sources.save(cfg)
     this.source = this.sources.active()
     this.sourceError = null
@@ -274,6 +282,55 @@ class PearTuneHost {
     const st = await this.adapter.stats().catch(() => ({}))
     this.log('host:rescanned', { source: this.adapter.kind, tracks })
     return { kind: this.adapter.kind, tracks, albums: st.albums ?? 0, artists: st.artists ?? 0, books: st.books ?? 0 }
+  }
+
+  // --- the Audiobookshelf books source (proposal 2026-09-13) -------------------
+  //
+  // Same contract as setSource: build, scan, and only then swap and save, so a wrong key
+  // leaves whatever was serving untouched and the dashboard shows why.
+
+  async testBooks (cfg) {
+    cfg = this.sources.booksWithKeptSecrets({ kind: 'audiobookshelf', ...cfg })
+    const abs = buildBooksAdapter(cfg, { libraryId: this.libraryId, log: this.log })
+    return { ok: true, ...(await abs.probe()) }
+  }
+
+  async setBooks (cfg) {
+    cfg = this.sources.booksWithKeptSecrets({ kind: 'audiobookshelf', ...cfg })
+    if (!cfg.url) throw new Error('an Audiobookshelf address is needed')
+    const abs = buildBooksAdapter(cfg, { libraryId: this.libraryId, log: this.log })
+    const tracks = await abs.scan()
+    this.booksAdapter = abs
+    this.adapter = composeAdapter(this.musicAdapter, abs, { log: this.log })
+    this.sources.saveBooks(cfg)
+    const st = await abs.stats()
+    this.log('host:books-source-changed', { books: st.books, tracks })
+    this.presence.notifyAll('library:changed', { libraryId: this.libraryId, source: this.adapter.kind })
+    return { books: st.books, tracks }
+  }
+
+  async removeBooks () {
+    this.booksAdapter = null
+    this.adapter = this.musicAdapter
+    this.sources.removeBooks()
+    this.log('host:books-source-removed')
+    this.presence.notifyAll('library:changed', { libraryId: this.libraryId, source: this.adapter.kind })
+    return { ok: true }
+  }
+
+  // For the dashboard: the saved address and login shape (no secrets), and how the last
+  // scan went.
+  async booksStatus () {
+    const view = this.sources.booksView()
+    if (!view || !this.booksAdapter) return null
+    const st = await this.booksAdapter.stats().catch(() => null)
+    return {
+      ...view,
+      books: st ? st.books : 0,
+      tracks: st ? st.tracks : 0,
+      error: this.adapter.booksError || null,
+      scannedAt: st ? st.scannedAt : null
+    }
   }
 
   // The operator's library name. Persisted to library.json in the data dir so it

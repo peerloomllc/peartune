@@ -10,6 +10,7 @@ import { loadThemePref, applyThemePref, resolveTheme } from './theme'
 import { PEAR_MARK } from './icon'
 import { Collapse, ConfirmHost, Modal, askConfirm } from './ui'
 import { SourcePanel } from './SourcePanel'
+import { BooksPanel } from './BooksPanel'
 import { SpeakersPanel } from './SpeakersPanel'
 import { PairModal, DAY_MS } from './Pair'
 import { SharingModal, pathsSummary } from './Sharing'
@@ -164,6 +165,7 @@ export default function App () {
           </div>
           <div className='tabpane' id='pane-source' role='tabpanel' aria-labelledby='tab-source' hidden={tab !== 'source'}>
             <SourcePanel state={state} refresh={refresh} toast={toast} />
+            <BooksPanel state={state} refresh={refresh} />
           </div>
           <div className='tabpane' id='pane-requests' role='tabpanel' aria-labelledby='tab-requests' hidden={tab !== 'requests'}>
             <RequestsPanel state={state} refresh={refresh} toast={toast} />
@@ -572,6 +574,7 @@ function AccessPanel ({ state, refresh, toast, online }) {
         <SharingModal
           person={sharing}
           initialPaths={heldBy(sharing.id)[0]?.paths || []}
+          booksNote={!!state.books}
           toast={toast}
           onSaved={refresh}
           onClose={() => setSharing(null)}
