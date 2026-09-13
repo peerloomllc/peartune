@@ -837,6 +837,18 @@ button.icon.playerfav:active { transform: scale(.85); }
 button.icon.speedbtn { font-size: .8rem; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 2.6rem; }
 .chapterline { text-align: center; margin-top: -.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 1rem; }
 .sheet .acts button.chapterrow { justify-content: space-between; text-align: left; }
+/* Bookmarks (slice 4). A book's sub-row holds one more button, so it packs tighter. */
+.sub-transport.booksub { gap: 1.6rem; }
+.bookmarks { margin: 1rem 0 .5rem; }
+.bmlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .35rem; }
+.bmrow { display: flex; align-items: center; gap: .5rem; border: 1px solid var(--color-border); border-radius: 12px; padding: .2rem .3rem .2rem .7rem; }
+.bmjump { flex: 1; min-width: 0; display: flex; align-items: center; gap: .6rem; background: none; border: 0; color: var(--color-text-primary); text-align: left; padding: .45rem 0; }
+.bmjump svg { color: var(--color-primary); flex: none; }
+.bmmeta { display: flex; flex-direction: column; min-width: 0; }
+.bmwhen { font-variant-numeric: tabular-nums; }
+.bmnote { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bmadd { display: flex; flex-direction: column; gap: .5rem; margin: .6rem 0 1rem; }
+.bmadd button { justify-content: center; }
 .chaptertitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* --- classic (retro) player skin ----------------------------------------- */
