@@ -156,6 +156,20 @@ Books; the rest stay in music.
 - **Gapless queue and speed.** Speed is set on the one ExoPlayer instance, which also
   holds the music queue. Switching from a book back to music must reset it to 1x.
 
+## Test environment (Tim, 2026-09-13)
+
+Set this up before slice 1, so testing matches the user's setup.
+
+- **Sample books with chapters.** At least one single-file m4b with chapters, one
+  single-file m4a with chapters and one book split into parts (m4a or mp3). Use
+  public-domain audio (LibriVox) or tones built with ffmpeg, with chapter metadata added
+  by ffmpeg. Put a copy on the Umbrel as its own top-level folder, e.g. `/audiobooks`, and
+  commit a tiny m4b fixture (a few seconds, two chapters, embedded cover) for the tests.
+- **A working Audiobookshelf install** holding the same books. Nothing in phase 1 reads
+  from it, but it lets us compare against what the user has today (chapters, progress,
+  covers) and it is ready for the phase 2 adapter. The Umbrel app store lists
+  Audiobookshelf; the user runs it on a Raspberry Pi 5.
+
 ## Verify
 
 - `npm run verify` green on every slice.
