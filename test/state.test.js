@@ -172,6 +172,20 @@ test('resume positions are per-owner isolated', async (t) => {
   assert.equal(await s.getResume('d:asas', 't1'), null, 'another owner has no resume for it')
 })
 
+test('listResumes lists one person\'s rows, newest listening first, without cleared ones', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  assert.deepEqual(await s.listResumes('p:tim'), [])
+  await s.setResume('p:tim', 'old', 10000, 200000, { playedAt: 1000 })
+  await s.setResume('p:tim', 'new', 20000, 300000, { playedAt: 3000 })
+  await s.setResume('p:tim', 'mid', 30000, 300000, { playedAt: 2000 })
+  await s.setResume('p:tim', 'done', 40000, 300000, { playedAt: 4000 })
+  await s.setResume('p:tim', 'done', 0)
+  await s.setResume('d:other', 'theirs', 5000, 100000, { playedAt: 9000 })
+  assert.deepEqual((await s.listResumes('p:tim')).map(r => r.trackId), ['new', 'mid', 'old'])
+  assert.deepEqual((await s.listResumes('p:tim', 2)).map(r => r.trackId), ['new', 'mid'])
+})
+
 test('latestResume returns the MOST RECENTLY updated resume (the continue candidate)', async (t) => {
   const { bee } = await store(t)
   const s = new UserState(bee)

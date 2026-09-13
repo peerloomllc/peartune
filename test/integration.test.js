@@ -416,6 +416,26 @@ test('CONTINUE LISTENING: a device asks and gets ITS OWN last track, not the oth
   assert.equal((await b.client.resumeLatest()).trackId, 'trackB', "B's card is B's track")
 })
 
+test('resume.list returns the person\'s rows with their tracks, filtered by kind, hidden ids dropped', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  const { items } = await a.client.list({ type: 'tracks' })
+  const real = items[0]
+  await a.client.resumeSet({ trackId: real.id, positionMs: 30_000, durationMs: 60_000, playedAt: Date.now() })
+  await a.client.resumeSet({ trackId: 'gone', positionMs: 10_000, playedAt: Date.now() - 1000 })
+
+  const rows = await b.client.resumeList()
+  assert.equal(rows.length, 1, 'a row whose track no longer exists is dropped')
+  assert.equal(rows[0].trackId, real.id)
+  assert.equal(rows[0].positionMs, 30_000)
+  assert.equal(rows[0].track.id, real.id)
+  assert.equal((await b.client.resumeList({ kind: 'music' })).length, 1)
+  assert.equal((await b.client.resumeList({ kind: 'book' })).length, 0, 'the scaffold track is music')
+})
+
 test('CONTINUE LISTENING: a late outbox flush cannot jump in front of the device playing now', async (t) => {
   const { testnet, host } = await scaffold(t)
   const { a, b } = await twoDevicesOnePerson(testnet, host)

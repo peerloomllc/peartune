@@ -131,6 +131,43 @@ test('a narrowed person still sees which albums are books', async () => {
   for (const al of albums) assert.equal(al.kind, 'book')
 })
 
+test('list and search take kind: books and music come back apart, and pages stay full', async () => {
+  const a = await scanned({ roots: [MUSIC, BOOKS], bookRoots: [BOOKS] })
+  const names = (items) => items.map(x => x.name).sort()
+
+  const all = await allAlbums(a)
+  const books = (await a.list({ type: 'albums', limit: 1000, kind: 'book' })).items
+  const music = (await a.list({ type: 'albums', limit: 1000, kind: 'music' })).items
+  assert.deepEqual(names(books), ['Book in Parts', 'Short Book'])
+  assert.equal(books.length + music.length, all.length)
+  for (const x of music) assert.equal('kind' in x, false)
+
+  // A page of music is a FULL page: filtered before paging, so cursors count what is shown.
+  const first = await a.list({ type: 'albums', limit: 2, kind: 'music' })
+  assert.equal(first.items.length, 2)
+  assert.equal(first.nextCursor, 2)
+
+  // An author with only books, and a genre with only books, leave the music views.
+  const artists = (await a.list({ type: 'artists', kind: 'music' })).items
+  assert.equal(artists.some(x => x.name === 'Test Author'), false)
+  assert.equal((await a.list({ type: 'artists', kind: 'book' })).items.find(x => x.name === 'Test Author').kind, 'book')
+  const genres = (await a.list({ type: 'genres', kind: 'music' })).items
+  assert.equal(genres.some(x => x.name === 'Audiobook'), false)
+
+  const tracks = (await a.list({ type: 'tracks', limit: 1000, kind: 'music' })).items
+  assert.equal(tracks.some(t => t.kind === 'book'), false)
+
+  // No kind (an older phone) still gets everything.
+  assert.equal((await a.list({ type: 'artists' })).items.some(x => x.name === 'Test Author'), true)
+
+  const hit = await a.search({ q: 'book', kind: 'music' })
+  assert.equal(hit.albums.length + hit.tracks.length + hit.artists.length, 0)
+  const bookHit = await a.search({ q: 'book', kind: 'book' })
+  assert.deepEqual(names(bookHit.albums), ['Book in Parts', 'Short Book'])
+
+  assert.equal((await a.stats()).books, 2)
+})
+
 test('the phone labels an m4b as audio/mp4, not octet-stream', () => {
   assert.equal(mimeFor('Short Book.m4b'), 'audio/mp4')
   assert.equal(mimeFor('x.M4B'), 'audio/mp4')

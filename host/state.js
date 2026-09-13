@@ -208,6 +208,20 @@ class UserState {
     return mine || any
   }
 
+  // Every resume row of one person, newest listening first, capped at `limit` (proposal
+  // 2026-09-13: the Books view's Continue listening row). Same range scan and the same
+  // "when" as latestResume; rows at position 0 were cleared and are skipped.
+  async listResumes (ownerId, limit = 200) {
+    const lo = `resume:${ownerId}:`
+    const hi = `resume:${ownerId};`
+    const when = (v) => Number(v.playedAt) || Number(v.updatedAt) || 0
+    const rows = []
+    for await (const node of this.bee.createReadStream({ gte: lo, lt: hi }, { valueEncoding: 'json' })) {
+      if (node.value && node.value.positionMs > 0) rows.push(node.value)
+    }
+    return rows.sort((a, b) => when(b) - when(a)).slice(0, limit)
+  }
+
   // The owner's favorites, grouped by kind: { track:[ids], album:[ids], artist:[ids] }.
   // One prefix scan per kind. Every `fav:{ownerId}:{kind}:{id}` key sorts below
   // `fav:{ownerId}:{kind};` (';' is ':'+1, and a z32 id never contains ':' or ';'), so
