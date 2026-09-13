@@ -626,6 +626,8 @@ export default function App () {
       // wins once the player actually knows; this is the fallback that makes the
       // number appear immediately (Tim, off-LAN, 2026-08-16).
       durationMs: t.durationMs ?? null,
+      // Books keep their place longer and are not counted as plays (proposal 2026-09-13).
+      kind: t.kind ?? null,
       index: i,
       queueLength: queueRef.current.length
     })

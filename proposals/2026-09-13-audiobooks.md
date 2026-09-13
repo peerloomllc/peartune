@@ -128,6 +128,10 @@ Each slice is its own PR, verified before the next starts.
    book with its cover; a `bookRoots` folder marks its tracks; an old-shape config loads.
 2. **Phone: books are separate.** Books replaces Songs, the Continue listening row, removal
    from the music views, the book resume rules and no play counts.
+   As built (2026-09-13), slice 2 needed host help after all: `library.list` and
+   `library.search` take `kind` so a music page is a full page, artists and genres made
+   only of books carry `kind: 'book'`, `stats` counts books, and `resume.list` feeds the
+   Continue listening row. A whole book over 64 MB is not tee'd into the audio cache.
 3. **Player book mode.** Chapters (host parse plus the list and prev/next), speed and End
    of chapter.
 4. **Bookmarks.** Host state, the three methods, outbox, the bookmark button and a
