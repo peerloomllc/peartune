@@ -69,9 +69,9 @@ with 40 tracks, grouped by the existing album rules (folder.js:354).
 - `ping` caps gain `books: 1` (host/media.js:242). The phone shows book features only for
   a library that sets it, through the existing `capsFor` fallback (src/bare.js:64).
 - Tracks and albums gain `kind: 'book'`. Absent means music. Old phones ignore it.
-- Book tracks from an m4b gain `chapters: [{ title, startMs }]`, read at scan time with
-  music-metadata's `includeChapters` (supported for MP4 in the installed 11.14.0). Only
-  on the album and track detail responses, so list responses do not grow.
+- Book tracks from an m4b gain `chapters: [{ title, startMs }]`, read at scan time. Only
+  on the album and track detail responses, so list responses do not grow. NOT with
+  music-metadata's `includeChapters`: see Risks.
 - New methods `bookmarks.list(trackIds)`, `bookmarks.add({ trackId, positionMs, note })`
   and `bookmarks.remove(id)`. An old host answers `ENOMETHOD` and the bookmark button
   hides.
@@ -151,6 +151,13 @@ Books; the rest stay in music.
 - **Cellular transcode seek.** "Auto" quality transcodes to mp3 on cellular, and seeking
   inside a transcode needs `caps.timeOffset`. A seek deep into a long book re-starts
   ffmpeg with `-ss`, which should be fine but is untested at 8+ hours in.
+- **Reading chapters.** Tested 2026-09-13 on the sample books: music-metadata 11.14 with
+  `includeChapters` found 1 of 3 chapters when the index is at the start, and none when
+  it is at the end (ffmpeg's default, so common in books people convert themselves). It
+  only reads the QuickTime chapter track, assumes one chapter per chunk and ignores the
+  Nero `chpl` list. `ffprobe -show_chapters` and Audiobookshelf read all of them in both
+  layouts. Slice 3 reads chapters with ffprobe where the host has it (the Docker image
+  ships a static ffmpeg) or a small `chpl` reader, and must be tested on both layouts.
 - **Chapter parse cost.** `includeChapters` runs only for m4b files, so music scans are
   unaffected. Measure a rescan of a large book folder on the Umbrel in slice 3.
 - **Gapless queue and speed.** Speed is set on the one ExoPlayer instance, which also
@@ -158,7 +165,12 @@ Books; the rest stay in music.
 
 ## Test environment (Tim, 2026-09-13)
 
-Set this up before slice 1, so testing matches the user's setup.
+Set this up before slice 1, so testing matches the user's setup. **Done 2026-09-13**: four
+books from `scripts/make-audiobook-samples.sh` are in the Umbrel's
+`home/Downloads/audiobooks` (the PearTune host sees it as `/library/audiobooks`, not yet a
+root), and Audiobookshelf 2.36.0 runs on the Umbrel at port 13378 with those four books
+in its Audiobooks library, every chapter and cover read. Audiobookshelf treats each file
+of a book in parts as a chapter, which is a good model for slice 3.
 
 - **Sample books with chapters.** At least one single-file m4b with chapters, one
   single-file m4a with chapters and one book split into parts (m4a or mp3). Use
