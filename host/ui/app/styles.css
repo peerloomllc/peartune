@@ -297,6 +297,8 @@ label { display: block; margin: 10px 0 4px; color: var(--subtle); font-size: 12p
 .detectchip:hover { border-color: var(--primary); color: var(--primary); }
 .rootlist { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .rootrow { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 6px 6px 11px; }
+/* The Audiobooks mark on a folder row (proposal 2026-09-13). Overrides the block label. */
+.rootbook { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; margin: 0; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
 .rootpath { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .srcfields { min-height: 278px; }
 .srcactions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }

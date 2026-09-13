@@ -61,8 +61,9 @@ const FIELDS = {
   subsonic: ['url', 'username', 'password', 'apiKey'],
   jellyfin: ['url', 'username', 'password'],
   // A folder source can point at SEVERAL directories now. `roots` is the canonical
-  // field; the legacy single `root` is migrated into it (see pick()).
-  folder: ['roots']
+  // field; the legacy single `root` is migrated into it (see pick()). `bookRoots` is the
+  // subset of roots marked as Audiobooks (proposal 2026-09-13).
+  folder: ['roots', 'bookRoots']
 }
 
 // The secrets. Never sent to the browser, and preserved when the browser sends the
@@ -82,7 +83,12 @@ function pick (kind, cfg) {
     // Trim, drop blanks, and de-dupe exact repeats. (The adapter additionally drops
     // roots NESTED inside another at scan time - that needs path logic and lives there.)
     const roots = [...new Set(list.map(r => String(r ?? '').trim()).filter(Boolean))]
-    return roots.length ? { roots } : {}
+    // Only roots this source actually has can be marked. Removing a folder drops its
+    // mark with it, instead of leaving a stale mark to re-apply if the path comes back.
+    const marked = Array.isArray(cfg.bookRoots) ? cfg.bookRoots : []
+    const bookRoots = [...new Set(marked.map(r => String(r ?? '').trim()).filter(r => roots.includes(r)))]
+    if (!roots.length) return {}
+    return bookRoots.length ? { roots, bookRoots } : { roots }
   }
   const out = {}
   for (const f of FIELDS[kind] || []) {
@@ -210,6 +216,7 @@ class SourceStore {
       for (const f of FIELDS[kind]) {
         if (SECRETS.includes(f)) pub[`has${f[0].toUpperCase()}${f.slice(1)}`] = !!cfg[f]
         else if (Array.isArray(cfg[f])) pub[f] = cfg[f] // folder roots - an array, not a string
+        else if (kind === 'folder') pub[f] = [] // no bookRoots saved: still a list
         else pub[f] = cfg[f] || ''
       }
       kinds[kind] = pub
@@ -241,6 +248,7 @@ function buildAdapter (cfg, { libraryId, musicDir, log }) {
 
   return new FolderAdapter({
     roots: (cfg.roots && cfg.roots.length) ? cfg.roots : [cfg.root || musicDir],
+    bookRoots: cfg.bookRoots || [],
     libraryId,
     log
   })
