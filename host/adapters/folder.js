@@ -36,6 +36,7 @@ const { visibleTo, locate, normalRel } = require('../visibility')
 // Transcoding moved to host/transcode.js when the server adapters grew a local
 // -ss path (proposal 2026-08-16 slice 4) - one transcoder, three adapters.
 const { hasFfmpeg, spawnTranscode } = require('../transcode')
+const { readChapters } = require('../chapters')
 
 // .m4b is an audiobook: an MP4 like .m4a, usually one long file with chapters inside
 // (proposal 2026-09-13). Skipped until then, so a folder of books looked empty.
@@ -48,6 +49,9 @@ const AUDIO_EXT = new Set(['.mp3', '.flac', '.m4a', '.m4b', '.aac', '.ogg', '.op
 // "Spoken Word") are deliberately NOT a signal: tags are unreliable, and a wrong guess
 // would hide someone's music from the music views.
 const BOOK_SUFFIX = 'm4b'
+// The containers that can carry chapters (host/chapters.js). An mp3 part has none.
+const CHAPTER_SUFFIXES = new Set(['m4b', 'm4a', 'mp4'])
+const CHAPTER_CACHE_MAX = 500
 
 // An image sitting next to the music beats an embedded one: it is usually the
 // bigger, better scan, and reading it costs one open() instead of parsing a 40MB
@@ -153,6 +157,9 @@ class FolderAdapter {
     this._sortCache = new Map()
 
     this.artCache = new Map() // coverId -> Buffer | null  (null = looked, found nothing)
+    // absPath|mtime -> [{ title, startMs }]. Read on the first detail request for a book, not at
+    // scan: a library of books would otherwise open every one of them on every rescan.
+    this._chapterCache = new Map()
     this.scannedAt = null
     this.scanning = null
 
@@ -761,7 +768,8 @@ class FolderAdapter {
         year: a.year,
         coverId: a.coverId,
         ...(a.kind ? { kind: a.kind } : {}),
-        tracks: a.trackIds.map(t => this._pub(this.tracks.get(t))).filter(Boolean)
+        tracks: await Promise.all(a.trackIds.map(t => this._withChapters(this.tracks.get(t))))
+          .then(ts => ts.filter(Boolean))
       }
     }
 
@@ -807,7 +815,23 @@ class FolderAdapter {
     // not this), so a playlist lookup is a clean null rather than a track miss.
     if (type === 'playlist') return null
 
-    return this._pub(this.tracks.get(id))
+    return this._withChapters(this.tracks.get(id))
+  }
+
+  // A book track that can carry chapters gains `chapters: [{ title, startMs }]` (proposal
+  // 2026-09-13 slice 3), on detail reads only so list pages stay the size they were. Absent
+  // when there are none; an older phone ignores the field.
+  async _withChapters (t) {
+    const pub = this._pub(t)
+    if (!pub || t.kind !== 'book' || !CHAPTER_SUFFIXES.has(t.suffix)) return pub
+    const key = `${t.absPath}|${t.addedAt || 0}`
+    let list = this._chapterCache.get(key)
+    if (!list) {
+      list = await readChapters(t.absPath)
+      if (this._chapterCache.size >= CHAPTER_CACHE_MAX) this._chapterCache.delete(this._chapterCache.keys().next().value)
+      this._chapterCache.set(key, list)
+    }
+    return list.length ? { ...pub, chapters: list } : pub
   }
 
   async search ({ q = '', limit = 50, kind } = {}) {
