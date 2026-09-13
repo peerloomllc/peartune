@@ -202,6 +202,35 @@ test('merged libraries: a book stays a book only when every copy is one, and ser
   assert.deepEqual(names(catalog.searchIndex(ix, 'o', { kind: 'music' }).albums), ['Song Album'])
 })
 
+test('chapters: read from all three layouts, and from nothing else', async () => {
+  const { readChapters } = require('../host/chapters')
+  const CH = path.join(__dirname, 'fixtures', 'chapters')
+  const want = [
+    { title: 'Opening', startMs: 0 },
+    { title: 'The Middle, Part Two', startMs: 1000 },
+    { title: 'Café Ending', startMs: 2000 }
+  ]
+  // Index at the end is ffmpeg's default and what music-metadata read NO chapters from.
+  assert.deepEqual(await readChapters(path.join(CH, 'end-index.m4b')), want)
+  assert.deepEqual(await readChapters(path.join(CH, 'start-index.m4b')), want)
+  // No Nero list: only the QuickTime chapter track, all three titles in one chunk.
+  assert.deepEqual(await readChapters(path.join(CH, 'track-only.m4b')), want)
+  assert.deepEqual(await readChapters(path.join(CH, 'no-chapters.m4a')), [])
+  assert.deepEqual(await readChapters(path.join(BOOKS, 'Book in Parts', '01 Part 1.mp3')), [])
+  assert.deepEqual(await readChapters('/no/such/file.m4b'), [])
+})
+
+test('a book\'s detail carries its chapters; lists do not', async () => {
+  const a = await scanned({ roots: [BOOKS] })
+  const album = (await allAlbums(a)).find(x => x.name === 'Short Book')
+  const detail = await a.get({ id: album.id, type: 'album' })
+  assert.deepEqual(detail.tracks[0].chapters, [{ title: 'Chapter One', startMs: 0 }, { title: 'Chapter Two', startMs: 1000 }])
+  const track = await a.get({ id: detail.tracks[0].id })
+  assert.equal(track.chapters.length, 2)
+  // List pages stay small.
+  assert.equal((await allTracks(a)).some(t => 'chapters' in t), false)
+})
+
 // --- the saved config -------------------------------------------------------
 
 async function dir (t) {

@@ -832,6 +832,12 @@ button.icon.playerfav:active { transform: scale(.85); }
 /* Sleep timer: amber when armed, with a compact mm:ss (or "end") next to the moon. */
 .sub-transport button.icon.sleepbtn.on { color: var(--color-primary); }
 .sleeplabel { font-variant-numeric: tabular-nums; font-size: .72rem; }
+/* Books (proposal 2026-09-13 slice 3): the speed label where shuffle sits, the chapter
+   playing under the transport, and the chapter list rows. */
+button.icon.speedbtn { font-size: .8rem; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 2.6rem; }
+.chapterline { text-align: center; margin-top: -.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 1rem; }
+.sheet .acts button.chapterrow { justify-content: space-between; text-align: left; }
+.chaptertitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* --- classic (retro) player skin ----------------------------------------- */
 /* A deliberately theme-INDEPENDENT face: fixed metal chrome + a green LCD, the look

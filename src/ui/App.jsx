@@ -20,7 +20,7 @@ import {
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
-  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode,
+  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode, ListNumbers,
   WarningCircle, LockKey, DeviceMobile, MusicNotesPlus, XCircle, CheckSquare, Square
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
@@ -233,6 +233,10 @@ export default function App () {
   const [repeat, setRepeat] = useState(0) // 0 off, 1 one, 2 all
   const [sleep, setSleep] = useState(null) // sleep timer: { active, endOfTrack, deadline } from the shell
   const [sleepOpen, setSleepOpen] = useState(false) // the sleep-timer picker sheet
+  // Books (proposal 2026-09-13 slice 3): the speed books play at, and the two player sheets.
+  const [bookRate, setBookRate] = useState(1)
+  const [speedOpen, setSpeedOpen] = useState(false)
+  const [chaptersOpen, setChaptersOpen] = useState(false)
   // Home Assistant speakers (proposal 2026-08-01). `speakers` is null until we have asked;
   // an empty list, an old host, a non-owner grant and an unconfigured host all collapse to
   // "no button", which is why only ONE flag drives the UI.
@@ -348,6 +352,8 @@ export default function App () {
         if (!s.host) recheckHostOnce()
         if (s.settings?.density) setDensity(String(s.settings.density))
         if (s.settings?.skin) setSkin(String(s.settings.skin))
+        // The shell holds the live book speed (it outlives a frozen WebView); tell it the saved one.
+        if (Number(s.settings?.bookRate) > 0) { setBookRate(Number(s.settings.bookRate)); call('bookRate', { rate: Number(s.settings.bookRate) }).catch(() => {}) }
         // Default true, so only an explicit false hides it - a missing key must not read as "off".
         if (s.settings?.showRecent === false) setShowRecent(false)
         // Restore the persisted per-view sort. Held in a local, not read back from state,
@@ -2359,7 +2365,9 @@ export default function App () {
     artFull: x.artFull ?? null,
     durationMs: x.durationMs,
     // Books resume and count differently (proposal 2026-09-13); play:started hands it back.
-    kind: x.kind ?? null
+    kind: x.kind ?? null,
+    // A book's chapters ride the queue so the player has them whatever opened it (slice 3).
+    chapters: x.chapters ?? null
   }))
 
   // Tapping a track queues the whole list behind it - which is what people mean
@@ -2974,6 +2982,9 @@ export default function App () {
             shuffle={shuffle} repeat={repeat} onQueue={() => goTab('queue')}
             queueItems={queue?.items || []} queueIndex={queue?.index ?? 0} onJump={jumpTo}
             sleep={sleep} onSleep={() => { haptic('light'); setSleepOpen(true) }}
+            bookRate={bookRate}
+            onSpeed={() => { haptic('light'); setSpeedOpen(true) }}
+            onChapters={() => { haptic('light'); setChaptersOpen(true) }}
             onShuffle={toggleShuffle} onRepeat={cycleRepeat} onStop={stopPlayback}
             onExpand={() => { haptic('light'); setExpanded(true) }}
             onCollapse={() => { haptic('light'); setExpanded(false) }}
@@ -3050,6 +3061,25 @@ export default function App () {
           onClose={() => setSpeakerOpen(false)}
           onPick={castTo}
           onHere={castHere}
+        />
+      )}
+      {speedOpen && (
+        <SpeedSheet
+          rate={bookRate}
+          onClose={() => setSpeedOpen(false)}
+          onPick={(r) => {
+            setBookRate(r)
+            call('bookRate', { rate: r }).catch(() => {})
+            call('setSettings', { bookRate: r }).catch(() => {})
+            setSpeedOpen(false)
+          }}
+        />
+      )}
+      {chaptersOpen && now?.chapters?.length > 0 && (
+        <ChaptersSheet
+          chapters={now.chapters} positionMs={status?.positionMs || 0}
+          onClose={() => setChaptersOpen(false)}
+          onPick={(c) => { call('seekTo', { ms: c.startMs }).catch(() => {}); setChaptersOpen(false) }}
         />
       )}
       {sleepOpen && (
@@ -5719,7 +5749,8 @@ function Row ({ t, on, onPlay, onLong, showTrackNo, art, fav, onFav, count }) {
 function Player ({
   now, status, expanded, skin, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
   onViewArt, onQueue, onStop, queueItems, queueIndex, onJump, sleep, onSleep,
-  canCast, castingTo, castPaused, onCastToggle, onSpeakers, fav, onFav
+  canCast, castingTo, castPaused, onCastToggle, onSpeakers, fav, onFav,
+  bookRate = 1, onSpeed, onChapters
 }) {
   // While casting, play/pause drives the SPEAKER and the icon reflects the SPEAKER. The
   // phone is muted and held paused throughout, so `status.playing` is false the whole
@@ -5736,6 +5767,29 @@ function Player ({
   const pos = status?.positionMs || 0
   const pct = dur ? Math.min(100, (pos / dur) * 100) : 0
   const qlen = status?.queueLength ?? now.queueLength ?? 0
+
+  // A book plays like a book (proposal 2026-09-13 slice 3): speed and chapters where shuffle
+  // and repeat were, previous/next move by chapter when the file has chapters, and the skips
+  // are back 15 / forward 30 (Tim, 2026-09-13).
+  const book = now.kind === 'book'
+  const chapters = book && Array.isArray(now.chapters) ? now.chapters : []
+  const back = 15
+  const fwd = book ? 30 : 15
+  const onPrev = () => {
+    haptic('light')
+    const at = chapterAt(chapters, pos)
+    if (at < 0) return call('prev')
+    // Like a track: more than 3 s into a chapter goes back to its start, otherwise to the one before.
+    const target = pos - chapters[at].startMs > 3000 || at === 0 ? chapters[at] : chapters[at - 1]
+    call('seekTo', { ms: target.startMs })
+  }
+  const onNext = () => {
+    haptic('light')
+    const at = chapterAt(chapters, pos)
+    if (at < 0 || at >= chapters.length - 1) return call('next')
+    call('seekTo', { ms: chapters[at + 1].startMs })
+  }
+  const chapter = chapters[chapterAt(chapters, pos)]
 
   // The classic skin only re-faces the EXPANDED player - the mini bar stays the same compact
   // control, so collapsing always lands somewhere familiar. It is a distinct tree (not a
@@ -5865,28 +5919,45 @@ function Player ({
         </div>
 
         <div className='transport'>
-          <button className={'icon mode' + (shuffle ? ' on' : '')} onClick={onShuffle} aria-label='Shuffle'>
-            <Shuffle size={19} weight={shuffle ? 'fill' : 'regular'} />
-          </button>
-          <button className='icon' onClick={() => { haptic('light'); call('prev') }} aria-label='Previous'>
+          {book
+            ? (
+              <button className={'icon mode speedbtn' + (bookRate !== 1 ? ' on' : '')} onClick={onSpeed} aria-label='Playback speed'>
+                {fmtRate(bookRate)}
+              </button>
+              )
+            : (
+              <button className={'icon mode' + (shuffle ? ' on' : '')} onClick={onShuffle} aria-label='Shuffle'>
+                <Shuffle size={19} weight={shuffle ? 'fill' : 'regular'} />
+              </button>
+              )}
+          <button className='icon' onClick={onPrev} aria-label={chapters.length ? 'Previous chapter' : 'Previous'}>
             <SkipBack size={22} weight='fill' />
           </button>
           <button className='icon big' onClick={onPlayPause} aria-label='Play/pause'>
             {playing ? <Pause size={26} weight='fill' /> : <Play size={26} weight='fill' />}
           </button>
-          <button className='icon' onClick={() => { haptic('light'); call('next') }} aria-label='Next'>
+          <button className='icon' onClick={onNext} aria-label={chapters.length ? 'Next chapter' : 'Next'}>
             <SkipForward size={22} weight='fill' />
           </button>
-          <button className={'icon mode' + (repeat ? ' on' : '')} onClick={onRepeat} aria-label='Repeat'>
-            {repeat === 1
-              ? <RepeatOnce size={19} weight='fill' />
-              : <Repeat size={19} weight={repeat === 2 ? 'fill' : 'regular'} />}
-          </button>
+          {book
+            ? (
+              <button className='icon mode' onClick={onChapters} disabled={!chapters.length} aria-label='Chapters'>
+                <ListNumbers size={19} weight='regular' />
+              </button>
+              )
+            : (
+              <button className={'icon mode' + (repeat ? ' on' : '')} onClick={onRepeat} aria-label='Repeat'>
+                {repeat === 1
+                  ? <RepeatOnce size={19} weight='fill' />
+                  : <Repeat size={19} weight={repeat === 2 ? 'fill' : 'regular'} />}
+              </button>
+              )}
         </div>
+        {chapter && <div className='chapterline muted sm'>{chapter.title}</div>}
 
         <div className='transport sub-transport'>
-          <button className='icon' onClick={() => call('seekBy', { seconds: -15 })} aria-label='Back 15 seconds' disabled={!!castingTo}>
-            <ArrowCounterClockwise size={15} /> 15
+          <button className='icon' onClick={() => call('seekBy', { seconds: -back })} aria-label={`Back ${back} seconds`} disabled={!!castingTo}>
+            <ArrowCounterClockwise size={15} /> {back}
           </button>
           <button
             className={'icon sleepbtn' + (sleep?.active ? ' on' : '')}
@@ -5911,11 +5982,66 @@ function Player ({
             >
               <SpeakerHigh size={16} weight={castingTo ? 'fill' : 'regular'} />
             </button>}
-          {/* Last, so back 15 and forward 15 sit at the two ends of the row with
+          {/* Last, so the back and forward skips sit at the two ends of the row with
               sleep and speaker between them. */}
-          <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds' disabled={!!castingTo}>
-            15 <ArrowClockwise size={15} />
+          <button className='icon' onClick={() => call('seekBy', { seconds: fwd })} aria-label={`Forward ${fwd} seconds`} disabled={!!castingTo}>
+            {fwd} <ArrowClockwise size={15} />
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// The chapter the position is in: the last one starting at or before it. -1 when there
+// are no chapters (or the position is before the first, which a real file never has).
+function chapterAt (chapters, positionMs) {
+  let at = -1
+  for (let i = 0; i < (chapters || []).length; i++) {
+    if (chapters[i].startMs <= positionMs) at = i
+    else break
+  }
+  return at
+}
+
+const BOOK_RATES = [0.8, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2]
+const fmtRate = (r) => `${Number(r).toFixed(2).replace(/\.?0+$/, '')}x`
+
+// How fast books play. One speed for all books, remembered; music always plays at 1x.
+function SpeedSheet ({ rate, onClose, onPick }) {
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Playback speed</h1>
+        <p className='muted sm'>For books. Music always plays at normal speed.</p>
+        <div className='acts'>
+          {BOOK_RATES.map(r => (
+            <button key={r} className={'wide' + (Math.abs(rate - r) < 0.001 ? ' on' : '')} onClick={() => onPick(r)}>
+              {r === 1 ? '1x (normal)' : fmtRate(r)}
+            </button>
+          ))}
+          <button className='wide' onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// A book's chapters. Tapping one jumps to its start; the one playing is marked.
+function ChaptersSheet ({ chapters, positionMs, onClose, onPick }) {
+  const at = chapterAt(chapters, positionMs)
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet chaptersheet' onClick={e => e.stopPropagation()}>
+        <h1>Chapters</h1>
+        <div className='acts'>
+          {chapters.map((c, i) => (
+            <button key={i} className={'wide chapterrow' + (i === at ? ' on' : '')} onClick={() => onPick(c)}>
+              <span className='chaptertitle'>{c.title || `Chapter ${i + 1}`}</span>
+              <span className='muted sm'>{fmt(c.startMs)}</span>
+            </button>
+          ))}
+          <button className='wide' onClick={onClose}>Close</button>
         </div>
       </div>
     </div>

@@ -40,4 +40,21 @@ for p in 1 2; do
     "$root/Book in Parts/0$p Part $p.mp3"
 done
 
-du -ah "$root"
+# --- chapter layouts (test/fixtures/chapters) ---------------------------------
+# One 3 s, three-chapter m4b in each way a real book stores its chapters, for the chapter
+# reader (host/chapters.js). NOT under books/, so they do not change the library tests.
+#   end-index.m4b    ffmpeg's default: index (moov) at the END, both chpl and a chapter track
+#   start-index.m4b  -movflags +faststart: index at the start
+#   track-only.m4b   +disable_chpl: only the QuickTime chapter track, no Nero chpl list
+#   no-chapters.m4a  none at all
+chap="$(dirname "$root")/chapters"
+rm -rf "$chap"
+mkdir -p "$chap"
+printf ';FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\ntitle=Opening\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=1000\nEND=2000\ntitle=The Middle, Part Two\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=2000\nEND=3000\ntitle=Caf\xc3\xa9 Ending\n' > "$tmp/chap.txt"
+three() { ffmpeg -v error -f lavfi -i anullsrc=r=22050:cl=mono:duration=3 -i "$tmp/chap.txt" -map 0:a -map_metadata 1 -map_chapters 1 -c:a aac -b:a 32k "$@"; }
+three -f mp4 "$chap/end-index.m4b"
+three -movflags +faststart -f mp4 "$chap/start-index.m4b"
+three -movflags +disable_chpl -f mp4 "$chap/track-only.m4b"
+ffmpeg -v error -f lavfi -i anullsrc=r=22050:cl=mono:duration=1 -c:a aac -b:a 32k -f mp4 "$chap/no-chapters.m4a"
+
+du -ah "$root" "$chap"

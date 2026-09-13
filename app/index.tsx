@@ -316,6 +316,22 @@ export default function App () {
 
   const SEEK_STEP = 15 // seconds; the lock-screen and media-key skips are patched to 15 to match (patches/expo-audio)
 
+  // Book playback speed (proposal 2026-09-13). Held HERE, not in the UI, because a book
+  // runs on into its next part while the WebView is frozen in the background: the rate is
+  // re-applied on every track start, a book at the book speed and everything else at 1x,
+  // so a sped-up book can never leave the music after it sped up too.
+  const bookRateRef = useRef(1)
+  function applyRate (i: number) {
+    const p: any = player.current
+    const t = queueRef.current[i]
+    if (!p || !t) return
+    const rate = t.kind === 'book' ? bookRateRef.current : 1
+    try {
+      p.shouldCorrectPitch = true
+      p.setPlaybackRate(rate, 'high')
+    } catch {}
+  }
+
   // GAPLESS. The queue lives inside ExoPlayer, not here.
   //
   // The obvious design - keep the queue in JS and swap the source on
@@ -575,6 +591,7 @@ export default function App () {
   function announce (i: number) {
     const t = queueRef.current[i]
     if (!t) return
+    applyRate(i)
 
     const meta = {
       title: t.title,
@@ -628,6 +645,8 @@ export default function App () {
       durationMs: t.durationMs ?? null,
       // Books keep their place longer and are not counted as plays (proposal 2026-09-13).
       kind: t.kind ?? null,
+      // A book's chapters, for the player's chapter list and chapter skips (slice 3).
+      chapters: t.chapters ?? null,
       index: i,
       queueLength: queueRef.current.length
     })
@@ -1708,6 +1727,12 @@ export default function App () {
       // Session handoff: "Play here" adopts the session another device is holding.
       playHere: () => playHere(),
       seekBy: () => seekBy(msg.args.seconds ?? SEEK_STEP),
+      // The speed books play at (0.5x to 2x). Applies now if a book is playing.
+      bookRate: () => {
+        const r = Number(msg.args.rate)
+        bookRateRef.current = Number.isFinite(r) ? Math.min(2, Math.max(0.5, r)) : 1
+        applyRate(indexRef.current)
+      },
       seekTo: () => seekTo(msg.args.ms ?? 0),
       shuffle: () => setShuffle(!!msg.args.on),
       repeat: () => setRepeat(Number(msg.args.mode) || 0),
