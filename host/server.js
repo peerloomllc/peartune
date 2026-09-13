@@ -250,7 +250,7 @@ class PearTuneHost {
     // and painting "internal error" (Tim, 2026-08-17). Additive: an old client ignores
     // unknown push kinds.
     this.presence.notifyAll('library:changed', { libraryId: this.libraryId, source: cfg.kind })
-    return { kind: cfg.kind, tracks, albums: st.albums ?? 0, artists: st.artists ?? 0 }
+    return { kind: cfg.kind, tracks, albums: st.albums ?? 0, artists: st.artists ?? 0, books: st.books ?? 0 }
   }
 
   // Does this config actually work? Used by the dashboard's "Test" button, so an
@@ -273,7 +273,7 @@ class PearTuneHost {
     this.sourceError = null
     const st = await this.adapter.stats().catch(() => ({}))
     this.log('host:rescanned', { source: this.adapter.kind, tracks })
-    return { kind: this.adapter.kind, tracks, albums: st.albums ?? 0, artists: st.artists ?? 0 }
+    return { kind: this.adapter.kind, tracks, albums: st.albums ?? 0, artists: st.artists ?? 0, books: st.books ?? 0 }
   }
 
   // The operator's library name. Persisted to library.json in the data dir so it

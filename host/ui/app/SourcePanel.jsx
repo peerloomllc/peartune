@@ -76,6 +76,9 @@ export function SourcePanel ({ state, refresh, toast, embedded = false, onSaved 
     const parts = [tracks(r.tracks)]
     if (r.albums) parts.push(`${r.albums.toLocaleString()} album${r.albums === 1 ? '' : 's'}`)
     if (r.artists) parts.push(`${r.artists.toLocaleString()} artist${r.artists === 1 ? '' : 's'}`)
+    // Audiobooks, when the source found any (proposal 2026-09-13). They are also counted in
+    // the albums above; this says how many of them are books.
+    if (r.books) parts.push(`${r.books.toLocaleString()} audiobook${r.books === 1 ? '' : 's'}`)
     return parts.join(' · ')
   }
 

@@ -2676,6 +2676,8 @@ export default function App () {
         return toast(`Nothing to play in ${item.name || 'that'}`, true)
       }
       if (action === 'queue') return enqueue(list)
+      // A book from the menu picks up where this person stopped, like its page's Play.
+      if (item.kind === 'book' && action === 'play') return playBookFromPage(item, list)
       return playAll(list, { shuffled: action === 'shuffle' })
     } catch (e) {
       haptic('warn')
@@ -3403,8 +3405,8 @@ function ActionSheet ({ item, onClose, onAction, canPlaylist, canDownload, downl
             <Play size={17} weight='fill' /> Play
           </button>
           {/* One track cannot be shuffled. Offering it would be a button that
-              visibly does nothing. */}
-          {item.type !== 'track' && (
+              visibly does nothing. Nor can a book: its parts only make sense in order. */}
+          {item.type !== 'track' && item.kind !== 'book' && (
             <button className='wide' onClick={() => onAction('shuffle')}>
               <Shuffle size={17} weight='bold' /> Shuffle
             </button>
@@ -5094,7 +5096,7 @@ function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase, favs, onFav })
         <Tile
           key={a.id} className='album'
           onPress={() => onOpen(a.id)}
-          onLongPress={onLong && (() => onLong({ type: 'album', id: a.id, name: a.name }))}
+          onLongPress={onLong && (() => onLong({ type: 'album', id: a.id, name: a.name, kind: a.kind }))}
           fav={favs?.album?.has(a.id)}
           onFav={onFav ? (() => onFav('album', a)) : null}
         >
@@ -5293,7 +5295,7 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
         // A book's Play picks up where this person stopped, in whichever part that was
         // (proposal 2026-09-13). Music plays from the top, as it always has.
         onPlay={() => (album.kind === 'book' && onResumeBook ? onResumeBook(album, tracks) : onPlayAll(tracks))}
-        onShuffle={() => onPlayAll(tracks, { shuffled: true })}
+        onShuffle={album.kind === 'book' ? null : () => onPlayAll(tracks, { shuffled: true })}
         onQueue={() => onQueue(tracks)}
       />
 
@@ -5413,9 +5415,12 @@ function Actions ({ onPlay, onShuffle, onQueue }) {
       <button className='primary' onClick={onPlay}>
         <Play size={16} weight='fill' /> Play
       </button>
-      <button onClick={onShuffle}>
-        <Shuffle size={16} weight='bold' /> Shuffle
-      </button>
+      {/* No shuffle for a book: its parts only make sense in order (Tim, 2026-09-13). */}
+      {onShuffle && (
+        <button onClick={onShuffle}>
+          <Shuffle size={16} weight='bold' /> Shuffle
+        </button>
+      )}
       <button className='icon sq' onClick={onQueue} aria-label='Add to queue'>
         <ListPlus size={18} weight='bold' />
       </button>
