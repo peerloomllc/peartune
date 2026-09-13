@@ -12,7 +12,7 @@ source that replaces music. The host combines two sources.
 **Tier** - T2. New persisted config (an Audiobookshelf URL and a secret), a new adapter,
 and a host that answers from two adapters at once. No wire change: the phone already
 understands `kind: 'book'`, `chapters`, `caps.books` and every method it will call. One
-access rule needs care (per-person folders, below).
+access rule changes on purpose (per-person folders, below).
 
 ## What Audiobookshelf offers
 
@@ -82,13 +82,14 @@ not read or written: the host talks to it with ONE credential, so every PearTune
 would collapse into one Audiobookshelf user. Importing a person's progress from their own
 Audiobookshelf account is a possible later step, out of scope here.
 
-### Per-person folders: fail closed
+### Per-person folders: limits cover music folders only
 
-Narrowing a person to chosen folders works only on the folder source today. Audiobookshelf
-books have no folder in PearTune's tree, so a NARROWED person sees no Audiobookshelf books
-at all in this proposal. An unnarrowed person sees all of them. Showing Audiobookshelf books
-to a narrowed person (per library, or per book) is a later decision. The combined adapter's
-`narrowedView` must return the music view alone, and a test must hold that.
+Narrowing a person to chosen folders works only on the folder source. **Everyone who can
+reach the library sees every Audiobookshelf book, narrowed or not (Tim, 2026-09-13).** A
+folder limit keeps meaning what the dashboard says: which music folders a person hears. The
+combined adapter's `narrowedView` returns the narrowed music view plus all Audiobookshelf
+books, and a test holds both halves: the music stays narrowed, the books do not. The Sharing
+panel says so next to the folder picker, so an owner is not surprised.
 
 ### Transcoding
 
@@ -101,10 +102,11 @@ directly (`-headers 'Authorization: Bearer ...' -ss <t> -i <url>`), which lets f
 ## Build order
 
 1. **The Audiobookshelf adapter on its own.** Scan, list, get with chapters, search, art,
-   stream (direct), probe; API key and username/password. Tests against a fake
+   stream (direct), probe; API key and username/password. Every book library on the
+   server is served; podcast libraries are skipped. Tests against a fake
    Audiobookshelf HTTP server built from the real 2.36.0 responses above.
 2. **Combined adapter, config and dashboard.** Routing by id, kind-aware listing and paging,
-   the fail-closed narrowing, source.json `books`, the Audiobooks section with Test and
+   narrowing that limits music only (with a note in the Sharing panel), source.json `books`, the Audiobooks section with Test and
    detection. Tested against the fake server plus the folder fixtures.
 3. **Transcoding and the Umbrel.** Seekable HTTP-input transcode; deploy to the Umbrel with
    its Audiobookshelf as the books source and check on the Pixel and the emulator.
@@ -137,7 +139,8 @@ directly (`-headers 'Authorization: Bearer ...' -ss <t> -i <url>`), which lets f
 - `npm run verify` green per slice.
 - Emulator first, against a local host combining the folder fixtures with a fake or real
   Audiobookshelf; then the Umbrel's real Audiobookshelf (The Hobbit, 219 files) on the Pixel.
-- Fail-closed check: a narrowed person sees no Audiobookshelf books, over the wire.
+- Narrowing check, over the wire: a narrowed person hears only their music folders and every
+  Audiobookshelf book.
 
 ## Rollback
 
@@ -145,7 +148,8 @@ Remove the `books` key (the dashboard's Remove does this); the host goes back to
 adapter alone. Resume rows and bookmarks for Audiobookshelf track ids stay in the store,
 unused, and come back if the source is added again.
 
-## Open questions
+## Decided (Tim, 2026-09-13)
 
-1. Several Audiobookshelf book libraries on one server: serve all of them, or pick which?
-2. Should a narrowed person be able to see Audiobookshelf books later, and if so chosen how?
+1. Several Audiobookshelf book libraries: serve all of them. Podcast libraries are skipped.
+2. A person limited to certain folders still sees every Audiobookshelf book; folder limits
+   cover music folders only.
