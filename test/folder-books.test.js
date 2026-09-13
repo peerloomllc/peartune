@@ -173,6 +173,35 @@ test('the phone labels an m4b as audio/mp4, not octet-stream', () => {
   assert.equal(mimeFor('x.M4B'), 'audio/mp4')
 })
 
+test('a whole book over 64 MB is not cached on the way past; music and small parts are', () => {
+  const { cacheWholeTrack, BOOK_CACHE_MAX_BYTES } = require('../worklet/shim')
+  const big = BOOK_CACHE_MAX_BYTES + 1
+  assert.equal(cacheWholeTrack({ full: true, kind: 'book', size: big }), false)
+  assert.equal(cacheWholeTrack({ full: true, kind: 'book', size: 5 * 1024 * 1024 }), true)
+  assert.equal(cacheWholeTrack({ full: true, kind: null, size: big }), true)
+  assert.equal(cacheWholeTrack({ full: false, kind: null, size: 10 }), false)
+})
+
+test('merged libraries: a book stays a book only when every copy is one, and serveList/search filter by kind', () => {
+  const merge = require('../worklet/merge')
+  const catalog = require('../worklet/catalog')
+  const album = (lib, name, kind) => ({ id: lib + name, name, artist: 'A', year: 2026, songCount: 1, coverId: 'c', ...(kind ? { kind } : {}) })
+  const ix = merge.buildIndex([
+    { libraryId: 'L1', albums: [album('L1', 'Only Book', 'book'), album('L1', 'Clash', 'book'), album('L1', 'Song Album')] },
+    { libraryId: 'L2', albums: [album('L2', 'Only Book', 'book'), album('L2', 'Clash')] }
+  ])
+  const byName = (n) => ix.albums.find(a => a.name === n)
+  assert.equal(byName('Only Book').kind, 'book')
+  assert.equal('kind' in byName('Clash'), false, 'a book deduped with a music album stays music')
+  assert.equal('kind' in byName('Song Album'), false)
+
+  const names = (items) => items.map(a => a.name).sort()
+  assert.deepEqual(names(catalog.serveList(ix.albums, { kind: 'book' }).items), ['Only Book'])
+  assert.deepEqual(names(catalog.serveList(ix.albums, { kind: 'music' }).items), ['Clash', 'Song Album'])
+  assert.equal(catalog.serveList(ix.albums, {}).items.length, 3)
+  assert.deepEqual(names(catalog.searchIndex(ix, 'o', { kind: 'music' }).albums), ['Song Album'])
+})
+
 // --- the saved config -------------------------------------------------------
 
 async function dir (t) {

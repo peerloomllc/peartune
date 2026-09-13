@@ -105,6 +105,13 @@ function idCopy (x) {
 
 // --- per-type merges --------------------------------------------------------
 
+// A merged entity is a book only when EVERY copy says so (proposal 2026-09-13). A book on
+// one host deduped against a music album of the same name on another stays music, which
+// keeps it in the music views rather than hiding somebody's album.
+function bookKind (g) {
+  return g.copies.length && g.copies.every((c) => c.kind === 'book') ? { kind: 'book' } : {}
+}
+
 function mergeTracks (tracks) {
   const out = []
   for (const g of groupByKey(tracks, trackKey, betterTrack).values()) {
@@ -124,6 +131,7 @@ function mergeTracks (tracks) {
       // a date order; before that this was dropped here and every merged track sorted as 0.
       addedAt: Math.max(0, ...g.copies.map((c) => Number(c.addedAt) || 0)) || null,
       coverId: p.coverId,
+      ...bookKind(g),
       copies: orderedCopies(g, trackCopy)
     })
   }
@@ -148,6 +156,7 @@ function mergeAlbums (albums) {
       // The NEWEST "date added" across copies, so a merged album sorts by when it most recently
       // landed on any host - the true global "recently added" ordering across the blend.
       addedAt: Math.max(0, ...g.copies.map((c) => Number(c.addedAt) || 0)) || null,
+      ...bookKind(g),
       copies: orderedCopies(g, idCopy)
     })
   }
@@ -165,6 +174,7 @@ function mergeArtists (artists) {
       name: p.name,
       coverId: p.coverId,
       albumCount: Number(p.albumCount) || 0, // recomputed from merged albums in buildIndex
+      ...bookKind(g),
       copies: orderedCopies(g, idCopy)
     })
   }
@@ -181,6 +191,7 @@ function mergeGenres (genres) {
       libraryId: p.libraryId,
       name: p.name,
       coverId: p.coverId,
+      ...bookKind(g),
       copies: orderedCopies(g, idCopy)
     })
   }
@@ -244,6 +255,13 @@ function sortItems (items, key, order = 'asc') {
 // Narrow the merged list to items with a copy on `libraryId`. '_all'/falsy = the whole blend
 // (the source-filter chip). This is why the per-host view is free: it's just the merged index
 // filtered.
+// kind 'book' keeps only books, 'music' everything else, anything else keeps all. The
+// same rule the folder host applies to library.list (host/adapters/folder.js _ofKind).
+function filterByKind (items, kind) {
+  if (kind !== 'book' && kind !== 'music') return items || []
+  return (items || []).filter((x) => (x.kind === 'book') === (kind === 'book'))
+}
+
 function filterByLibrary (items, libraryId) {
   if (!libraryId || libraryId === '_all') return items || []
   return (items || []).filter(
@@ -359,6 +377,7 @@ module.exports = {
   buildIndex,
   sortItems,
   filterByLibrary,
+  filterByKind,
   bestCopy,
   collapseRequests,
   answeredElsewhere,

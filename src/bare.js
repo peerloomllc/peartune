@@ -2734,41 +2734,43 @@ const methods = {
 
   // The Songs view. Navidrome answers an empty-query search3 with everything,
   // paged, so this is a real list and not the 60-call album walk it used to be.
-  async tracks ({ cursor = 0, limit = 100, sort, order, libraryId } = {}) {
+  async tracks ({ cursor = 0, limit = 100, sort, order, libraryId, kind } = {}) {
     // DEMO MODE, first: the bundled library is served straight out of memory by the very same
     // in-memory helpers the blend uses (worklet/catalog.js), so browsing it needs no host, no
     // connection and no second code path. Same shape in every browse method below.
     if (demoMode()) {
-      const page = catalog.serveList(demoCatalog.tracks, { sort: sort || 'title', order, cursor, limit })
+      const page = catalog.serveList(demoCatalog.tracks, { sort: sort || 'title', order, cursor, limit, kind })
       return { ...page, items: page.items.map(withArt) }
     }
     if (mergedMode()) {
       const ix = await ensureIndex()
       // Default to A-Z by title: the merged index CAN sort all songs by title, which a single
       // Subsonic host can't (it has no all-songs sort). Items already carry libraryId + copies.
-      const page = catalog.serveList(ix.tracks, { libraryId, sort: sort || 'title', order, cursor, limit })
+      const page = catalog.serveList(ix.tracks, { libraryId, sort: sort || 'title', order, cursor, limit, kind })
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await mustClient().list({ type: 'tracks', cursor, limit, sort, order })
+    const page = await mustClient().list({ type: 'tracks', cursor, limit, sort, order, kind })
     return { ...page, items: page.items.map(withArt) }
   },
 
   // Album browsing is the primary way in. A flat list of 1358 tracks is not a
   // music app, and Subsonic has no "all songs" call anyway - so the flat list
   // could only ever show the first page. Albums page properly.
-  async albums ({ cursor = 0, limit = 60, sort, order, libraryId } = {}) {
+  // kind ('book' | 'music', proposal 2026-09-13) splits the Books view from the music
+  // views. The host filters before paging; an older host ignores it and has no books.
+  async albums ({ cursor = 0, limit = 60, sort, order, libraryId, kind } = {}) {
     if (demoMode()) {
-      const page = catalog.serveList(demoCatalog.albums, { sort: sort || 'name', order, cursor, limit })
+      const page = catalog.serveList(demoCatalog.albums, { sort: sort || 'name', order, cursor, limit, kind })
       return { ...page, items: page.items.map(withArt) }
     }
     if (mergedMode()) {
       const ix = await ensureIndex()
-      const page = catalog.serveList(ix.albums, { libraryId, sort: sort || 'name', order, cursor, limit })
+      const page = catalog.serveList(ix.albums, { libraryId, sort: sort || 'name', order, cursor, limit, kind })
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await mustClient().list({ type: 'albums', cursor, limit, sort, order })
+    const page = await mustClient().list({ type: 'albums', cursor, limit, sort, order, kind })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -2797,18 +2799,18 @@ const methods = {
 
   // Artists are the second way in. The host has always been able to list them
   // (`library.list({type:'artists'})`); nothing was asking.
-  async artists ({ sort, order, libraryId } = {}) {
+  async artists ({ sort, order, libraryId, kind } = {}) {
     if (demoMode()) {
-      const page = catalog.serveList(demoCatalog.artists, { sort: sort || 'name', order })
+      const page = catalog.serveList(demoCatalog.artists, { sort: sort || 'name', order, kind })
       return { ...page, items: page.items.map(withArt) }
     }
     if (mergedMode()) {
       const ix = await ensureIndex()
-      const page = catalog.serveList(ix.artists, { libraryId, sort: sort || 'name', order })
+      const page = catalog.serveList(ix.artists, { libraryId, sort: sort || 'name', order, kind })
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await mustClient().list({ type: 'artists', sort, order })
+    const page = await mustClient().list({ type: 'artists', sort, order, kind })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -2908,18 +2910,18 @@ const methods = {
   // Genres are the BROADEST way in - list them, then a genre page is a grid of its
   // albums. Same wire methods as artists (library.list / library.get with a new
   // `genres` / `genre` type); the host does the work, this just adds artwork.
-  async genres ({ sort, order, libraryId } = {}) {
+  async genres ({ sort, order, libraryId, kind } = {}) {
     if (demoMode()) {
-      const page = catalog.serveList(demoCatalog.genres, { sort: sort || 'name', order })
+      const page = catalog.serveList(demoCatalog.genres, { sort: sort || 'name', order, kind })
       return { ...page, items: page.items.map(withArt) }
     }
     if (mergedMode()) {
       const ix = await ensureIndex()
-      const page = catalog.serveList(ix.genres, { libraryId, sort: sort || 'name', order })
+      const page = catalog.serveList(ix.genres, { libraryId, sort: sort || 'name', order, kind })
       return { ...page, items: page.items.map(withArt) }
     }
     await ensureConnected()
-    const page = await mustClient().list({ type: 'genres', sort, order })
+    const page = await mustClient().list({ type: 'genres', sort, order, kind })
     return { ...page, items: page.items.map(withArt) }
   },
 
@@ -2983,16 +2985,16 @@ const methods = {
   // `libraryId` narrows the shelf to ONE library, the same way every other browse call does. It
   // used to be missing, so picking a library from the header left the "Recently added" shelf
   // showing the whole blend while the grid beneath it showed that one library (Tim, 2026-07-27).
-  async recentMerged ({ limit = 12, libraryId } = {}) {
+  async recentMerged ({ limit = 12, libraryId, kind } = {}) {
     if (!mergedMode()) return { items: [] }
     const ix = await ensureIndex()
-    const page = catalog.serveList(ix.albums, { libraryId, sort: 'added', order: 'desc', cursor: 0, limit })
+    const page = catalog.serveList(ix.albums, { libraryId, sort: 'added', order: 'desc', cursor: 0, limit, kind })
     return { items: page.items.map(withArt) }
   },
 
-  async search ({ q, libraryId } = {}) {
+  async search ({ q, libraryId, kind } = {}) {
     if (demoMode()) {
-      const r = catalog.searchIndex(demoCatalog, q)
+      const r = catalog.searchIndex(demoCatalog, q, { kind })
       return {
         tracks: r.tracks.map(withArt),
         albums: r.albums.map(withArt),
@@ -3001,7 +3003,7 @@ const methods = {
     }
     if (mergedMode()) {
       const ix = await ensureIndex()
-      const r = catalog.searchIndex(ix, q)
+      const r = catalog.searchIndex(ix, q, { kind })
       const filt = (arr) => merge.filterByLibrary(arr, libraryId)
       // Merged search hits everything and returns TRACKS too (each deduped, copy-tagged) - a single
       // host's search couldn't sort/merge songs across hosts.
@@ -3012,7 +3014,7 @@ const methods = {
       }
     }
     await ensureConnected()
-    const r = await mustClient().search({ q })
+    const r = await mustClient().search({ q, kind })
     return {
       ...r,
       albums: (r.albums || []).map(withArt),
@@ -3511,6 +3513,45 @@ const methods = {
   // The "continue listening" candidate: the most recent resume, RESOLVED to a
   // renderable track (title, artist, art) so the launch card can show it. Null when
   // there is nothing to continue, offline, or on an old host.
+  // How many albums are books, across what this phone can reach (proposal 2026-09-13). The
+  // UI shows its Books view only when this is above 0. Merged mode counts the blended index,
+  // so it waits for the index like the album grid does; an older host reports no books.
+  async bookCount ({ libraryId } = {}) {
+    if (demoMode()) return { books: 0 }
+    if (mergedMode()) {
+      const ix = await ensureIndex()
+      return { books: catalog.serveList(ix.albums, { libraryId, kind: 'book' }).items.length }
+    }
+    await ensureConnected()
+    const st = await mustClient().stats()
+    return { books: Number(st && st.books) || 0 }
+  },
+
+  // Every resume row this person has, each with its track, newest listening first (proposal
+  // 2026-09-13: the Books view's Continue listening row). kind filters on the host. A host
+  // too old for resume.list contributes nothing rather than failing the whole list.
+  async resumeList ({ kind, limit = 50 } = {}) {
+    if (demoMode()) return []
+    const when = (r) => Number(r.playedAt) || 0
+    if (mergedMode()) {
+      const libs = [...connectedLibs()]
+      const settled = await Promise.allSettled(libs.map(async (lib) => {
+        const c = clientFor(lib)
+        if (!c) return []
+        const rows = await c.resumeList({ kind, limit })
+        return (rows || []).map((r) => ({ ...r, track: withArt({ ...r.track, libraryId: lib }) }))
+      }))
+      return settled.filter((x) => x.status === 'fulfilled').flatMap((x) => x.value).sort((a, b) => when(b) - when(a)).slice(0, limit)
+    }
+    try {
+      await ensureConnected()
+      const rows = await mustClient().resumeList({ kind, limit })
+      return (rows || []).map((r) => ({ ...r, track: withArt(r.track) }))
+    } catch {
+      return []
+    }
+  },
+
   async resumeLatest () {
     if (demoMode()) return null // nothing is stored, so there is no 'continue listening'
     if (mergedMode()) {
