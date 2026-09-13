@@ -5833,9 +5833,6 @@ function Player ({
             <Moon size={16} weight={sleep?.active ? 'fill' : 'regular'} />
             {sleep?.active && <SleepCountdown sleep={sleep} />}
           </button>
-          <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds' disabled={!!castingTo}>
-            15 <ArrowClockwise size={15} />
-          </button>
           {/* Only when the host actually offers speakers AND this device may use them.
               An unconfigured host, an old host or a non-owner grant all mean canCast
               is false, and then there is no button at all rather than one that
@@ -5851,6 +5848,11 @@ function Player ({
             >
               <SpeakerHigh size={16} weight={castingTo ? 'fill' : 'regular'} />
             </button>}
+          {/* Last, so back 15 and forward 15 sit at the two ends of the row with
+              sleep and speaker between them. */}
+          <button className='icon' onClick={() => call('seekBy', { seconds: 15 })} aria-label='Forward 15 seconds' disabled={!!castingTo}>
+            15 <ArrowClockwise size={15} />
+          </button>
         </div>
       </div>
     </div>
