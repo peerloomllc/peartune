@@ -127,10 +127,21 @@ index 49a53af..fdbe047 100644
          runOnMain {
            ref.setActiveForLockScreen(active, metadata, options)
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-index 320062e..51db639 100644
+index 320062e..6ec8245 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-@@ -44,6 +44,12 @@ class AudioPlayer(
+@@ -32,7 +32,9 @@ import java.util.UUID
+ 
+ private const val PLAYBACK_STATUS_UPDATE = "playbackStatusUpdate"
+ private const val AUDIO_SAMPLE_UPDATE = "audioSampleUpdate"
+-private const val SEEK_JUMP_INTERVAL_MS: Long = 10_000
++// PearTune: 15 s, the same step as the app's own skip buttons (app/index.tsx SEEK_STEP).
++// Upstream is 10 s, so a media key or car button skipped less than the screen did.
++private const val SEEK_JUMP_INTERVAL_MS: Long = 15_000
+ 
+ @UnstableApi
+ class AudioPlayer(
+@@ -44,12 +46,30 @@ class AudioPlayer(
    ExoPlayer.Builder(context)
      .setLooper(context.mainLooper)
      .setAudioAttributes(AudioAttributes.DEFAULT, false)
@@ -143,7 +154,6 @@ index 320062e..51db639 100644
      .setSeekForwardIncrementMs(SEEK_JUMP_INTERVAL_MS)
      .setSeekBackIncrementMs(SEEK_JUMP_INTERVAL_MS)
      .build(),
-@@ -50,6 +56,18 @@ class AudioPlayer(
    appContext
  ) {
    val id = UUID.randomUUID().toString()
@@ -162,7 +172,7 @@ index 320062e..51db639 100644
    var preservesPitch = true
    var isPaused = false
    var isMuted = false
-@@ -100,6 +118,39 @@ class AudioPlayer(
+@@ -100,6 +120,39 @@ class AudioPlayer(
      startUpdating()
    }
  
@@ -202,7 +212,7 @@ index 320062e..51db639 100644
    fun setActiveForLockScreen(active: Boolean, metadata: Metadata? = null, options: AudioLockScreenOptions? = null) {
      if (active) {
        this.metadata = metadata
-@@ -163,6 +214,8 @@ class AudioPlayer(
+@@ -163,6 +216,8 @@ class AudioPlayer(
      }
  
      override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -211,7 +221,8 @@ index 320062e..51db639 100644
        playerScope.launch {
          sendPlayerUpdate()
        }
-@@ -219,5 +272,8 @@ class AudioPlayer(
+@@ -218,7 +273,10 @@ class AudioPlayer(
+       "isLoaded" to if (ref.playbackState == Player.STATE_ENDED) true else isLoaded,
        "playbackRate" to ref.playbackParameters.speed,
        "shouldCorrectPitch" to preservesPitch,
 -      "isBuffering" to isBuffering
@@ -221,6 +232,39 @@ index 320062e..51db639 100644
 +      "playWhenReady" to ref.playWhenReady
      )
    }
+ 
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+index 04486e2..c0ca91d 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+@@ -139,7 +139,7 @@ class AudioControlsService : MediaSessionService() {
+     // Add seek backward button if enabled
+     if (currentOptions?.showSeekBackward == true) {
+       customLayout.add(
+-        CommandButton.Builder(CommandButton.ICON_SKIP_BACK)
++        CommandButton.Builder(CommandButton.ICON_SKIP_BACK_15)
+           .setDisplayName("Seek Backward")
+           .setEnabled(true)
+           .setSessionCommand(SessionCommand(ACTION_SEEK_BACKWARD, Bundle.EMPTY))
+@@ -159,7 +159,7 @@ class AudioControlsService : MediaSessionService() {
+     // Add seek forward button if enabled
+     if (currentOptions?.showSeekForward == true) {
+       customLayout.add(
+-        CommandButton.Builder(CommandButton.ICON_SKIP_FORWARD)
++        CommandButton.Builder(CommandButton.ICON_SKIP_FORWARD_15)
+           .setDisplayName("Seek Forward")
+           .setEnabled(true)
+           .setSessionCommand(SessionCommand(ACTION_SEEK_FORWARD, Bundle.EMPTY))
+@@ -340,7 +340,8 @@ class AudioControlsService : MediaSessionService() {
+     const val ACTION_SEEK_FORWARD = "expo.modules.audio.action.SEEK_FORWARD"
+     const val ACTION_SEEK_BACKWARD = "expo.modules.audio.action.SEEK_REWIND"
+ 
+-    const val SEEK_INTERVAL_MS = 10000L
++    // PearTune: 15 s to match the app's skip buttons; upstream is 10 s. The icons below say 15.
++    const val SEEK_INTERVAL_MS = 15000L
+ 
+     private var pendingPlayer: AudioPlayer? = null
+     private var pendingMetadata: Metadata? = null
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt
 index 839aaef..e0620a3 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt
@@ -512,3 +556,26 @@ index 1dbce09..0e50050 100644
  
      if samplingEnabled {
        samplingEnabled = false
+diff --git a/node_modules/expo-audio/ios/MediaController.swift b/node_modules/expo-audio/ios/MediaController.swift
+index 2dd3fb2..462ff39 100644
+--- a/node_modules/expo-audio/ios/MediaController.swift
++++ b/node_modules/expo-audio/ios/MediaController.swift
+@@ -173,7 +173,8 @@ class MediaController {
+       return .success
+     }
+ 
+-    remoteCommandCenter.skipForwardCommand.preferredIntervals = [10.0]
++    // PearTune: 15 s, the same step as the app's own skip buttons. Upstream is 10 s.
++    remoteCommandCenter.skipForwardCommand.preferredIntervals = [15.0]
+     remoteCommandCenter.skipForwardCommand.addTarget { [weak self] event in
+       guard let player = self?.activePlayer,
+       let event = event as? MPSkipIntervalCommandEvent else {
+@@ -187,7 +188,7 @@ class MediaController {
+       return .success
+     }
+ 
+-    remoteCommandCenter.skipBackwardCommand.preferredIntervals = [10.0]
++    remoteCommandCenter.skipBackwardCommand.preferredIntervals = [15.0]
+     remoteCommandCenter.skipBackwardCommand.addTarget { [weak self] event in
+       guard let player = self?.activePlayer,
+       let event = event as? MPSkipIntervalCommandEvent else {
