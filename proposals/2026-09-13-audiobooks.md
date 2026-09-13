@@ -206,7 +206,7 @@ of a book in parts as a chapter, which is a good model for slice 3.
 | Book speed 1.5x | 33 s of book in 21 s |
 | Book in parts at 1.5x, after moving on to Part 2 | 32 s of book in 21 s |
 | m4b on a 1.0.7 build (served as octet-stream) | plays, 16 s in 16 s |
-| Lock-screen 15/30 skips | not checkable on the Simulator; needs the iPhone SE |
+| Lock-screen 15/30 skips | not checkable on the Simulator. On the iPhone SE (Tim): back 15 / forward 30 for a book, 15 / 15 for music |
 
 ## Rollback
 
