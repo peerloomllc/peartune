@@ -172,6 +172,21 @@ test('resume positions are per-owner isolated', async (t) => {
   assert.equal(await s.getResume('d:asas', 't1'), null, 'another owner has no resume for it')
 })
 
+test('bookmarks: per person, per track, in position order, removable by id', async (t) => {
+  const { bee } = await store(t)
+  const s = new UserState(bee)
+  await s.addBookmark('p:tim', { id: 'b2', trackId: 't1', positionMs: 90000, note: 'later' })
+  await s.addBookmark('p:tim', { id: 'b1', trackId: 't1', positionMs: 30000, note: 'earlier' })
+  await s.addBookmark('p:tim', { id: 'b3', trackId: 't2', positionMs: 5000 })
+  await s.addBookmark('d:other', { id: 'x', trackId: 't1', positionMs: 1 })
+  assert.deepEqual((await s.listBookmarks('p:tim', ['t1'])).map(b => b.id), ['b1', 'b2'])
+  assert.deepEqual((await s.listBookmarks('p:tim', ['t1', 't2'])).map(b => b.id), ['b1', 'b2', 'b3'])
+  assert.equal((await s.listBookmarks('p:tim', ['t1']))[0].note, 'earlier')
+  await s.removeBookmark('p:tim', 't1', 'b1')
+  assert.deepEqual((await s.listBookmarks('p:tim', ['t1'])).map(b => b.id), ['b2'])
+  assert.deepEqual((await s.listBookmarks('d:other', ['t1'])).map(b => b.id), ['x'])
+})
+
 test('listResumes lists one person\'s rows, newest listening first, without cleared ones', async (t) => {
   const { bee } = await store(t)
   const s = new UserState(bee)

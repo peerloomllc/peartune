@@ -75,3 +75,18 @@ test('clientCall maps each entry to its client method; unknown -> null', () => {
   assert.equal(clientCall(client, { method: 'who.knows', params: {} }), null)
   assert.deepEqual(calls.map(c => c[0]), ['favSet', 'resumeSet', 'countBump'])
 })
+
+test('a bookmark add then remove keeps only the remove; different bookmarks stay apart', () => {
+  let q = []
+  q = coalesce(q, { method: 'bookmark.add', params: { id: 'b1', trackId: 't' } })
+  q = coalesce(q, { method: 'bookmark.add', params: { id: 'b2', trackId: 't' } })
+  q = coalesce(q, { method: 'bookmark.remove', params: { id: 'b1', trackId: 't' } })
+  assert.deepEqual(q.map(e => `${e.method}:${e.params.id}`), ['bookmark.add:b2', 'bookmark.remove:b1'])
+})
+
+test('a queued bookmark for a host too old for bookmarks is dropped, not retried forever', async () => {
+  const old = { bookmarkAdd: async () => { const e = new Error('no'); e.code = 'ENOMETHOD'; throw e } }
+  await clientCall(old, { method: 'bookmark.add', params: { id: 'b', trackId: 't' } })() // resolves: flush moves on
+  const offline = { bookmarkRemove: async () => { throw new Error('not connected') } }
+  await assert.rejects(clientCall(offline, { method: 'bookmark.remove', params: { id: 'b', trackId: 't' } })(), /not connected/)
+})
