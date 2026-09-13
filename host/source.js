@@ -37,6 +37,8 @@ const path = require('path')
 const { FolderAdapter } = require('./adapters/folder')
 const { SubsonicAdapter } = require('./adapters/subsonic')
 const { JellyfinAdapter } = require('./adapters/jellyfin')
+const { AudiobookshelfAdapter } = require('./adapters/audiobookshelf')
+const { CombinedAdapter } = require('./adapters/combined')
 
 const FILE = 'source.json'
 const VERSION = 2
@@ -69,6 +71,22 @@ const FIELDS = {
 // The secrets. Never sent to the browser, and preserved when the browser sends the
 // field back empty (which means "leave it alone", not "set it to the empty string").
 const SECRETS = ['password', 'apiKey']
+
+// A BOOKS source beside the music one (proposal 2026-09-13-audiobookshelf-books-source).
+// Stored as its own `books` key, not as one more music kind: it never becomes `active`, and
+// adding or removing it leaves the music source exactly as it was.
+const BOOK_KINDS = ['audiobookshelf']
+const BOOK_FIELDS = ['url', 'apiKey', 'username', 'password']
+
+function pickBooks (cfg) {
+  if (!cfg || typeof cfg !== 'object' || !BOOK_KINDS.includes(cfg.kind)) return null
+  const out = { kind: cfg.kind }
+  for (const f of BOOK_FIELDS) {
+    if (cfg[f] != null && cfg[f] !== '') out[f] = String(cfg[f]).trim()
+  }
+  if (out.url) out.url = out.url.replace(/\/+$/, '')
+  return out.url ? out : null
+}
 
 function pathOf (dataDir) {
   return path.join(dataDir, FILE)
@@ -115,7 +133,8 @@ function migrate (raw) {
       if (KINDS.includes(kind) && cfg) sources[kind] = pick(kind, cfg)
     }
     const active = canonKind(raw.active)
-    return { version: VERSION, active: KINDS.includes(active) ? active : null, sources }
+    const books = pickBooks(raw.books)
+    return { version: VERSION, active: KINDS.includes(active) ? active : null, sources, ...(books ? { books } : {}) }
   }
 
   const kind = canonKind(raw.kind)
@@ -204,6 +223,43 @@ class SourceStore {
     return out
   }
 
+  // --- the books source -------------------------------------------------------
+
+  books () {
+    return this.data.books ? { ...this.data.books } : null
+  }
+
+  // Same rule as withKeptSecrets: an empty secret field on a saved books source keeps the
+  // saved secret, so editing the URL does not wipe the API key.
+  booksWithKeptSecrets (cfg) {
+    const saved = this.data.books && this.data.books.kind === cfg?.kind ? this.data.books : {}
+    const out = { ...cfg }
+    for (const s of SECRETS) {
+      if (!out[s] && saved[s]) out[s] = saved[s]
+    }
+    return out
+  }
+
+  saveBooks (cfg) {
+    const books = pickBooks(cfg)
+    if (!books) throw new Error('an Audiobookshelf address is needed')
+    this.data.books = books
+    this._write()
+    return this.booksView()
+  }
+
+  removeBooks () {
+    delete this.data.books
+    this._write()
+  }
+
+  // For the dashboard: the address and who logs in, never the secrets themselves.
+  booksView () {
+    const b = this.data.books
+    if (!b) return null
+    return { kind: b.kind, url: b.url, username: b.username || '', hasApiKey: !!b.apiKey, hasPassword: !!b.password }
+  }
+
   // What the dashboard is allowed to see: every kind's config, with the passwords
   // replaced by the only fact about them the operator needs - whether one is set.
   // A dashboard session is not a licence to read back credentials.
@@ -254,4 +310,20 @@ function buildAdapter (cfg, { libraryId, musicDir, log }) {
   })
 }
 
-module.exports = { SourceStore, buildAdapter, KINDS, migrate }
+function buildBooksAdapter (cfg, { libraryId, log }) {
+  return new AudiobookshelfAdapter({
+    url: cfg.url,
+    apiKey: cfg.apiKey,
+    username: cfg.username,
+    password: cfg.password,
+    libraryId,
+    log
+  })
+}
+
+// The library the host serves: the music adapter alone, or combined with a books source.
+function composeAdapter (music, books, { log } = {}) {
+  return books ? new CombinedAdapter({ music, books, log }) : music
+}
+
+module.exports = { SourceStore, buildAdapter, buildBooksAdapter, composeAdapter, KINDS, migrate }

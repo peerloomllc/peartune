@@ -234,6 +234,8 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
           persons,
           requests,
           source: host.sourceView,
+          // The Audiobookshelf books source beside the music, or null (no secrets in it).
+          books: typeof host.booksStatus === 'function' ? await host.booksStatus().catch(() => null) : null,
           // Whether the ACTIVE source can enforce per-person folders (folder: yes,
           // proxies: no). The People page offers the control only when true.
           canNarrow: !!(host.adapter && host.adapter.canNarrow),
@@ -452,6 +454,27 @@ async function startDashboard ({ host, bind = '127.0.0.1', port = 8741, password
       // Subsonic on this Start9 or Umbrel), so the operator does not have to know its
       // internal address (jellyfin.embassy:8096 etc.). Returns the reachable ones for
       // the dashboard to pre-fill. Behind the dashboard password like everything here.
+      // --- the Audiobookshelf books source (proposal 2026-09-13) -----------------
+      if (req.method === 'POST' && url.pathname === '/api/books/test') {
+        try {
+          return json(res, 200, await host.testBooks(await readBody(req)))
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/books') {
+        try {
+          return json(res, 200, { ok: true, ...(await host.setBooks(await readBody(req))) })
+        } catch (e) {
+          return json(res, 400, { ok: false, error: e.message })
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/books/remove') {
+        return json(res, 200, await host.removeBooks())
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/source/detect') {
         try {
           return json(res, 200, { sources: await detectSources() })

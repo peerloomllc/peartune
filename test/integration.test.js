@@ -416,6 +416,39 @@ test('CONTINUE LISTENING: a device asks and gets ITS OWN last track, not the oth
   assert.equal((await b.client.resumeLatest()).trackId, 'trackB', "B's card is B's track")
 })
 
+test('an Audiobookshelf books source over the wire: added beside the music, narrowing limits music only, removable', async (t) => {
+  const { fakeAbs } = require('./fixtures/audiobookshelf/fake-server')
+  const abs = await fakeAbs(t)
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  await assert.rejects(host.setBooks({ url: abs.url, apiKey: 'wrong' }), /refused/)
+  assert.equal(host.sources.books(), null, 'a refused key saves nothing')
+
+  const added = await host.setBooks({ url: abs.url, apiKey: 'key-1' })
+  assert.equal(added.books, 2)
+  assert.equal((await host.booksStatus()).hasApiKey, true)
+  assert.equal('apiKey' in (await host.booksStatus()), false, 'the dashboard never gets the key')
+
+  const books = await a.client.list({ type: 'albums', kind: 'book', limit: 100 })
+  assert.deepEqual(books.items.map(x => x.name).sort(), ['The Book in Parts', 'The Short Book'])
+  const music = await a.client.list({ type: 'tracks', kind: 'music', limit: 100 })
+  assert.equal(music.items.length, 1, 'the music is still the one test track')
+  assert.equal((await a.client.ping()).caps.books, 1)
+
+  // Narrow the person to a folder with no music in it: no music, every book.
+  const person = (await host.grants.listPersons())[0]
+  await host.setPersonPaths(person.id, [{ root: host.musicAdapter.roots[0], rel: 'nothing-here' }])
+  await until(async () => (await b.client.list({ type: 'tracks', kind: 'music', limit: 100 })).items.length === 0)
+  assert.equal((await b.client.list({ type: 'albums', kind: 'book', limit: 100 })).items.length, 2)
+
+  await host.removeBooks()
+  assert.equal(host.sources.books(), null)
+  assert.equal((await a.client.list({ type: 'albums', kind: 'book', limit: 100 })).items.length, 0)
+})
+
 test('bookmarks over the wire: one person\'s devices share them', async (t) => {
   const { testnet, host } = await scaffold(t)
   const { a, b } = await twoDevicesOnePerson(testnet, host)

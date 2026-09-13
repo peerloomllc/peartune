@@ -194,11 +194,12 @@ export function SourcePanel ({ state, refresh, toast, embedded = false, onSaved 
           <button className={kind === 'jellyfin' ? 'on' : ''} onClick={() => pick('jellyfin')}>Jellyfin / Emby</button>
         </div>
 
-        {detected && detected.length > 0 &&
+        {/* Music servers only: an Audiobookshelf found here belongs to the Audiobooks panel. */}
+        {detected && detected.some(d => SERVERS[d.kind]) &&
           <div className='srcdetect'>
             <span className='subtle'>Found on this server — tap to use its address:</span>
             <div className='srcdetect-row'>
-              {detected.map((d, i) =>
+              {detected.filter(d => SERVERS[d.kind]).map((d, i) =>
                 <button key={i} className='detectchip' onClick={() => useDetected(d)} title={d.url}>
                   {d.server} · {d.name}
                 </button>)}

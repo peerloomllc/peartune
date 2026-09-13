@@ -37,7 +37,10 @@ const SERVERS = [
   { pkg: 'navidrome', port: 4533, probe: 'subsonic' },
   { pkg: 'gonic', port: 4747, probe: 'subsonic' },
   { pkg: 'airsonic-advanced', port: 4040, probe: 'subsonic' },
-  { pkg: 'nextcloud', port: 80, probe: 'subsonic' } // Nextcloud Music's Subsonic API
+  { pkg: 'nextcloud', port: 80, probe: 'subsonic' }, // Nextcloud Music's Subsonic API
+  // A BOOKS source, offered in the dashboard's Audiobooks section rather than as a music
+  // source (proposal 2026-09-13-audiobookshelf-books-source). 13378 is its default port.
+  { pkg: 'audiobookshelf', port: 13378, probe: 'audiobookshelf' }
 ]
 
 function urlsFor (s) {
@@ -52,6 +55,14 @@ async function probe (kind, base) {
       const m = r.body.match(/"ServerName"\s*:\s*"([^"]+)"/i)
       const prod = /Emby/i.test(r.body) && !/Jellyfin/i.test(r.body) ? 'Emby' : 'Jellyfin'
       return { kind: 'jellyfin', url: base, name: (m && m[1]) ? m[1] : prod, server: prod }
+    }
+  } else if (kind === 'audiobookshelf') {
+    // /status needs no login and names the app.
+    const r = await fetchText(base + '/status')
+    if (r && r.status === 200 && /"app"\s*:\s*"audiobookshelf"/i.test(r.body)) {
+      let host = base
+      try { host = new URL(base).host } catch {}
+      return { kind: 'audiobookshelf', url: base, name: host, server: 'Audiobookshelf' }
     }
   } else if (kind === 'subsonic') {
     const r = await fetchText(base + '/rest/ping.view?c=peartune&v=1.16.1&f=json')
