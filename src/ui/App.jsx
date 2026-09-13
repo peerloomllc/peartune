@@ -591,7 +591,9 @@ export default function App () {
         toast('This library changed its music source. Reloading.')
         setStack([])
         if (mergedRef.current?.merged) call('refreshMerged').catch(() => {})
-        else { loadAlbums(0); loadRecent() }
+        // The new source may have gained or lost books (a folder marked as Audiobooks), and
+        // nothing else re-reads the count on a single library (proposal 2026-09-13).
+        else { loadAlbums(0); loadRecent(); loadBookCount() }
       }),
       // A library reachable only through the relay is about to stream audio and has not been
       // asked yet (proposal 2026-07-29-relay-audio-consent). The worklet raises this ONCE per
