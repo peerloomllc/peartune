@@ -6,7 +6,7 @@ them in Books exactly like books from a marked folder: chapters, speed, resume a
 all work. Asked for by the user behind proposal 2026-09-13, who runs Audiobookshelf on a
 Raspberry Pi 5 behind a Cloudflare Tunnel.
 
-**Decided (Tim, 2026-09-14)** - a books ADD-ON beside the music source, not a fourth
+**Decided (Tim, 2026-09-13)** - a books ADD-ON beside the music source, not a fourth
 source that replaces music. The host combines two sources.
 
 **Tier** - T2. New persisted config (an Audiobookshelf URL and a secret), a new adapter,
