@@ -58,11 +58,16 @@ function hasFfmpeg () {
 // leave ffmpeg chewing CPU on a Pi. Kill it when the reader is done or breaks; killing
 // also unblocks the upstream pipe, whose own error is swallowed - a dead consumer is
 // the expected way these end.
-function spawnTranscode (input, { format = 'mp3', bitrate, timeOffsetMs, log = () => {} } = {}) {
+// headers: for an http(s) input that needs them (an Audiobookshelf file behind a Bearer
+// token). ffmpeg takes them as one CRLF-joined option that must come before -i.
+function spawnTranscode (input, { format = 'mp3', bitrate, timeOffsetMs, headers, log = () => {} } = {}) {
   const spec = TRANSCODE[format] || TRANSCODE.mp3
   const ss = Math.max(0, Number(timeOffsetMs) || 0)
   const piped = typeof input !== 'string'
   const args = ['-hide_banner', '-loglevel', 'error']
+  if (!piped && headers && Object.keys(headers).length) {
+    args.push('-headers', Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') + '\r\n')
+  }
   if (ss > 0 && !piped) args.push('-ss', String(ss / 1000))
   args.push('-i', piped ? 'pipe:0' : input)
   if (ss > 0 && piped) args.push('-ss', String(ss / 1000))
