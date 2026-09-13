@@ -416,6 +416,24 @@ test('CONTINUE LISTENING: a device asks and gets ITS OWN last track, not the oth
   assert.equal((await b.client.resumeLatest()).trackId, 'trackB', "B's card is B's track")
 })
 
+test('bookmarks over the wire: one person\'s devices share them', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { a, b } = await twoDevicesOnePerson(testnet, host)
+  t.after(() => a.client.close())
+  t.after(() => b.client.close())
+
+  const { items } = await a.client.list({ type: 'tracks' })
+  const trackId = items[0].id
+  const added = await a.client.bookmarkAdd({ id: 'bm1', trackId, positionMs: 42_000, note: 'the good bit' })
+  assert.equal(added.positionMs, 42_000)
+
+  const seen = await b.client.bookmarkList({ trackIds: [trackId] })
+  assert.deepEqual(seen.map(x => [x.id, x.positionMs, x.note]), [['bm1', 42_000, 'the good bit']])
+
+  await b.client.bookmarkRemove({ trackId, id: 'bm1' })
+  assert.deepEqual(await a.client.bookmarkList({ trackIds: [trackId] }), [])
+})
+
 test('resume.list returns the person\'s rows with their tracks, filtered by kind, hidden ids dropped', async (t) => {
   const { testnet, host } = await scaffold(t)
   const { a, b } = await twoDevicesOnePerson(testnet, host)

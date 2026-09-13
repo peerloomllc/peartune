@@ -150,6 +150,43 @@ class UserState {
     return node ? node.value : null
   }
 
+  // --- bookmarks (proposal 2026-09-13, slice 4) ------------------------------
+  //
+  // bookmark:{ownerId}:{trackId}:{id} -> { id, trackId, positionMs, note, createdAt, deviceKey }.
+  // The id is minted by the PHONE, so a bookmark made offline and removed before its add ever
+  // reached the host is still one well-defined row: the remove lands on the same key.
+
+  async addBookmark (ownerId, { id, trackId, positionMs, note = '', createdAt = 0 }, { deviceKey = null } = {}) {
+    const row = {
+      id: String(id),
+      trackId: String(trackId),
+      positionMs: Math.max(0, Math.round(Number(positionMs) || 0)),
+      note: String(note || '').slice(0, 500),
+      createdAt: Number(createdAt) || Date.now(),
+      deviceKey
+    }
+    await this.bee.put(`bookmark:${ownerId}:${row.trackId}:${row.id}`, row, { valueEncoding: 'json' })
+    return row
+  }
+
+  async removeBookmark (ownerId, trackId, id) {
+    await this.bee.del(`bookmark:${ownerId}:${trackId}:${id}`)
+  }
+
+  // This person's bookmarks in the given tracks, in position order per track. One range scan
+  // per track, so a book in 40 parts is 40 small scans rather than one scan of everything.
+  async listBookmarks (ownerId, trackIds = []) {
+    const out = []
+    for (const trackId of trackIds) {
+      const lo = `bookmark:${ownerId}:${trackId}:`
+      const hi = `bookmark:${ownerId}:${trackId};`
+      for await (const node of this.bee.createReadStream({ gte: lo, lt: hi }, { valueEncoding: 'json' })) {
+        if (node.value) out.push(node.value)
+      }
+    }
+    return out.sort((a, b) => (a.trackId === b.trackId ? a.positionMs - b.positionMs : 0))
+  }
+
   // --- play counts (milestone 3, phase 3) -----------------------------------
   //
   // count:{ownerId}:{trackId} -> { trackId, count, updatedAt }. Host-as-hub, so the

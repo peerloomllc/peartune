@@ -19,6 +19,8 @@ const { viewOf } = require('./visibility')
 // so a new mutating method cannot accidentally ship without a scope check.
 const MUTATING = new Set([
   'identity.set', 'identity.avatar', 'fav.set', 'resume.set', 'count.bump',
+  // Bookmarks in books (proposal 2026-09-13, slice 4).
+  'bookmark.add', 'bookmark.remove',
   'playlist.create', 'playlist.rename', 'playlist.delete', 'playlist.add', 'playlist.setTracks',
   'session.claim', 'session.set',
   // Filing a music request writes a host row, so a readonly grant is refused here
@@ -420,6 +422,33 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // ('book' or 'music') filters on the track's kind; hidden and deleted tracks are
       // dropped, like resume.latest. An old host answers ENOMETHOD and the app shows no
       // Continue listening row.
+      // --- bookmarks (proposal 2026-09-13, slice 4) ----------------------------
+      //
+      // Per person, like resume: ownerOf(grant) comes from the authenticated connection, so a
+      // device only ever reads and writes its own person's bookmarks. The list is filtered by
+      // what this person may see, so a narrowed grant does not learn a hidden track's position.
+      case 'bookmark.list': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        const ids = Array.isArray(params?.trackIds) ? params.trackIds.map(String).slice(0, 500) : []
+        const visible = await visibleIds(ids, 'track')
+        return send.res.send({ id, body: await state.listBookmarks(ownerOf(grant), visible) })
+      }
+
+      case 'bookmark.add': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.id || !params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'id and trackId required')
+        const row = await state.addBookmark(ownerOf(grant), params, { deviceKey: grant.deviceKey })
+        log('bookmark:add', { positionMs: row.positionMs })
+        return send.res.send({ id, body: row })
+      }
+
+      case 'bookmark.remove': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!params?.id || !params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'id and trackId required')
+        await state.removeBookmark(ownerOf(grant), String(params.trackId), String(params.id))
+        return send.res.send({ id, body: { ok: true } })
+      }
+
       case 'resume.list': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         const want = params?.kind

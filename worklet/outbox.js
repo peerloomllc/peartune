@@ -17,6 +17,8 @@ const OUTBOX_MAX = 500 // a backstop against unbounded growth if a device stays 
 function entryKey (e) {
   if (e.method === 'fav.set') return `fav:${e.params.kind}:${e.params.id}`
   if (e.method === 'resume.set') return `resume:${e.params.trackId}`
+  // An add then a remove of the same bookmark: only the last one needs to reach the host.
+  if (e.method === 'bookmark.add' || e.method === 'bookmark.remove') return `bookmark:${e.params.id}`
   return null // count.bump (and anything else) accumulates
 }
 
@@ -31,12 +33,21 @@ function coalesce (queue, entry) {
   return next.length > OUTBOX_MAX ? next.slice(next.length - OUTBOX_MAX) : next
 }
 
+function skipOldHost (e) {
+  if (e && e.code === 'ENOMETHOD') return null
+  throw e
+}
+
 // Map a queued entry to the client method that replays it. Returns null for an unknown
 // method (defensive: a queue written by a newer app version, then downgraded).
 function clientCall (client, entry) {
   if (entry.method === 'fav.set') return () => client.favSet(entry.params)
   if (entry.method === 'resume.set') return () => client.resumeSet(entry.params)
   if (entry.method === 'count.bump') return () => client.countBump(entry.params)
+  // A host too old for bookmarks answers ENOMETHOD, and always will: drop the entry rather
+  // than block every write queued behind it.
+  if (entry.method === 'bookmark.add') return () => client.bookmarkAdd(entry.params).catch(skipOldHost)
+  if (entry.method === 'bookmark.remove') return () => client.bookmarkRemove(entry.params).catch(skipOldHost)
   return null
 }
 

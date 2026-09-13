@@ -20,7 +20,7 @@ import {
   EnvelopeSimple, Code, Copy, PlugsConnected, ArrowsClockwise, Rows, SquaresFour,
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
-  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode, ListNumbers,
+  Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode, ListNumbers, BookmarkSimple,
   WarningCircle, LockKey, DeviceMobile, MusicNotesPlus, XCircle, CheckSquare, Square
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
@@ -237,6 +237,7 @@ export default function App () {
   const [bookRate, setBookRate] = useState(1)
   const [speedOpen, setSpeedOpen] = useState(false)
   const [chaptersOpen, setChaptersOpen] = useState(false)
+  const [bookmarksOpen, setBookmarksOpen] = useState(false)
   // Home Assistant speakers (proposal 2026-08-01). `speakers` is null until we have asked;
   // an empty list, an old host, a non-owner grant and an unconfigured host all collapse to
   // "no button", which is why only ONE flag drives the UI.
@@ -2378,7 +2379,8 @@ export default function App () {
   // advance (that would jump you mid-listen). So the seek lives here, in the user-tap
   // path, not in the status listener. Guarded to a real middle (>5s, <95%) so a nearly
   // finished track just starts fresh.
-  const playFrom = async (list, t) => {
+  // atMs starts at a chosen spot instead of the saved one (a bookmark, proposal 2026-09-13).
+  const playFrom = async (list, t, { atMs } = {}) => {
     haptic('light')
     const index = Math.max(0, list.findIndex(x => x.id === t.id))
     // Ask for the resume BEFORE the seek can be dropped: seeking straight after play()
@@ -2386,6 +2388,7 @@ export default function App () {
     // apply it on the track's first status (below), when the player can honour it.
     pendingResumeRef.current = null
     call('play', { queue: toQueue(list), index })
+    if (atMs != null) { pendingResumeRef.current = { trackId: t.id, positionMs: atMs }; return }
     try {
       const r = await call('resumeGet', { trackId: t.id })
       const pos = r?.positionMs || 0
@@ -2673,6 +2676,8 @@ export default function App () {
         return toast(`Nothing to play in ${item.name || 'that'}`, true)
       }
       if (action === 'queue') return enqueue(list)
+      // A book from the menu picks up where this person stopped, like its page's Play.
+      if (item.kind === 'book' && action === 'play') return playBookFromPage(item, list)
       return playAll(list, { shuffled: action === 'shuffle' })
     } catch (e) {
       haptic('warn')
@@ -2985,6 +2990,7 @@ export default function App () {
             bookRate={bookRate}
             onSpeed={() => { haptic('light'); setSpeedOpen(true) }}
             onChapters={() => { haptic('light'); setChaptersOpen(true) }}
+            onBookmarks={() => { haptic('light'); setBookmarksOpen(true) }}
             onShuffle={toggleShuffle} onRepeat={cycleRepeat} onStop={stopPlayback}
             onExpand={() => { haptic('light'); setExpanded(true) }}
             onCollapse={() => { haptic('light'); setExpanded(false) }}
@@ -3073,6 +3079,13 @@ export default function App () {
             call('setSettings', { bookRate: r }).catch(() => {})
             setSpeedOpen(false)
           }}
+        />
+      )}
+      {bookmarksOpen && now && (
+        <BookmarksSheet
+          track={now} positionMs={status?.positionMs || 0} toast={toast}
+          onClose={() => setBookmarksOpen(false)}
+          onJump={(b) => { call('seekTo', { ms: b.positionMs }).catch(() => {}); setBookmarksOpen(false) }}
         />
       )}
       {chaptersOpen && now?.chapters?.length > 0 && (
@@ -3392,8 +3405,8 @@ function ActionSheet ({ item, onClose, onAction, canPlaylist, canDownload, downl
             <Play size={17} weight='fill' /> Play
           </button>
           {/* One track cannot be shuffled. Offering it would be a button that
-              visibly does nothing. */}
-          {item.type !== 'track' && (
+              visibly does nothing. Nor can a book: its parts only make sense in order. */}
+          {item.type !== 'track' && item.kind !== 'book' && (
             <button className='wide' onClick={() => onAction('shuffle')}>
               <Shuffle size={17} weight='bold' /> Shuffle
             </button>
@@ -5083,7 +5096,7 @@ function Grid ({ albums, onOpen, onLong, d = DENSITY[2], artBase, favs, onFav })
         <Tile
           key={a.id} className='album'
           onPress={() => onOpen(a.id)}
-          onLongPress={onLong && (() => onLong({ type: 'album', id: a.id, name: a.name }))}
+          onLongPress={onLong && (() => onLong({ type: 'album', id: a.id, name: a.name, kind: a.kind }))}
           fav={favs?.album?.has(a.id)}
           onFav={onFav ? (() => onFav('album', a)) : null}
         >
@@ -5214,6 +5227,17 @@ function Cover ({ src, big, sm, artist }) {
 function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt, onLong, favs, onFav, pinned, pinning, onPin, onUnpin, onResumeBook }) {
   const [album, setAlbum] = useState(null)
   const [err, setErr] = useState(null)
+  // A book's bookmarks across all its parts (proposal 2026-09-13 slice 4). null until read.
+  const [marks, setMarks] = useState(null)
+  const bookIds = album?.kind === 'book' ? (album.tracks || []).map(t => t.id).join(',') : ''
+  useEffect(() => {
+    if (!bookIds) return undefined
+    let live = true
+    call('bookmarkList', { trackIds: bookIds.split(',') })
+      .then(r => { if (live) setMarks(r?.supported ? r.items || [] : null) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [bookIds])
 
   useEffect(() => {
     let live = true
@@ -5271,9 +5295,23 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
         // A book's Play picks up where this person stopped, in whichever part that was
         // (proposal 2026-09-13). Music plays from the top, as it always has.
         onPlay={() => (album.kind === 'book' && onResumeBook ? onResumeBook(album, tracks) : onPlayAll(tracks))}
-        onShuffle={() => onPlayAll(tracks, { shuffled: true })}
+        onShuffle={album.kind === 'book' ? null : () => onPlayAll(tracks, { shuffled: true })}
         onQueue={() => onQueue(tracks)}
       />
+
+      {marks?.length > 0 && (
+        <div className='bookmarks'>
+          <h3 className='favh'>Bookmarks</h3>
+          <BookmarkList
+            marks={marks} tracks={tracks}
+            onJump={(b) => { const part = tracks.find(t => t.id === b.trackId); if (part) onPlay(tracks, part, { atMs: b.positionMs }) }}
+            onRemove={(b) => {
+              setMarks(m => (m || []).filter(x => x.id !== b.id))
+              call('bookmarkRemove', { trackId: b.trackId, id: b.id }).catch(() => {})
+            }}
+          />
+        </div>
+      )}
 
       <ul className='tracks'>
         {tracks.map(t => (
@@ -5288,6 +5326,87 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
   )
 }
 
+// Bookmarks as rows: where (the part, for a book in parts, and the time), the note, and a
+// remove button. Tapping the row plays from that spot.
+function BookmarkList ({ marks, tracks = [], onJump, onRemove }) {
+  const multi = new Set(marks.map(b => b.trackId)).size > 1 || tracks.length > 1
+  return (
+    <ul className='bmlist'>
+      {marks.map(b => {
+        const part = tracks.find(t => t.id === b.trackId)
+        return (
+          <li key={b.id} className='bmrow'>
+            <button className='bmjump' onClick={() => onJump(b)}>
+              <BookmarkSimple size={16} weight='fill' />
+              <span className='bmmeta'>
+                <span className='bmwhen'>{[multi && part ? part.title : null, fmt(b.positionMs)].filter(Boolean).join(' · ')}</span>
+                {b.note && <span className='muted sm bmnote'>{b.note}</span>}
+              </span>
+            </button>
+            <button className='icon bmdel' onClick={() => onRemove(b)} aria-label='Remove bookmark'>
+              <Trash size={17} />
+            </button>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+// The player's bookmark sheet: save this spot with an optional note, and this track's saved
+// spots to jump to or remove. An older host has no bookmarks and says so rather than failing.
+function BookmarksSheet ({ track, positionMs, onClose, onJump, toast }) {
+  const [marks, setMarks] = useState(null)
+  const [supported, setSupported] = useState(true)
+  const [note, setNote] = useState('')
+  const [at] = useState(positionMs) // the spot as the sheet opened, not where playback drifts to
+  useEffect(() => {
+    let live = true
+    call('bookmarkList', { trackIds: [track.trackId] })
+      .then(r => { if (!live) return; setSupported(!!r?.supported); setMarks(r?.items || []) })
+      .catch(() => { if (live) setMarks([]) })
+    return () => { live = false }
+  }, [track.trackId])
+  const save = async () => {
+    haptic('success')
+    const row = await call('bookmarkAdd', { trackId: track.trackId, positionMs: at, note: note.trim() }).catch(() => null)
+    if (!row || row.unsupported) { setSupported(false); return }
+    setMarks(m => [...(m || []), row].sort((a, b) => a.positionMs - b.positionMs))
+    setNote('')
+    toast(`Bookmarked ${fmt(at)}`)
+  }
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet' onClick={e => e.stopPropagation()}>
+        <h1>Bookmarks</h1>
+        {supported
+          ? (
+            <>
+              <div className='bmadd'>
+                <input value={note} placeholder='Note (optional)' maxLength={500} onChange={e => setNote(e.target.value)} />
+                <button className='primary' onClick={save}>
+                  <BookmarkSimple size={16} weight='fill' /> Save {fmt(at)}
+                </button>
+              </div>
+              {marks == null
+                ? <p className='muted sm'>Loading…</p>
+                : marks.length
+                  ? <BookmarkList marks={marks} onJump={onJump} onRemove={(b) => {
+                      setMarks(m => m.filter(x => x.id !== b.id))
+                      call('bookmarkRemove', { trackId: b.trackId, id: b.id }).catch(() => {})
+                    }} />
+                  : <p className='muted sm'>No bookmarks in this book yet.</p>}
+            </>
+            )
+          : <p className='muted sm'>This library is too old for bookmarks. They arrive when its PearTune host is updated.</p>}
+        <div className='acts'>
+          <button className='wide' onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // The obvious way to play a record: a button that says Play. Long-press on a tile
 // is the shortcut for people who know it is there; this is for everyone else.
 function Actions ({ onPlay, onShuffle, onQueue }) {
@@ -5296,9 +5415,12 @@ function Actions ({ onPlay, onShuffle, onQueue }) {
       <button className='primary' onClick={onPlay}>
         <Play size={16} weight='fill' /> Play
       </button>
-      <button onClick={onShuffle}>
-        <Shuffle size={16} weight='bold' /> Shuffle
-      </button>
+      {/* No shuffle for a book: its parts only make sense in order (Tim, 2026-09-13). */}
+      {onShuffle && (
+        <button onClick={onShuffle}>
+          <Shuffle size={16} weight='bold' /> Shuffle
+        </button>
+      )}
       <button className='icon sq' onClick={onQueue} aria-label='Add to queue'>
         <ListPlus size={18} weight='bold' />
       </button>
@@ -5750,7 +5872,7 @@ function Player ({
   now, status, expanded, skin, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
   onViewArt, onQueue, onStop, queueItems, queueIndex, onJump, sleep, onSleep,
   canCast, castingTo, castPaused, onCastToggle, onSpeakers, fav, onFav,
-  bookRate = 1, onSpeed, onChapters
+  bookRate = 1, onSpeed, onChapters, onBookmarks
 }) {
   // While casting, play/pause drives the SPEAKER and the icon reflects the SPEAKER. The
   // phone is muted and held paused throughout, so `status.playing` is false the whole
@@ -5955,7 +6077,7 @@ function Player ({
         </div>
         {chapter && <div className='chapterline muted sm'>{chapter.title}</div>}
 
-        <div className='transport sub-transport'>
+        <div className={'transport sub-transport' + (book ? ' booksub' : '')}>
           <button className='icon' onClick={() => call('seekBy', { seconds: -back })} aria-label={`Back ${back} seconds`} disabled={!!castingTo}>
             <ArrowCounterClockwise size={15} /> {back}
           </button>
@@ -5982,6 +6104,12 @@ function Player ({
             >
               <SpeakerHigh size={16} weight={castingTo ? 'fill' : 'regular'} />
             </button>}
+          {/* A book's bookmarks (proposal 2026-09-13 slice 4): save this spot, or jump to one. */}
+          {book && onBookmarks && (
+            <button className='icon' onClick={onBookmarks} aria-label='Bookmarks'>
+              <BookmarkSimple size={16} weight='regular' />
+            </button>
+          )}
           {/* Last, so the back and forward skips sit at the two ends of the row with
               sleep and speaker between them. */}
           <button className='icon' onClick={() => call('seekBy', { seconds: fwd })} aria-label={`Forward ${fwd} seconds`} disabled={!!castingTo}>

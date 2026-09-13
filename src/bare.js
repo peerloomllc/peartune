@@ -3588,6 +3588,71 @@ const methods = {
     }
   },
 
+  // --- bookmarks (proposal 2026-09-13, slice 4) --------------------------------
+  //
+  // A saved spot in a book, per person, on the track's own host. The id is minted HERE so an
+  // offline add and a later remove name the same row; both go through the outbox like resume.
+
+  async bookmarkAdd ({ trackId, positionMs, note = '' }) {
+    if (demoMode() || !trackId) return null
+    const row = {
+      id: b4a.toString(hcrypto.randomBytes(8), 'hex'),
+      trackId,
+      positionMs: Math.max(0, Math.round(Number(positionMs) || 0)),
+      note: String(note || '').slice(0, 500),
+      createdAt: Date.now()
+    }
+    const lib = mergedMode() ? favHost('track', trackId) : null
+    const c = mergedMode() ? (lib && clientFor(lib)) : (defaultConnected() ? mustClient() : null)
+    const queue = () => (mergedMode() ? (lib && enqueueFor(lib, 'bookmark.add', row)) : enqueue('bookmark.add', row))
+    if (c) {
+      try { await c.bookmarkAdd(row) } catch (e) {
+        if (e?.code === 'ENOMETHOD') return { ...row, unsupported: true }
+        queue()
+      }
+    } else queue()
+    return row
+  },
+
+  async bookmarkRemove ({ trackId, id }) {
+    if (demoMode() || !trackId || !id) return { ok: true }
+    const lib = mergedMode() ? favHost('track', trackId) : null
+    const c = mergedMode() ? (lib && clientFor(lib)) : (defaultConnected() ? mustClient() : null)
+    const queue = () => (mergedMode() ? (lib && enqueueFor(lib, 'bookmark.remove', { trackId, id })) : enqueue('bookmark.remove', { trackId, id }))
+    if (c) {
+      try { await c.bookmarkRemove({ trackId, id }) } catch (e) { if (e?.code !== 'ENOMETHOD') queue() }
+    } else queue()
+    return { ok: true }
+  },
+
+  // Bookmarks in these tracks, from each track's host. { supported: false } when no host that
+  // was asked knows bookmarks, so the UI can hide the button instead of offering a dead one.
+  async bookmarkList ({ trackIds = [] } = {}) {
+    if (demoMode()) return { supported: false, items: [] }
+    const groups = new Map()
+    for (const t of trackIds) {
+      const lib = mergedMode() ? favHost('track', t) : '_default'
+      if (!lib) continue
+      if (!groups.has(lib)) groups.set(lib, [])
+      groups.get(lib).push(t)
+    }
+    let supported = false
+    const items = []
+    for (const [lib, ids] of groups) {
+      try {
+        if (lib !== '_default' && !clientFor(lib)) continue
+        if (lib === '_default') await ensureConnected()
+        const c = lib === '_default' ? mustClient() : clientFor(lib)
+        const rows = await c.bookmarkList({ trackIds: ids })
+        supported = true
+        items.push(...(rows || []))
+      } catch (e) {
+        if (e?.code !== 'ENOMETHOD') supported = true // reachable-but-failed is not "unsupported"
+      }
+    }
+    return { supported, items }
+  },
+
   // --- play counts (milestone 3, phase 3) -------------------------------------
   //
   // Count a play (fire-and-forget); the app calls this once a track has been listened

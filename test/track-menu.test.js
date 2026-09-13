@@ -87,6 +87,7 @@ test('the artist and genre screens carry a Download of their own', () => {
 test('the action sheet still handles a single track', () => {
   // What the rows above are wired TO. One track cannot be shuffled, so that button is hidden
   // rather than offered as a no-op - if that guard goes, the menu grows a dead button.
-  assert.match(SRC, /item\.type !== 'track' && \(/, 'the shuffle guard for a single track is gone')
+  // (A book is excluded from shuffle by the same guard since 2026-09-13.)
+  assert.match(SRC, /item\.type !== 'track' && (item\.kind !== 'book' && )?\(/, 'the shuffle guard for a single track is gone')
   assert.match(SRC, /onLong\(\{ type: 'track', track: t, name: t\.title \}\)/, 'Row no longer raises a track menu')
 })
