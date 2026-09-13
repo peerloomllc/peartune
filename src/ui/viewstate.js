@@ -25,7 +25,8 @@
 // older or newer build of this app, and an unknown `tab` would render nothing at all -
 // a blank screen with a navbar, which reads as a broken app rather than a stale setting.
 export const VIEW_TABS = ['library', 'you', 'queue', 'settings', 'about']
-export const VIEW_BROWSE = ['albums', 'artists', 'genres', 'songs']
+// 'songs' is gone: Books took its place (proposal 2026-09-13), and a saved 'songs' falls back to Albums.
+export const VIEW_BROWSE = ['albums', 'artists', 'genres', 'books']
 export const VIEW_SCREENS = ['album', 'artist', 'genre', 'playlist', 'download']
 export const YOU_VIEWS = ['favorites', 'top', 'playlists', 'downloads', 'requests', 'manage']
 

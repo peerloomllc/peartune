@@ -89,13 +89,18 @@ export default function App () {
   const [recent, setRecent] = useState(null) // the Recently Added shelf (newest albums)
   const [artists, setArtists] = useState(null)
   const [genres, setGenres] = useState(null)
-  const [songs, setSongs] = useState(null)
-  const [songCursor, setSongCursor] = useState(0)
+  // The Books view (proposal 2026-09-13), which took the Songs view's place: the albums that are
+  // books, paged like the album grid. bookCount is how many there are across what this phone can
+  // reach; 0 hides the Books segment altogether. bookResumes is every book in progress.
+  const [books, setBooks] = useState(null)
+  const [bookCursor, setBookCursor] = useState(0)
+  const [bookCount, setBookCount] = useState(0)
+  const [bookResumes, setBookResumes] = useState([])
   const [density, setDensity] = useState('2')
-  // Per-view sort choice: { albums:{key,order}, artists:{key,order}, songs:{key,order} }.
+  // Per-view sort choice: { albums:{key,order}, artists:{key,order}, books:{key,order} }.
   // Absent = the source's default (shelf) order. Which keys are OFFERED comes from the
   // host's advertised capability (state.sorts), so a source that cannot sort a view
-  // (Subsonic songs) shows no control at all.
+  // shows no sort control for it.
   const [sort, setSort] = useState({})
   const [display, setDisplay] = useState(false) // the layout + sort bottom sheet
   const [ident, setIdent] = useState(null) // device name + user claim
@@ -374,7 +379,7 @@ export default function App () {
         if (s.merged?.merged && showAlbums) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
         if (s.connected) {
           if (showAlbums) loadAlbums(0, sortParamsFor(savedSort, 'albums'))
-          loadRecent(); loadSource(); loadFavs(); loadContinue(); loadHandoff(); loadPlaylists(); loadSpeakers()
+          loadRecent(); loadSource(); loadFavs(); loadContinue(); loadBookCount(); loadHandoff(); loadPlaylists(); loadSpeakers()
         }
         // Paired but not connected YET: the background connect is in flight, so show
         // a spinner rather than a verdict until it lands or fails.
@@ -518,6 +523,7 @@ export default function App () {
         loadSource()
         loadFavs()
         loadContinue()
+        loadBookCount()
         loadHandoff(); setTimeout(loadHandoff, 2000) // retry: the active device may push its queue just after we connect
         // Bring back a saved queue the mount-time restore could not: an uncached queue needs
         // the link to resolve its URLs, and a cold start races the dial. The shell ignores
@@ -629,7 +635,7 @@ export default function App () {
         call('setLibraryFilter', { libraryId: '_all' }).catch(() => {})
         setAlbums([]); setArtists(null); setAlbumsLoaded(false); setStack([]); setResults(null); setQuery(''); setError(null)
         if (liveRef.current?.connected) {
-          loadAlbums(0); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadPlaylists(true); loadSpeakers()
+          loadAlbums(0); loadRecent(); loadSource(); loadFavs(); loadContinue(); loadBookCount(); loadPlaylists(true); loadSpeakers()
         }
         // Swap the play queue to the new library: if a track is playing it drains first, then
         // the new library's queue takes over; if nothing is playing it swaps straight over
@@ -833,7 +839,7 @@ export default function App () {
   const albumsRef = useRef([]); albumsRef.current = albums
   const artistsRef = useRef(null); artistsRef.current = artists
   const genresRef = useRef(null); genresRef.current = genres
-  const songsRef = useRef(null); songsRef.current = songs
+  const booksRef = useRef(null); booksRef.current = books
 
   // Reload whichever browse view is showing, from the current source filter (used after a merged
   // rebuild, and by a chip tap).
@@ -863,10 +869,12 @@ export default function App () {
     } else if (v === 'genres') {
       if (!genresRef.current) setGenres(null)
       track(loadGenres())
-    } else if (v === 'songs') {
-      if (!songsRef.current) setSongs(null)
-      setSongCursor(0); track(loadSongs(0))
+    } else if (v === 'books') {
+      if (!booksRef.current) setBooks(null)
+      setBookCursor(0); track(loadBooks(0)); loadBookResumes()
     }
+    // Whether the Books segment exists at all can change with the library you picked.
+    loadBookCount()
     // The shelf sits INSIDE the albums view and is scoped to the same library, so it has to move
     // with the filter too. Leaving it out is what let a one-library grid sit under a whole-blend
     // shelf; it is cheap (one call, 12 rows) so it reloads on any view change, not just albums.
@@ -941,8 +949,13 @@ export default function App () {
       const pos = s.positionMs || 0
       const dur = s.durationMs || t.durationMs || 0
       if (pos < 5000) return // the first few seconds are not a resume point
-      const clear = dur && pos > dur * 0.95
+      const book = t.kind === 'book'
+      // A song is done at 95%. A book is not: 5% of a 10-hour book is 30 minutes of it, so a
+      // book's place is kept until its last 30 seconds (proposal 2026-09-13).
+      const clear = dur && (book ? pos > dur - 30000 : pos > dur * 0.95)
       call('resumeSave', { trackId: t.trackId, positionMs: clear ? 0 : pos, durationMs: dur }).catch(() => {})
+      // A book is not a play to count: it would fill Most played after four minutes of it.
+      if (book) return
 
       // Count a PLAY once it has been listened to past the scrobble threshold (half the
       // track, or 4 minutes, whichever comes first) - and only once per play.
@@ -1312,17 +1325,17 @@ export default function App () {
     // Order does not matter here - see the note on pendingExpanded. The track may already have
     // arrived, or may be seconds away; whichever half lands second opens the player.
     if (v.expanded) setPendingExpanded(true)
-    // Artists / genres / songs each load their own list. Albums is the default and
+    // Artists / genres / books each load their own list. Albums is the default and
     // init() loads it, so it is the one view this must NOT ask for twice.
     //
     // A launch with nothing to read from (no connection, no cached blend) DELIBERATELY
     // drops back to Albums rather than restoring the view: setting `browse` without a
-    // loader would leave an empty Songs list that only a manual tap could fill, since
+    // loader would leave an empty Books grid that only a manual tap could fill, since
     // the single-host reconnect path reloads albums and not the current view.
     if (v.browse !== 'albums' && (s.connected || s.merged?.merged)) {
       if (v.browse === 'artists') showArtists()
       else if (v.browse === 'genres') showGenres()
-      else showSongs()
+      else if (v.browse === 'books') showBooks()
     }
     restoreScroll(v.scroll)
     return v
@@ -1364,10 +1377,10 @@ export default function App () {
 
   // --- data ------------------------------------------------------------------
 
-  // Which host capability key backs each browse view (the Songs view is 'tracks'
-  // server-side), and the {sort,order} params for a view's active choice - empty
-  // when none, so a call falls through to the source's default order.
-  const SORT_TYPE = { genres: 'genres', albums: 'albums', artists: 'artists', songs: 'tracks' }
+  // Which host capability key backs each browse view (Books are albums server-side), and
+  // the {sort,order} params for a view's active choice - empty when none, so a call falls
+  // through to the source's default order.
+  const SORT_TYPE = { genres: 'genres', albums: 'albums', artists: 'artists', books: 'albums' }
   const sortParams = (view) => sortParamsFor(sortRef.current, view)
 
   // Change (or clear) the sort for a view and reload it from the top. The new params
@@ -1386,7 +1399,7 @@ export default function App () {
     if (view === 'albums') { setAlbums([]); setCursor(0); setAlbumsLoaded(false); loadAlbums(0, params) }
     else if (view === 'artists') { setArtists(null); loadArtists(params) }
     else if (view === 'genres') { setGenres(null); loadGenres(params) }
-    else if (view === 'songs') { setSongs(null); setSongCursor(0); loadSongs(0, params) }
+    else if (view === 'books') { setBooks(null); setBookCursor(0); loadBooks(0, params) }
   }
 
   // Returns whether the page landed. Only the infinite-scroll path reads that (see
@@ -1394,7 +1407,9 @@ export default function App () {
   // has already fired will not fire again on its own.
   async function loadAlbums (from, params) {
     try {
-      const page = await call('albums', { cursor: from, limit: 60, libraryId: filterRef.current, ...(params ?? sortParams('albums')) })
+      // kind 'music' keeps books out of the album grid (proposal 2026-09-13). An older host
+      // ignores it, and has no books to keep out.
+      const page = await call('albums', { cursor: from, limit: 60, libraryId: filterRef.current, kind: 'music', ...(params ?? sortParams('albums')) })
       setAlbums(a => (from ? [...a, ...page.items] : page.items))
       setCursor(page.nextCursor)
       setAlbumsLoaded(true)
@@ -1450,7 +1465,7 @@ export default function App () {
   // a single call, so unlike albums there is nothing to page.
   async function loadArtists (params) {
     try {
-      const page = await call('artists', { libraryId: filterRef.current, ...(params ?? sortParams('artists')) })
+      const page = await call('artists', { libraryId: filterRef.current, kind: 'music', ...(params ?? sortParams('artists')) })
       setArtists(page.items)
     } catch (e) {
       setError(e.message)
@@ -1473,8 +1488,8 @@ export default function App () {
     // the shelf used to ignore the filter and show the whole blend under a one-library grid.
     try {
       const page = mergedRef.current?.merged
-        ? await call('recentMerged', { limit: 12, libraryId: filterRef.current })
-        : await call('albums', { sort: 'added', order: 'desc', limit: 12 })
+        ? await call('recentMerged', { limit: 12, libraryId: filterRef.current, kind: 'music' })
+        : await call('albums', { sort: 'added', order: 'desc', limit: 12, kind: 'music' })
       setRecent(recentEnough(page.items || []))
     } catch { setRecent([]) }
   }
@@ -1482,7 +1497,7 @@ export default function App () {
   // Genres load once, like artists - the host returns the whole set in one call.
   async function loadGenres (params) {
     try {
-      const page = await call('genres', { libraryId: filterRef.current, ...(params ?? sortParams('genres')) })
+      const page = await call('genres', { libraryId: filterRef.current, kind: 'music', ...(params ?? sortParams('genres')) })
       setGenres(page.items)
     } catch (e) {
       setError(e.message)
@@ -1495,26 +1510,79 @@ export default function App () {
     await loadGenres()
   }
 
-  // The Songs view. It exists because Navidrome answers an empty-query search3
-  // with everything, PAGED - so this is a real list, not the album walk the old
-  // code did (which could only ever reach the first page of albums, and is why
-  // this view was dropped the first time round).
-  async function loadSongs (from, params) {
+  // The Books view (proposal 2026-09-13). It replaced Songs (Tim, 2026-09-13): a track is also
+  // reachable from search, an album or a genre, and the four-way control had no room for a fifth.
+  async function loadBooks (from, params) {
     try {
-      const page = await call('tracks', { cursor: from, limit: 100, libraryId: filterRef.current, ...(params ?? sortParams('songs')) })
-      setSongs(s => (from ? [...(s || []), ...page.items] : page.items))
-      setSongCursor(page.nextCursor)
+      const page = await call('albums', { cursor: from, limit: 60, libraryId: filterRef.current, kind: 'book', ...(params ?? sortParams('books')) })
+      setBooks(b => (from ? [...(b || []), ...page.items] : page.items))
+      setBookCursor(page.nextCursor)
+      return true
     } catch (e) {
       setError(e.message)
-      setSongs(s => s || [])
+      setBooks(b => b || [])
+      return false
     }
   }
 
-  async function showSongs (force) {
-    setBrowse('songs')
-    if (songs && !force) return
-    setSongs(null)
-    await loadSongs(0)
+  async function showBooks (force) {
+    setBrowse('books')
+    loadBookResumes()
+    if (booksRef.current && !force) return
+    setBooks(null)
+    await loadBooks(0)
+  }
+
+  // Every book this person is partway through, one entry per book: the part listened to most
+  // recently. The worklet sorts newest first, so the first row seen for an album wins.
+  async function loadBookResumes () {
+    try {
+      const rows = await call('resumeList', { kind: 'book', limit: 50 })
+      const seen = new Set()
+      const out = []
+      for (const r of rows || []) {
+        const key = r.track?.albumId || r.trackId
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push(r)
+      }
+      setBookResumes(out)
+    } catch { setBookResumes([]) }
+  }
+
+  // Whether to offer Books at all. Leaving the view if its last book went away (a library
+  // removed, a folder unmarked) - an empty segment that cannot be reached again is worse.
+  async function loadBookCount () {
+    try {
+      const r = await call('bookCount', { libraryId: filterRef.current })
+      const n = Number(r?.books) || 0
+      setBookCount(n)
+      if (!n && browseRef.current === 'books') setBrowse('albums')
+    } catch {}
+  }
+
+  // A book resumes where this person stopped. A book in parts queues the whole book, so it
+  // runs on into the next part; playFrom applies the saved position of the part it starts on.
+  // Play on a book's own page: the part with this person's newest saved place, or the first part.
+  async function playBookFromPage (album, parts) {
+    let start = parts[0]
+    try {
+      const rows = await call('resumeList', { kind: 'book', limit: 200 })
+      const mine = (rows || []).find(r => parts.some(p => p.id === r.trackId))
+      if (mine) start = parts.find(p => p.id === mine.trackId)
+    } catch {}
+    if (start) playFrom(parts, start)
+  }
+
+  async function resumeBook (r) {
+    const t = r.track
+    if (!t) return
+    try {
+      const a = t.albumId ? await call('album', { id: t.albumId, libraryId: t.libraryId }) : null
+      const parts = (a?.tracks || []).map(x => ({ ...x, art: x.art ?? a.art, artFull: a.artFull }))
+      if (parts.some(x => x.id === t.id)) return playFrom(parts, parts.find(x => x.id === t.id))
+    } catch {}
+    playFrom([t], t)
   }
 
   // --- favorites (host-as-hub, milestone 3) -----------------------------------
@@ -1973,7 +2041,7 @@ export default function App () {
     }
     loadSource() // the operator may have switched the source since we last looked
     if (browse === 'artists') return showArtists(true)
-    if (browse === 'songs') return showSongs(true)
+    if (browse === 'books') { loadBookCount(); return showBooks(true) }
     setAlbumsLoaded(false)
     setAlbums([])
     await loadAlbums(0)
@@ -1981,12 +2049,12 @@ export default function App () {
 
   async function runSearch (q) {
     setQuery(q)
-    // SONGS and GENRES filter what is already loaded, client-side (instant, works offline) - so no
+    // BOOKS and GENRES filter what is already loaded, client-side (instant, works offline) - so no
     // server round-trip there (the server search returns no genres anyway). Albums/Artists still
-    // search the whole library server-side. The Library render does the actual filtering off `query`.
-    if (!q.trim() || browse === 'songs' || browse === 'genres') return setResults(null)
+    // search the whole library server-side, music only. The Library render does the filtering off `query`.
+    if (!q.trim() || browse === 'books' || browse === 'genres') return setResults(null)
     try {
-      setResults(await call('search', { q, libraryId: filterRef.current }))
+      setResults(await call('search', { q, libraryId: filterRef.current, kind: 'music' }))
     } catch (e) {
       toast(e.message, true)
     }
@@ -2287,7 +2355,9 @@ export default function App () {
     // Carried so the player's own art viewer opens the big image rather than a
     // stretched thumbnail. The lock screen still gets the small one.
     artFull: x.artFull ?? null,
-    durationMs: x.durationMs
+    durationMs: x.durationMs,
+    // Books resume and count differently (proposal 2026-09-13); play:started hands it back.
+    kind: x.kind ?? null
   }))
 
   // Tapping a track queues the whole list behind it - which is what people mean
@@ -2310,7 +2380,8 @@ export default function App () {
       const r = await call('resumeGet', { trackId: t.id })
       const pos = r?.positionMs || 0
       const dur = r?.durationMs || t.durationMs || 0
-      if (pos > 5000 && (!dur || pos < dur * 0.95)) pendingResumeRef.current = { trackId: t.id, positionMs: pos }
+      const end = t.kind === 'book' ? dur - 30000 : dur * 0.95
+      if (pos > 5000 && (!dur || pos < end)) pendingResumeRef.current = { trackId: t.id, positionMs: pos }
     } catch {}
   }
 
@@ -2729,6 +2800,7 @@ export default function App () {
       <AlbumScreen
         id={top.id} now={now} error={error} onBack={pop} onPlay={playFrom}
         onPlayAll={playAll} onQueue={enqueue} onViewArt={viewArt} onLong={setMenu}
+        onResumeBook={playBookFromPage}
         favs={favs} onFav={favSupported ? onFav : null}
         pinned={pinned.has(top.id)} pinning={pinning[top.id]}
         // No Download in demo mode (a null onPin hides the button). Downloading means "pull
@@ -2847,9 +2919,9 @@ export default function App () {
   } else {
     screen = (
       <Library
-        state={state} albums={albums} artists={artists} genres={genres} songs={songs} recent={recent} showRecent={showRecent}
+        state={state} albums={albums} artists={artists} genres={genres} books={books} recent={recent} showRecent={showRecent}
         merged={merged} filter={filter} onFilter={pickFilter} onAddLibrary={openAddLibrary}
-        cursor={cursor} songCursor={songCursor} density={density}
+        cursor={cursor} bookCursor={bookCursor} bookCount={bookCount} bookResumes={bookResumes} onResumeBook={resumeBook} density={density}
         browse={browse} query={query} results={results} now={now} error={error}
         onDismissError={() => setError(null)}
         albumsLoaded={albumsLoaded} reconnecting={reconnecting} firstConnect={firstConnect} updating={busy}
@@ -2863,12 +2935,12 @@ export default function App () {
         onBrowse={(b) => {
           haptic('light')
           // Reset the search box when changing views: it means "search everything" on
-          // Albums/Artists but "filter the loaded list" on Songs, so carrying a query
+          // Albums/Artists but "filter the loaded list" on Books, so carrying a query
           // across that boundary would show a stale, wrong-shaped result.
           setQuery(''); setResults(null)
           if (b === 'genres') return showGenres()
           if (b === 'artists') return showArtists()
-          if (b === 'songs') return showSongs()
+          if (b === 'books') return showBooks()
           return setBrowse('albums')
         }}
         onDisplay={() => { haptic('light'); setDisplay(true) }}
@@ -2877,7 +2949,7 @@ export default function App () {
         onRefresh={refresh}
         onMore={moreAlbums}
         moreFailed={moreFailed}
-        onMoreSongs={() => loadSongs(songCursor)}
+        onMoreBooks={() => { if (bookCursor != null) loadBooks(bookCursor) }}
         onOpenAlbum={(id) => push({ type: 'album', id })}
         onOpenArtist={(a) => push({ type: 'artist', id: a.id, name: a.name })}
         onOpenGenre={(g) => push({ type: 'genre', id: g.id, name: g.name })}
@@ -3497,20 +3569,20 @@ const SORT_LABEL = {
 
 // The Display sheet: layout (grid density) and sort, in one bottom sheet opened by the
 // single Display icon in the library header. Each section only appears when it applies
-// - Layout on the grid views, Sort when the active source advertises keys for the view
-// (state.sorts) - so a Subsonic Songs list, which has neither, never opens this (its
-// button is disabled). Direction is a toggle shown only for a reversible source once a
-// key is chosen.
+// - Layout always (every Library view is a grid now that Songs is gone), Sort when the
+// active source advertises keys for the view (state.sorts). Direction is a toggle shown
+// only for a reversible source once a key is chosen.
 const LAYOUT_OPTS = [
   { value: 'list', label: 'List', desc: 'One per row, with the full title' },
   { value: '2', label: 'Grid, 2 per row', desc: 'Larger covers' },
   { value: '3', label: 'Grid, 3 per row', desc: 'More on screen' }
 ]
 function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClose }) {
-  const capType = browse === 'songs' ? 'tracks' : browse
+  // Books are albums to the host, so they sort by what albums sort by.
+  const capType = browse === 'books' ? 'albums' : browse
   const cap = sorts?.[capType]
   const keys = cap?.keys || []
-  const hasLayout = browse !== 'songs'
+  const hasLayout = true
   const cur = sort?.[browse] || null
   const order = cur?.order || 'asc'
   const sortOpts = [
@@ -3552,28 +3624,27 @@ function DisplaySheet ({ browse, density, onDensity, sorts, sort, onSort, onClos
 }
 
 function Library ({
-  state, albums, artists, genres, songs, recent, showRecent, merged, filter, onFilter, onAddLibrary, cursor, songCursor, density, updating,
+  state, albums, artists, genres, books, recent, showRecent, merged, filter, onFilter, onAddLibrary, cursor, bookCursor, bookCount, bookResumes, onResumeBook, density, updating,
   moreFailed,
   browse, query, results, now, error, onDismissError, albumsLoaded, reconnecting, firstConnect, revoked,
   favs, onFav, cont, onContinue, handoff, playing, onPlayHere,
-  onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreSongs,
+  onBrowse, onDisplay, onSearch, onReconnect, onRefresh, onMore, onMoreBooks,
   onOpenAlbum, onOpenArtist, onOpenGenre, onPlay, onLong, onRequest
 }) {
   // Bind the generic onFav(kind, item) to per-kind heart handlers for the leaves.
   const favTrack = onFav ? (t => onFav('track', t)) : null
-  // Server search shows its own results view - but NOT on Songs or Genres, which filter the
-  // already-loaded list in place (see songFilter/genreFilter below and runSearch). The server
+  // Server search shows its own results view - but NOT on Books or Genres, which filter the
+  // already-loaded list in place (see bookFilter/genreFilter below and runSearch). The server
   // search only returns artists/albums/tracks (never genres), so on the Genres view a query has
   // to filter the loaded genres or it does nothing at all (Tim, 2026-07-24).
-  const searching = results && query.trim() && browse !== 'songs' && browse !== 'genres'
-  // The Songs client-side filter: match title / artist / album, case-insensitive.
-  const songFilter = browse === 'songs' ? query.trim().toLowerCase() : ''
-  const shownSongs = songFilter
-    ? (songs || []).filter(t =>
-        `${t.title || ''} ${t.artist || ''} ${t.album || ''}`.toLowerCase().includes(songFilter))
-    : songs
+  const searching = results && query.trim() && browse !== 'books' && browse !== 'genres'
+  // The Books client-side filter: match the book's title or author, case-insensitive.
+  const bookFilter = browse === 'books' ? query.trim().toLowerCase() : ''
+  const shownBooks = bookFilter
+    ? (books || []).filter(b => `${b.name || ''} ${b.artist || ''}`.toLowerCase().includes(bookFilter))
+    : books
   // The Genres client-side filter: match the genre name. Genres load in full (not paged), so this
-  // reaches every genre - no "load more to filter" caveat like Songs has.
+  // reaches every genre - no "load more to filter" caveat like Books has.
   const genreFilter = browse === 'genres' ? query.trim().toLowerCase() : ''
   const shownGenres = genreFilter
     ? (genres || []).filter(g => (g.name || '').toLowerCase().includes(genreFilter))
@@ -3598,8 +3669,6 @@ function Library ({
   const connecting = (!!reconnecting || !!firstConnect) && !reachable
   // The Display sheet offers layout (grid views only) and/or sort (whatever the
   // source can do). Disable its button when the active view has neither.
-  const sortCap = state.sorts?.[browse === 'songs' ? 'tracks' : browse]
-  const displayHasOptions = browse !== 'songs' || (sortCap?.keys?.length > 0)
   // The Recently Added shelf only makes sense when the source can order by date added
   // (older hosts would hand back alphabetical albums under a "recently added" title). In merged mode
   // the shelf comes from recentMerged (each host's own 'added' order, interleaved), so show it there
@@ -3815,11 +3884,11 @@ function Library ({
           )}
         </div>
         <p className='muted sm'>
-          {songFilter
-            ? `${shownSongs.length} of ${songs ? songs.length : 0} loaded songs`
+          {bookFilter
+            ? `${(shownBooks || []).length} of ${books ? books.length : 0} loaded books`
             : genreFilter
               ? `${(shownGenres || []).length} of ${genres ? genres.length : 0} genres`
-              : count(browse, { albums, artists, genres, songs })}
+              : count(browse, { albums, artists, genres, bookCount })}
           {/* The blend says how many libraries it is blending - that is what you are looking at, and
               nothing else on this screen tells you. The SOURCE KIND ("Folder", "Subsonic") used to
               sit here for a single library and was dropped (Tim, 2026-07-27): it is the operator's
@@ -3847,7 +3916,7 @@ function Library ({
             className='search'
             value={query}
             onChange={e => onSearch(e.target.value)}
-            placeholder={browse === 'songs' ? 'Filter loaded songs' : browse === 'genres' ? 'Filter genres' : 'Search artists, albums, tracks'}
+            placeholder={browse === 'books' ? 'Filter books' : browse === 'genres' ? 'Filter genres' : 'Search artists, albums, tracks'}
           />
           {query && (
             <button className='searchclear' onClick={() => onSearch('')} aria-label='Clear search'>
@@ -3863,15 +3932,14 @@ function Library ({
               <button className={browse === 'genres' ? 'on' : ''} onClick={() => onBrowse('genres')}>Genres</button>
               <button className={browse === 'artists' ? 'on' : ''} onClick={() => onBrowse('artists')}>Artists</button>
               <button className={browse === 'albums' ? 'on' : ''} onClick={() => onBrowse('albums')}>Albums</button>
-              <button className={browse === 'songs' ? 'on' : ''} onClick={() => onBrowse('songs')}>Songs</button>
+              {/* Books only when a library you can reach has one (proposal 2026-09-13). */}
+              {bookCount > 0 && <button className={browse === 'books' ? 'on' : ''} onClick={() => onBrowse('books')}>Books</button>}
             </div>
-            {/* One "Display" control (layout + sort) instead of two. Stays PUT and
-                disabled when the active view has neither to offer (a Subsonic Songs
-                list: no grid density, no all-songs sort), so the row does not reflow. */}
+            {/* One "Display" control (layout + sort) instead of two. Every view is a grid
+                since Books replaced Songs, so there is always a layout to offer. */}
             <button
               className='icon dens'
               onClick={onDisplay}
-              disabled={!displayHasOptions}
               aria-label='Display options'
             >
               <Faders size={20} weight='regular' />
@@ -3894,7 +3962,7 @@ function Library ({
       {/* Session handoff: another device is the active player. "Play here" adopts its queue.
           Shown on the home view when this device is NOT actively playing - a PAUSED local queue
           (e.g. a launch-restore) should still offer to switch, so gate on `playing`, not `now`. */}
-      {/* The handoff affordance shows across ALL library sub-views (Albums / Artists / Songs),
+      {/* The handoff affordance shows across ALL library sub-views (Albums / Artists / Books),
           not just the album home - it's easy to miss otherwise. Hidden while searching (don't
           crowd results) or while playing here. Also rendered on the You tab. */}
       {handoff && !playing && !searching && (
@@ -3905,7 +3973,8 @@ function Library ({
           AND no live session on another device - the "Playing on <name>" card above is the
           richer affordance for that case (it brings the whole queue, not just this one track),
           so Continue yields to it rather than showing the same song twice. */}
-      {cont?.track && !now && !handoff && !searching && browse === 'albums' && (
+      {/* A book in progress belongs to the Books view's own row, not the music home. */}
+      {cont?.track && cont.track.kind !== 'book' && !now && !handoff && !searching && browse === 'albums' && (
         <ContinueCard cont={cont} onPlay={onContinue} />
       )}
 
@@ -3917,40 +3986,31 @@ function Library ({
             query={query} onRequest={onRequest}
           />
           )
-        : browse === 'songs'
-          ? (songs
-              ? (shownSongs.length
-                  ? (
-                    <>
-                      <ul className='tracks'>
-                        {shownSongs.map(t => (
-                          <Row
-                            key={t.id} t={t} on={now?.trackId === t.id}
-                            onPlay={() => onPlay(shownSongs, t)} onLong={onLong} art
-                            fav={favs.track.has(t.id)} onFav={favTrack}
-                          />
-                        ))}
-                      </ul>
-                      {songCursor != null && (
-                        <button className='more' onClick={onMoreSongs}>
-                          {songFilter ? 'Load more songs to filter' : 'Load more'}
-                        </button>
-                      )}
-                    </>
-                    )
-                  // No matches. When filtering, offer to pull in more of the (paged)
-                  // library so the filter can reach songs not yet loaded.
-                  : songFilter
+        : browse === 'books'
+          ? (books
+              ? (
+                <>
+                  {/* Books in progress, newest first, one card per book (proposal 2026-09-13). */}
+                  {!bookFilter && bookResumes.slice(0, 3).map((r, i) => (
+                    <ContinueCard
+                      key={r.trackId} heading={i === 0 ? 'Continue listening' : null}
+                      cont={{ ...r, track: { ...r.track, title: r.track.album || r.track.title } }}
+                      onPlay={() => onResumeBook(r)}
+                    />
+                  ))}
+                  {shownBooks.length
                     ? (
-                      <div className='blank'>
-                        <p className='muted sm'>No loaded song matches “{query.trim()}”.</p>
-                        {songCursor != null && (
-                          <button className='more' onClick={onMoreSongs}>Load more songs</button>
-                        )}
-                      </div>
+                      <>
+                        <Grid albums={shownBooks} onOpen={onOpenAlbum} onLong={onLong} d={D} artBase={artBase} favs={favs} onFav={onFav} />
+                        {!bookFilter && <MoreAlbums cursor={bookCursor} onMore={onMoreBooks} d={D} />}
+                      </>
                       )
-                    : <Empty reachable={reachable} onRetry={onReconnect} all={allScope} connecting={connecting} loading={updating} />)
-              : <SkeletonRows />)
+                    : bookFilter
+                      ? <div className='blank'><p className='muted sm'>No loaded book matches “{query.trim()}”.</p></div>
+                      : <Empty reachable={reachable} onRetry={onReconnect} all={allScope} connecting={connecting} loading={updating} />}
+                </>
+                )
+              : <SkeletonGrid d={D} />)
           : browse === 'genres'
             ? (genres
                 ? (shownGenres.length
@@ -4070,7 +4130,7 @@ function FavEmpty () {
 }
 
 // The "You" tab: a person's own collections, split out of Library so the library
-// picker stays a clean Albums / Artists / Songs. Its own small sub-picker switches
+// picker stays a clean Genres / Artists / Albums / Books. Its own small sub-picker switches
 // between Favorites and Most Played (Playlists slots in here at P4). The content is
 // the same FavoritesView and Most-Played list that used to live in Library; only the
 // home changed.
@@ -4475,14 +4535,14 @@ function FavoritesView ({ favItems, favs, onFav, now, d, artBase, onPlay, onLong
 // "Continue listening" - a launch affordance that resumes the last track from where it
 // was stopped. One tap plays it (playFrom applies the saved position). It disappears
 // once something is playing, or when there is nothing to continue.
-function ContinueCard ({ cont, onPlay }) {
+function ContinueCard ({ cont, onPlay, heading = 'Continue listening' }) {
   const t = cont.track
   const press = usePress(onPlay)
   return (
     <div className='contcard' {...press}>
       <Cover src={t.art} sm />
       <div className='meta'>
-        <div className='muted sm cont-h'>Continue listening</div>
+        {heading && <div className='muted sm cont-h'>{heading}</div>}
         <div className='t'>{t.title}</div>
         <div className='muted sm sub'>
           {[t.artist, cont.positionMs ? 'at ' + fmt(cont.positionMs) : ''].filter(Boolean).join(' · ')}
@@ -4755,13 +4815,12 @@ function recentEnough (albums) {
   return (albums || []).filter(a => Number(a.addedAt) > cutoff)
 }
 
-function count (browse, { albums, artists, genres, songs }) {
+function count (browse, { albums, artists, genres, bookCount }) {
   if (browse === 'artists') return `${artists ? artists.length : 0} artists`
   if (browse === 'genres') return `${genres ? genres.length : 0} genres`
-  // "60 albums" is the whole truth; "100 songs" is not - it is the first page of a
-  // list we are still walking. Say so rather than lying about the size of someone's
-  // library.
-  if (browse === 'songs') return songs ? `${songs.length} songs loaded` : 'Loading songs…'
+  // The worklet counts books across the whole reach, so this is the real number even while
+  // the grid is still on its first page.
+  if (browse === 'books') return `${bookCount} book${bookCount === 1 ? '' : 's'}`
   return `${albums.length} albums`
 }
 
@@ -5120,7 +5179,7 @@ function Cover ({ src, big, sm, artist }) {
 
 // Each drill-down fetches its own data from its id, so the nav stack holds nothing
 // but ids and popping back never has to restore anything.
-function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt, onLong, favs, onFav, pinned, pinning, onPin, onUnpin }) {
+function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onViewArt, onLong, favs, onFav, pinned, pinning, onPin, onUnpin, onResumeBook }) {
   const [album, setAlbum] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -5177,7 +5236,9 @@ function AlbumScreen ({ id, now, error, onBack, onPlay, onPlayAll, onQueue, onVi
       </div>
 
       <Actions
-        onPlay={() => onPlayAll(tracks)}
+        // A book's Play picks up where this person stopped, in whichever part that was
+        // (proposal 2026-09-13). Music plays from the top, as it always has.
+        onPlay={() => (album.kind === 'book' && onResumeBook ? onResumeBook(album, tracks) : onPlayAll(tracks))}
         onShuffle={() => onPlayAll(tracks, { shuffled: true })}
         onQueue={() => onQueue(tracks)}
       />
@@ -6223,6 +6284,8 @@ function RetroMini ({ now, status }) {
 function fmt (ms) {
   if (!ms && ms !== 0) return '--:--'
   const s = Math.floor(ms / 1000)
+  // Hours once there are any: a 10-hour book read 575:00 (proposal 2026-09-13).
+  if (s >= 3600) return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 

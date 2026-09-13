@@ -494,6 +494,7 @@ class PearTuneClient {
   resumeGet (params) { return this._request('resume.get', params) }
   resumeSet (params) { return this._request('resume.set', params) }
   resumeLatest () { return this._request('resume.latest') }
+  resumeList (params = {}) { return this._request('resume.list', params) }
 
   // Play counts (milestone 3, phase 3).
   countBump (params) { return this._request('count.bump', params) }

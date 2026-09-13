@@ -111,6 +111,17 @@ const MIME = {
   aif: 'audio/aiff'
 }
 
+// A whole book is not cached on the way past (proposal 2026-09-13). A 10-hour m4b is
+// about 290 MB at 64 kb/s, so one listen would push most of the music out of the LRU
+// cache. A book made of small parts still caches part by part. Keeping a book for offline
+// listening is a separate, deliberate feature.
+const BOOK_CACHE_MAX_BYTES = 64 * 1024 * 1024
+
+function cacheWholeTrack ({ full, kind, size }) {
+  if (!full) return false
+  return !(kind === 'book' && Number(size) > BOOK_CACHE_MAX_BYTES)
+}
+
 function mimeFor (name = '') {
   const ext = String(name).split('.').pop().toLowerCase()
   return MIME[ext] || 'application/octet-stream'
@@ -180,7 +191,7 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
     // adapters report it directly; the path is the fallback for tracks indexed
     // before suffix existed.
     const suffix = t.suffix || String(t.path || t.title || '').split('.').pop().toLowerCase()
-    const m = { size: t.size, mime: mimeFor(t.path || t.title), suffix }
+    const m = { size: t.size, mime: mimeFor(t.path || t.title), suffix, kind: t.kind || null }
     meta.set(trackId, m)
     return m
   }
@@ -319,7 +330,7 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
       // arrives - a skip or a dropped connection aborts it, so a partial is never
       // stored as complete. Transcodes (above) are never cached: they have no stable
       // bytes to seek back into.
-      const full = start === 0 && end === m.size - 1
+      const full = cacheWholeTrack({ full: start === 0 && end === m.size - 1, kind: m.kind, size: m.size })
       // Tag the bytes with the library they came from (conn.libraryId - set by connect(), so
       // it is right in merged mode AND single-host, where the URL carries no library). It is
       // the only chance to record it: a trackId is a hash of the libraryId, so nothing can
@@ -686,4 +697,4 @@ function createAudioShim ({ log = () => {}, defaultClient = async () => null, qu
   }
 }
 
-module.exports = { createAudioShim, mimeFor, parseUrl, DEFAULT_ART_SIZE, STREAM_WINDOW }
+module.exports = { createAudioShim, mimeFor, cacheWholeTrack, BOOK_CACHE_MAX_BYTES, parseUrl, DEFAULT_ART_SIZE, STREAM_WINDOW }

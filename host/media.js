@@ -416,6 +416,25 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         return send.res.send({ id, body: row ? { trackId: row.trackId, positionMs: row.positionMs, durationMs: row.durationMs, updatedAt: row.updatedAt || 0, playedAt: row.playedAt || row.updatedAt || 0 } : null })
       }
 
+      // Several resume rows at once, each with its track (proposal 2026-09-13). `kind`
+      // ('book' or 'music') filters on the track's kind; hidden and deleted tracks are
+      // dropped, like resume.latest. An old host answers ENOMETHOD and the app shows no
+      // Continue listening row.
+      case 'resume.list': {
+        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        const want = params?.kind
+        const limit = Math.min(Math.max(Number(params?.limit) || 50, 1), 200)
+        const out = []
+        for (const r of await state.listResumes(ownerOf(grant))) {
+          const track = await adapterFor().get({ id: r.trackId, type: 'track' }).catch(() => null)
+          if (!track) continue
+          if ((want === 'book' || want === 'music') && (track.kind === 'book') !== (want === 'book')) continue
+          out.push({ trackId: r.trackId, positionMs: r.positionMs, durationMs: r.durationMs || null, playedAt: r.playedAt || r.updatedAt || 0, track })
+          if (out.length >= limit) break
+        }
+        return send.res.send({ id, body: out })
+      }
+
       case 'resume.set': {
         if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
         if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')

@@ -509,6 +509,8 @@ class FolderAdapter {
     for (const a of this.artists.values()) {
       a.albumIds.sort((x, y) => cmp(this.albums.get(x)?.name, this.albums.get(y)?.name))
       a.coverId = a.albumIds[0] || null
+      // An author with only books is a book artist, and leaves the music Artists view.
+      if (a.albumIds.every(id => this.albums.get(id)?.kind === 'book')) a.kind = 'book'
     }
 
     // Genres, the broadest way in: a genre is the set of albums (and their tracks)
@@ -528,6 +530,7 @@ class FolderAdapter {
       g.albumIds.sort((x, y) => cmp(this.albums.get(x)?.name, this.albums.get(y)?.name))
       g.albumCount = g.albumIds.length
       g.coverId = g.albumIds[0] || null
+      if (g.albumIds.every(id => this.albums.get(id)?.kind === 'book')) g.kind = 'book'
       delete g._albumSet
     }
 
@@ -659,6 +662,9 @@ class FolderAdapter {
       albums: this.albums.size,
       artists: this.artists.size,
       genres: this.genres.size,
+      // Albums that are books (proposal 2026-09-13). The app shows its Books view only
+      // when a library has at least one.
+      books: this._sortedAlbums.filter(a => a.kind === 'book').length,
       // The whole library is in memory, so every field sorts for free, both ways.
       sorts: FULL_SORTS,
       scannedAt: this.scannedAt
@@ -678,7 +684,22 @@ class FolderAdapter {
     return rows
   }
 
-  async list ({ type = 'tracks', limit = 200, cursor = 0, sort, order } = {}) {
+  // kind: 'book' keeps only books, 'music' keeps everything else, anything else keeps
+  // all (an older phone sends no kind). Filtered BEFORE paging, so a page of the music
+  // Albums view is a full page and nextCursor still counts the rows the phone can see.
+  // Memoized like _order; the same cache is cleared on every rebuild.
+  _ofKind (type, rows, kind, sort, order) {
+    if (kind !== 'book' && kind !== 'music') return rows
+    const key = `kind|${kind}|${type}|${sort || ''}|${order === 'desc' ? 'desc' : 'asc'}`
+    let out = this._sortCache.get(key)
+    if (!out) {
+      out = rows.filter(r => (r.kind === 'book') === (kind === 'book'))
+      this._sortCache.set(key, out)
+    }
+    return out
+  }
+
+  async list ({ type = 'tracks', limit = 200, cursor = 0, sort, order, kind } = {}) {
     const start = Math.max(0, Number(cursor) || 0)
     const page = (all, map) => {
       const items = all.slice(start, start + limit).map(map)
@@ -687,7 +708,7 @@ class FolderAdapter {
     }
 
     if (type === 'albums') {
-      return page(this._order('albums', this._sortedAlbums, ALBUM_CMP, sort, order), a => ({
+      return page(this._ofKind('albums', this._order('albums', this._sortedAlbums, ALBUM_CMP, sort, order), kind, sort, order), a => ({
         id: a.id,
         name: a.name,
         artist: a.artist,
@@ -707,22 +728,22 @@ class FolderAdapter {
     if (type === 'artists') {
       // Not paged, to match the Navidrome adapter (getArtists answers in one shot,
       // and the app's artist grid asks for the lot).
-      const items = this._order('artists', this._sortedArtists, ARTIST_CMP, sort, order).map(a => ({
-        id: a.id, name: a.name, albumCount: a.albumCount, coverId: a.coverId
+      const items = this._ofKind('artists', this._order('artists', this._sortedArtists, ARTIST_CMP, sort, order), kind, sort, order).map(a => ({
+        id: a.id, name: a.name, albumCount: a.albumCount, coverId: a.coverId, ...(a.kind ? { kind: a.kind } : {})
       }))
       return { type, items, nextCursor: null }
     }
 
     if (type === 'genres') {
       // One shot, like artists - the genre grid asks for the lot.
-      const items = this._order('genres', this._sortedGenres, GENRE_CMP, sort, order).map(g => ({
-        id: g.id, name: g.name, albumCount: g.albumCount, coverId: g.coverId
+      const items = this._ofKind('genres', this._order('genres', this._sortedGenres, GENRE_CMP, sort, order), kind, sort, order).map(g => ({
+        id: g.id, name: g.name, albumCount: g.albumCount, coverId: g.coverId, ...(g.kind ? { kind: g.kind } : {})
       }))
       return { type, items, nextCursor: null }
     }
 
     if (type === 'tracks') {
-      return page(this._order('tracks', this._sortedTracks, TRACK_CMP, sort, order), t => this._pub(t))
+      return page(this._ofKind('tracks', this._order('tracks', this._sortedTracks, TRACK_CMP, sort, order), kind, sort, order), t => this._pub(t))
     }
 
     // No playlists in a folder. An .m3u reader is a fine idea and it is not this.
@@ -789,26 +810,28 @@ class FolderAdapter {
     return this._pub(this.tracks.get(id))
   }
 
-  async search ({ q = '', limit = 50 } = {}) {
+  async search ({ q = '', limit = 50, kind } = {}) {
     const needle = lower(clean(q) || '')
     if (!needle) return { artists: [], albums: [], tracks: [] }
 
+    // Same kind rule as list(): 'book', 'music', or anything else for everything.
+    const want = (r) => (kind !== 'book' && kind !== 'music') || (r.kind === 'book') === (kind === 'book')
     const hit = (s) => lower(s).includes(needle)
 
     return {
       artists: this._sortedArtists
-        .filter(a => hit(a.name))
+        .filter(a => want(a) && hit(a.name))
         .slice(0, limit)
-        .map(a => ({ id: a.id, name: a.name, albumCount: a.albumCount, coverId: a.coverId })),
+        .map(a => ({ id: a.id, name: a.name, albumCount: a.albumCount, coverId: a.coverId, ...(a.kind ? { kind: a.kind } : {}) })),
       albums: this._sortedAlbums
-        .filter(a => hit(a.name) || hit(a.artist))
+        .filter(a => want(a) && (hit(a.name) || hit(a.artist)))
         .slice(0, limit)
         .map(a => ({ id: a.id, name: a.name, artist: a.artist, year: a.year, coverId: a.coverId, ...(a.kind ? { kind: a.kind } : {}) })),
       // The path stays searchable. It is the only thing an untagged library has,
       // and dropping it the day we learned to read tags would make search WORSE
       // for exactly the people this adapter exists for.
       tracks: this._sortedTracks
-        .filter(t => hit(t.title) || hit(t.artist) || hit(t.album) || hit(t.path))
+        .filter(t => want(t) && (hit(t.title) || hit(t.artist) || hit(t.album) || hit(t.path)))
         .slice(0, limit)
         .map(t => this._pub(t))
     }

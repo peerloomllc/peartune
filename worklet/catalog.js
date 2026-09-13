@@ -73,8 +73,8 @@ function paginate (items, cursor = 0, limit) {
 // then slice one page. Sorting the full in-memory list is what lets the merged view order by any
 // field regardless of a host's own sort capability (a host that can't sort songs by title still
 // gets an A-Z Songs list here).
-function serveList (items, { libraryId, sort, order, cursor = 0, limit } = {}) {
-  const filtered = merge.filterByLibrary(items || [], libraryId)
+function serveList (items, { libraryId, sort, order, cursor = 0, limit, kind } = {}) {
+  const filtered = merge.filterByKind(merge.filterByLibrary(items || [], libraryId), kind)
   const sorted = sort ? merge.sortItems(filtered, sort, order) : filtered
   return paginate(sorted, cursor, limit)
 }
@@ -85,14 +85,15 @@ function serveList (items, { libraryId, sort, order, cursor = 0, limit } = {}) {
 // deduped and carries its copies, so tapping a result streams from whichever host holds it. An
 // empty needle (or a query that norms to nothing, like "the") returns nothing rather than the whole
 // library.
-function searchIndex (index, q, { limit = 50 } = {}) {
+function searchIndex (index, q, { limit = 50, kind } = {}) {
   const needle = merge.norm(q)
   if (!needle) return { artists: [], albums: [], tracks: [] }
   const hit = (s) => merge.norm(s).includes(needle)
+  const of = (arr) => merge.filterByKind(arr, kind)
   return {
-    artists: (index.artists || []).filter((a) => hit(a.name)).slice(0, limit),
-    albums: (index.albums || []).filter((a) => hit(a.name) || hit(a.artist)).slice(0, limit),
-    tracks: (index.tracks || []).filter((t) => hit(t.title) || hit(t.artist) || hit(t.album)).slice(0, limit)
+    artists: of(index.artists).filter((a) => hit(a.name)).slice(0, limit),
+    albums: of(index.albums).filter((a) => hit(a.name) || hit(a.artist)).slice(0, limit),
+    tracks: of(index.tracks).filter((t) => hit(t.title) || hit(t.artist) || hit(t.album)).slice(0, limit)
   }
 }
 

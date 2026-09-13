@@ -37,7 +37,8 @@ function rowElements (src) {
 
 test('every track row offers the long-press menu', () => {
   const rows = rowElements(SRC)
-  assert.ok(rows.length >= 9, `only ${rows.length} track rows found - has Row been renamed?`)
+  // 8 since the Songs list went (Books replaced it, proposal 2026-09-13).
+  assert.ok(rows.length >= 8, `only ${rows.length} track rows found - has Row been renamed?`)
   const missing = rows.filter(r => !r.text.includes('onLong')).map(r => `App.jsx:${r.line}`)
   assert.deepEqual(missing, [], 'these track lists cannot open the menu on long-press')
 })

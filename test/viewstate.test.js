@@ -13,6 +13,12 @@ const assert = require('node:assert')
 
 const load = () => import('../src/ui/viewstate.js')
 
+test('a saved Songs view, from before Books replaced it, restores as Albums', async () => {
+  const { normalizeViewState } = await load()
+  assert.equal(normalizeViewState({ browse: 'songs' }).browse, 'albums')
+  assert.equal(normalizeViewState({ browse: 'books' }).browse, 'books')
+})
+
 test('a snapshot round-trips unchanged', async () => {
   const { normalizeViewState } = await load()
   const v = {
@@ -118,7 +124,7 @@ test('a device that never left the Library root has nothing to restore', async (
 test('any real position counts as something to restore', async () => {
   const { isDefaultView } = await load()
   assert.strictEqual(isDefaultView({ tab: 'settings' }), false)
-  assert.strictEqual(isDefaultView({ browse: 'songs' }), false)
+  assert.strictEqual(isDefaultView({ browse: 'books' }), false)
   assert.strictEqual(isDefaultView({ scroll: 400 }), false)
   assert.strictEqual(isDefaultView({ expanded: true }), false)
   assert.strictEqual(isDefaultView({ filter: 'jud4pgi4' }), false)
