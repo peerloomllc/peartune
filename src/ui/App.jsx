@@ -3084,7 +3084,7 @@ export default function App () {
       )}
       {sleepOpen && (
         <SleepSheet
-          sleep={sleep}
+          sleep={sleep} hasChapters={now?.chapters?.length > 1}
           onClose={() => setSleepOpen(false)}
           onPick={(opts) => { call('sleep', opts).catch(() => {}); setSleepOpen(false) }}
         />
@@ -6059,13 +6059,14 @@ function SleepCountdown ({ sleep }) {
     return () => clearInterval(id)
   }, [])
   if (sleep.endOfTrack) return <span className='sleeplabel'>end</span>
+  if (sleep.endOfChapter) return <span className='sleeplabel'>ch.</span>
   const s = Math.max(0, Math.round(((sleep.deadline || 0) - Date.now()) / 1000))
   return <span className='sleeplabel'>{Math.floor(s / 60)}:{String(s % 60).padStart(2, '0')}</span>
 }
 
 // Pick how long until playback fades out and pauses. The choice goes to the shell
 // (call('sleep', ...)), which owns the countdown; this sheet only shows what is armed.
-function SleepSheet ({ sleep, onClose, onPick }) {
+function SleepSheet ({ sleep, onClose, onPick, hasChapters }) {
   const cur = sleep?.active ? sleep.minutes : null
   return (
     <div className='sheetwrap' onClick={onClose}>
@@ -6088,6 +6089,15 @@ function SleepSheet ({ sleep, onClose, onPick }) {
           >
             <MusicNotes size={16} weight='regular' /> End of track
           </button>
+          {/* Only for a book with chapters (proposal 2026-09-13); the shell follows chapter jumps. */}
+          {hasChapters && (
+            <button
+              className={'wide' + (sleep?.endOfChapter ? ' on' : '')}
+              onClick={() => onPick({ endOfChapter: true })}
+            >
+              <ListNumbers size={16} weight='regular' /> End of chapter
+            </button>
+          )}
           {sleep?.active && (
             <button className='wide' onClick={() => onPick({ off: true })}>
               Turn off timer
@@ -6172,7 +6182,7 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
   // for end-of-track. A 1s tick refreshes the minute readout while a timed one runs (the
   // status ticks would already re-render mid-song, but this keeps it live while paused too).
   const [, sleepTick] = useState(0)
-  const sleepTimed = sleep?.active && !sleep.endOfTrack
+  const sleepTimed = sleep?.active && !sleep.endOfTrack && !sleep.endOfChapter
   useEffect(() => {
     if (!sleepTimed) return
     const id = setInterval(() => sleepTick(t => t + 1), 1000)
@@ -6182,7 +6192,9 @@ function RetroPlayer ({ now, status, shuffle, repeat, onShuffle, onRepeat, onSto
     ? 'ZZZ'
     : sleep.endOfTrack
       ? 'END'
-      : Math.max(0, Math.ceil(((sleep.deadline || 0) - Date.now()) / 60000)) + 'm'
+      : sleep.endOfChapter
+        ? 'CH'
+        : Math.max(0, Math.ceil(((sleep.deadline || 0) - Date.now()) / 60000)) + 'm'
 
   const vizRef = useRef(null)
   const playRef = useRef(playing); playRef.current = playing
