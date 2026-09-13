@@ -143,7 +143,7 @@ The user who asked can listen after slices 1 and 2.
 
 | Host | Phone | Result |
 | --- | --- | --- |
-| New | Old | Books appear as albums, m4b now included. An old phone serves m4b as `application/octet-stream`. Android: checked 2026-09-13 on the emulator, it plays, including a seek to 9 h 35 min in the 10-hour book. iOS: not yet checked. |
+| New | Old | Books appear as albums, m4b now included. An old phone serves m4b as `application/octet-stream`. Android: checked 2026-09-13 on the emulator, it plays, including a seek to 9 h 35 min in the 10-hour book. iOS: checked 2026-09-13 on the Simulator with a 1.0.7 build, it plays. |
 | Old | New | No `caps.books`: no Books segment, no bookmark button, today's app. |
 | New | New | Full feature |
 
@@ -197,6 +197,16 @@ of a book in parts as a chapter, which is a good model for slice 3.
   and speed on the lock screen.
 - Per-person check: two people on one host, each listening to the same book, each
   resumes at their own place.
+
+## iOS results (Simulator, 2026-09-13)
+
+| Check | Result |
+| --- | --- |
+| m4b on the current app | plays; Books view, chapter title and book controls present, no Shuffle on the book page |
+| Book speed 1.5x | 33 s of book in 21 s |
+| Book in parts at 1.5x, after moving on to Part 2 | 32 s of book in 21 s |
+| m4b on a 1.0.7 build (served as octet-stream) | plays, 16 s in 16 s |
+| Lock-screen 15/30 skips | not checkable on the Simulator; needs the iPhone SE |
 
 ## Rollback
 
