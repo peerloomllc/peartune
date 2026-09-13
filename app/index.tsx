@@ -33,6 +33,7 @@ const bundle = require('../assets/bare-universal.bundle')
 const { reindexAfterMove, reindexAfterRemove } = require('./queue-index')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { decideStarve, decideRecover } = require('./starve')
+const { chapterEndAfter, crossedChapterEnd } = require('./chapter-sleep')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { openableUrl } = require('./openable')
 
@@ -201,6 +202,10 @@ export default function App () {
   const sleepDeadline = useRef(0)
   const sleepMinutes = useRef(0) // the chosen duration, so the UI can highlight it
   const sleepEndOfTrack = useRef(false)
+  // End-of-chapter mode (proposal 2026-09-13): pause when the position reaches the end of the
+  // chapter it is in. Held as a mode, not a fixed time, so a chapter jump while armed re-aims
+  // it at the end of the chapter you jumped to. A book with no chapters behaves as end-of-track.
+  const sleepEndOfChapter = useRef(false)
   // Set by next/prev/playIndex so the status listener can tell a user skip from a
   // track ending on its own - only the latter should trip end-of-track sleep.
   const manualNav = useRef(false)
@@ -325,11 +330,14 @@ export default function App () {
     const p: any = player.current
     const t = queueRef.current[i]
     if (!p || !t) return
-    const rate = t.kind === 'book' ? bookRateRef.current : 1
+    const book = t.kind === 'book'
     try {
       p.shouldCorrectPitch = true
-      p.setPlaybackRate(rate, 'high')
+      p.setPlaybackRate(book ? bookRateRef.current : 1, 'high')
     } catch {}
+    // The lock-screen skips follow too: back 15 / forward 30 for a book, 15 each way for
+    // music (Tim, 2026-09-13). Buttons only; the session is not rebuilt (patches/expo-audio).
+    try { p.setSeekIntervals(SEEK_STEP * 1000, (book ? 30 : SEEK_STEP) * 1000) } catch {}
   }
 
   // GAPLESS. The queue lives inside ExoPlayer, not here.
@@ -433,6 +441,24 @@ export default function App () {
         // Absolute position in the SONG, not in the source: a seek-swapped transcode's
         // bytes start mid-track, so the player's own clock is offset by the swap target.
         const posMs = baseOffsetMs.current + Math.round((s.currentTime ?? 0) * 1000)
+
+        // End of chapter: pause when this tick crossed the end of the chapter the last tick was
+        // in. A jump is not a crossing (app/chapter-sleep.js), so skipping chapters while armed
+        // re-aims the timer. The last chapter ends with the file, handled like end-of-track.
+        if (sleepEndOfChapter.current && s.playing) {
+          const t = queueRef.current[indexRef.current]
+          if (chapterEndAfter(t?.chapters, posMs) == null && chapterEndAfter(t?.chapters, posRef.current) == null) {
+            // In the last chapter: it ends with the file, so let end-of-track take it from here.
+            sleepEndOfChapter.current = false
+            sleepEndOfTrack.current = true
+            pushSleep()
+          } else if (crossedChapterEnd(t?.chapters, posRef.current, posMs)) {
+            sleepEndOfChapter.current = false
+            try { p.pause() } catch {}
+            persistQueue(true)
+            pushSleep(true)
+          }
+        }
 
         // Real forward progress re-arms the recovery budget: a stream that limps but
         // moves gets one fresh retry per stall, not one per lifetime.
@@ -940,6 +966,7 @@ export default function App () {
     sleepDeadline.current = 0
     sleepMinutes.current = 0
     sleepEndOfTrack.current = false
+    sleepEndOfChapter.current = false
     // ...but NOT while casting, where 0 is the deliberate volume. Restoring it here would
     // un-mute the phone behind the user's back and put a second copy of the song in the
     // room the moment anything cleared a sleep timer.
@@ -950,8 +977,9 @@ export default function App () {
   // marks the transition where the timer just stopped playback (so the UI can toast).
   function pushSleep (fired = false) {
     toWeb('sleep:state', {
-      active: !!sleepTimeout.current || sleepEndOfTrack.current,
+      active: !!sleepTimeout.current || sleepEndOfTrack.current || sleepEndOfChapter.current,
       endOfTrack: sleepEndOfTrack.current,
+      endOfChapter: sleepEndOfChapter.current,
       deadline: sleepDeadline.current || null,
       minutes: sleepMinutes.current || null,
       fired
@@ -986,9 +1014,16 @@ export default function App () {
   // Arm/disarm from the UI. { off } cancels; { endOfTrack } stops when the current song
   // finishes on its own (the status listener watches didJustFinish); { minutes } counts
   // down then fades out. One mode at a time - each call clears the last.
-  function setSleep ({ minutes, endOfTrack, off }: any) {
+  function setSleep ({ minutes, endOfTrack, endOfChapter, off }: any) {
     clearSleep()
     if (off) { pushSleep(); return }
+    if (endOfChapter) {
+      const t = queueRef.current[indexRef.current]
+      if (Array.isArray(t?.chapters) && t.chapters.length > 1) sleepEndOfChapter.current = true
+      else sleepEndOfTrack.current = true // nothing to measure a chapter by
+      pushSleep()
+      return
+    }
     if (endOfTrack) {
       sleepEndOfTrack.current = true
       pushSleep()
