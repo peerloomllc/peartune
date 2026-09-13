@@ -56,7 +56,8 @@ A track is a book when either:
 - it sits under a folder root the owner marked **Audiobooks** in the dashboard.
 
 Folder-source config keeps `roots: string[]` and gains `bookRoots: string[]`, a subset of
-`roots`. An older host ignores the new key and shows those books as music, which is
+`roots`. Only a top-level root can be marked (Tim, 2026-09-13), e.g. add `/audiobooks` as
+its own folder; a subfolder inside a music root cannot. An older host ignores the new key and shows those books as music, which is
 today's behaviour. Genre-tag detection ("Audiobook", "Spoken Word") is left out: tags are
 unreliable and a wrong guess hides music.
 
@@ -84,15 +85,17 @@ keyed by bookmark id, so a bookmark made in a car with no signal lands later.
 
 ### Where books live in the app
 
-The Genres / Artists / Albums / Songs control is already full, so books do **not** get a
-fifth segment there. Books are removed from all four views, from Recently added and from
-Shuffle all.
+The Genres / Artists / Albums / Songs control is already full, and the bottom bar already
+has five tabs. **Books replaces Songs** in that control (Tim, 2026-09-13): Genres / Artists
+/ Albums / Books. Songs is the least useful of the four, since a track is also reachable
+from search, an album or a genre. Books are removed from the other three views, from
+search, from Recently added and from Shuffle all.
 
-Recommended: a **Books** tab in the bottom bar, shown only when a connected library has
-`caps.books` and at least one book. A music-only user sees no change. See open question 1
-for keeping the bar at five tabs.
+The Books segment shows only when a connected library has `caps.books`. Without it the
+control is Genres / Artists / Albums, so a music-only user loses Songs and gains nothing.
+A saved view of `songs` (test/viewstate.test.js) falls back to Albums.
 
-The Books tab is a cover grid with a **Continue listening** row on top (every book with a
+Books is a cover grid with a **Continue listening** row on top (every book with a
 resume row for this person, most recent first). Tapping a book resumes it: for an m4b
 that is the saved position; for a book in parts it is the part with the newest resume
 row. Tapping a part inside a book's page plays that part from its own saved position.
@@ -104,8 +107,10 @@ Same player, with these changes while the current track is a book:
 - Shuffle and repeat are replaced by **speed** (0.8x to 2x, pitch corrected, remembered
   per person per book in local settings) and **chapters** (a list; tap to jump).
 - Previous / next move by chapter when the file has chapters, by part otherwise.
-- The secondary row keeps its four buttons and gains a **bookmark**
-  button that saves the current position with an optional note.
+- The seek buttons become **back 15 / forward 30** (Tim, 2026-09-13), matching most book
+  apps. Music keeps ±15. The lock-screen buttons follow the same sizes.
+- The secondary row gains a **bookmark** button that saves the current position with an
+  optional note.
 - The sleep timer gains **End of chapter**.
 - Resume is cleared only when the book reaches its last 30 seconds, not at 95%.
 - No play counts.
@@ -118,8 +123,8 @@ Each slice is its own PR, verified before the next starts.
    the folder config and dashboard folder panel, `kind: 'book'`, `caps.books`. Books still
    show in Albums on phones at this point. Tests: a tiny committed m4b fixture scans as a
    book with its cover; a `bookRoots` folder marks its tracks; an old-shape config loads.
-2. **Phone: books are separate.** The Books tab, the Continue listening row, removal from
-   the music views, the book resume rules and no play counts.
+2. **Phone: books are separate.** Books replaces Songs, the Continue listening row, removal
+   from the music views, the book resume rules and no play counts.
 3. **Player book mode.** Chapters (host parse plus the list and prev/next), speed and End
    of chapter.
 4. **Bookmarks.** Host state, the three methods, outbox, the bookmark button and a
@@ -132,11 +137,11 @@ The user who asked can listen after slices 1 and 2.
 | Host | Phone | Result |
 | --- | --- | --- |
 | New | Old | Books appear as albums, m4b now included. An old phone serves m4b as `application/octet-stream`: ExoPlayer sniffs the container, iOS may not. Check both in slice 1. |
-| Old | New | No `caps.books`: no Books tab, no bookmark button, today's app. |
+| Old | New | No `caps.books`: no Books segment, no bookmark button, today's app. |
 | New | New | Full feature |
 
 In a merged view of several libraries, books from any library with `caps.books` go to
-the Books tab; the rest stay in music.
+Books; the rest stay in music.
 
 ## Risks
 
@@ -154,7 +159,7 @@ the Books tab; the rest stay in music.
 ## Verify
 
 - `npm run verify` green on every slice.
-- Emulator first for the Books tab, player book mode and bookmarks (rule 15).
+- Emulator first for Books, player book mode and bookmarks (rule 15).
 - TCL for lock-screen seek step, background playback of a long book with the screen off
   and speed on the lock screen.
 - Per-person check: two people on one host, each listening to the same book, each
@@ -165,8 +170,8 @@ the Books tab; the rest stay in music.
 Revert the slice. Bookmark rows left on a host are unused keys and harmless. `bookRoots`
 left in a config is ignored by the older host.
 
-## Open questions
+## Decided (Tim, 2026-09-13)
 
-1. Six tabs, or keep five by moving About into Settings?
-2. Skip sizes for books: keep ±15, or back 15 / forward 30 as most book apps do?
-3. Should the dashboard's Audiobooks mark be per folder root only, or also on any subfolder?
+1. Books replaces Songs in the Library view control. No new bottom tab.
+2. Book skip sizes are back 15 / forward 30.
+3. The Audiobooks mark is on top-level folder roots only.
