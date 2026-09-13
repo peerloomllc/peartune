@@ -100,6 +100,9 @@ const MIME = {
   ogg: 'audio/ogg',
   opus: 'audio/opus',
   wav: 'audio/wav',
+  // An audiobook is an MP4 with a different extension. Served as octet-stream before
+  // 2026-09-13, which ExoPlayer sniffs past and iOS may not.
+  m4b: 'audio/mp4',
   // Indexed by the scanner but not decodable by the phone - they reach the player
   // only as transcodes (worklet/quality.js). Named here so the rare direct serve
   // (a host with no ffmpeg) is at least honestly labeled, not octet-stream.

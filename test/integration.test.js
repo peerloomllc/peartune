@@ -97,6 +97,8 @@ test('pair by QR link, then reach the library', async (t) => {
   let ffmpegHere = false
   try { require('child_process').execSync('ffmpeg -hide_banner -version', { stdio: 'ignore' }); ffmpegHere = true } catch {}
   assert.equal(pong.caps.timeOffset, ffmpegHere)
+  // A folder source labels audiobooks (proposal 2026-09-13), and says so.
+  assert.equal(pong.caps.books, 1)
 
   const stats = await client.stats()
   assert.equal(stats.source, 'folder')

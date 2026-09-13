@@ -61,7 +61,7 @@ export function SourcePanel ({ state, refresh, toast, embedded = false, onSaved 
     setCfg({
       subsonic: server('subsonic'),
       jellyfin: server('jellyfin'),
-      folder: { roots }
+      folder: { roots, bookRoots: (kinds.folder && kinds.folder.bookRoots) || [] }
     })
   }, [state.source, detected])
 
@@ -83,6 +83,13 @@ export function SourcePanel ({ state, refresh, toast, embedded = false, onSaved 
   // duplicates are ignored so tapping "Choose this folder" on one you already have
   // is a no-op rather than a double entry.
   const roots = () => (cfg.folder && cfg.folder.roots) || []
+  // Folders marked as Audiobooks (proposal 2026-09-13). Top-level folders only, which
+  // is what this list is; the host drops a mark that names anything else.
+  const bookRoots = () => (cfg.folder && cfg.folder.bookRoots) || []
+  const toggleBook = (p, on) => {
+    const rest = bookRoots().filter(r => r !== p)
+    setCfg(c => ({ ...c, folder: { ...c.folder, bookRoots: on ? [...rest, p] : rest } })); touch()
+  }
   const addRoot = (p) => {
     const clean = String(p || '').trim()
     if (!clean) return
@@ -108,15 +115,15 @@ export function SourcePanel ({ state, refresh, toast, embedded = false, onSaved 
       </>)
       return
     }
-    setCfg(c => ({ ...c, folder: { roots: [...existing, clean] } })); touch()
+    setCfg(c => ({ ...c, folder: { ...c.folder, roots: [...existing, clean] } })); touch()
   }
   const removeRoot = (p) => {
-    setCfg(c => ({ ...c, folder: { roots: roots().filter(r => r !== p) } })); touch()
+    setCfg(c => ({ ...c, folder: { roots: roots().filter(r => r !== p), bookRoots: bookRoots().filter(r => r !== p) } })); touch()
   }
 
   const form = () => {
     const c = cfg[kind] || {}
-    if (kind === 'folder') return { kind: 'folder', roots: roots().map(r => r.trim()).filter(Boolean) }
+    if (kind === 'folder') return { kind: 'folder', roots: roots().map(r => r.trim()).filter(Boolean), bookRoots: bookRoots().filter(r => roots().includes(r)) }
     const out = { kind, url: (c.url || '').trim(), username: (c.username || '').trim() }
     if (c.password) out.password = c.password
     if (kind === 'subsonic' && c.apiKey) out.apiKey = c.apiKey
@@ -204,6 +211,10 @@ export function SourcePanel ({ state, refresh, toast, embedded = false, onSaved 
                     ? roots().map((r, i) =>
                         <div className='rootrow' key={r}>
                           <span className='rootpath' title={r}>{r}{i === 0 && roots().length > 1 && <span className='subtle'> · primary</span>}</span>
+                          <label className='rootbook' title='Everything in this folder is an audiobook'>
+                            <input type='checkbox' checked={bookRoots().includes(r)} onChange={e => toggleBook(r, e.target.checked)} />
+                            Audiobooks
+                          </label>
                           <button className='iconbtn' aria-label={'Remove ' + r} onClick={() => removeRoot(r)}><X size={13} /></button>
                         </div>)
                     : <div className='rootrow'><span className='subtle'>No folders yet — add one below.</span></div>}

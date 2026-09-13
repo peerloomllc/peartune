@@ -37,7 +37,17 @@ const { visibleTo, locate, normalRel } = require('../visibility')
 // -ss path (proposal 2026-08-16 slice 4) - one transcoder, three adapters.
 const { hasFfmpeg, spawnTranscode } = require('../transcode')
 
-const AUDIO_EXT = new Set(['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.wma', '.aiff', '.aif'])
+// .m4b is an audiobook: an MP4 like .m4a, usually one long file with chapters inside
+// (proposal 2026-09-13). Skipped until then, so a folder of books looked empty.
+const AUDIO_EXT = new Set(['.mp3', '.flac', '.m4a', '.m4b', '.aac', '.ogg', '.opus', '.wav', '.wma', '.aiff', '.aif'])
+
+// WHAT IS A BOOK? A track is a book when its file is .m4b, or when it sits under a
+// folder root the owner marked as Audiobooks in the dashboard (bookRoots). An album is
+// a book when EVERY track in it is. Absent `kind` means music, so an older phone that
+// has never heard of books sees exactly what it saw before. Genre tags ("Audiobook",
+// "Spoken Word") are deliberately NOT a signal: tags are unreliable, and a wrong guess
+// would hide someone's music from the music views.
+const BOOK_SUFFIX = 'm4b'
 
 // An image sitting next to the music beats an embedded one: it is usually the
 // bigger, better scan, and reading it costs one open() instead of parsing a 40MB
@@ -97,7 +107,7 @@ function normalizeRoots (roots) {
 }
 
 class FolderAdapter {
-  constructor ({ roots, root, libraryId, log = () => {} }) {
+  constructor ({ roots, root, bookRoots, libraryId, log = () => {} }) {
     // Accept either `roots` (a list) or the legacy single `root`. Always at least one.
     const list = (roots && roots.length ? roots : [root || '/music'])
     this.roots = normalizeRoots(list)
@@ -113,6 +123,12 @@ class FolderAdapter {
     // Kept for the many call sites + tests that still speak of a single root; it is
     // just the primary now.
     this.root = this.roots[0]
+    // Top-level roots only (Tim, 2026-09-13): a mark that does not name one of the kept
+    // roots - a subfolder, a root dropped as nested, a stale entry - is ignored.
+    const kept = new Set(this.roots)
+    this.bookRoots = new Set((bookRoots || []).map(r => path.resolve(String(r))).filter(r => kept.has(r)))
+    // What ping advertises as caps.books. A narrowed view inherits it (Object.create).
+    this.books = true
     this.libraryId = libraryId
     this.kind = 'folder'
     this.log = log
@@ -394,6 +410,8 @@ class FolderAdapter {
       b.rows.push(r)
     }
 
+    const isBook = (r) => r.suffix === BOOK_SUFFIX || this.bookRoots.has(r.root)
+
     // Pass 2: resolve each album's name and artist, and mint stable ids.
     for (const b of buckets.values()) {
       const id = groupId(this.libraryId, this.kind, 'album', b.key)
@@ -426,6 +444,7 @@ class FolderAdapter {
         addedAt: Math.max(0, ...b.rows.map(r => r.addedAt || 0)) || null,
         coverId: id, // an album IS the unit of artwork here; art() resolves it lazily
         songCount: b.rows.length,
+        ...(b.rows.every(isBook) ? { kind: 'book' } : {}),
         dir: b.dir,
         // The ABSOLUTE cover directory, resolved against this album's own root - a
         // relative dir alone is ambiguous once there is more than one root.
@@ -474,6 +493,7 @@ class FolderAdapter {
           // phone with dated albums and dateless songs, and the blend could not order Songs by
           // date at all. Carried since 2026-07-27.
           addedAt: r.addedAt ?? null,
+          ...(isBook(r) ? { kind: 'book' } : {}),
           path: r.relPath,
           absPath: r.absPath
         }
@@ -679,7 +699,8 @@ class FolderAdapter {
         // under any Subsonic/Jellyfin host, and the shelf's own age test could not see them. The
         // subsonic adapter's addedAt comment already promised this field would be here.
         addedAt: a.addedAt ?? null,
-        coverId: a.coverId
+        coverId: a.coverId,
+        ...(a.kind ? { kind: a.kind } : {})
       }))
     }
 
@@ -718,6 +739,7 @@ class FolderAdapter {
         artist: a.artist,
         year: a.year,
         coverId: a.coverId,
+        ...(a.kind ? { kind: a.kind } : {}),
         tracks: a.trackIds.map(t => this._pub(this.tracks.get(t))).filter(Boolean)
       }
     }
@@ -781,7 +803,7 @@ class FolderAdapter {
       albums: this._sortedAlbums
         .filter(a => hit(a.name) || hit(a.artist))
         .slice(0, limit)
-        .map(a => ({ id: a.id, name: a.name, artist: a.artist, year: a.year, coverId: a.coverId })),
+        .map(a => ({ id: a.id, name: a.name, artist: a.artist, year: a.year, coverId: a.coverId, ...(a.kind ? { kind: a.kind } : {}) })),
       // The path stays searchable. It is the only thing an untagged library has,
       // and dropping it the day we learned to read tags would make search WORSE
       // for exactly the people this adapter exists for.

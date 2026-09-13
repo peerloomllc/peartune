@@ -244,7 +244,10 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         // timeOffsetMs (ffmpeg -ss); a phone that sees no caps seeks the old way,
         // keeping its clock and its audio telling the same story (found on a real
         // Pixel against a pre-timeOffset host: the clock jumped, the audio restarted).
-        return send.res.send({ id, body: { protocol: 1, libraryId, caps: { timeOffset: await hasFfmpeg() } } })
+        //
+        // books = this source labels audiobooks with kind:'book' (proposal 2026-09-13).
+        // Absent, not false, on a source that cannot: an older phone reads caps the same.
+        return send.res.send({ id, body: { protocol: 1, libraryId, caps: { timeOffset: await hasFfmpeg(), ...(getAdapter()?.books ? { books: 1 } : {}) } } })
 
       case 'library.stats':
         return send.res.send({ id, body: await adapterFor().stats() })

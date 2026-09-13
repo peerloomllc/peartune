@@ -52,7 +52,7 @@ book for offline listening and podcasts.
 
 A track is a book when either:
 
-- its file is `.m4b` (any source that reports `suffix`), or
+- its file is `.m4b`, or
 - it sits under a folder root the owner marked **Audiobooks** in the dashboard.
 
 Folder-source config keeps `roots: string[]` and gains `bookRoots: string[]`, a subset of
@@ -60,6 +60,9 @@ Folder-source config keeps `roots: string[]` and gains `bookRoots: string[]`, a 
 its own folder; a subfolder inside a music root cannot. An older host ignores the new key and shows those books as music, which is
 today's behaviour. Genre-tag detection ("Audiobook", "Spoken Word") is left out: tags are
 unreliable and a wrong guess hides music.
+
+Slice 1 does this for the folder source only. Subsonic and Jellyfin report a `suffix`
+too, but their album lists do not, so labelling their albums needs its own design; later.
 
 An album whose tracks are all books is a book. A book made of 40 mp3 parts is one album
 with 40 tracks, grouped by the existing album rules (folder.js:354).
@@ -136,7 +139,7 @@ The user who asked can listen after slices 1 and 2.
 
 | Host | Phone | Result |
 | --- | --- | --- |
-| New | Old | Books appear as albums, m4b now included. An old phone serves m4b as `application/octet-stream`: ExoPlayer sniffs the container, iOS may not. Check both in slice 1. |
+| New | Old | Books appear as albums, m4b now included. An old phone serves m4b as `application/octet-stream`. Android: checked 2026-09-13 on the emulator, it plays, including a seek to 9 h 35 min in the 10-hour book. iOS: not yet checked. |
 | Old | New | No `caps.books`: no Books segment, no bookmark button, today's app. |
 | New | New | Full feature |
 
