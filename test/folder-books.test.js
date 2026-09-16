@@ -263,3 +263,28 @@ test('a config saved before books existed loads unchanged', async (t) => {
   assert.deepEqual(s.view().kinds.folder.bookRoots, [])
   assert.deepEqual(migrate({ kind: 'folder', root: '/music' }).sources.folder, { roots: ['/music'] })
 })
+
+// Issue #430: a folder of podcast episodes marked as Audiobooks came out scrambled,
+// because the episodes carried track numbers that restart each year.
+test('a book with messy track numbers plays in file-name order', () => {
+  const order = (bookRoots, tracks) => {
+    const a = new FolderAdapter({ roots: ['/lib'], bookRoots, libraryId: LIB })
+    a._build(tracks.map(([relPath, track]) => ({
+      relPath, sourceKey: relPath, root: '/lib', absPath: '/lib/' + relPath, size: 1, addedAt: 1, suffix: 'mp3',
+      title: relPath, artist: 'Pod', albumArtist: null, album: 'Mystery', track, disc: null, year: null, genre: null, durationMs: 1000
+    })))
+    const album = [...a.albums.values()][0]
+    return album.trackIds.map(id => path.basename(a.tracks.get(id).title))
+  }
+  // Numbers restart each year: two parts share track 1.
+  const restarting = [['M/[2010-01-05] # 2', 1], ['M/[2009-11-12] # 1', 1], ['M/[2010-03-01] # 10', 2]]
+  assert.deepEqual(order(['/lib'], restarting), ['[2009-11-12] # 1', '[2010-01-05] # 2', '[2010-03-01] # 10'])
+  // Only some parts are numbered.
+  const partial = [['M/[2009-11-15] # 2', 2], ['M/[2009-11-12] # 1', null], ['M/[2009-11-19] # 3', null]]
+  assert.deepEqual(order(['/lib'], partial), ['[2009-11-12] # 1', '[2009-11-15] # 2', '[2009-11-19] # 3'])
+  // Clean numbers still win over file names: a ripped book named by chapter title.
+  const clean = [['M/Prologue', 1], ['M/The Storm', 3], ['M/Arrival', 2]]
+  assert.deepEqual(order(['/lib'], clean), ['Prologue', 'Arrival', 'The Storm'])
+  // Music keeps its old order: numbered tracks first, messy numbers and all.
+  assert.deepEqual(order([], partial), ['[2009-11-15] # 2', '[2009-11-12] # 1', '[2009-11-19] # 3'])
+})

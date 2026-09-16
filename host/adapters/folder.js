@@ -469,10 +469,16 @@ class FolderAdapter {
       artistRow.albumIds.push(id)
       artistRow.albumCount = artistRow.albumIds.length
 
-      // Pass 3: the tracks themselves.
-      const sorted = b.rows.sort(
-        (x, y) => (x.disc ?? 1) - (y.disc ?? 1) || (x.track ?? 9999) - (y.track ?? 9999) || cmp(x.title, y.title)
-      )
+      // Pass 3: the tracks themselves. A book trusts its track numbers only when every
+      // part has one and no two parts share one. Podcast episodes often carry numbers
+      // that restart each year or cover only some files, and sorting by those scrambles
+      // the book (issue #430), so a book with messy numbers goes by file name instead.
+      const byTags = (x, y) => (x.disc ?? 1) - (y.disc ?? 1) || (x.track ?? 9999) - (y.track ?? 9999) || cmp(x.title, y.title)
+      const cleanNumbers = (rows) => rows.every(r => r.track != null) &&
+        new Set(rows.map(r => `${r.disc ?? 1}|${r.track}`)).size === rows.length
+      const sorted = b.rows.every(isBook) && !cleanNumbers(b.rows)
+        ? b.rows.sort((x, y) => cmp(x.relPath, y.relPath))
+        : b.rows.sort(byTags)
       for (const r of sorted) {
         // sourceKey (the relPath, plus a per-root tag for non-primary roots) is what
         // makes an id stable across rescans and restarts as long as the file does not
