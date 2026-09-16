@@ -66,24 +66,8 @@ gallery:
   - https://peerloomllc.com/assets/gallery-peartune-2.jpg
   - https://peerloomllc.com/assets/gallery-peartune-3.jpg
 releaseNotes: |-
-  New Features
-  - Audiobooks. PearTune now plays audiobooks: m4b and m4a files, or books split into mp3 parts. In the dashboard, tick "Audiobooks" next to a folder and those books get their own Books section, with covers.
-  - Audiobookshelf support. If you use Audiobookshelf, add it in the dashboard and its books appear in PearTune next to your music. You can listen to them from anywhere without setting up remote access.
-  - Pick up where you left off. Books remember your place, even near the very end, and a "Continue listening" row takes you straight back. Everyone in your library keeps their own place.
-  - Chapters. Jump to the next or previous chapter, or choose one from a list. The current chapter shows under the controls.
-  - Playback speed. Listen to books anywhere from 0.8x to 2x. Music always plays at normal speed.
-  - Bookmarks. Save a spot in a book with an optional note. Jump back to it from the player or the book's page.
-  - End-of-chapter sleep timer. The sleep timer can stop playback when the current chapter ends.
-  Improvements
-  - Books replace Songs. The Library now shows Genres, Artists, Albums and Books. You can still find individual songs through search, albums and genres.
-  - Skip sizes. While a book plays, skip back 15 seconds or forward 30. The lock screen follows suit, and music stays at 15 either way.
-  - Lock screen matches the app. Lock-screen and headphone skips now move 15 seconds, the same as the buttons in the app. Before, they moved 10.
-  - Player layout. The back and forward buttons now sit at opposite ends of the player's second row.
-  - Long times. Times over an hour now show hours, e.g. 9:43:41.
-  - No shuffle for books. Books no longer offer Shuffle, since their parts only make sense in order.
-  - Scan summary. The dashboard's scan summary now counts your audiobooks.
-  Good to Know
-  - Audiobooks need the updated PearTune on your server as well as on your phone.
+  Bug Fixes
+  - Audiobooks and podcasts made of many files now play in the right order. Before, some folders showed their episodes jumbled, for example episode 300 before episode 1.
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the
