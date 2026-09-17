@@ -247,10 +247,11 @@ PATH="$XCODE_PATH" xcodebuild \
   -archivePath "$ARCHIVE_PATH" \
   DEVELOPMENT_TEAM="$TEAM_ID" \
   OTHER_CODE_SIGN_FLAGS="--keychain ~/Library/Keychains/buildkey.keychain" \
-  archive | grep -E "^(error:|warning:|note:|.*ARCHIVE)" || true
+  archive 2>&1 | tee /tmp/${APP_NAME}-archive.log | grep -E "^(error:|warning:|note:|.*ARCHIVE)|: error:" || true
 
 if [ ! -d "$ARCHIVE_PATH" ]; then
   echo "Error: archive failed - no .xcarchive at $ARCHIVE_PATH" >&2
+  grep -E "error:" "/tmp/${APP_NAME}-archive.log" | head -10
   exit 1
 fi
 echo "Archive complete: $ARCHIVE_PATH"
