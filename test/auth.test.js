@@ -333,7 +333,7 @@ test('A PASSWORD CHANGE STILL SIGNS NOBODY OUT - the reason this control exists'
 // --- secret files are owner-only, on READ as well as write (2026-08-31) ------
 
 test('a seed file restored world-readable is tightened when it is read', () => {
-  const { loadOrCreateSeed } = require('../host/identity')
+  const { loadOrCreateSeed } = require('@peerloom/host/identity')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pt-seed-'))
   try {
     // A seed as a backup restore, a scp, or an older build would leave it. The 0600
@@ -370,6 +370,6 @@ test('a dashboard-password file restored world-readable is tightened when it is 
 test('tighten never throws on a filesystem that cannot express the mode', () => {
   // A Windows volume, a FAT USB drive, some bind mounts. Refusing to run there to
   // enforce a mode the platform does not have would be the worse failure.
-  const { tighten } = require('../host/identity')
+  const { tighten } = require('@peerloom/host/identity')
   assert.equal(tighten(path.join(os.tmpdir(), 'peartune-no-such-file-' + Date.now())), false)
 })

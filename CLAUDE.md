@@ -33,7 +33,7 @@ playback, shuffle/repeat, per-person grants, the app shell (bottom navbar, nav
 stack, Android back, Settings, About) and artist browsing all shipped.
 
 Milestones 3 and 4 shipped too, and NOT the way the original plan said: user state
-(favorites, resume, counts, playlists) is stored ON THE HOST (host/state.js,
+(favorites, resume, counts, playlists) is stored ON THE HOST (`UserState` in `@peerloom/host`, ../peerloom-host/src/state.js,
 host-as-hub), which superseded the 2026-07-13 Autobase-ledger design - there is no
 Autobase anywhere in this tree. The app is released: App Store, Play, Zapstore, the
 Umbrel community store and GitHub, one version number across all of them (1.0.6 as

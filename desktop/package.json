@@ -24,6 +24,7 @@
     "is what lets electron-builder cross-build the Windows target from Linux."
   ],
   "dependencies": {
+    "@peerloom/host": "file:../../peerloom-host",
     "b4a": "^1.6.7",
     "compact-encoding": "^2.16.0",
     "corestore": "^7.4.4",

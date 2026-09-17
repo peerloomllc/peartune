@@ -13,8 +13,8 @@ const Hyperbee = require('hyperbee')
 const hcrypto = require('hypercore-crypto')
 const z32 = require('z32')
 
-const { Grants, confirmedClaim } = require('../host/grants')
-const { decide } = require('../host/gate')
+const { Grants, confirmedClaim } = require('@peerloom/host/grants')
+const { decide } = require('@peerloom/host/gate')
 
 async function store (t) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pt-grants-'))
@@ -454,7 +454,7 @@ test('setScope refuses a revoked or unknown device', async (t) => {
 // operator asks for one, and personLabels suffixes them so a revoke button names someone
 // specific.
 
-const { personLabels } = require('../host/grants')
+const { personLabels } = require('@peerloom/host/grants')
 
 test('personLabels suffixes ONLY the names that clash', () => {
   const labels = personLabels([

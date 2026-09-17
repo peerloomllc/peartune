@@ -12,7 +12,7 @@ const EventEmitter = require('events')
 const hcrypto = require('hypercore-crypto')
 const z32 = require('z32')
 
-const { decide, sweepKills, carryOverPerson, Connections } = require('../host/gate')
+const { decide, sweepKills, carryOverPerson, Connections } = require('@peerloom/host/gate')
 
 const NOW = 1_000_000
 const okGrant = (over = {}) => ({
@@ -253,7 +253,7 @@ test('Connections: deviceKeys lists exactly the devices holding a live connectio
 
 // --- the goodbye (proposal 2026-08-31-grant-fixes-trio) ----------------------
 
-const { mayBeToldWhy, FarewellBook } = require('../host/gate')
+const { mayBeToldWhy, FarewellBook } = require('@peerloom/host/gate')
 
 test('mayBeToldWhy: exactly the once-granted refusals, never no-grant', () => {
   // A tombstoned grant proved possession of a key this host issued - saying "not

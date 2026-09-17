@@ -25,31 +25,32 @@
 // GRANTED phone's every reconnect is then refused (measured 2026-07-22). So the
 // host stays on createServer; only the PHONE gets Hyperswarm's ConnectionManager,
 // which is where the retry-forever + keepalive that actually fixes off-LAN lives.
+//
+// ON @peerloom/host (proposal 2026-08-12-shared-host, option C; migration plan
+// proposals/2026-09-17-peartune-host-migration-plan.md). The server, firewall, pairing,
+// grants, presence, announce, sweep and every operator action that cuts somebody off
+// are LibraryHost's. This class is what is PearTune: music sources, library settings,
+// Home Assistant speakers and voice, the request queue and now-playing. It wires those
+// in through LibraryHost's hooks and exposes the host's pieces under the names the
+// dashboard, index.js and the tests have always used.
 
 const path = require('path')
 const fs = require('fs')
-const HyperDHT = require('hyperdht')
-const Corestore = require('corestore')
-const Hyperbee = require('hyperbee')
-const Protomux = require('protomux')
-const b4a = require('b4a')
 const crypto = require('crypto')
 const z32 = require('z32')
 
-const { createIdentity } = require('./identity')
-const { Grants } = require('./grants')
-const { UserState } = require('./state')
-const { decide, mayBeToldWhy, FarewellBook, sweepKills, Connections } = require('./gate')
-const { normalisePaths } = require('./visibility')
-const { Presence, notifyOwners } = require('./presence')
+const { LibraryHost, Grants, notifyOwners, createProtocol } = require('@peerloom/host')
+const { SCOPE } = require('@peerloom/host/constants')
+const { createMedia } = require('./media')
 const { AvatarStore } = require('./avatars')
+const { Speakers, canWriteHaConfig } = require('./speakers')
+const { CastSessions } = require('./cast')
+const { SourceStore, buildAdapter, buildBooksAdapter, composeAdapter } = require('./source')
 
-// How often to sweep live connections for an expired guest grant. `decide()` covers
-// connect; this covers a guest that expires WHILE connected. 30s is fine for a scheduled
-// expiry - unlike revoke's instant, event-driven kill, nobody is racing a lost phone here.
-const EXPIRY_SWEEP_MS = 30_000
-
-// How long a play session stays believable on the dashboard with no heartbeat (listDevices).
+// The wire every paired phone already speaks. `peartune` is a DATA identifier, not a
+// label: it seeds libraryId and every id derived from it (peerloom-host CLAUDE.md), and
+// peerloom-host/test/brand-compat.test.js pins what it must produce.
+const PROTOCOL = createProtocol({ app: 'peartune', displayName: 'PearTune' })
 
 // How long a device's own now-playing report stands before we drop it. The phone refreshes it on
 // the same ~4s heartbeat that carries the queue, so this is a few missed beats - long enough to
@@ -63,95 +64,13 @@ const EXPIRY_SWEEP_MS = 30_000
 // dashboards claiming two different songs, both "now playing". A host sees requests, not
 // playback; only the phone knows.
 const NOWPLAYING_STALE_MS = 20 * 1000
-const { serveMedia, serveFarewell } = require('./media')
-const { Speakers, canWriteHaConfig } = require('./speakers')
-const { CastSessions } = require('./cast')
-const { PairSession, tokenEquals } = require('./pair')
-const { SCOPE } = require('../protocol/constants')
-const { SourceStore, buildAdapter, buildBooksAdapter, composeAdapter } = require('./source')
-const { pruneRocksLogs } = require('./logprune')
-const { hostTopic } = require('../protocol/ids')
-const { PAIR_PROTOCOL, MEDIA_PROTOCOL } = require('../protocol/constants')
-
-// How often to re-announce the discovery topic (proposal 2026-07-22). A HyperDHT
-// announce record lives ~20 min on the nodes holding it (defaultMaxAge), so we
-// refresh well inside that - 10 min matches Hyperswarm's own announcer interval.
-// unref'd, so it never keeps the process alive on its own.
-const TOPIC_REANNOUNCE_MS = 10 * 60 * 1000
-
-// A single announce right after startup can silently fail to propagate against a
-// cold DHT routing table (the record resolves but does not reach the topic's
-// keyspace nodes), and the steady re-announce above is 10 min away - long enough
-// that a freshly-started host looks unreachable in the meantime. Observed once
-// after a host wipe (2026-07-23); a controlled wipe on 2026-07-24 recovered in
-// <1s, so this is belt-and-suspenders for the rare cold-announce case, not a fix
-// for a reproduced bug. Re-announce a few times early to shrink that worst case
-// from ~10 min to <2 min. One-shot, unref'd, cleared on close.
-const TOPIC_EARLY_REANNOUNCE_MS = [20 * 1000, 60 * 1000, 120 * 1000]
-
-// Keep this many of RocksDB's rotated info logs (store/db/LOG.old.*) for debugging; prune the
-// rest. RocksDB rotates them only on reopen, so pruning at startup keeps the count bounded; the
-// 12h re-prune is cheap insurance. See host/logprune.js. NOT data - the .sst/.log/MANIFEST are
-// never touched.
-const ROCKS_LOG_KEEP = 3
-const ROCKS_LOG_PRUNE_MS = 12 * 60 * 60_000
 
 class PearTuneHost {
   constructor ({ dataDir, musicDir, libraryName = 'My Library', subsonic = null, dht = null, bootstrap = null, dhtPort = null, log = () => {} }) {
     this.dataDir = path.resolve(dataDir)
     this.musicDir = musicDir
-    // A persisted operator rename (library.json) wins over the env/CLI default, so the
-    // name set in the dashboard survives a restart even though PEARTUNE_NAME is still
-    // set - the same precedence the source config uses (host/source.js).
-    this.libraryName = this._readLibraryName() || libraryName
     this.log = log
 
-    this.identity = createIdentity(this.dataDir)
-    this.libraryId = this.identity.libraryId
-
-    this._ownDht = !dht
-    // dhtPort pins the DHT's UDP socket. Unset keeps today's behaviour, which is a
-    // RANDOM port per process - note that is despite `opts.port || 49737` in
-    // hyperdht/index.js, which is only a preference and does not survive (measured
-    // 36600 / 42742 / 59270 over three runs).
-    //
-    // A pinned port only matters where something outside the process has to forward
-    // to it: a router port-forward, or StartOS 0.4's `bindPortRange`, which cannot
-    // forward a port that changes every restart. See
-    // proposals/2026-07-29-start9-bindportrange.md.
-    this.dht = dht || new HyperDHT({
-      ...(bootstrap ? { bootstrap } : {}),
-      ...(dhtPort ? { port: Number(dhtPort) } : {})
-    })
-
-    this.store = new Corestore(path.join(this.dataDir, 'store'))
-    this.bee = new Hyperbee(this.store.get({ name: 'grants' }), {
-      keyEncoding: 'utf-8',
-      valueEncoding: 'json'
-    })
-    this.grants = new Grants(this.bee)
-
-    // User state (favorites, later resume/counts/playlists) - HOST-AS-HUB, milestone 3.
-    // A SEPARATE Hyperbee from grants, on purpose: grants are a single-purpose,
-    // never-replicated security surface, and user state should not share that store or
-    // its rules. Both live in the one corestore.
-    this.stateBee = new Hyperbee(this.store.get({ name: 'state' }), {
-      keyEncoding: 'utf-8',
-      valueEncoding: 'json'
-    })
-    this.userState = new UserState(this.stateBee)
-
-    this.connections = new Connections()
-    // The goodbye rate limit (gate.js): which refused-but-once-granted keys have already
-    // been told why, so a revoked phone that keeps knocking is denied silently after its
-    // one explanation per minute. `_farewellReasons` carries the reason from the firewall
-    // (which decides a goodbye is owed) to the media handshake (which delivers it).
-    this._farewells = new FarewellBook()
-    this._farewellReasons = new Map()
-    // deviceKey -> Set<serveMedia handle>: the live media channels per device, so a grant
-    // edit can refresh a connection IN PLACE (handle.setGrant) instead of waiting for the
-    // phone to reconnect. Pruned when the connection closes.
-    this._mediaHandles = new Map()
     // deviceKey -> { trackId, at }: the last track THIS host served that device. In memory on
     // purpose - it describes right now, not history, and a restart should forget it. One entry per
     // paired device at most, overwritten per request.
@@ -160,56 +79,109 @@ class PearTuneHost {
     // us. In memory and short-lived on purpose - see NOWPLAYING_STALE_MS.
     this._nowPlaying = new Map()
 
-    // The registry that lets a session.claim on one device's connection push "you lost the
-    // token" to another device's connection (host/presence.js). Only ever holds channels the
-    // firewall already admitted; a revoke destroys the connection, which unregisters here.
-    this.presence = new Presence()
+    this.host = new LibraryHost({
+      protocol: PROTOCOL,
+      dataDir: this.dataDir,
+      // A persisted operator rename (library.json) wins over the env/CLI default, so the
+      // name set in the dashboard survives a restart even though PEARTUNE_NAME is still
+      // set - the same precedence the source config uses (host/source.js).
+      libraryName: this._readLibraryName() || libraryName,
+      dht,
+      bootstrap,
+      // dhtPort pins the DHT's UDP socket, for a router port-forward or StartOS 0.4's
+      // bindPortRange (proposals/2026-07-29-start9-bindportrange.md). Unset is a random port.
+      dhtPort,
+      log,
+      // A speaker is NOT one of the connections kill() destroys - the audio reaches it from
+      // this process, not from the revoked phone. The package calls this wherever it kills
+      // connections (revoke, leave, expiry, delete, person revoke), and sweeps the casting
+      // keys too, so a phone that cast and closed its app still expires. See host/cast.js.
+      // Lazy: this.casts is built below, after the host it needs.
+      silence: (deviceKey) => this.casts ? this.casts.stopFor(deviceKey) : 0,
+      extraLiveKeys: () => this.casts ? this.casts.deviceKeys() : [],
+      decorateDevice: (row, { online }) => this._decorateDevice(row, online),
+      // Don't orphan the photo file.
+      onDeviceDeleted: (deviceKey) => this.avatars.delete(deviceKey),
+      // Deleting the person ALSO purges their user state, because the personId is minted
+      // fresh and never reused - so those favorites, resume points, counts and playlists
+      // become unreachable the moment the row goes.
+      onPersonDeleted: (personId) => this.host.userState.deleteOwner('p:' + personId),
+      media: (host) => createMedia({
+        // A GETTER, not the adapter itself. A connection outlives a source change,
+        // and a phone that keeps streaming from the source you just switched away
+        // from is a bug you would not find for weeks.
+        getAdapter: () => this.adapter,
+        // A getter too: the operator can rename the library mid-connection, and identity.get
+        // (refreshed on every connect) hands the CURRENT name back so the phone updates live.
+        libraryName: () => this.libraryName,
+        grants: host.grants,
+        state: host.userState,
+        presence: host.presence,
+        avatars: this.avatars,
+        // device.leave: the phone removed this library, so drop ITS OWN grant + cut the
+        // connection (proposal 2026-07-20).
+        onLeave: (deviceKey) => this.leaveDevice(deviceKey),
+        // Every served track, per device: what THIS host is actually streaming right now.
+        onStream: (deviceKey, trackId) => this._noteStreaming(deviceKey, trackId),
+        // The phone's own statement of what it is playing from us (proposal 2026-07-28).
+        onNowPlaying: (deviceKey, np) => this._noteNowPlaying(deviceKey, np),
+        // Owner maintenance from the app (proposal 2026-07-24, P2). Bound host operations,
+        // never the host itself - media.js gates them on grant.scope === 'owner'.
+        owner: {
+          listDevices: () => this.listDevices(),
+          revokeDevice: (deviceKey) => this.revokeDevice(deviceKey),
+          getGrant: (deviceKey) => this.grants.get(deviceKey),
+          claim: (deviceKey, code) => this.claimOwner(deviceKey, code),
+          // P2b: a NORMAL/guest window - never an owner one, so an owner phone can't mint
+          // more owners (security review).
+          pairStart: ({ expiresMs } = {}) => this.startPairing({ expiresMs, owner: false }),
+          pairStop: () => this.stopPairing(),
+          pairState: () => ({ pairing: this.pairing, link: this.pairSession && !this.pairSession.closed ? this.pairSession.link : null }),
+          requests: () => this.ownerRequestList(),
+          resolveRequest: (id, status) => this.resolveRequestAndNotify(id, status)
+        },
+        // Home Assistant speaker playback (proposal 2026-08-01). media.js gates every one on
+        // the grant's scope, because casting makes noise in somebody's house.
+        speakers: {
+          enabled: () => this.speakers.enabled,
+          list: () => this.speakers.list(),
+          state: (entityId) => this.speakers.getState(entityId),
+          setVolume: (entityId, level) => this.speakers.setVolume(entityId, level),
+          pause: (entityId) => this.speakers.pause(entityId),
+          resume: (entityId) => this.speakers.resume(entityId),
+          // deviceKey is bound from THIS connection's grant by media.js, never a param.
+          play: (deviceKey, entityId, trackId) => this.casts.play({ deviceKey, entityId, trackId }),
+          stop: (deviceKey, entityId) => this.casts.stop(deviceKey, entityId),
+          active: (deviceKey) => this.casts.active(deviceKey)
+        }
+      })
+    })
 
     // Device avatars (a photo the user sets on their phone, sent over the identity
     // channel). Files in the data dir, keyed by deviceKey - see host/avatars.js.
     this.avatars = new AvatarStore(path.join(this.dataDir, 'avatars'))
 
-    // One interface, two implementations. The app never learns which is behind the
-    // media API, which is what keeps the raw-folder path a first-class citizen
-    // instead of a fallback nobody tests.
-    //
-    // WHICH one is now the OPERATOR's choice (source.json), not the container's
-    // (env vars) - see host/source.js. Somebody installing this from an app store is
-    // never going to hand-edit a compose file, and without Navidrome they would get a
-    // library of filenames.
-    //
-    // ONE CONFIG PER KIND (host/source.js). Switching Navidrome -> Folder no longer
-    // throws the Navidrome credentials away; `active` is a pointer, and every kind
-    // keeps its own row.
+    // One interface, several implementations, chosen by the OPERATOR (source.json), not the
+    // container's env vars - see host/source.js. One config per kind: switching Navidrome ->
+    // Folder keeps the Navidrome credentials; `active` is a pointer.
     this.sources = new SourceStore({
       dataDir: this.dataDir,
-      // The env/CLI credential blob (PEARTUNE_NAVIDROME_* / --navidrome) now builds a
+      // The env/CLI credential blob (PEARTUNE_NAVIDROME_* / --navidrome) builds a
       // 'subsonic'-kind source. The env var NAMES are kept - people have them set.
       env: subsonic ? { subsonic } : null,
       musicDir: this.musicDir
     })
     this.source = this.sources.active()
     // The library is the music adapter, combined with an Audiobookshelf books source when one
-    // is configured (proposal 2026-09-13-audiobookshelf-books-source). Both are kept so either
-    // side can be swapped without rebuilding the other.
+    // is configured (proposal 2026-09-13-audiobookshelf-books-source).
     this.musicAdapter = this._build(this.source)
     const booksCfg = this.sources.books()
     this.booksAdapter = booksCfg ? buildBooksAdapter(booksCfg, { libraryId: this.libraryId, log: this.log }) : null
     this.adapter = composeAdapter(this.musicAdapter, this.booksAdapter, { log: this.log })
     this.sourceError = null
-    this.server = null
-    this.pairSession = null
 
-    // Discovery topic + its re-announce timer (proposal 2026-07-22 phase 1).
-    // Derived from the host key, so the phone derives the same one from the
-    // hostKey it holds. Set in ready() once the server is listening.
-    this._topic = null
-    this._reannounce = null
-    this._earlyReannounce = null
-
-    // Home Assistant speaker playback (proposal 2026-08-01). Both are inert until
-    // an operator configures HA in the dashboard: `speakers.enabled` is false with
-    // no speakers.json, and CastSessions binds nothing until the first play.
+    // Home Assistant speaker playback (proposal 2026-08-01). Both are inert until an
+    // operator configures HA in the dashboard.
     this.speakers = new Speakers({ dataDir: this.dataDir, log: this.log })
     this.casts = new CastSessions({
       speakers: this.speakers,
@@ -220,9 +192,22 @@ class PearTuneHost {
     })
   }
 
-  get publicKey () {
-    return this.identity.publicKey
-  }
+  // --- the package's pieces, under the names this app has always used ------------
+
+  get identity () { return this.host.identity }
+  get libraryId () { return this.host.libraryId }
+  get publicKey () { return this.host.publicKey }
+  get dht () { return this.host.dht }
+  get grants () { return this.host.grants }
+  get userState () { return this.host.userState }
+  get connections () { return this.host.connections }
+  get presence () { return this.host.presence }
+  get pairSession () { return this.host.pairSession }
+  get pairing () { return this.host.pairing }
+  get server () { return this.host.server }
+  get _earlyReannounce () { return this.host._earlyReannounce }
+  get libraryName () { return this.host.libraryName }
+  set libraryName (name) { this.host.libraryName = name }
 
   _build (cfg) {
     return buildAdapter(cfg, {
@@ -390,20 +375,16 @@ class PearTuneHost {
     return this.sources.view()
   }
 
-  get pairing () {
-    return !!(this.pairSession && !this.pairSession.closed)
-  }
-
   async ready () {
-    await this.bee.ready()
-    await this.stateBee.ready()
-
     // A BAD SOURCE MUST NOT STOP THE HOST FROM STARTING.
     //
     // If the saved Navidrome credentials are wrong (someone rotated the password,
     // the container moved), scan() throws - and if that killed the process, the
     // operator would be locked out of the very dashboard they need in order to fix
     // it. So: come up, serve the dashboard, and say what is wrong.
+    //
+    // Scanned BEFORE the host listens, as it always was, so a phone never sees an
+    // unscanned library.
     try {
       const n = await this.adapter.scan()
       this.log('host:scanned', { source: this.adapter.kind, tracks: n })
@@ -427,417 +408,61 @@ class PearTuneHost {
     // Arm the scheduled auto-rescan from the persisted setting (a no-op when off).
     this._armRescan()
 
-    this.server = this.dht.createServer({
-      firewall: (remotePublicKey) => this._firewall(remotePublicKey)
-    }, (conn) => this._onconnection(conn))
-
-    await this.server.listen(this.identity.keyPair)
-
-    // Announce the discovery topic so a topic-joining phone finds the host by
-    // lookup (proposal 2026-07-22 phase 1). Best-effort and awaited-but-swallowed:
-    // a slow or failing announce must NOT stop the host from starting - the raw
-    // dht.connect(hostKey) path still works without it, and the re-announce below
-    // will retry. Then refresh it periodically before the ~20 min record TTL.
-    this._topic = hostTopic(this.identity.publicKey)
-    await this._announceTopic()
-    this._reannounce = setInterval(() => { this._announceTopic() }, TOPIC_REANNOUNCE_MS)
-    if (this._reannounce.unref) this._reannounce.unref()
-    // Early one-shot re-announces to cover a cold-table first announce (see
-    // TOPIC_EARLY_REANNOUNCE_MS). Best-effort and unref'd, so they never hold the
-    // process open; cleared in close().
-    this._earlyReannounce = TOPIC_EARLY_REANNOUNCE_MS.map((ms) => {
-      const t = setTimeout(() => { this._announceTopic() }, ms)
-      if (t.unref) t.unref()
-      return t
-    })
-
-    // Cut guest connections whose grant has expired since they dialed in (see
-    // EXPIRY_SWEEP_MS). unref so it never keeps the process alive on its own.
-    this._sweep = setInterval(() => { this._sweepExpired().catch(() => {}) }, EXPIRY_SWEEP_MS)
-    if (this._sweep.unref) this._sweep.unref()
-
-    // Prune RocksDB's rotated info logs (LOG.old.*) - once now (clears what prior restarts
-    // left), then periodically. unref'd, same as the sweep.
-    this._pruneRocksLogs()
-    this._logPrune = setInterval(() => this._pruneRocksLogs(), ROCKS_LOG_PRUNE_MS)
-    if (this._logPrune.unref) this._logPrune.unref()
-
-    this.log('host:listening', {
-      hostKey: z32.encode(this.identity.publicKey),
-      libraryId: this.libraryId
-    })
-
+    await this.host.ready()
     return this
   }
 
-  // (Re-)announce the discovery topic on the DHT. Signed with the host keypair, so
-  // the record authentically points a topic-lookup at THIS host. Never throws: a
-  // failed announce only means new topic-clients cannot find us yet (the raw
-  // dht.connect path and already-connected phones are unaffected), and the timer
-  // retries. Proposal 2026-07-22 phase 1.
-  async _announceTopic () {
-    if (!this._topic) return
-    try {
-      await this.dht.announce(this._topic, this.identity.keyPair).finished()
-      this.log('host:announced', { topic: z32.encode(this._topic).slice(0, 8) })
-    } catch (e) {
-      this.log('host:announce-failed', { err: e.message })
-    }
-  }
+  // --- operator actions: the package does the work, this adds PearTune's rules ------
 
-  // Delete all but the most-recent RocksDB info logs (store/db/LOG.old.*) so they do not
-  // grow without bound. Safe: only LOG.old.* is ever touched - no data, no WAL, no MANIFEST.
-  _pruneRocksLogs () {
-    const deleted = pruneRocksLogs(path.join(this.dataDir, 'store', 'db'), ROCKS_LOG_KEEP)
-    if (deleted) this.log('host:log-pruned', { deleted, kept: ROCKS_LOG_KEEP })
-  }
-
-  // Walk the live-connection devices and kill any whose grant decide() now refuses -
-  // an expired guest, mostly (a revoke already killed on its own event). Loads each
-  // lookup, then delegates the selection to the pure gate.sweepKills.
-  //
-  // CASTING DEVICES ARE SWEPT TOO, even with no live connection. A phone can start a
-  // cast and close the app: the connection goes, the speaker keeps playing, and a
-  // connection-only sweep would never look at that device again - so an expiring
-  // guest grant would leave music playing indefinitely.
-  async _sweepExpired () {
-    const keys = [...new Set([...this.connections.deviceKeys(), ...this.casts.deviceKeys()])]
-    if (!keys.length) return
-    const lookups = new Map()
-    for (const key of keys) lookups.set(key, await this.grants.lookup(key))
-    for (const key of sweepKills(keys, lookups)) {
-      const killed = this.connections.kill(key)
-      const silenced = await this.casts.stopFor(key).catch(() => 0)
-      this.log('host:expired', { device: key.slice(0, 8), killed, silenced })
-    }
-  }
-
-  // HyperDHT awaits this hook, so touching the Hyperbee here is fine. It also
-  // initialises `firewalled: true` and SWALLOWS a throw, so any error in this
-  // path fails CLOSED (denied). test/gate.test.js pins that behavior, because a
-  // future hyperdht bump that flipped it to fail-open would silently expose
-  // every library in the wild.
-  //
-  // Returns TRUE to DENY.
-  async _firewall (remotePublicKey) {
-    const short = z32.encode(remotePublicKey).slice(0, 8)
-
-    const lookup = await this.grants.lookup(remotePublicKey)
-    const { allow, reason } = decide(lookup)
-
-    if (allow) {
-      this.log('gate:allow', { device: short, reason })
-      return false
-    }
-
-    // Chicken-and-egg: a device that has never paired HAS no grant, so the gate
-    // must let it in far enough to pair. It is admitted only while the operator
-    // has a window open, and _onconnection gives it the pairing channel ONLY -
-    // never the media API. It still has to present the QR token to get a grant.
-    if (this.pairing) {
-      this.log('gate:allow-for-pairing', { device: short })
-      return false
-    }
-
-    // A DEVICE WE ONCE LET IN IS TOLD SO, ONCE, and then refused like anybody else.
-    //
-    // Without this a revoked phone says "could not reach the host" and knocks every
-    // few seconds forever, and the person blames their network. Admitting the
-    // connection is what makes a goodbye possible at all; _onconnection gives it a
-    // channel with NO methods on it and destroys it (media.serveFarewell).
-    //
-    // RATE-LIMITED, because this is a socket a refused peer can open. One goodbye per
-    // key per minute (gate.FarewellBook); every other attempt is denied exactly as
-    // before, so a phone that ignores the goodbye cannot use it to keep a host
-    // answering.
-    if (mayBeToldWhy(reason) && this._farewells.shouldSay(z32.encode(remotePublicKey))) {
-      this.log('gate:farewell', { device: short, reason })
-      this._farewellReasons.set(z32.encode(remotePublicKey), reason)
-      return false
-    }
-
-    this.log('gate:deny', { device: short, reason })
-    return true
-  }
-
-  // SYNCHRONOUS on purpose, and it registers Protomux `pair` handlers rather
-  // than creating channels directly.
-  //
-  // This is the second time this exact bug has bitten the suite (see the
-  // @peerloom/core writer-admission fix). Protomux REJECTS a channel the remote
-  // opens if we have not created our side yet AND no `mux.pair` notify handler
-  // is registered for that (protocol, id) - see `_requestSession` in
-  // protomux/index.js. The client dials and opens its channel immediately, so
-  // any `await` before we set our side up (a Hyperbee grant lookup, say) loses
-  // the race and the connection dies for no visible reason.
-  //
-  // `mux.pair` is the supported way to say "I will build my side when you ask
-  // for it". Protomux awaits the callback, so the async grant lookup is fine
-  // INSIDE it - just not before it.
-  _onconnection (conn) {
-    const remoteKey = conn.remotePublicKey
-    const short = z32.encode(remoteKey).slice(0, 8)
-    const id = b4a.from(this.libraryId)
-
-    conn.on('error', () => {}) // a peer vanishing is normal, not an event
-
-    // Registered even while unpaired, so a revoke landing mid-pair can still
-    // find and kill the connection.
-    this.connections.add(remoteKey, conn)
-
-    const mux = Protomux.from(conn)
-
-    mux.pair({ protocol: PAIR_PROTOCOL, id }, () => {
-      // The window may have closed between the firewall admitting this device
-      // and it asking to pair. A race must never become an admission.
-      if (!this.pairing) {
-        this.log('host:pair-window-closed', { device: short })
-        conn.destroy()
-        return
-      }
-      this.log('host:pairing-connection', { device: short })
-      this.pairSession.serve(conn)
-    })
-
-    mux.pair({ protocol: MEDIA_PROTOCOL, id }, async () => {
-      const lookup = await this.grants.lookup(remoteKey)
-      const { allow, reason } = decide(lookup)
-
-      // The firewall let this device through, but that may have been the
-      // pairing exemption. Reaching the MEDIA api requires a real grant.
-      if (!allow) {
-        this.log('host:media-denied', { device: short, reason })
-        // The firewall admitted this one to say goodbye. The channel it gets here
-        // has no method table on it, so the device can be told and nothing else.
-        const farewell = this._farewellReasons.get(z32.encode(remoteKey))
-        if (farewell && mayBeToldWhy(reason)) {
-          this._farewellReasons.delete(z32.encode(remoteKey))
-          serveFarewell({
-            conn,
-            libraryId: this.libraryId,
-            reason,
-            log: (m, d) => this.log(m, { device: short, ...d })
-          })
-          return
-        }
-        conn.destroy()
-        return
-      }
-
-      await this.grants.touch(remoteKey)
-      this.log('host:connected', { device: short, live: this.connections.size })
-
-      const handle = serveMedia({
-        conn,
-        libraryId: this.libraryId,
-        // A GETTER, not the adapter itself. A connection outlives a source change,
-        // and a phone that keeps streaming from the source you just switched away
-        // from is a bug you would not find for weeks.
-        getAdapter: () => this.adapter,
-        // A getter too: the operator can rename the library mid-connection, and identity.get
-        // (refreshed on every connect) hands the CURRENT name back so the phone updates live.
-        libraryName: () => this.libraryName,
-        grant: lookup.grant,
-        // Every served track, per device: what THIS host is actually streaming right now. See
-        // _noteStreaming.
-        onStream: (trackId) => this._noteStreaming(lookup.grant.deviceKey, trackId),
-        // The phone's own statement of what it is playing from us (proposal 2026-07-28). The
-        // deviceKey comes from THIS connection's Noise-authenticated grant, so a device can only
-        // ever speak about itself.
-        onNowPlaying: (np) => this._noteNowPlaying(lookup.grant.deviceKey, np),
-        // The host-as-hub user-state store. serveMedia derives the owner from THIS
-        // connection's grant, so a device can only ever read/write its own state.
-        state: this.userState,
-        // Passed so a device can name ITSELF (identity.set). The row it may write
-        // is fixed by `grant`, which came from the Noise-authenticated key of this
-        // very connection - see host/grants.js setIdentity.
-        grants: this.grants,
-        // So a session.claim here can push "you were superseded" to the device that
-        // held the token (cross-device handoff, instant presence).
-        presence: this.presence,
-        // device.leave: the phone removed this library, so drop ITS OWN grant + cut the
-        // connection (proposal 2026-07-20). Bound here so serveMedia never holds the host.
-        onLeave: (deviceKey) => this.leaveDevice(deviceKey),
-        // A device sets its own avatar (identity.avatar), keyed by this connection's
-        // Noise-authenticated deviceKey - it can only ever write its own.
-        avatars: this.avatars,
-        // Owner maintenance from the app (proposal 2026-07-24, P2). Bound host operations,
-        // never the host itself - media.js gates them on grant.scope === 'owner'. Kept to
-        // the small v1 surface: see the device list, and revoke a device (which cuts its
-        // live connections, same teeth as the dashboard).
-        owner: {
-          listDevices: () => this.listDevices(),
-          revokeDevice: (deviceKey) => this.revokeDevice(deviceKey),
-          getGrant: (deviceKey) => this.grants.get(deviceKey),
-          // Promote THIS connection to owner via the open owner window's code (P2, the
-          // connected-device path). deviceKey is bound to the connection's own grant.
-          claim: (deviceKey, code) => this.claimOwner(deviceKey, code),
-          // P2b: open a pairing window remotely (a NORMAL/guest window - never an owner one,
-          // so an owner phone can't mint more owners - security review), work the request queue.
-          pairStart: ({ expiresMs } = {}) => this.startPairing({ expiresMs, owner: false }),
-          pairStop: () => this.stopPairing(),
-          pairState: () => ({ pairing: this.pairing, link: this.pairSession && !this.pairSession.closed ? this.pairSession.link : null }),
-          requests: () => this.ownerRequestList(),
-          resolveRequest: (id, status) => this.resolveRequestAndNotify(id, status)
-        },
-        // Home Assistant speaker playback (proposal 2026-08-01). Bound operations only,
-        // never the host - and media.js gates every one on the grant's scope, because
-        // casting makes noise in somebody's house.
-        speakers: {
-          enabled: () => this.speakers.enabled,
-          list: () => this.speakers.list(),
-          state: (entityId) => this.speakers.getState(entityId),
-          setVolume: (entityId, level) => this.speakers.setVolume(entityId, level),
-          pause: (entityId) => this.speakers.pause(entityId),
-          resume: (entityId) => this.speakers.resume(entityId),
-          // deviceKey is bound from THIS connection's grant by media.js, never a param.
-          play: (deviceKey, entityId, trackId) => this.casts.play({ deviceKey, entityId, trackId }),
-          stop: (deviceKey, entityId) => this.casts.stop(deviceKey, entityId),
-          active: (deviceKey) => this.casts.active(deviceKey)
-        },
-        log: (msg, data) => this.log(msg, { device: short, ...data })
-      })
-
-      // Remembered so a grant edit can refresh this connection's snapshot in place
-      // (handle.setGrant, proposal 2026-08-31-grant-fixes-trio). Keyed the way the
-      // grant store keys devices, pruned when the connection closes.
-      if (handle) {
-        const dk = lookup.grant.deviceKey
-        let set = this._mediaHandles.get(dk)
-        if (!set) { set = new Set(); this._mediaHandles.set(dk, set) }
-        set.add(handle)
-        conn.once('close', () => {
-          set.delete(handle)
-          if (set.size === 0 && this._mediaHandles.get(dk) === set) this._mediaHandles.delete(dk)
-        })
-      }
-    })
-  }
-
-  // Change which person a device belongs to, THROUGH the host rather than straight at
-  // the store: the store write alone leaves every live connection filing state under
-  // the old owner until the phone happens to reconnect. This refreshes each live
-  // connection's grant snapshot in place and pushes 'grant:changed' so the phone can
-  // refresh whatever it derived from the old grant.
-  async assignDevice (deviceKey, personId) {
-    const row = await this.grants.assign(deviceKey, personId)
-    if (!row) return null
-    const refreshed = this.refreshGrant(row)
-    const notified = this.presence.notify(row.deviceKey, 'grant:changed', { libraryId: this.libraryId, personId: row.personId || null })
-    this.log('host:grant-changed', { device: String(row.deviceKey).slice(0, 8), refreshed, notified })
-    return { grant: row, refreshed }
-  }
-
-  // Narrow (or widen) a person to chosen folders, THROUGH the host: the store write
-  // plus the live refresh plus the push, so the very next request from any of their
-  // connected devices is already filtered (proposal 2026-08-31-per-person-folders).
-  async setPersonPaths (personId, paths) {
-    // A source that cannot enforce a narrowing must not accept one - the People page
-    // never offers it, and this refusal is the API's word for the same rule. An
-    // EXISTING narrowing under a swapped source fails closed in visibility.viewOf.
+  // A source that cannot enforce a narrowing must not accept one - the People page never
+  // offers it, and this refusal is the API's word for the same rule. An EXISTING narrowing
+  // under a swapped source fails closed in visibility.viewOf.
+  _refuseNarrowingIfUnsupported (paths) {
     if (paths != null && !(this.adapter && this.adapter.canNarrow)) {
       throw new Error('this music source cannot narrow by folder (folder libraries only)')
     }
-    const rows = await this.grants.setPersonPaths(personId, paths)
-    let refreshed = 0
-    for (const row of rows) {
-      refreshed += this.refreshGrant(row)
-      this.presence.notify(row.deviceKey, 'grant:changed', { libraryId: this.libraryId, personId: row.personId || null })
-    }
-    this.log('host:paths-changed', { person: String(personId).slice(0, 8), devices: rows.length, refreshed, narrowed: paths != null })
-    return { grants: rows, refreshed }
   }
 
-  // Swap the stored row into every live media handle for its device. Returns how many
-  // connections took it.
-  refreshGrant (row) {
-    if (!row) return 0
-    let n = 0
-    for (const h of this._mediaHandles.get(row.deviceKey) || []) {
-      if (h.setGrant(row)) n++
-    }
-    return n
-  }
-
-  // --- operator actions (the dashboard drives these) -----------------------
-
-  // expiresMs > 0 opens a GUEST window: devices that pair through it get access that
-  // expires that many ms after pairing. owner:true opens an OWNER window (scope 'owner',
-  // proposal 2026-07-24, P2) - mutually exclusive with guest, so an owner is never
-  // time-limited. Omitted = a normal permanent window.
+  // expiresMs > 0 opens a GUEST window; owner:true opens an OWNER window (proposal
+  // 2026-07-24, P2); paths narrows who pairs through it. Fail at the OPEN, not at the scan.
+  //
+  // null paths means "this window says nothing about folders", which the package spells
+  // undefined. The package reads null as "everything", which would WIDEN an already-paired,
+  // narrowed device that scans a plain QR.
   startPairing ({ expiresMs = null, owner = false, paths = null } = {}) {
-    // Owner XOR guest: an owner window ignores any expiry (an owner is permanent by
-    // definition; a time-limited owner would be a footgun). An owner window carries
-    // no paths either - the owner is never filtered, so accepting a narrowing here
-    // would only record a lie.
-    if (owner) { expiresMs = null; paths = null }
-    // Fail at the OPEN, not at the scan: a window that would mint an unenforceable
-    // narrowing (or a malformed one) should never show a QR code.
-    if (paths != null && !(this.adapter && this.adapter.canNarrow)) {
-      throw new Error('this music source cannot narrow by folder (folder libraries only)')
-    }
-    const cleanPaths = normalisePaths(paths)
-    // A window is already open. Reuse it only if its KIND (guest-ness AND owner-ness
-    // AND narrowing) matches what was asked; otherwise close it and open the requested
-    // kind, so the window types never silently hand back the wrong one.
-    if (this.pairing) {
-      const openMs = this.pairSession.expiresMs || null
-      const sameKind = (openMs ? 1 : 0) === (expiresMs ? 1 : 0) && !!this.pairSession.owner === !!owner &&
-        JSON.stringify(this.pairSession.paths ?? null) === JSON.stringify(cleanPaths)
-      if (sameKind) return this.pairSession.link
-      this.pairSession.close('operator')
-    }
-
-    this.pairSession = new PairSession({
-      identity: this.identity,
-      grants: this.grants,
-      libraryName: this.libraryName,
-      expiresMs: expiresMs && expiresMs > 0 ? expiresMs : null,
-      owner: !!owner,
-      paths: cleanPaths,
-      log: this.log,
-      // A device pairing in changes the roster every owner sees, so refresh their live Manage view.
-      onpaired: () => this.notifyOwnersDevicesChanged()
-    })
-    this.log('pair:open', { ttlMs: this.pairSession.ttl, guest: !!this.pairSession.expiresMs, owner: !!owner })
-    return this.pairSession.link
+    if (!owner) this._refuseNarrowingIfUnsupported(paths)
+    return this.host.startPairing({ expiresMs, owner, paths: paths == null ? undefined : paths })
   }
 
-  // Tell every CONNECTED owner that the device roster changed - a pair, a revoke, a delete, a
-  // promotion - so their in-app Manage list refreshes live instead of only when reopened (Tim: a
-  // dashboard revoke did not update You > Manage in realtime). Rides the presence rail, keyed to
-  // each owner's device; a revoked or offline owner is simply not in the registry. Best-effort,
-  // and carries libraryId so the app reloads the RIGHT library's list in a blended view.
-  async notifyOwnersDevicesChanged () {
-    try {
-      for (const g of await this.grants.list()) {
-        if (g.scope === SCOPE.OWNER && !g.revokedAt) this.presence.notify(g.deviceKey, 'devices:changed', { libraryId: this.libraryId })
-      }
-    } catch (e) { this.log('owners-notify-failed', { err: e?.message }) }
+  stopPairing () {
+    return this.host.stopPairing()
   }
 
-  // Promote a device to owner over its EXISTING media connection (proposal 2026-07-24, P2).
-  // The re-pair-through-the-owner-window path works only for a DISCONNECTED device - an
-  // already-connected phone's re-pair is preempted by its live media connection and never
-  // reaches the pair window (found in hardware testing). So a connected device claims owner
-  // here instead: it presents the open owner window's one-time code over the channel, we
-  // check it against that window's rv, and promote THIS connection's grant. Same proof as
-  // scanning the QR (you saw the dashboard's owner code), no new secret, and it consumes the
-  // window one-shot like a pair. `deviceKey` is the connection's Noise-authenticated key
-  // (media.js passes grant.deviceKey), so a device can only ever promote ITSELF.
-  async claimOwner (deviceKey, code) {
-    const ps = this.pairSession
-    if (!ps || ps.closed || !ps.owner) return { ok: false, reason: 'no owner window open' }
-    let rv
-    try { rv = z32.decode(code) } catch { return { ok: false, reason: 'bad code' } }
-    if (!tokenEquals(rv, ps.rv)) return { ok: false, reason: 'code mismatch' }
-    const row = await this.grants.setScope(deviceKey, SCOPE.OWNER)
-    if (!row) return { ok: false, reason: 'no grant' }
-    ps.close('owner-claimed')
-    this.log('owner:claimed', { device: String(deviceKey).slice(0, 8) })
-    this.notifyOwnersDevicesChanged()
-    return { ok: true }
+  // Change which person a device belongs to, THROUGH the host: the live connections get the
+  // new grant in place and the device is pushed 'grant:changed'. null for an unknown device,
+  // which the dashboard turns into a 404.
+  async assignDevice (deviceKey, personId) {
+    const r = await this.host.assignDevice(deviceKey, personId)
+    return r.grant ? r : null
   }
+
+  // Narrow (or widen) a person to chosen folders, THROUGH the host (proposal
+  // 2026-08-31-per-person-folders).
+  async setPersonPaths (personId, paths) {
+    this._refuseNarrowingIfUnsupported(paths)
+    return this.host.setPersonPaths(personId, paths)
+  }
+
+  refreshGrant (row) { return this.host.refreshGrant(row) }
+  notifyOwnersDevicesChanged () { return this.host.notifyOwnersDevicesChanged() }
+  claimOwner (deviceKey, code) { return this.host.claimOwner(deviceKey, code) }
+  revokeDevice (deviceKey) { return this.host.revokeDevice(deviceKey) }
+  leaveDevice (deviceKey) { return this.host.leaveDevice(deviceKey) }
+  setDeviceExpiry (deviceKey, expiresAt) { return this.host.setDeviceExpiry(deviceKey, expiresAt) }
+  revokePerson (personId) { return this.host.revokePerson(personId) }
+  deleteDevice (deviceKey) { return this.host.deleteDevice(deviceKey) }
+  deletePerson (personId) { return this.host.deletePerson(personId) }
+  listDevices () { return this.host.listDevices() }
 
   // The request queue for the OWNER app (P2b), enriched with WHO asked - same shape the
   // dashboard shows. Names are resolved from persons/devices so the owner sees a person,
@@ -873,14 +498,6 @@ class PearTuneHost {
     return row
   }
 
-  stopPairing () {
-    if (this.pairSession) this.pairSession.close('operator')
-  }
-
-  // The teeth. Tombstoning the grant only stops the NEXT connection; the firewall
-  // hook never runs again for one already open. Killing the live connections is
-  // what makes revoke mean "the music stops now" instead of "the music stops
-  // whenever they happen to reconnect".
   // --- voice control (proposal 2026-08-02) ---------------------------------
   //
   // Voice plays as a REAL grant rather than a special case in the security path, so
@@ -977,145 +594,34 @@ class PearTuneHost {
     return { ok: true }
   }
 
-  async revokeDevice (deviceKey) {
-    const row = await this.grants.revoke(deviceKey, { by: 'operator' })
-    const killed = this.connections.kill(deviceKey)
-    // A speaker is NOT one of the connections kill() destroys - the audio reaches it
-    // from this process, not from the revoked phone. Without this the music would keep
-    // playing in the room. See host/cast.js.
-    const silenced = await this.casts.stopFor(Grants.keyOf(deviceKey)).catch(() => 0)
-    this.log('host:revoked', {
-      device: Grants.keyOf(deviceKey).slice(0, 8),
-      killedConnections: killed,
-      silencedSpeakers: silenced
-    })
-    this.notifyOwnersDevicesChanged()
-    return { grant: row, killed }
-  }
-
-  // A device dropping its OWN access - the phone removed this library / unpaired (device.leave,
-  // proposal 2026-07-20). Same teeth as an operator revoke (tombstone + cut every live connection
-  // it holds) so "remove" on the phone actually ends access here instead of leaving a live grant,
-  // but logged as a self-initiated leave. The deviceKey is the leaving connection's own Noise-
-  // authenticated key (media.js passes grant.deviceKey), so a device can only ever leave on its
-  // own behalf. The revoked row is hidden by the dashboard's "show revoked" toggle, so the device
-  // drops out of the default Devices list.
-  async leaveDevice (deviceKey) {
-    // 'self': the DEVICE ended this, not the operator - so pairing again may bring it back
-    // to the person it held (gate.carryOverPerson). An operator revoke never does.
-    const row = await this.grants.revoke(deviceKey, { by: 'self' })
-    const killed = this.connections.kill(deviceKey)
-    this.log('host:device-left', {
-      device: Grants.keyOf(deviceKey).slice(0, 8),
-      killedConnections: killed
-    })
-    this.notifyOwnersDevicesChanged()
-    return { grant: row, killed }
-  }
-
-  // Edit a device's guest expiry from the dashboard: a timestamp to (re)limit it, or null
-  // to promote it to permanent. The sweep enforces a future expiry; if the operator sets
-  // one already in the past we cut the connection now rather than waiting up to 30s.
-  async setDeviceExpiry (deviceKey, expiresAt) {
-    const row = await this.grants.setExpiry(deviceKey, expiresAt)
-    if (!row) return { grant: null, killed: 0 }
-    const past = !!(expiresAt && Date.now() > expiresAt)
-    const killed = past ? this.connections.kill(deviceKey) : 0
-    const silenced = past ? await this.casts.stopFor(Grants.keyOf(deviceKey)).catch(() => 0) : 0
-    this.log('host:expiry-set', { device: Grants.keyOf(deviceKey).slice(0, 8), expiresAt, killed, silenced })
-    this.notifyOwnersDevicesChanged()
-    return { grant: row, killed }
-  }
-
-  async revokePerson (personId) {
-    const revoked = await this.grants.revokePerson(personId)
-    const killed = this.connections.killAll(revoked.map(r => r.deviceKey))
-    const silenced = await this.casts.stopForAll(revoked.map(r => Grants.keyOf(r.deviceKey))).catch(() => 0)
-    this.log('host:revoked-person', {
-      personId, devices: revoked.length, killedConnections: killed, silencedSpeakers: silenced
-    })
-    this.notifyOwnersDevicesChanged()
-    return { revoked, killed }
-  }
-
-  // Cleanup, not revocation. Removes a REVOKED device's tombstone so the Devices list
-  // stops growing forever; grants.deleteGrant refuses a live grant, so the operator has
-  // to revoke first (which tombstones and cuts the connection). We kill any lingering
-  // connection here too, belt-and-braces: a revoked device should have none, but a
-  // delete must never leave one half-alive, and it can never re-admit - with the row
-  // gone the gate denies by default (gate.js).
-  async deleteDevice (deviceKey) {
-    const row = await this.grants.deleteGrant(deviceKey)
-    if (!row) return { deleted: null, killed: 0 }
-    this.avatars.delete(deviceKey) // don't orphan the photo file
-    const killed = this.connections.kill(deviceKey)
-    const silenced = await this.casts.stopFor(Grants.keyOf(deviceKey)).catch(() => 0)
-    this.log('host:device-deleted', { device: Grants.keyOf(deviceKey).slice(0, 8), killed, silenced })
-    this.notifyOwnersDevicesChanged()
-    return { deleted: row, killed }
-  }
-
-  // Remove an empty person (grants.deletePerson refuses one that still holds a live
-  // device). Nothing to kill: their live devices, if any, are what would have blocked
-  // the delete.
-  //
-  // Deleting the person ALSO purges their user state, because the personId is minted
-  // fresh and never reused - so those favorites, resume points, counts and playlists
-  // become unreachable the moment the row goes. Leaving them was a slow leak and a
-  // privacy wart ("delete Ben" that did not delete Ben's history). Order matters: the
-  // person row goes FIRST, since that is the guarded step that can refuse.
-  async deletePerson (personId) {
-    const person = await this.grants.deletePerson(personId)
-    if (!person) return { deleted: null }
-    const purged = await this.userState.deleteOwner('p:' + personId)
-    this.log('host:person-deleted', { personId, purged })
-    return { deleted: person, purged }
-  }
-
-  async listDevices () {
-    const rows = await this.grants.list()
-    // Who each device BELONGS TO, disambiguated where two people share a name (grants
-    // personLabels). Carried on the row so the owner phone's device list names the same Sam the
-    // dashboard's revoke button does - claimedUser is only what the device SAID, and stays raw.
-    const personLabel = await this.grants.personLabels()
-    return Promise.all(rows.map(async r => {
-      const online = this.connections.count(r.deviceKey) > 0
-      let nowPlaying = null
-      if (online && !r.revokedAt) {
-        // ONE library shows now-playing: the one the track came from, which is the one that
-        // reported it. The play SESSION is deliberately NOT a source here (Tim, 2026-07-28).
-        //
-        // It was, for a few hours, and the result was every song appearing on two dashboards at
-        // once - the session home showing it because it holds the queue, and the owning library
-        // showing it because the audio came from there. On Tim's setup that is EVERY song, because
-        // his Mac's music is a subset of his Umbrel's, so the owner is always the Umbrel while the
-        // session home is always the Mac. Two true statements, but he asked for one place, and
-        // "where the music is coming from" is the useful one: an operator wants to know whether
-        // anyone is listening to THEIR library.
-        //
-        // The cost, stated: a phone too old to send nowplaying.set now shows nowhere rather than on
-        // its session home. The session still drives Play-here handoff and resume - it just no
-        // longer decides who displays a song.
-        const said = this._nowPlaying.get(r.deviceKey)
-        if (said && Date.now() - said.at < NOWPLAYING_STALE_MS) {
-          nowPlaying = {
-            title: said.title,
-            artist: said.artist,
-            playing: said.playing,
-            reported: true,
-            coverId: await this._coverIdFor(said.trackId)
-          }
+  // What the dashboard's device list adds to the package's row: what the device says it is
+  // playing, and its photo.
+  async _decorateDevice (r, online) {
+    let nowPlaying = null
+    if (online && !r.revokedAt) {
+      // ONE library shows now-playing: the one the track came from, which is the one that
+      // reported it. The play SESSION is deliberately NOT a source here (Tim, 2026-07-28):
+      // it was, for a few hours, and every song appeared on two dashboards at once. "Where
+      // the music is coming from" is the useful one - an operator wants to know whether
+      // anyone is listening to THEIR library. A phone too old to send nowplaying.set shows
+      // nowhere rather than on its session home.
+      const said = this._nowPlaying.get(r.deviceKey)
+      if (said && Date.now() - said.at < NOWPLAYING_STALE_MS) {
+        nowPlaying = {
+          title: said.title,
+          artist: said.artist,
+          playing: said.playing,
+          reported: true,
+          coverId: await this._coverIdFor(said.trackId)
         }
       }
-      return {
-        ...r,
-        online,
-        nowPlaying,
-        belongsTo: r.personId ? (personLabel.get(r.personId) || null) : null,
-        hasAvatar: this.avatars.has(r.deviceKey),
-        avatarAt: this.avatars.at(r.deviceKey)
-      }
-    }))
+    }
+    return {
+      ...r,
+      nowPlaying,
+      hasAvatar: this.avatars.has(r.deviceKey),
+      avatarAt: this.avatars.at(r.deviceKey)
+    }
   }
 
   // trackId -> coverId, cached: a track's cover is stable, so a network-backed source
@@ -1155,27 +661,12 @@ class PearTuneHost {
   }
 
   async close () {
-    this.stopPairing()
-    if (this._sweep) clearInterval(this._sweep)
-    if (this._logPrune) clearInterval(this._logPrune)
     if (this._rescanTimer) clearInterval(this._rescanTimer)
-    if (this._reannounce) clearInterval(this._reannounce)
-    if (this._earlyReannounce) for (const t of this._earlyReannounce) clearTimeout(t)
-    // Withdraw the discovery record so a lookup stops handing out a dead host.
-    // Best-effort: on a crash the record just ages out at its ~20 min TTL.
-    if (this._topic) {
-      try { await this.dht.unannounce(this._topic, this.identity.keyPair) } catch {}
-    }
-    // Before the store closes: stopFor() silences speakers, and a speaker left
-    // playing from a URL that has stopped answering is a worse ending than silence.
+    // Before the host closes: stopFor() silences speakers, and a speaker left playing from a
+    // URL that has stopped answering is a worse ending than silence.
     await this.casts.close().catch(() => {})
-    if (this.server) await this.server.close()
-    await this.bee.close()
-    await this.stateBee.close()
-    await this.store.close()
-    if (this._ownDht) await this.dht.destroy()
-    this.log('host:closed')
+    await this.host.close()
   }
 }
 
-module.exports = { PearTuneHost }
+module.exports = { PearTuneHost, PROTOCOL }

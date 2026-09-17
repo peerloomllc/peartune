@@ -29,7 +29,7 @@ test('CLAUDE.md does not promise an Autobase ledger the tree does not contain', 
     assert.doesNotMatch(claude, /Autobase (ledger|writer)/,
       'the architecture diagram claims an Autobase component that does not exist')
     assert.match(claude, /host-as-hub/i, 'the design that replaced it should be named')
-    assert.ok(fs.existsSync(path.join(root, 'host', 'state.js')), 'host/state.js is the host-as-hub store CLAUDE.md points at')
+    assert.ok(fs.existsSync(path.join(root, '..', 'peerloom-host', 'src', 'state.js')), '../peerloom-host/src/state.js is the host-as-hub store CLAUDE.md points at')
   }
 })
 
@@ -68,7 +68,7 @@ test('the paths CLAUDE.md sends a reader to are really there', () => {
     'plugins/webview-recovery-source.js',
     'test/prebuild.test.js',
     'test/ios-version.test.js',
-    'host/state.js',
+    '../peerloom-host/src/state.js',
     'src/ui',
     'worklet'
   ]) {
