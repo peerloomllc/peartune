@@ -40,6 +40,10 @@
     <string>0.0.0.0</string>
     <key>PEARTUNE_HTTP_PORT</key>
     <string>8741</string>
+    <!-- host/ holds the packages, but protocol/ and client/ beside it look for them
+         from the repo root. Keep this in step with the path above. -->
+    <key>NODE_PATH</key>
+    <string>/opt/peartune/host/node_modules</string>
     <!-- Optional: your own password instead of the generated one.
     <key>PEARTUNE_PASSWORD</key>
     <string>choose-your-own</string> -->

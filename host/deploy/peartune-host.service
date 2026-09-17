@@ -18,6 +18,9 @@ User=peartune
 Group=peartune
 WorkingDirectory=/opt/peartune
 EnvironmentFile=/etc/peartune/peartune-host.env
+# host/ holds the packages, but protocol/ and client/ beside it look for them from the
+# repo root, where nothing is installed. Without this the host exits at startup.
+Environment=NODE_PATH=/opt/peartune/host/node_modules
 ExecStart=/usr/bin/env node /opt/peartune/host/index.js
 Restart=always
 RestartSec=5
