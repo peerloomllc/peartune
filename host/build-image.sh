@@ -13,9 +13,41 @@ set -euo pipefail
 VER="${1:?usage: build-image.sh <version>   e.g. 0.2.10}"
 IMG="ghcr.io/peerloomllc/peartune-host:${VER}"
 
+# The rest of this script edits files by repo-relative path, so run from the root
+# whatever directory it was called from.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO"
+
+# THE HOST DEPENDS ON @peerloom/host through file:../../peerloom-host, which sits
+# OUTSIDE this repo and so outside any build context rooted here. Stage exactly what
+# the image copies, side by side, in a temp dir, and build from that - PearCinema's
+# host/build-image.sh, same reasons. No node_modules from either: the image runs npm ci
+# itself, and a checkout's native addons are built for the wrong arch on a cross build.
+HOST_PKG="$(cd "$REPO/.." && pwd)/peerloom-host"
+if [ ! -d "$HOST_PKG/src" ]; then
+  echo "@peerloom/host not found at $HOST_PKG - clone peerloomllc/peerloom-host beside this repo" >&2
+  exit 1
+fi
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+mkdir -p "$STAGE/peartune" "$STAGE/peerloom-host"
+cp -r "$REPO/host" "$REPO/protocol" "$REPO/client" "$STAGE/peartune/"
+rm -rf "$STAGE/peartune/host/node_modules" "$STAGE/peartune/host/host-data" "$STAGE/peartune/host"/*.seed
+cp "$HOST_PKG/package.json" "$HOST_PKG/package-lock.json" "$STAGE/peerloom-host/"
+cp -r "$HOST_PKG/src" "$STAGE/peerloom-host/src"
+echo "== staged build context in $STAGE (@peerloom/host at $(git -C "$HOST_PKG" rev-parse --short HEAD 2>/dev/null || echo unknown)) =="
+
 echo "== building $IMG (linux/amd64,linux/arm64) =="
 podman manifest rm "$IMG" 2>/dev/null || true
-podman build --platform linux/amd64,linux/arm64 --manifest "$IMG" -f host/Dockerfile .
+podman build --platform linux/amd64,linux/arm64 --manifest "$IMG" -f "$STAGE/peartune/host/Dockerfile" "$STAGE"
+
+# DOES IT START? PearCinema's first image built clean and crash-looped at the first
+# require out of @peerloom/host (2026-08-13), and this script pins the digest into the
+# Umbrel compose, Start9 and the store in the same run. So before pushing: load the
+# server module inside the image. Native-arch leg only - the other runs under qemu.
+echo "== smoke: the host loads inside the image =="
+podman run --rm --platform "linux/$(podman info --format '{{.Host.Arch}}')" "$IMG" \
+  node -e "require('/app/host/server'); require('@peerloom/host'); console.log('host loads')"
 
 echo "== pushing $IMG =="
 podman manifest push --all "$IMG"

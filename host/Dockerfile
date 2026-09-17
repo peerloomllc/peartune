@@ -3,17 +3,10 @@
 # Port 8741, NOT 8731: the PearCircle seeder already publishes 8731 on Umbrel,
 # and two PeerLoom apps on one box cannot share a port.
 #
-# Build from the REPO ROOT:
-#   docker build -f host/Dockerfile -t ghcr.io/peerloomllc/peartune-host:0.2.6 .
-#
-# Multi-arch (Umbrel Home is x86_64; a Pi-class Umbrel is arm64):
-#   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -f host/Dockerfile -t ghcr.io/peerloomllc/peartune-host:0.2.6 --push .
-#
-# No Docker on hand? podman + qemu-user-static builds the same manifest list:
-#   podman build --platform linux/amd64,linux/arm64 --manifest \
-#     ghcr.io/peerloomllc/peartune-host:0.2.6 -f host/Dockerfile .
-#   podman manifest push --all ghcr.io/peerloomllc/peartune-host:0.2.6
+# Build with host/build-image.sh, not a bare `docker build`. The host depends on
+# @peerloom/host (../peerloom-host, outside this repo), so the script stages a
+# context holding peartune/{host,protocol,client} and peerloom-host/ side by side,
+# and every COPY below is relative to that staged directory.
 #
 # Simpler than PearCircle's seeder image on purpose: the seeder has to stage a
 # Bare runtime + a bare-pack'd worklet bundle because it runs the APP's worklet.
@@ -98,14 +91,37 @@ WORKDIR /app
 # the hypercore stack needs, and you get a runtime that half-works and then
 # aborts - the long PearCal debug detour, in a container this time.
 #
-# Deps first, so a code change does not re-resolve the tree. package.json lands
-# at /app so host/, client/ and protocol/ all resolve up into /app/node_modules.
-COPY host/package.json host/package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund
+# @peerloom/host is a file: dependency (file:../../peerloom-host, relative to
+# host/). Three things about installing it here, each learned by the build failing:
+#
+#   1. npm ci CANNOT RUN IN /app. The lock records the link as ../../peerloom-host,
+#      and from /app the `..` clamps at /, so npm ci refuses the lock with a
+#      misleading EUSAGE "can only install with an existing package-lock.json"
+#      (measured 2026-09-17). So it installs one level deeper, in /build/app, where
+#      ../../peerloom-host is /peerloom-host, and node_modules moves to /app after.
+#   2. The link becomes a REAL COPY of the package's package.json and src/, the same
+#      thing desktop/scripts/prepack.js does. A copied package resolves hyperdht,
+#      corestore and the rest from /app/node_modules - host/package.json lists every
+#      one it requires - so the image holds ONE hypercore stack, not two.
+#   3. /peerloom-host and /build are deleted in the same layer, so a moved symlink
+#      can never point at nothing.
+#
+# Deps first, so a code change does not re-resolve the tree. package.json lands at
+# /app so host/, client/ and protocol/ all resolve up into /app/node_modules.
+COPY peerloom-host/package.json /peerloom-host/package.json
+COPY peerloom-host/src/ /peerloom-host/src/
+COPY peartune/host/package.json peartune/host/package-lock.json /build/app/
+RUN cd /build/app \
+ && npm ci --omit=dev --no-audit --no-fund \
+ && rm node_modules/@peerloom/host \
+ && mkdir -p node_modules/@peerloom/host \
+ && cp -r /peerloom-host/package.json /peerloom-host/src node_modules/@peerloom/host/ \
+ && mv node_modules package.json package-lock.json /app/ \
+ && rm -rf /build /peerloom-host
 
-COPY protocol/ ./protocol/
-COPY client/ ./client/
-COPY host/ ./host/
+COPY peartune/protocol/ ./protocol/
+COPY peartune/client/ ./client/
+COPY peartune/host/ ./host/
 
 # Containerized defaults. Bind the dashboard on all interfaces so Umbrel's
 # app_proxy can reach it on the Docker network - the proxy is what gates access
