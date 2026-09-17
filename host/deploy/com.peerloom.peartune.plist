@@ -2,8 +2,9 @@
 <!--
   PearTune host as a macOS LaunchAgent (runs at login, restarts on crash).
 
-  Node 20+ must be installed. Copy the repo somewhere stable, install the host's
-  deps once (`cd /opt/peartune/host && npm ci --omit=dev`), edit the paths + env
+  Node 20+ must be installed. Copy the repo somewhere stable, with
+  peerloomllc/peerloom-host cloned beside it, install deps once
+  (`cd /opt/peerloom-host && npm ci`, then `cd /opt/peartune/host && npm ci --omit=dev`), edit the paths + env
   below, then:
 
     cp com.peerloom.peartune.plist ~/Library/LaunchAgents/

@@ -17,6 +17,12 @@ DEST="${DEST:-peartune-ios}"
 echo "== syncing host/ + protocol/ -> $MAC:$DEST =="
 rsync -az --delete host/ "$MAC:$DEST/host/"
 rsync -az --delete protocol/ "$MAC:$DEST/protocol/"
+# The host requires @peerloom/host. The Mac tree has no symlink to a sibling checkout,
+# so put a REAL COPY where Node looks for it (same as the desktop prepack and the image);
+# it resolves hyperdht and the rest from $DEST/node_modules.
+echo "== syncing @peerloom/host -> $MAC:$DEST/node_modules/@peerloom/host =="
+ssh "$MAC" "mkdir -p $DEST/node_modules/@peerloom/host"
+rsync -az --delete ../peerloom-host/package.json ../peerloom-host/src "$MAC:$DEST/node_modules/@peerloom/host/"
 
 # machost.sh only stops the TRAY app, not an already-running node host - so if the current
 # :8741 listener is a previous node host/index.js, kill it first or the restart collides on the

@@ -8,7 +8,9 @@ Wants=network-online.target
 Type=simple
 # The PearTune host is plain Node - it runs host/index.js directly (unlike the
 # PearCircle seeder, there is no Bare worklet to supervise). Node 20+ must be on
-# PATH. Stage the repo at /opt/peartune and install the host's deps ONCE with:
+# PATH. Stage the repo at /opt/peartune, peerloomllc/peerloom-host at /opt/peerloom-host
+# (the host depends on ../../peerloom-host), and install deps ONCE with:
+#   cd /opt/peerloom-host && npm ci
 #   cd /opt/peartune/host && npm ci --omit=dev
 # (the host resolves ../protocol and ../client, so keep the whole repo, not just
 # host/). Config comes from the EnvironmentFile - see peartune-host.env.example.

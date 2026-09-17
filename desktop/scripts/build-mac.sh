@@ -79,6 +79,12 @@ rsync -az --checksum \
   --exclude='*.aab' \
   ../ \
   "$MAC_HOST:$REMOTE_DIR/"
+# The host requires @peerloom/host (file:../../peerloom-host), a sibling repo. It must
+# ride along EVERY time: the Mac also builds PearCinema, so an old copy may already sit
+# at ~/peerloomllc/peerloom-host, and npm would install that one without complaint.
+# --delete so a module removed from the package cannot linger in the Mac's copy.
+rsync -az --checksum --delete --exclude='.git' --exclude='node_modules' --exclude='test' \
+  ../../peerloom-host/ "$MAC_HOST:~/peerloomllc/peerloom-host/"
 
 # Stage the App Store Connect API key on the Mac so notarytool can run there.
 # scripts/.env is the same place release.sh reads these from.

@@ -5,14 +5,16 @@
 // enforcement impossible, and teach the app to speak Subsonic - which would
 // quietly demote the raw-folder adapter to a second-class citizen. Instead the
 // host answers a normalized API, and the two source adapters sit behind it.
+//
+// The CHANNEL (registration order, the readonly check, backpressure, chunking, cancel,
+// media.stream, the goodbye to a revoked device) is @peerloom/host's serveMedia. This
+// file is the part that is PearTune: the method table, handed to LibraryHost as the
+// `media` factory (see host/server.js).
 
+const { ownerOf, serveFarewell } = require('@peerloom/host')
+const { ERR, SCOPE } = require('@peerloom/host/constants')
+const { REQUEST_KINDS, notifyOwners } = require('@peerloom/host')
 const { hasFfmpeg } = require('./transcode')
-const Protomux = require('protomux')
-const b4a = require('b4a')
-const { mediaChannel } = require('../protocol/channels')
-const { CHUNK_SIZE, ERR, SCOPE } = require('../protocol/constants')
-const { REQUEST_KINDS } = require('./state')
-const { notifyOwners } = require('./presence')
 const { viewOf } = require('./visibility')
 
 // Methods that mutate. A readonly grant is refused HERE rather than at the adapter,
@@ -36,165 +38,11 @@ const MUTATING = new Set([
   'speaker.play', 'speaker.stop', 'speaker.volume', 'speaker.pause', 'speaker.resume'
 ])
 
-// WHO owns the user state on this connection. Derived from the grant the firewall
-// looked up from the Noise-authenticated remote key - NEVER from a client parameter,
-// which is the whole reason host-as-hub is safe (there is nothing to forge). A device
-// assigned to a person owns state as that person (so their phone + tablet share it);
-// an unclaimed device is its own owner until the operator confirms a claim.
-function ownerOf (grant) {
-  return grant.personId ? 'p:' + grant.personId : 'd:' + grant.deviceKey
-}
+// Every method this table answers. ping and media.stream are not here: the package
+// answers both, through the `ping` and `openStream` hooks below.
+const METHODS = ['library.stats', 'library.list', 'library.get', 'library.search', 'identity.get', 'identity.set', 'identity.avatar', 'device.leave', 'fav.list', 'fav.set', 'count.bump', 'count.top', 'resume.get', 'resume.latest', 'bookmark.list', 'bookmark.add', 'bookmark.remove', 'resume.list', 'resume.set', 'playlist.list', 'playlist.get', 'playlist.create', 'playlist.rename', 'playlist.delete', 'playlist.add', 'playlist.setTracks', 'request.add', 'request.list', 'owner.claim', 'owner.devices', 'owner.pairStart', 'owner.pairStop', 'owner.pairState', 'owner.requests', 'owner.requestResolve', 'owner.revoke', 'request.delete', 'session.get', 'session.claim', 'session.set', 'speaker.list', 'speaker.play', 'speaker.stop', 'speaker.pause', 'speaker.resume', 'speaker.volume', 'speaker.state', 'art.get', 'nowplaying.set']
 
-function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, speakers = null, onStream = null, onNowPlaying = null, log = () => {} }) {
-  const mux = Protomux.from(conn)
-
-  // Set once the channel is open (below). Called on close to drop this connection's push
-  // sender from the presence registry, so a dead channel is never pushed to.
-  let unregisterPresence = () => {}
-
-  // The streamed responses currently in flight, request id -> { source, cancelled }.
-  // This is what a cancel frame reaches for: destroy the source, flag the pipe
-  // (proposal 2026-08-31-stream-cancel).
-  const liveStreams = new Map()
-
-  // Cancels that arrived BEFORE their stream started piping. The window is real: a
-  // scrub cancels milliseconds after requesting, and the request may still be inside
-  // the adapter's stream() - for a transcoded format that is an ffmpeg spawn.
-  // Bounded, because a peer could send cancels for ids that will never exist.
-  const preCancelled = new Set()
-  const PRE_CANCELLED_MAX = 128
-
-  // Registration order is fixed in protocol/channels.js and MUST match the
-  // client's. Do not hand-roll addMessage here - see the note in that file.
-  const built = mediaChannel(mux, {
-    id: b4a.from(libraryId),
-    onclose: () => { unregisterPresence(); log('media:channel-closed') },
-    onreq: async (m) => {
-      try {
-        await dispatch(m)
-      } catch (e) {
-        log('media:dispatch-failed', { method: m?.method, err: e?.message })
-        safeErr(m?.id ?? 0, ERR.INTERNAL, 'internal error')
-      }
-    },
-    oncancel: (m) => {
-      const live = liveStreams.get(m.id)
-      if (!live) {
-        // Not piping yet - remember the id so a stream still opening dies at birth
-        // instead of streaming to a player that already hung up.
-        preCancelled.add(m.id)
-        if (preCancelled.size > PRE_CANCELLED_MAX) {
-          preCancelled.delete(preCancelled.values().next().value)
-        }
-        return
-      }
-      // Destroy the SOURCE, not just the pipe: closing a file read stops the disk,
-      // and EPIPEing a transcoding ffmpeg frees the engine slot at the scrub.
-      live.cancelled = true
-      try { live.source.destroy?.() } catch {}
-      log('media:cancelled', { id: m.id })
-    }
-  })
-
-  if (!built) return null
-
-  const { channel } = built
-  const send = built.messages
-
-  channel.open()
-
-  // The adapter as THIS connection may see it (proposal 2026-08-31-per-person-folders).
-  // Built per call off the LIVE grant snapshot - setGrant swaps `grant`, so a narrowing
-  // saved on the dashboard filters the very next request with no reconnect, the same way
-  // a reassignment lands. Unnarrowed grants get the real adapter back (viewOf fast path),
-  // so the common case costs nothing.
-  const adapterFor = () => viewOf(getAdapter(), grant)
-
-  // Hidden ids leave the person's OWN lists on the way out, never their store: a
-  // favorite of a hidden track is filtered here and comes back whole when the person
-  // is widened (proposal 2026-08-31). No-op for an unnarrowed grant.
-  async function visibleIds (ids, type) {
-    const v = adapterFor()
-    if (v === getAdapter()) return ids || []
-    const out = []
-    for (const x of ids || []) {
-      if (await v.get({ id: x, type })) out.push(x)
-    }
-    return out
-  }
-
-  const pushToDevice = (evt) => { try { send.push.send(evt) } catch {} }
-
-  // This connection is now reachable by an unsolicited push. Keyed by the grant's device -
-  // the one the firewall authenticated - so a session.claim on ANOTHER connection can reach it.
-  if (presence) unregisterPresence = presence.register(grant.deviceKey, pushToDevice, ownerOf(grant))
-
-  function safeErr (id, code, message) {
-    try {
-      send.err.send({ id, code, message })
-    } catch {}
-  }
-
-  // Tell this person's OTHER devices that their playlists moved. Same gap the favorites push
-  // closed (proposal 2026-07-30-favorites-live-update): a playlist created, renamed, deleted or
-  // reordered on one phone did not reach the others until something made the app ask again, and
-  // nothing does while it sits connected. Not the device that made the change - it already
-  // re-rendered, and a push would fight its own optimistic update.
-  //
-  // `id` is which playlist (null when the change is not about one in particular), `reason` is
-  // what happened. Neither is enough to patch a list with, deliberately: the client re-reads,
-  // because the summaries carry counts that a create/add/remove all shift.
-  function playlistsChanged (id, reason) {
-    if (!presence) return
-    presence.notifyOwner(ownerOf(grant), 'playlists:changed', { id: id || null, reason, libraryId },
-      { exceptDevice: grant.deviceKey })
-  }
-
-  // Backpressure. Protomux `send()` returns false when the underlying stream is
-  // full; pushing a whole album through regardless would balloon memory on a
-  // Pi-class host. Wait for drain before the next frame.
-  function drain () {
-    return new Promise(resolve => conn.once('drain', resolve))
-  }
-
-  async function pipeStream (id, stream) {
-    // The cancel already arrived while the stream was opening. Kill it at birth.
-    if (preCancelled.delete(id)) {
-      try { stream.destroy?.() } catch {}
-      log('media:cancelled', { id, at: 'open' })
-      return
-    }
-    let seq = 0
-    let total = 0
-    const live = { source: stream, cancelled: false }
-    liveStreams.set(id, live)
-    try {
-      for await (const buf of stream) {
-        // Frames are capped so a seek is never stuck behind one fat in-flight
-        // chunk, regardless of what the source hands us.
-        for (let off = 0; off < buf.length; off += CHUNK_SIZE) {
-          // Cancelled mid-pipe: no more chunks, and no end frame either - the
-          // client forgot this id the moment it hung up.
-          if (live.cancelled) return
-          const slice = buf.subarray(off, Math.min(off + CHUNK_SIZE, buf.length))
-          const ok = send.chunk.send({ id, seq: seq++, data: slice })
-          total += slice.length
-          if (!ok) await drain()
-          if (channel.closed || live.cancelled) return
-        }
-      }
-      send.end.send({ id, total })
-    } catch (e) {
-      // A destroyed source throws out of the iterator - that is the cancel
-      // WORKING, not a failure to report to a client that already hung up.
-      if (live.cancelled) return
-      log('media:stream-failed', { id, err: e?.message })
-      safeErr(id, ERR.INTERNAL, 'stream failed')
-    } finally {
-      liveStreams.delete(id)
-    }
-  }
-
+function createMedia ({ getAdapter, libraryName = null, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, speakers = null, onStream = null, onNowPlaying = null }) {
   // CONFIRMED means the claim matches the person this device is actually assigned
   // to - not merely that SOME person is assigned.
   //
@@ -232,36 +80,55 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
     }
   }
 
-  async function dispatch (m) {
-    const { id, method, params } = m
+  async function handle (ctx) {
+    const { method, params, grant, libraryId, log } = ctx
 
-    if (MUTATING.has(method) && grant?.scope === SCOPE.READONLY) {
-      return safeErr(id, ERR.FORBIDDEN, 'read-only grant')
+    // The adapter as THIS connection may see it (proposal 2026-08-31-per-person-folders).
+    // Built per request off the LIVE grant, which LibraryHost.refreshGrant swaps, so a
+    // narrowing saved on the dashboard filters the very next request with no reconnect.
+    // Unnarrowed grants get the real adapter back (viewOf fast path).
+    const adapterFor = () => viewOf(getAdapter(), grant)
+
+    // Hidden ids leave the person's OWN lists on the way out, never their store: a
+    // favorite of a hidden track is filtered here and comes back whole when the person
+    // is widened (proposal 2026-08-31). No-op for an unnarrowed grant.
+    async function visibleIds (ids, type) {
+      const v = adapterFor()
+      if (v === getAdapter()) return ids || []
+      const out = []
+      for (const x of ids || []) {
+        if (await v.get({ id: x, type })) out.push(x)
+      }
+      return out
+    }
+
+  // Tell this person's OTHER devices that their playlists moved. Same gap the favorites push
+  // closed (proposal 2026-07-30-favorites-live-update): a playlist created, renamed, deleted or
+  // reordered on one phone did not reach the others until something made the app ask again, and
+  // nothing does while it sits connected. Not the device that made the change - it already
+  // re-rendered, and a push would fight its own optimistic update.
+  //
+  // `id` is which playlist (null when the change is not about one in particular), `reason` is
+  // what happened. Neither is enough to patch a list with, deliberately: the client re-reads,
+  // because the summaries carry counts that a create/add/remove all shift.
+    function playlistsChanged (id, reason) {
+      if (!presence) return
+      presence.notifyOwner(ownerOf(grant), 'playlists:changed', { id: id || null, reason, libraryId },
+        { exceptDevice: grant.deviceKey })
     }
 
     switch (method) {
-      case 'ping':
-        // caps: what this host can do beyond protocol 1, so a NEWER phone degrades
-        // deliberately instead of optimistically. timeOffset = media.stream honours
-        // timeOffsetMs (ffmpeg -ss); a phone that sees no caps seeks the old way,
-        // keeping its clock and its audio telling the same story (found on a real
-        // Pixel against a pre-timeOffset host: the clock jumped, the audio restarted).
-        //
-        // books = this source labels audiobooks with kind:'book' (proposal 2026-09-13).
-        // Absent, not false, on a source that cannot: an older phone reads caps the same.
-        return send.res.send({ id, body: { protocol: 1, libraryId, caps: { timeOffset: await hasFfmpeg(), ...(getAdapter()?.books ? { books: 1 } : {}) } } })
-
       case 'library.stats':
-        return send.res.send({ id, body: await adapterFor().stats() })
+        return ctx.reply(await adapterFor().stats())
 
       case 'library.list':
-        return send.res.send({ id, body: await adapterFor().list(params || {}) })
+        return ctx.reply(await adapterFor().list(params || {}))
 
       case 'library.get':
-        return send.res.send({ id, body: await adapterFor().get(params || {}) })
+        return ctx.reply(await adapterFor().get(params || {}))
 
       case 'library.search':
-        return send.res.send({ id, body: await adapterFor().search(params || {}) })
+        return ctx.reply(await adapterFor().search(params || {}))
 
       // --- identity (proposal 2026-07-14) ------------------------------------
       //
@@ -281,11 +148,11 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         // stale snapshot (measured on-device 2026-07-21). Only a reconnect cleared it, which is
         // exactly why relaunching the app "fixed" it.
         const row = (grants && grant) ? await grants.get(grant.deviceKey) : null
-        return send.res.send({ id, body: await identityOf(row || grant) })
+        return ctx.reply(await identityOf(row || grant))
       }
 
       case 'identity.set': {
-        if (!grants || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!grants || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
 
         // params.deviceKey and params.personId are IGNORED, not merely unused: a
         // device names ITSELF, and only the operator decides who it belongs to.
@@ -296,11 +163,11 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
           // Additive: an older phone omits it and its platform is left as the grant recorded it.
           platform: params?.platform
         })
-        if (!row) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!row) return ctx.fail(ERR.FORBIDDEN, 'no grant')
 
         log('identity:set', { label: row.label, claims: row.claimedUser || null })
 
-        return send.res.send({ id, body: { ok: true, ...(await identityOf(row)) } })
+        return ctx.reply({ ok: true, ...(await identityOf(row)) })
       }
 
       // A device sets its OWN avatar: a small JPEG, base64 in params.avatar. Keyed by
@@ -308,17 +175,17 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // only ever set its own photo. The bytes go to the file-backed avatar store, not
       // the grant bee. An empty/absent avatar clears it.
       case 'identity.avatar': {
-        if (!grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!avatars) return safeErr(id, ERR.NOT_FOUND, 'avatars unavailable')
+        if (!grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!avatars) return ctx.fail(ERR.NOT_FOUND, 'avatars unavailable')
         try {
           const buf = params?.avatar ? Buffer.from(String(params.avatar), 'base64') : null
           if (!buf || !buf.length) avatars.delete(grant.deviceKey)
           else avatars.set(grant.deviceKey, buf)
         } catch (e) {
-          return safeErr(id, ERR.BAD_PARAMS, e.message)
+          return ctx.fail(ERR.BAD_PARAMS, e.message)
         }
         log('identity:avatar', { bytes: (params?.avatar || '').length })
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       // The phone removed this library / unpaired: drop ITS OWN access here (proposal
@@ -328,8 +195,8 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // least-privileged action), so it is deliberately NOT in the MUTATING scope gate. Reply
       // BEFORE onLeave, which revokes the grant and destroys THIS connection.
       case 'device.leave': {
-        if (!grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        send.res.send({ id, body: { ok: true } })
+        if (!grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        ctx.reply({ ok: true })
         if (onLeave) { try { await onLeave(grant.deviceKey) } catch (e) { log('device:leave-failed', { err: e?.message }) } }
         return
       }
@@ -339,31 +206,28 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // The owner comes from THIS connection's grant (ownerOf), never from params -
       // same rule as identity.set. A device can only ever touch its own state.
       case 'fav.list': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         // Grouped { track:[ids], album:[ids], artist:[ids] }.
         const favs = await state.listFavs(ownerOf(grant))
-        return send.res.send({
-          id,
-          body: {
-            track: await visibleIds(favs.track, 'track'),
-            album: await visibleIds(favs.album, 'album'),
-            artist: await visibleIds(favs.artist, 'artist')
-          }
+        return ctx.reply({
+          track: await visibleIds(favs.track, 'track'),
+          album: await visibleIds(favs.album, 'album'),
+          artist: await visibleIds(favs.artist, 'artist')
         })
       }
 
       case 'fav.set': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         // kind defaults to 'track', and id accepts the old `trackId` name, so a phase-1
         // app degrades cleanly. An unknown kind is a bad-params error, not a throw.
         const kind = params?.kind || 'track'
         const favId = params?.id || params?.trackId
-        if (!favId) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        if (!favId) return ctx.fail(ERR.BAD_PARAMS, 'id required')
         let row
         try {
           row = await state.setFav(ownerOf(grant), kind, favId, params?.on !== false)
         } catch {
-          return safeErr(id, ERR.BAD_PARAMS, 'bad favorite kind')
+          return ctx.fail(ERR.BAD_PARAMS, 'bad favorite kind')
         }
         // TELL THIS PERSON'S OTHER DEVICES, or they show the old hearts until something makes
         // them ask again - and nothing does while the app sits connected, which is why a
@@ -378,36 +242,36 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
             { exceptDevice: grant.deviceKey })
         }
         log('fav:set', { kind: row.kind, on: row.on, told })
-        return send.res.send({ id, body: { ok: true, kind: row.kind, id: row.id, on: row.on } })
+        return ctx.reply({ ok: true, kind: row.kind, id: row.id, on: row.on })
       }
 
       // --- play counts (milestone 3, phase 3) -------------------------------
       case 'count.bump': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.trackId) return ctx.fail(ERR.BAD_PARAMS, 'trackId required')
         const count = await state.bumpCount(ownerOf(grant), params.trackId)
         log('count:bump', { count })
-        return send.res.send({ id, body: { ok: true, count } })
+        return ctx.reply({ ok: true, count })
       }
 
       case 'count.top': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         const top = await state.topCounts(ownerOf(grant), Number(params?.limit) || 50)
         const topVisible = new Set(await visibleIds(top.map((r) => r.trackId), 'track'))
-        return send.res.send({ id, body: { items: top.filter((r) => topVisible.has(r.trackId)) } })
+        return ctx.reply({ items: top.filter((r) => topVisible.has(r.trackId)) })
       }
 
       // --- resume positions (milestone 3, phase 2) --------------------------
       case 'resume.get': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.trackId) return ctx.fail(ERR.BAD_PARAMS, 'trackId required')
         const row = await state.getResume(ownerOf(grant), params.trackId)
         log('resume:get', { positionMs: row?.positionMs || 0 })
-        return send.res.send({ id, body: { positionMs: row?.positionMs || 0, durationMs: row?.durationMs || null } })
+        return ctx.reply({ positionMs: row?.positionMs || 0, durationMs: row?.durationMs || null })
       }
 
       case 'resume.latest': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         // Scoped to the asking device (proposal 2026-07-30-one-device-plays): the card answers
         // "what was I playing on THIS phone", with the person-wide newest as a fallback.
         let row = await state.latestResume(ownerOf(grant), grant.deviceKey)
@@ -415,7 +279,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         // updatedAt lets the merged client pick the globally-newest resume across hosts, and
         // playedAt lets it order by when the device LISTENED rather than when the write landed
         // (an outbox flush lands late). An old host sends no playedAt; the client falls back.
-        return send.res.send({ id, body: row ? { trackId: row.trackId, positionMs: row.positionMs, durationMs: row.durationMs, updatedAt: row.updatedAt || 0, playedAt: row.playedAt || row.updatedAt || 0 } : null })
+        return ctx.reply(row ? { trackId: row.trackId, positionMs: row.positionMs, durationMs: row.durationMs, updatedAt: row.updatedAt || 0, playedAt: row.playedAt || row.updatedAt || 0 } : null)
       }
 
       // Several resume rows at once, each with its track (proposal 2026-09-13). `kind`
@@ -428,29 +292,29 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // device only ever reads and writes its own person's bookmarks. The list is filtered by
       // what this person may see, so a narrowed grant does not learn a hidden track's position.
       case 'bookmark.list': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         const ids = Array.isArray(params?.trackIds) ? params.trackIds.map(String).slice(0, 500) : []
         const visible = await visibleIds(ids, 'track')
-        return send.res.send({ id, body: await state.listBookmarks(ownerOf(grant), visible) })
+        return ctx.reply(await state.listBookmarks(ownerOf(grant), visible))
       }
 
       case 'bookmark.add': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.id || !params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'id and trackId required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.id || !params?.trackId) return ctx.fail(ERR.BAD_PARAMS, 'id and trackId required')
         const row = await state.addBookmark(ownerOf(grant), params, { deviceKey: grant.deviceKey })
         log('bookmark:add', { positionMs: row.positionMs })
-        return send.res.send({ id, body: row })
+        return ctx.reply(row)
       }
 
       case 'bookmark.remove': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.id || !params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'id and trackId required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.id || !params?.trackId) return ctx.fail(ERR.BAD_PARAMS, 'id and trackId required')
         await state.removeBookmark(ownerOf(grant), String(params.trackId), String(params.id))
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       case 'resume.list': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         const want = params?.kind
         const limit = Math.min(Math.max(Number(params?.limit) || 50, 1), 200)
         const out = []
@@ -461,12 +325,12 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
           out.push({ trackId: r.trackId, positionMs: r.positionMs, durationMs: r.durationMs || null, playedAt: r.playedAt || r.updatedAt || 0, track })
           if (out.length >= limit) break
         }
-        return send.res.send({ id, body: out })
+        return ctx.reply(out)
       }
 
       case 'resume.set': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.trackId) return ctx.fail(ERR.BAD_PARAMS, 'trackId required')
         // playedAt is the CLIENT's clock (when it actually listened) - the one thing the host
         // cannot know, because a write can arrive from an outbox hours later. deviceKey comes
         // from the authenticated connection, never a param: a device may only ever write as
@@ -476,7 +340,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
           deviceKey: grant.deviceKey
         })
         log('resume:set', { positionMs: Number(params.positionMs) || 0 })
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       // --- playlists (milestone 3, phase 4) ---------------------------------
@@ -486,67 +350,67 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // above. A mutation that names a playlist the owner does not have gets NOT_FOUND
       // (the state layer returns null), not a silent no-op.
       case 'playlist.list': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        return send.res.send({ id, body: { items: await state.listPlaylists(ownerOf(grant)) } })
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        return ctx.reply({ items: await state.listPlaylists(ownerOf(grant)) })
       }
 
       case 'playlist.get': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return ctx.fail(ERR.BAD_PARAMS, 'id required')
         const row = await state.getPlaylist(ownerOf(grant), params.id)
-        if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
-        return send.res.send({ id, body: { id: row.id, name: row.name, trackIds: await visibleIds(row.trackIds, 'track') } })
+        if (!row) return ctx.fail(ERR.NOT_FOUND, 'no such playlist')
+        return ctx.reply({ id: row.id, name: row.name, trackIds: await visibleIds(row.trackIds, 'track') })
       }
 
       case 'playlist.create': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         const row = await state.createPlaylist(ownerOf(grant), params?.name)
         playlistsChanged(row.id, 'created')
         log('playlist:create', { id: row.id, name: row.name })
-        return send.res.send({ id, body: { id: row.id, name: row.name } })
+        return ctx.reply({ id: row.id, name: row.name })
       }
 
       case 'playlist.rename': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return ctx.fail(ERR.BAD_PARAMS, 'id required')
         const row = await state.renamePlaylist(ownerOf(grant), params.id, params?.name)
-        if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
+        if (!row) return ctx.fail(ERR.NOT_FOUND, 'no such playlist')
         playlistsChanged(row.id, 'renamed')
         log('playlist:rename', { id: row.id, name: row.name })
-        return send.res.send({ id, body: { id: row.id, name: row.name } })
+        return ctx.reply({ id: row.id, name: row.name })
       }
 
       case 'playlist.delete': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return ctx.fail(ERR.BAD_PARAMS, 'id required')
         await state.deletePlaylist(ownerOf(grant), params.id)
         playlistsChanged(params.id, 'deleted')
         log('playlist:delete', { id: params.id })
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       case 'playlist.add': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return ctx.fail(ERR.BAD_PARAMS, 'id required')
         // How many actually landed, after de-duping against what is already there -
         // so the app can say "added 2" vs "already in the playlist" honestly.
         const before = (await state.getPlaylist(ownerOf(grant), params.id))?.trackIds?.length ?? 0
         const row = await state.addToPlaylist(ownerOf(grant), params.id, params?.trackIds)
-        if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
+        if (!row) return ctx.fail(ERR.NOT_FOUND, 'no such playlist')
         const added = row.trackIds.length - before
         playlistsChanged(row.id, 'tracks-added')
         log('playlist:add', { id: row.id, count: row.trackIds.length, added })
-        return send.res.send({ id, body: { ok: true, count: row.trackIds.length, added } })
+        return ctx.reply({ ok: true, count: row.trackIds.length, added })
       }
 
       case 'playlist.setTracks': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return ctx.fail(ERR.BAD_PARAMS, 'id required')
         const row = await state.setPlaylistTracks(ownerOf(grant), params.id, params?.trackIds)
-        if (!row) return safeErr(id, ERR.NOT_FOUND, 'no such playlist')
+        if (!row) return ctx.fail(ERR.NOT_FOUND, 'no such playlist')
         playlistsChanged(row.id, 'tracks-set')
         log('playlist:set-tracks', { id: row.id, count: row.trackIds.length })
-        return send.res.send({ id, body: { ok: true, count: row.trackIds.length } })
+        return ctx.reply({ ok: true, count: row.trackIds.length })
       }
 
       // --- music requests (proposal 2026-07-24-owner-in-the-app, P1) --------
@@ -556,15 +420,15 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // behalf, and request.list can only ever return the caller's own. Resolving is
       // the operator's job and lives on the dashboard API, not here.
       case 'request.add': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!REQUEST_KINDS.includes(params?.kind)) return safeErr(id, ERR.BAD_PARAMS, 'kind must be artist, album or track')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!REQUEST_KINDS.includes(params?.kind)) return ctx.fail(ERR.BAD_PARAMS, 'kind must be artist, album or track')
         let row
         try {
           row = await state.addRequest(ownerOf(grant), {
             kind: params.kind, name: params.name, artist: params.artist, album: params.album, mbid: params.mbid
           })
         } catch (e) {
-          return safeErr(id, ERR.BAD_PARAMS, e.message || 'bad request')
+          return ctx.fail(ERR.BAD_PARAMS, e.message || 'bad request')
         }
         log('request:add', { kind: row.kind, folded: row.count > 1 })
         // P3: nudge every CONNECTED owner so a request is not a dead-drop nobody reads. Best-effort
@@ -584,13 +448,13 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
           const payload = { id: row.id, kind: row.kind, name: row.name, artist: row.artist, requesterName, count: row.count }
           await notifyOwners(presence, grants, 'request:new', payload)
         }
-        return send.res.send({ id, body: { ok: true, id: row.id, status: row.status, count: row.count } })
+        return ctx.reply({ ok: true, id: row.id, status: row.status, count: row.count })
       }
 
       case 'request.list': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         // The caller's OWN requests only - the operator's all-requests view is dashboard-side.
-        return send.res.send({ id, body: { requests: await state.listRequests({ requester: ownerOf(grant) }) } })
+        return ctx.reply({ requests: await state.listRequests({ requester: ownerOf(grant) }) })
       }
 
       // --- owner maintenance (proposal 2026-07-24-owner-in-the-app, P2) -----
@@ -603,60 +467,57 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // having a grant (only a paired device has a media channel) AND presenting the open owner
       // window's one-time code, which the host checks. So a random device cannot self-promote.
       case 'owner.claim': {
-        if (!owner || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.code) return safeErr(id, ERR.BAD_PARAMS, 'code required')
+        if (!owner || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.code) return ctx.fail(ERR.BAD_PARAMS, 'code required')
         const r = await owner.claim(grant.deviceKey, params.code)
-        if (!r.ok) return safeErr(id, ERR.FORBIDDEN, r.reason || 'owner claim rejected')
-        // The store row is now owner, but THIS connection's captured `grant` still says its
-        // old scope - so raise it in-memory too, or the very next owner.* on this same
-        // connection would be refused until a reconnect (same staleness identity.get re-reads
-        // around). The gate reads grant.scope, so this makes the promotion effective at once.
-        grant.scope = SCOPE.OWNER
+        if (!r.ok) return ctx.fail(ERR.FORBIDDEN, r.reason || 'owner claim rejected')
+        // The host's claimOwner swaps the promoted row into this connection's live grant
+        // (LibraryHost.refreshGrant), so the very next owner.* here is already allowed.
         log('owner:claim')
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       case 'owner.devices': {
-        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        return send.res.send({ id, body: { devices: await owner.listDevices() } })
+        if (!owner) return ctx.fail(ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        return ctx.reply({ devices: await owner.listDevices() })
       }
 
       // Open a pairing window remotely so the owner can let a device in while away (P2b).
       // A NORMAL/guest window only - owner.pairStart never mints an owner grant (server binds
       // owner:false), so a stolen owner phone cannot make more owners.
       case 'owner.pairStart': {
-        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!owner) return ctx.fail(ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
         const link = owner.pairStart({ expiresMs: Number(params?.expiresMs) > 0 ? Number(params.expiresMs) : null })
         log('owner:pair-start', { guest: !!params?.expiresMs })
-        return send.res.send({ id, body: { link } })
+        return ctx.reply({ link })
       }
 
       case 'owner.pairStop': {
-        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+        if (!owner) return ctx.fail(ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
         owner.pairStop()
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       case 'owner.pairState': {
-        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        return send.res.send({ id, body: owner.pairState() })
+        if (!owner) return ctx.fail(ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        return ctx.reply(owner.pairState())
       }
 
       // The full request queue (all requesters) + resolve, so the owner can work it from the
       // phone away from the dashboard (P2b).
       case 'owner.requests': {
-        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        return send.res.send({ id, body: { requests: await owner.requests() } })
+        if (!owner) return ctx.fail(ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        return ctx.reply({ requests: await owner.requests() })
       }
 
       case 'owner.requestResolve': {
-        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
-        if (!params?.id || !['added', 'declined'].includes(params?.status)) return safeErr(id, ERR.BAD_PARAMS, 'id and status (added|declined) required')
+        if (!owner) return ctx.fail(ERR.INTERNAL, 'owner ops unavailable')
+        if (!params?.id || !['added', 'declined'].includes(params?.status)) return ctx.fail(ERR.BAD_PARAMS, 'id and status (added|declined) required')
         // The library's owner may resolve any row, and THE PERSON WHO FILED A ROW may
         // resolve that row (proposal 2026-08-31-the-requester-closes-the-ask): when
         // another library answers the same ask, the requester's device closes this
@@ -665,48 +526,48 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         // host-derived row.requester - the exact test request.delete already uses,
         // and marking answered is strictly less power than the delete it allows.
         if (grant?.scope !== SCOPE.OWNER) {
-          if (!state) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+          if (!state) return ctx.fail(ERR.FORBIDDEN, 'owner only')
           const mine = await state.getRequest(params.id)
-          if (!mine) return send.res.send({ id, body: { ok: false, notFound: true } })
-          if (mine.requester !== ownerOf(grant)) return safeErr(id, ERR.FORBIDDEN, 'owner only')
+          if (!mine) return ctx.reply({ ok: false, notFound: true })
+          if (mine.requester !== ownerOf(grant)) return ctx.fail(ERR.FORBIDDEN, 'owner only')
           // And only the mirror of an answer: 'added' onto a still-pending copy. A
           // requester cannot flip an owner's decline, and a decline never travels -
           // withdrawing entirely is what request.delete is for.
-          if (params.status !== 'added') return safeErr(id, ERR.FORBIDDEN, 'owner only')
-          if (mine.status !== 'pending') return send.res.send({ id, body: { ok: false, notFound: true } })
+          if (params.status !== 'added') return ctx.fail(ERR.FORBIDDEN, 'owner only')
+          if (mine.status !== 'pending') return ctx.reply({ ok: false, notFound: true })
         }
         const row = await owner.resolveRequest(params.id, params.status)
-        if (!row) return send.res.send({ id, body: { ok: false, notFound: true } })
+        if (!row) return ctx.reply({ ok: false, notFound: true })
         log('owner:request-resolve', { status: row.status, by: grant?.scope === SCOPE.OWNER ? 'owner' : 'requester' })
-        return send.res.send({ id, body: { ok: true, status: row.status } })
+        return ctx.reply({ ok: true, status: row.status })
       }
 
       case 'owner.revoke': {
-        if (!owner) return safeErr(id, ERR.INTERNAL, 'owner ops unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        if (!params?.deviceKey) return safeErr(id, ERR.BAD_PARAMS, 'deviceKey required')
+        if (!owner) return ctx.fail(ERR.INTERNAL, 'owner ops unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        if (!params?.deviceKey) return ctx.fail(ERR.BAD_PARAMS, 'deviceKey required')
         // An owner phone may NOT revoke another OWNER device (proposal security review):
         // owner-vs-owner stays a dashboard-only action, so a stolen owner phone cannot lock
         // out the real owner's other owner devices. It CAN revoke full/guest/readonly.
         const target = await owner.getGrant(params.deviceKey)
         if (target && !target.revokedAt && target.scope === SCOPE.OWNER) {
-          return safeErr(id, ERR.FORBIDDEN, 'revoke an owner device from the dashboard')
+          return ctx.fail(ERR.FORBIDDEN, 'revoke an owner device from the dashboard')
         }
         const { grant: row, killed } = await owner.revokeDevice(params.deviceKey)
-        if (!row) return send.res.send({ id, body: { ok: false, notFound: true } })
+        if (!row) return ctx.reply({ ok: false, notFound: true })
         log('owner:revoke', { killed })
-        return send.res.send({ id, body: { ok: true, killed } })
+        return ctx.reply({ ok: true, killed })
       }
 
       case 'request.delete': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
-        if (!params?.id) return safeErr(id, ERR.BAD_PARAMS, 'id required')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
+        if (!params?.id) return ctx.fail(ERR.BAD_PARAMS, 'id required')
         // You can only remove YOUR OWN request. The requester on the row is host-derived
         // (ownerOf), so this compares the caller's identity to it - a device cannot delete
         // someone else's request by guessing an id. A resolved OR a pending one (withdraw).
         const row = await state.getRequest(params.id)
-        if (!row) return send.res.send({ id, body: { ok: true, deleted: false } }) // already gone
-        if (row.requester !== ownerOf(grant)) return safeErr(id, ERR.FORBIDDEN, 'not your request')
+        if (!row) return ctx.reply({ ok: true, deleted: false }) // already gone
+        if (row.requester !== ownerOf(grant)) return ctx.fail(ERR.FORBIDDEN, 'not your request')
         const deleted = await state.deleteRequest(params.id)
         // A WITHDRAWAL IS NEWS TO THE OPERATORS TOO. Only the arrival of a request was ever
         // pushed, so an owner sitting on Manage watched the queue grow and never shrink - the row
@@ -714,7 +575,7 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
         // reason: the owner list is a live read, and telling it "something changed" is enough.
         if (deleted) await notifyOwners(presence, grants, 'requests:changed', { reason: 'withdrawn', id: params.id })
         log('request:delete', { deleted })
-        return send.res.send({ id, body: { ok: true, deleted } })
+        return ctx.reply({ ok: true, deleted })
       }
 
       // --- play session: cross-device handoff (proposal 2026-07-17) ----------
@@ -723,12 +584,12 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // their devices is acting. Both come from the Noise-authenticated connection, never a
       // param - a device can only ever touch its own owner's session and claim as itself.
       case 'session.get': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         // merged = the cross-host session (phase 3): a distinct row keyed the same owner,
         // holding a queue that spans hosts. Same auth, same shape.
         const merged = !!params?.merged
         const row = await state.getSession(ownerOf(grant), merged)
-        if (!row) return send.res.send({ id, body: null })
+        if (!row) return ctx.reply(null)
         // Enrich so the app can render "Playing on <name>" / "Play here" with no extra lookup:
         // is THIS device the active one, and if not, what is the active device called.
         const isActiveHere = row.activeDeviceKey === grant.deviceKey
@@ -737,11 +598,11 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
           const g = await grants.get(row.activeDeviceKey)
           activeDeviceName = g?.label || null
         }
-        return send.res.send({ id, body: { ...row, isActiveHere, activeDeviceName } })
+        return ctx.reply({ ...row, isActiveHere, activeDeviceName })
       }
 
       case 'session.claim': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         const merged = !!params?.merged
         const owner = ownerOf(grant)
         // Who held the token BEFORE this claim - so we can tell them, instantly, that they lost
@@ -770,15 +631,15 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
           }
         }
         log('session:claim', { merged, ok: !!row, generation: row?.generation ?? null, superseded: pushed })
-        return send.res.send({ id, body: { ok: !!row, session: row } })
+        return ctx.reply({ ok: !!row, session: row })
       }
 
       case 'session.set': {
-        if (!state || !grant) return safeErr(id, ERR.FORBIDDEN, 'no grant')
+        if (!state || !grant) return ctx.fail(ERR.FORBIDDEN, 'no grant')
         // Only the active device may write. null (ok:false) = superseded - the client learns
         // here that it lost the token (lazy presence) and pauses.
         const row = await state.setSession(ownerOf(grant), grant.deviceKey, params || {}, !!params?.merged)
-        return send.res.send({ id, body: { ok: !!row, session: row } })
+        return ctx.reply({ ok: !!row, session: row })
       }
 
       // --- Home Assistant speakers (proposal 2026-08-01) ---------------------
@@ -791,80 +652,77 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // An unconfigured host answers `enabled: false` rather than an error, so the app
       // can hide the button without treating a normal state as a failure.
       case 'speaker.list': {
-        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        if (!speakers.enabled()) return send.res.send({ id, body: { enabled: false, speakers: [] } })
+        if (!speakers) return ctx.fail(ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        if (!speakers.enabled()) return ctx.reply({ enabled: false, speakers: [] })
         const list = await speakers.list()
-        return send.res.send({
-          id,
-          body: { enabled: true, speakers: list, active: speakers.active(grant.deviceKey) }
-        })
+        return ctx.reply({ enabled: true, speakers: list, active: speakers.active(grant.deviceKey) })
       }
 
       case 'speaker.play': {
-        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        if (!params?.entityId || !params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'entityId and trackId required')
-        if (!speakers.enabled()) return safeErr(id, ERR.FORBIDDEN, 'Home Assistant is not set up')
+        if (!speakers) return ctx.fail(ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId || !params?.trackId) return ctx.fail(ERR.BAD_PARAMS, 'entityId and trackId required')
+        if (!speakers.enabled()) return ctx.fail(ERR.FORBIDDEN, 'Home Assistant is not set up')
         // deviceKey comes from the Noise-authenticated grant, never from params - a
         // device can only ever cast as itself, which is what makes revoke able to find it.
         await speakers.play(grant.deviceKey, String(params.entityId), String(params.trackId))
         log('speaker:play', { entityId: params.entityId })
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       case 'speaker.stop': {
-        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
+        if (!speakers) return ctx.fail(ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId) return ctx.fail(ERR.BAD_PARAMS, 'entityId required')
         await speakers.stop(grant.deviceKey, String(params.entityId))
         log('speaker:stop', { entityId: params.entityId })
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       // Pause and resume the SPEAKER (proposal 2026-08-02). Without these, the player's
       // play/pause button had nothing to talk to while casting, so it drove the phone and
       // put a second copy of the song in the room.
       case 'speaker.pause': {
-        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
+        if (!speakers) return ctx.fail(ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId) return ctx.fail(ERR.BAD_PARAMS, 'entityId required')
         await speakers.pause(String(params.entityId))
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       case 'speaker.resume': {
-        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
+        if (!speakers) return ctx.fail(ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId) return ctx.fail(ERR.BAD_PARAMS, 'entityId required')
         await speakers.resume(String(params.entityId))
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       case 'speaker.volume': {
-        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
+        if (!speakers) return ctx.fail(ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId) return ctx.fail(ERR.BAD_PARAMS, 'entityId required')
         const level = Number(params.level)
-        if (!Number.isFinite(level)) return safeErr(id, ERR.BAD_PARAMS, 'level required')
+        if (!Number.isFinite(level)) return ctx.fail(ERR.BAD_PARAMS, 'level required')
         await speakers.setVolume(String(params.entityId), level)
-        return send.res.send({ id, body: { ok: true } })
+        return ctx.reply({ ok: true })
       }
 
       // Read-only, so it is not in MUTATING - but still owner-gated, because the
       // entity list itself is information about someone's house.
       case 'speaker.state': {
-        if (!speakers) return safeErr(id, ERR.NO_METHOD, 'speakers unavailable')
-        if (grant?.scope !== SCOPE.OWNER) return safeErr(id, ERR.FORBIDDEN, 'owner only')
-        if (!params?.entityId) return safeErr(id, ERR.BAD_PARAMS, 'entityId required')
-        if (!speakers.enabled()) return safeErr(id, ERR.FORBIDDEN, 'Home Assistant is not set up')
-        return send.res.send({ id, body: await speakers.state(String(params.entityId)) })
+        if (!speakers) return ctx.fail(ERR.NO_METHOD, 'speakers unavailable')
+        if (grant?.scope !== SCOPE.OWNER) return ctx.fail(ERR.FORBIDDEN, 'owner only')
+        if (!params?.entityId) return ctx.fail(ERR.BAD_PARAMS, 'entityId required')
+        if (!speakers.enabled()) return ctx.fail(ERR.FORBIDDEN, 'Home Assistant is not set up')
+        return ctx.reply(await speakers.state(String(params.entityId)))
       }
 
       case 'art.get': {
         const stream = await adapterFor().art(params || {})
-        if (!stream) return safeErr(id, ERR.NOT_FOUND, 'no artwork')
-        return pipeStream(id, stream)
+        if (!stream) return ctx.fail(ERR.NOT_FOUND, 'no artwork')
+        return ctx.stream(stream)
       }
 
       // What the device is playing FROM US right now. The phone is the only party that knows -
@@ -872,87 +730,44 @@ function serveMedia ({ conn, libraryId, getAdapter, libraryName = null, grant, g
       // another library serves (proposal 2026-07-28). Deliberately NOT persisted and NOT
       // acknowledged with anything but ok: it describes this instant and expires on its own.
       case 'nowplaying.set': {
-        if (onNowPlaying) onNowPlaying(params || null)
-        return send.res.send({ id, body: { ok: true } })
+        // The deviceKey is THIS connection's Noise-authenticated one, so a device can only ever
+        // speak about itself.
+        if (onNowPlaying) onNowPlaying(grant.deviceKey, params || null)
+        return ctx.reply({ ok: true })
       }
-
-      case 'media.stream': {
-        if (!params?.trackId) return safeErr(id, ERR.BAD_PARAMS, 'trackId required')
-        const stream = await adapterFor().stream(params)
-        if (!stream) return safeErr(id, ERR.NOT_FOUND, 'no such track')
-        // THIS host is the one serving these bytes, which is the only thing it knows for certain
-        // about what a device is listening to (Tim, 2026-07-28: show now-playing where the music
-        // is actually coming from). Recorded per device by the caller; unlike the play session it
-        // needs no claim, so it works for a phone whose session lives on another library - or on
-        // no library at all.
-        if (onStream) onStream(params.trackId)
-        return pipeStream(id, stream)
-      }
-
-      default:
-        // Typed, and the channel survives. An old host must degrade in front of
-        // a newer client rather than wedge it (proposal, Compat).
-        return safeErr(id, ERR.NO_METHOD, `unknown method: ${method}`)
     }
   }
 
   return {
-    channel,
+    methods: Object.fromEntries(METHODS.map((name) => [name, handle])),
+    mutating: [...MUTATING],
 
-    // A grant is a row in a store the operator can change while this connection is
-    // live. This swaps the snapshot the dispatch above reads, so a device reassigned
-    // mid-song files its next resume point under the new owner instead of filing
-    // under the old one until it happens to reconnect (proposal
-    // 2026-08-31-grant-fixes-trio). The server calls it on every live connection of
-    // the device it just changed; the presence registration moves to the new owner
-    // in the same breath, so person-wide pushes reach the right devices immediately.
+    // caps: what this host can do beyond protocol 1, so a NEWER phone degrades
+    // deliberately instead of optimistically. timeOffset = media.stream honours
+    // timeOffsetMs (ffmpeg -ss); a phone that sees no caps seeks the old way,
+    // keeping its clock and its audio telling the same story (found on a real
+    // Pixel against a pre-timeOffset host: the clock jumped, the audio restarted).
     //
-    // The device key never changes here by construction - it is the Noise-
-    // authenticated remote key, and a row for a DIFFERENT device is refused rather
-    // than half-applied.
-    setGrant (row) {
-      if (!row || row.deviceKey !== grant.deviceKey) return false
-      grant = row
-      if (presence) {
-        unregisterPresence()
-        unregisterPresence = presence.register(grant.deviceKey, pushToDevice, ownerOf(grant))
-      }
-      return true
-    }
+    // books = this source labels audiobooks with kind:'book' (proposal 2026-09-13).
+    // Absent, not false, on a source that cannot: an older phone reads caps the same.
+    // The body is exactly what PearTune hosts have always sent (no `app` field).
+    ping: async (ctx) => ({ protocol: 1, libraryId: ctx.libraryId, caps: { timeOffset: await hasFfmpeg(), ...(getAdapter()?.books ? { books: 1 } : {}) } }),
+
+    // Through the caller's view, so a narrowed person gets no bytes of a hidden track.
+    // Thrown as typed errors with PearTune's own messages: a null return would make the
+    // package answer 'no such item', which is not what PearTune phones have been sent.
+    openStream: async (params, ctx) => {
+      if (!params?.trackId) throw ctx.badParams('trackId required')
+      const stream = await viewOf(getAdapter(), ctx.grant).stream(params)
+      if (!stream) throw ctx.notFound('no such track')
+      return stream
+    },
+
+    // THIS host is the one serving these bytes, which is the only thing it knows for certain
+    // about what a device is listening to (Tim, 2026-07-28: show now-playing where the music
+    // is actually coming from). Recorded per device by the caller.
+    onStream: onStream ? (params, ctx) => onStream(ctx.deviceKey, params.trackId) : null
   }
 }
 
-// A GOODBYE, AND NOTHING ELSE.
-//
-// The media channel, opened with no dispatch on it at all: one push frame saying the
-// grant is gone, then the connection is destroyed. A device that reaches this cannot
-// browse, cannot stream and cannot call a method, because the method table was never
-// wired to this channel - which is the property that keeps revoke's guarantee intact
-// (proposal 2026-08-31-grant-fixes-trio).
-//
-// IT IS NOT serveMedia WITH A FLAG, and that is deliberate. A flag on a function that
-// builds the whole API is one `if` away from admitting a revoked device to all of it;
-// a separate function with no method table in scope cannot make that mistake.
-//
-// `linger` is how long the frame gets to leave before the socket dies. Protomux writes
-// asynchronously, so destroying in the same tick would race the frame out of existence.
-function serveFarewell ({ conn, libraryId, reason = 'device-revoked', linger = 250, log = () => {} }) {
-  let sent = false
-  try {
-    const mux = Protomux.from(conn)
-    const built = mediaChannel(mux, { id: b4a.from(libraryId) })
-    if (built) {
-      built.channel.open()
-      built.messages.push.send({ kind: 'access:revoked', data: { libraryId, reason } })
-      sent = true
-    }
-  } catch (e) {
-    log('media:farewell-failed', { err: e?.message })
-  }
-  const timer = setTimeout(() => { try { conn.destroy() } catch {} }, linger)
-  if (timer.unref) timer.unref()
-  log('media:farewell', { reason, sent })
-  return sent
-}
-
-module.exports = { serveMedia, serveFarewell, ownerOf }
+module.exports = { createMedia, serveFarewell, ownerOf, MUTATING, METHODS }

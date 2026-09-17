@@ -8,7 +8,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const z32 = require('z32')
 
-const { Presence, notifyOwners } = require('../host/presence')
+const { Presence, notifyOwners } = require('@peerloom/host/presence')
 
 test('notify reaches every registered sender for a device and reports the count', (t) => {
   const p = new Presence()

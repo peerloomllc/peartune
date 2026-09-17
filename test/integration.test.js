@@ -1715,7 +1715,8 @@ test('per-person folders: a window opened with paths mints an already-narrow gra
   host.stopPairing()
   const ownerLink = host.startPairing({ owner: true, paths: [{ root: host.adapter.roots[0], rel: 'Kids' }] })
   assert.ok(ownerLink, 'owner + paths opens, with the paths dropped')
-  assert.equal(host.pairSession.paths, null)
+  // undefined in @peerloom/host: the window says nothing about folders.
+  assert.equal(host.pairSession.paths ?? null, null)
 })
 
 // --- the requester closes the ask (proposal 2026-08-31) ----------------------

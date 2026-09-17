@@ -2,6 +2,23 @@
 
 Append-only, newest on top. See Constitution §4.
 
+## 2026-09-17 - The host runs on @peerloom/host
+Tier: T3 (the firewall, grant store, pairing and revoke path change implementation).
+Proposal `../proposals/2026-08-12-shared-host.md`, option C, approved 2026-08-12; plan
+and drift audit in `../proposals/2026-09-17-peartune-host-migration-plan.md`. The iOS
+1.0.0 outcome option C waited on is known and 1.0.7-1.0.9 shipped since. Wire bytes
+and on-disk data do not change (test/host-package-wire.test.js). The audit found the
+package missing three PearTune fixes that each wrote wider folder access into the grant
+store; they went into the package first (peerloom-host #17), so PearCinema gained them
+too. host/server.js keeps sources, settings, speakers, voice, requests and now-playing;
+host/media.js keeps the method table; host/ui/auth.js keeps the cookie name and the
+PEARTUNE_PASSWORD text. Accepted changes: a phone that removes the library also stops
+its speaker cast (Tim, 2026-09-17), grant:changed pushes drop libraryId, device rows
+gain `confirmed`. The image installs in /build/app because npm ci refuses the lock's
+../../peerloom-host from /app, and it copies the package so the image holds one
+hypercore stack. peerloom-host was made public (Tim, 2026-09-17) so source installs can
+clone it. Not merged until the hardware revoke test passes against the real Umbrel data.
+
 ## 2026-08-31 - cancel(6) on the media channel: the requester's way of hanging up
 Tier: T2 (a new wire message, strictly appended - old peers drop it and stream to
 completion, today's behaviour in both mixed directions). Proposal

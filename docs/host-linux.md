@@ -126,7 +126,10 @@ docker logs peartune-host   # generated password
 For running it as a plain OS service. Needs **Node 20+** on the box.
 
 ```bash
-# 1. Stage the repo (the host resolves ../protocol and ../client, so keep it whole).
+# 1. Stage the repo (the host resolves ../protocol and ../client, so keep it whole),
+#    and the shared host package BESIDE it: the host depends on ../../peerloom-host.
+sudo git clone https://github.com/peerloomllc/peerloom-host /opt/peerloom-host
+cd /opt/peerloom-host && sudo npm ci
 sudo git clone https://github.com/peerloomllc/peartune /opt/peartune
 cd /opt/peartune/host && sudo npm ci --omit=dev
 
@@ -152,7 +155,8 @@ runs it unprivileged, and confines writes to `/var/lib/peartune`. If you change 
 change `ReadWritePaths` in the unit to match.
 
 **Ports & upgrades:** the host's `bin` is not published to npm yet, so a native install tracks the
-git repo — `git pull && (cd host && npm ci --omit=dev) && systemctl restart peartune-host` to
+git repos - pull both, `(cd /opt/peerloom-host && git pull && npm ci)`, then
+`git pull && (cd host && npm ci --omit=dev) && systemctl restart peartune-host` in `/opt/peartune`, to
 upgrade. The Docker paths upgrade by re-pulling the image.
 
 ---

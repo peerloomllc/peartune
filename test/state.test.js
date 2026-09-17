@@ -13,8 +13,8 @@ const fsp = require('fs/promises')
 const Corestore = require('corestore')
 const Hyperbee = require('hyperbee')
 
-const { UserState } = require('../host/state')
-const { ownerOf } = require('../host/media')
+const { UserState } = require('@peerloom/host')
+const { ownerOf } = require('@peerloom/host')
 
 async function store (t) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pt-state-'))

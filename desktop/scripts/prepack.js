@@ -67,6 +67,43 @@ function main () {
     }
   }
   console.log('[prepack] vendored host/ protocol/ client/ → desktop/vendor/')
+
+  derefPeerloomHost()
+}
+
+// THE HOST REQUIRES @peerloom/host, which npm installs as a SYMLINK
+// (file:../../peerloom-host). electron-builder may pack a symlink on one machine and
+// silently drop it on another, and a packaged app or service missing the package dies
+// at launch with MODULE_NOT_FOUND. So replace the link with a real copy of the package
+// (package.json + src/, no tests, no node_modules). A copied package resolves hyperdht,
+// corestore and the rest from desktop/node_modules, which lists every one it requires.
+// Same fix as pearcinema/desktop/scripts/prepack.js.
+function derefPeerloomHost () {
+  const desktopDir = path.join(__dirname, '..')
+  const pkgDir = path.join(desktopDir, 'node_modules', '@peerloom', 'host')
+  const source = path.join(repoRoot, '..', 'peerloom-host')
+
+  if (!fs.existsSync(path.join(desktopDir, 'node_modules'))) {
+    // npm install has not run yet (prepack:vendor called directly in a fresh tree).
+    // postinstall comes back through here.
+    console.log('[prepack] no node_modules yet - skipping the @peerloom/host copy')
+    return
+  }
+  if (!fs.existsSync(path.join(source, 'src'))) {
+    console.error(`[prepack] @peerloom/host source missing at ${source} - clone peerloomllc/peerloom-host beside this repo`)
+    process.exit(1)
+  }
+  // Always refreshed, symlink or earlier copy alike: a stale copy of last week's
+  // package is the subtlest possible packaging bug.
+  fs.rmSync(pkgDir, { recursive: true, force: true })
+  fs.mkdirSync(pkgDir, { recursive: true })
+  fs.copyFileSync(path.join(source, 'package.json'), path.join(pkgDir, 'package.json'))
+  fs.cpSync(path.join(source, 'src'), path.join(pkgDir, 'src'), { recursive: true })
+  if (!fs.existsSync(path.join(pkgDir, 'src', 'index.js'))) {
+    console.error('[prepack] @peerloom/host copy has no src/index.js')
+    process.exit(1)
+  }
+  console.log('[prepack] @peerloom/host symlink replaced with a real copy')
 }
 
 main()

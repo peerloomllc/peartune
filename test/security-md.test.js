@@ -43,9 +43,10 @@ test('"there are no passwords or tokens" holds: no bearer credential on the wire
 
 test('"the allow-list is never replicated" is still how the grant store is built', () => {
   assert.match(security, /host-local and never replicated/i)
-  const grants = read('host/grants.js')
+  // The store moved into @peerloom/host with the rest of the admission path.
+  const grants = fs.readFileSync(require.resolve('@peerloom/host/grants'), 'utf8')
   assert.match(grants, /NEVER REPLICATED/i, 'the rule should still be stated at the store itself')
-  assert.ok(!/replicate\s*\(/.test(grants), 'host/grants.js must not replicate anything')
+  assert.ok(!/replicate\s*\(/.test(grants), 'the grant store must not replicate anything')
 })
 
 test('"it refuses to start unauthenticated on a network" is a throw, not a warning', () => {

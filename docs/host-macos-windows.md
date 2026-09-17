@@ -130,7 +130,10 @@ restore it.
 Needs **Node 20+** (`brew install node@20`, or from nodejs.org).
 
 ```bash
-# 1. Stage the repo (the host resolves ../protocol and ../client, so keep it whole).
+# 1. Stage the repo (the host resolves ../protocol and ../client, so keep it whole),
+#    and the shared host package BESIDE it: the host depends on ../../peerloom-host.
+sudo git clone https://github.com/peerloomllc/peerloom-host /opt/peerloom-host
+cd /opt/peerloom-host && npm ci
 sudo git clone https://github.com/peerloomllc/peartune /opt/peartune
 cd /opt/peartune/host && npm ci --omit=dev
 
@@ -159,7 +162,10 @@ launchctl load ~/Library/LaunchAgents/com.peerloom.peartune.plist
 Needs **Node 20+** (`winget install OpenJS.NodeJS.LTS`, or from nodejs.org).
 
 ```powershell
-# 1. Stage the repo and install the host deps.
+# 1. Stage the repo, and the shared host package BESIDE it (the host depends on
+#    ..\..\peerloom-host), then install both.
+git clone https://github.com/peerloomllc/peerloom-host C:\peerloom-host
+cd C:\peerloom-host ; npm ci
 git clone https://github.com/peerloomllc/peartune C:\peartune
 cd C:\peartune\host ; npm ci --omit=dev
 

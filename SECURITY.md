@@ -26,7 +26,7 @@ matters less: it holds no library and no keys worth stealing beyond its own.
 
 The host is found by key, not by an address, and every connection is encrypted and
 authenticated by the Noise handshake before a single byte of ours is read. An unknown
-key is refused at the firewall (`host/gate.js`), and refused *again* when it tries to
+key is refused at the firewall (`gate.js` in `@peerloom/host`), and refused *again* when it tries to
 open the media channel, because the first refusal has a deliberate exemption while a
 pairing window is open and the second does not. A connection without a grant gets no
 method table at all, so there is nothing to call.

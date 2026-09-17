@@ -27,8 +27,8 @@ const crypto = require('crypto')
 const http = require('http')
 const os = require('os')
 
-const { decide } = require('./gate')
-const { SCOPE } = require('../protocol/constants')
+const { decide } = require('@peerloom/host/gate')
+const { SCOPE } = require('@peerloom/host/constants')
 
 // A cast token outlives one track by a margin, not by hours: HA re-fetches (the
 // spike saw two GETs for one track), and a long tail is a bigger window for a

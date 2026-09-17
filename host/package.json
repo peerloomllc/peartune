@@ -32,6 +32,7 @@
     "skew between the phone and the host is a protocol bug waiting to happen."
   ],
   "dependencies": {
+    "@peerloom/host": "file:../../peerloom-host",
     "b4a": "^1.6.7",
     "compact-encoding": "^2.16.0",
     "corestore": "^7.4.4",

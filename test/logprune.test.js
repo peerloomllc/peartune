@@ -8,7 +8,7 @@ const path = require('path')
 const fs = require('fs')
 const fsp = require('fs/promises')
 
-const { pruneRocksLogs } = require('../host/logprune')
+const { pruneRocksLogs } = require('@peerloom/host/logprune')
 
 async function tmpDir (t) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pt-logprune-'))

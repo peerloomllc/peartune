@@ -29,7 +29,7 @@ RocksDB `.sst` (data), `.log` (WAL), `MANIFEST`, and `LOG*` (debug) files.
 
 Every row is a small JSON value keyed by a **host-derived owner** (`p:{personId}` for a device
 assigned to a person, else `d:{deviceKey}`) — never client-asserted, which is what makes
-host-as-hub safe. Four row families (`host/state.js`):
+host-as-hub safe. Four row families (`UserState` in `@peerloom/host`):
 
 | Row | Key | Value | ~size | Row count scales with |
 |---|---|---|---|---|
