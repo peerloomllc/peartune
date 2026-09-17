@@ -13,6 +13,24 @@
 // separate auth here (same posture as the PearCircle seeder).
 
 const path = require('path')
+
+// A NATIVE INSTALL RUNS `npm ci` INSIDE host/, but protocol/ and client/ sit beside host/
+// and resolve their packages from the repo root, where nothing is installed. The image and
+// the desktop app put node_modules one level up and never hit this; a source install needs
+// NODE_PATH pointing at host/node_modules (docs/host-linux.md, docs/host-macos-windows.md).
+// Checked here so a missing NODE_PATH is one clear line instead of a stack trace from deep
+// inside protocol/ids.js - which is how the documented install failed until 2026-09-17.
+try {
+  require.resolve('hypercore-crypto', { paths: [path.join(__dirname, '..', 'protocol')] })
+} catch {
+  console.error(
+    'peartune-host: protocol/ cannot find its packages.\n' +
+    `  From a source install, set NODE_PATH=${path.join(__dirname, 'node_modules')}\n` +
+    '  (see docs/host-linux.md or docs/host-macos-windows.md).'
+  )
+  process.exit(1)
+}
+
 const qrcode = require('qrcode-terminal')
 const z32 = require('z32')
 const { writeStartosStats } = require('./startos-stats')

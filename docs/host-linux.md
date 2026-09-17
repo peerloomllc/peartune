@@ -132,6 +132,9 @@ sudo git clone https://github.com/peerloomllc/peerloom-host /opt/peerloom-host
 cd /opt/peerloom-host && sudo npm ci
 sudo git clone https://github.com/peerloomllc/peartune /opt/peartune
 cd /opt/peartune/host && sudo npm ci --omit=dev
+#    host/ holds the packages, but protocol/ and client/ beside it look for them from the
+#    repo root, so the service sets NODE_PATH=/opt/peartune/host/node_modules (step 4's unit
+#    already does). Set it yourself if you run node by hand.
 
 # 2. A dedicated user + writable data dir.
 sudo useradd --system --home /var/lib/peartune --create-home peartune

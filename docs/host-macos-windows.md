@@ -141,7 +141,10 @@ cd /opt/peartune/host && npm ci --omit=dev
 PEARTUNE_MUSIC="$HOME/Music" \
 PEARTUNE_DATA="$HOME/Library/Application Support/PearTune" \
 PEARTUNE_HTTP_HOST=0.0.0.0 \
+NODE_PATH=/opt/peartune/host/node_modules \
 node /opt/peartune/host/index.js
+# NODE_PATH: host/ holds the packages, but protocol/ and client/ beside it look for them
+# from the repo root. The LaunchAgent sample sets it too.
 # -> prints the generated dashboard password; open http://<this-mac>:8741
 ```
 
@@ -173,6 +176,9 @@ cd C:\peartune\host ; npm ci --omit=dev
 $env:PEARTUNE_MUSIC="$env:USERPROFILE\Music"
 $env:PEARTUNE_DATA="$env:APPDATA\PearTune"
 $env:PEARTUNE_HTTP_HOST="0.0.0.0"
+# host\ holds the packages, but protocol\ and client\ beside it look for them from the
+# repo root, so point Node at them.
+$env:NODE_PATH="C:\peartune\host\node_modules"
 node C:\peartune\host\index.js
 # -> prints the generated dashboard password; open http://<this-pc>:8741
 ```
@@ -182,7 +188,7 @@ node C:\peartune\host\index.js
 
 ```powershell
 nssm install PearTune "C:\Program Files\nodejs\node.exe" "C:\peartune\host\index.js"
-nssm set PearTune AppEnvironmentExtra PEARTUNE_MUSIC=C:\Users\you\Music PEARTUNE_DATA=C:\ProgramData\PearTune PEARTUNE_HTTP_HOST=0.0.0.0
+nssm set PearTune AppEnvironmentExtra PEARTUNE_MUSIC=C:\Users\you\Music PEARTUNE_DATA=C:\ProgramData\PearTune PEARTUNE_HTTP_HOST=0.0.0.0 NODE_PATH=C:\peartune\host\node_modules
 nssm start PearTune
 ```
 
