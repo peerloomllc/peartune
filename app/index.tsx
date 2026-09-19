@@ -13,7 +13,7 @@
 // dies, the loopback stream breaks, and the music stops. That is the product.
 
 import { useEffect, useRef, useState } from 'react'
-import { View, Text, StatusBar, BackHandler, Appearance, AppState, NativeModules, Platform, Settings, Share } from 'react-native'
+import { View, Text, StatusBar, BackHandler, Appearance, AppState, NativeModules, PermissionsAndroid, Platform, Settings, Share } from 'react-native'
 import { WebView } from 'react-native-webview'
 import * as Linking from 'expo-linking'
 import * as Clipboard from 'expo-clipboard'
@@ -36,6 +36,8 @@ const { decideStarve, decideRecover } = require('./starve')
 const { chapterEndAfter, crossedChapterEnd } = require('./chapter-sleep')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { openableUrl } = require('./openable')
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { shouldAskForNotifications } = require('./notify-permission')
 
 // THE DEMO LIBRARY (proposal 2026-07-28-app-review-demo). Five CC0 tracks that ship inside the
 // app so PearTune works with no server at all - see assets/demo-music/LICENSE.md for why they are
@@ -185,6 +187,8 @@ export default function App () {
   // Whether setActiveForLockScreen has built the session for the CURRENT player.
   // announce() goes metadata-only while true; cleared wherever the controls are.
   const lockScreenActive = useRef(false)
+  // Whether this launch has already put the POST_NOTIFICATIONS dialog on screen.
+  const notifyAsked = useRef(false)
   // Mirrored so the persisted queue snapshot can carry them (ExoPlayer owns the
   // live modes; we only need the last-set values for restore).
   const shuffleRef = useRef(false)
@@ -355,7 +359,38 @@ export default function App () {
   // The same patch stops expo-audio stripping the next/previous commands from the
   // MediaSession, so the lock screen now gets real track buttons too.
 
+  // THE MEDIA NOTIFICATION NEEDS PERMISSION FIRST, on Android 13 and up.
+  //
+  // expo-audio builds the now-playing card (play/pause, skip, seek) as the
+  // foreground-service notification when announce() first activates the lock
+  // screen. Without POST_NOTIFICATIONS that card is built and never shown - the
+  // service runs, the controls are unreachable, and the only symptom is an absence
+  // (issue #438). Asked here rather than at launch because this is the first moment
+  // it is true that the app is about to show one, and the app is foreground, which
+  // is the only state a permission dialog can appear in.
+  //
+  // Never awaited into the failure path: a refusal, a throw or an old React Native
+  // without the constant all leave playback exactly as it was.
+  async function ensureNotificationPermission () {
+    const permission = (PermissionsAndroid as any)?.PERMISSIONS?.POST_NOTIFICATIONS
+    if (!shouldAskForNotifications({
+      os: Platform.OS,
+      apiLevel: Platform.Version,
+      asked: notifyAsked.current,
+      permission
+    })) return
+    notifyAsked.current = true
+    try {
+      if (await PermissionsAndroid.check(permission)) return
+      await PermissionsAndroid.request(permission)
+    } catch {}
+  }
+
   async function ensurePlayer (urls: string[], startIndex: number) {
+    // Before the player exists, so the dialog cannot land on top of the first
+    // notification post. Resolves immediately once granted or once refused twice.
+    await ensureNotificationPermission()
+
     // shouldPlayInBackground + FOREGROUND_SERVICE_MEDIA_PLAYBACK keep audio alive
     // once the screen goes off. interruptionMode 'doNotMix' is what makes Android
     // associate the lock-screen controls with US: without it the OS may not hand
