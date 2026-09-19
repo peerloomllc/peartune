@@ -13,8 +13,27 @@ const path = require('path')
 const crypto = require('crypto')
 const { spawnSync } = require('child_process')
 
+// The helper moved out of scripts/release.sh and into the shared library beside the
+// repo (proposals/2026-09-17-shared-release-library.md, PR #437). Look in both, so
+// this keeps testing the code that actually runs wherever it ends up living, and say
+// which file is missing rather than dying on a null match.
 const SCRIPT = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'release.sh'), 'utf8')
-const helper = SCRIPT.match(/^_carry_forward_apk\(\) \{[\s\S]*?^\}$/m)[0]
+const SOURCES = [
+  path.join(__dirname, '..', 'scripts', 'release.sh'),
+  path.join(__dirname, '..', '..', 'peerloom-release', 'release-lib.sh')
+]
+const helper = (() => {
+  for (const file of SOURCES) {
+    if (!fs.existsSync(file)) continue
+    const m = fs.readFileSync(file, 'utf8').match(/^_carry_forward_apk\(\) \{[\s\S]*?^\}$/m)
+    if (m) return m[0]
+  }
+  throw new Error(
+    '_carry_forward_apk found in none of:\n  ' + SOURCES.join('\n  ') +
+    '\nThe shared release library is a private repo cloned beside this one; ' +
+    'see scripts/release.sh RELEASE_LIB.'
+  )
+})()
 
 function fakeRelease ({ apk = 'peartune-v1.0.8.apk', goodSum = true, withSum = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'carry-'))
