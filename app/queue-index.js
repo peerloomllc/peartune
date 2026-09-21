@@ -32,4 +32,15 @@ function reindexAfterRemove (cur, removed, len) {
   return removed < len - 1 ? removed : Math.max(0, removed - 1)
 }
 
-module.exports = { reindexAfterMove, reindexAfterRemove }
+// "Play next": the tracks have just been APPENDED at `start` (the queue's length before
+// the append) and belong right after the current track instead. ExoPlayer's patch
+// exposes append and move, never insert-at-index, so play-next is the composition of
+// the two: one move per appended track, walking them up in order. `cur` never shifts -
+// every move runs entirely after it - so the caller can apply these back to back.
+function nextUpMoves (cur, start, count) {
+  const moves = []
+  for (let k = 0; k < count; k++) moves.push({ from: start + k, to: cur + 1 + k })
+  return moves
+}
+
+module.exports = { reindexAfterMove, reindexAfterRemove, nextUpMoves }

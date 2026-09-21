@@ -30,7 +30,7 @@ import * as FileSystem from 'expo-file-system/legacy'
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const bundle = require('../assets/bare-universal.bundle')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { reindexAfterMove, reindexAfterRemove } = require('./queue-index')
+const { reindexAfterMove, reindexAfterRemove, nextUpMoves } = require('./queue-index')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { decideStarve, decideRecover } = require('./starve')
 const { chapterEndAfter, crossedChapterEnd } = require('./chapter-sleep')
@@ -837,6 +837,31 @@ export default function App () {
     } catch (e: any) {
       toWeb('play:error', { error: e?.message ?? String(e) })
     }
+  }
+
+  // "Play next": the same append as enqueue, then walk the new tracks up so they sit
+  // immediately after the track playing now. ExoPlayer has no insert-at-index through
+  // our patch, and rehanding it the whole playlist would restart the current song, so
+  // this composes append + move instead of touching the native side at all.
+  //
+  // SHUFFLE is why the UI only offers this with shuffle OFF: ExoPlayer owns the shuffled
+  // order and drops appended items into it wherever it likes, so a track sitting next in
+  // the LIST is not the track that plays next.
+  async function playNext ({ queue }: any) {
+    const q = Array.isArray(queue) ? queue : []
+    if (!q.length) return { items: queueRef.current, index: indexRef.current }
+    // Nothing playing: "next" and "play" are the same request, as with enqueue.
+    if (!player.current) { await play({ queue: q, index: 0 }); return { items: queueRef.current, index: indexRef.current } }
+
+    const start = queueRef.current.length
+    await enqueue({ queue: q })
+    // enqueue bails on a url failure (it reports play:error itself); with nothing
+    // appended there is nothing to move, and moving stale indices would scramble the
+    // queue the user still has.
+    if (queueRef.current.length !== start + q.length) return { items: queueRef.current, index: indexRef.current }
+
+    for (const m of nextUpMoves(indexRef.current, start, q.length)) queueMove(m)
+    return { items: queueRef.current, index: indexRef.current }
   }
 
   // Reorder the queue: move the track at `from` to `to`. ExoPlayer's own moveMediaItem
@@ -1744,6 +1769,7 @@ export default function App () {
     const local: Record<string, () => any> = {
       play: () => play(msg.args),
       enqueue: () => enqueue(msg.args),
+      playNext: () => playNext(msg.args),
 
       // The queue lives HERE (the shell hands it to ExoPlayer, and ExoPlayer owns
       // the shuffled order), so the UI has to ask for it rather than keep its own
