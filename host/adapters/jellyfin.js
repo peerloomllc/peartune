@@ -26,6 +26,7 @@ const { Readable } = require('stream')
 const { trackId } = require('../../protocol/ids')
 const { hasFfmpeg, spawnTranscode } = require('../transcode')
 const { FULL_SORTS } = require('./sort')
+const { parsePlain, fromTimedLines } = require('../lyrics')
 
 const CLIENT = 'PearTune'
 const VERSION = '0.1.0'
@@ -635,6 +636,23 @@ class JellyfinAdapter {
   // For a TRANSCODED stream there are no stable byte offsets to seek to - the bytes
   // do not exist until Jellyfin makes them - so a range request while transcoding is
   // best-effort. Same known v1 limitation as Navidrome.
+  // Lyrics (proposal 2026-09-21). Jellyfin serves them per item; `Start` is in TICKS,
+  // the same 100ns unit as every other duration it sends. A 404 here is the ordinary
+  // answer for a song with no words, so it is not an error.
+  async lyrics ({ trackId: id } = {}) {
+    const itemId = await this._itemId(id)
+    if (!itemId) return null
+
+    const body = await this._call(`/Audio/${itemId}/Lyrics`).catch(() => null)
+    const rows = Array.isArray(body?.Lyrics) ? body.Lyrics : []
+    if (!rows.length) return null
+
+    // Jellyfin drops Start entirely for an unsynced file rather than sending nulls.
+    const timed = rows.some(l => l.Start != null)
+    if (!timed) return parsePlain(rows.map(l => l.Text ?? '').join('\n'))
+    return fromTimedLines(rows.map(l => ({ t: Number(l.Start) / TICKS_PER_MS, text: l.Text ?? '' })))
+  }
+
   async stream ({ trackId: id, offset = 0, length, format, bitrate, timeOffsetMs } = {}) {
     const itemId = await this._itemId(id)
     if (!itemId) return null

@@ -40,7 +40,7 @@ const MUTATING = new Set([
 
 // Every method this table answers. ping and media.stream are not here: the package
 // answers both, through the `ping` and `openStream` hooks below.
-const METHODS = ['library.stats', 'library.list', 'library.get', 'library.search', 'identity.get', 'identity.set', 'identity.avatar', 'device.leave', 'fav.list', 'fav.set', 'count.bump', 'count.top', 'resume.get', 'resume.latest', 'bookmark.list', 'bookmark.add', 'bookmark.remove', 'resume.list', 'resume.set', 'playlist.list', 'playlist.get', 'playlist.create', 'playlist.rename', 'playlist.delete', 'playlist.add', 'playlist.setTracks', 'request.add', 'request.list', 'owner.claim', 'owner.devices', 'owner.pairStart', 'owner.pairStop', 'owner.pairState', 'owner.requests', 'owner.requestResolve', 'owner.revoke', 'request.delete', 'session.get', 'session.claim', 'session.set', 'speaker.list', 'speaker.play', 'speaker.stop', 'speaker.pause', 'speaker.resume', 'speaker.volume', 'speaker.state', 'art.get', 'nowplaying.set']
+const METHODS = ['library.stats', 'library.list', 'library.get', 'library.search', 'identity.get', 'identity.set', 'identity.avatar', 'device.leave', 'fav.list', 'fav.set', 'count.bump', 'count.top', 'resume.get', 'resume.latest', 'bookmark.list', 'bookmark.add', 'bookmark.remove', 'resume.list', 'resume.set', 'playlist.list', 'playlist.get', 'playlist.create', 'playlist.rename', 'playlist.delete', 'playlist.add', 'playlist.setTracks', 'request.add', 'request.list', 'owner.claim', 'owner.devices', 'owner.pairStart', 'owner.pairStop', 'owner.pairState', 'owner.requests', 'owner.requestResolve', 'owner.revoke', 'request.delete', 'session.get', 'session.claim', 'session.set', 'speaker.list', 'speaker.play', 'speaker.stop', 'speaker.pause', 'speaker.resume', 'speaker.volume', 'speaker.state', 'art.get', 'nowplaying.set', 'lyrics.get']
 
 function createMedia ({ getAdapter, libraryName = null, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, speakers = null, onStream = null, onNowPlaying = null }) {
   // CONFIRMED means the claim matches the person this device is actually assigned
@@ -719,6 +719,16 @@ function createMedia ({ getAdapter, libraryName = null, grants = null, state = n
         return ctx.reply(await speakers.state(String(params.entityId)))
       }
 
+      // The words for one track (proposal 2026-09-21). Read-only library data, so a
+      // readonly grant may ask; a source with no lyrics() answers an empty list rather
+      // than an error, because "this song has no words here" is not a failure.
+      case 'lyrics.get': {
+        const src = adapterFor()
+        if (typeof src.lyrics !== 'function') return ctx.reply({ synced: false, lines: [] })
+        const got = await src.lyrics({ trackId: params?.trackId })
+        return ctx.reply(got && Array.isArray(got.lines) ? { synced: !!got.synced, lines: got.lines } : { synced: false, lines: [] })
+      }
+
       case 'art.get': {
         const stream = await adapterFor().art(params || {})
         if (!stream) return ctx.fail(ERR.NOT_FOUND, 'no artwork')
@@ -751,7 +761,7 @@ function createMedia ({ getAdapter, libraryName = null, grants = null, state = n
     // books = this source labels audiobooks with kind:'book' (proposal 2026-09-13).
     // Absent, not false, on a source that cannot: an older phone reads caps the same.
     // The body is exactly what PearTune hosts have always sent (no `app` field).
-    ping: async (ctx) => ({ protocol: 1, libraryId: ctx.libraryId, caps: { timeOffset: await hasFfmpeg(), ...(getAdapter()?.books ? { books: 1 } : {}) } }),
+    ping: async (ctx) => ({ protocol: 1, libraryId: ctx.libraryId, caps: { timeOffset: await hasFfmpeg(), ...(getAdapter()?.books ? { books: 1 } : {}), ...(typeof getAdapter()?.lyrics === 'function' ? { lyrics: 1 } : {}) } }),
 
     // Through the caller's view, so a narrowed person gets no bytes of a hidden track.
     // Thrown as typed errors with PearTune's own messages: a null return would make the

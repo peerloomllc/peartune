@@ -1469,3 +1469,30 @@ label.flabel { display: block; margin-top: .6rem; }
 .stepslider.off { opacity: .45; }
 .stepslider.off input[type=range] { cursor: default; }
 .stepslider.off .stepslider-name { color: var(--color-text-muted); }
+
+/* --- lyrics (proposal 2026-09-21) ------------------------------------------
+   The sheet is taller than the others because words are the content, not a menu.
+   The list scrolls INSIDE it (the sheet itself does not), so the auto-scroll to the
+   current line moves the words and leaves the title and Close button where they are. */
+.sheet.lyricsheet { max-height: 88vh; overflow: hidden; display: flex; flex-direction: column; }
+.lyriclines {
+  flex: 1; overflow-y: auto; margin: .6rem 0 .2rem;
+  /* Room at the ends so the first and last lines can still centre themselves. */
+  padding: 30vh 0;
+  text-align: center;
+}
+.lyricline {
+  margin: 0; padding: .45rem .4rem; font-size: 1.05rem; line-height: 1.45;
+  color: var(--color-text-muted);
+  transition: color .25s ease, transform .25s ease;
+}
+/* Sung already: dimmer still, so the eye lands on the line being sung rather than
+   scanning from the top every time. */
+.lyricline.past { opacity: .55; }
+.lyricline.on {
+  color: var(--color-text); font-weight: 650; transform: scale(1.04);
+}
+@media (prefers-reduced-motion: reduce) {
+  .lyricline { transition: none; }
+  .lyricline.on { transform: none; }
+}

@@ -21,7 +21,7 @@ import {
   GridFour, ListPlus, Queue as QueueIcon, Trash, Plus, Playlist as PlaylistIcon,
   PencilSimple, DotsSixVertical, DownloadSimple, CheckCircle, CircleNotch,
   Palette, SpeakerHigh, Key, ChartLineUp, ArrowUp, ArrowDown, Faders, Moon, Camera, QrCode, ListNumbers, BookmarkSimple,
-  WarningCircle, LockKey, DeviceMobile, MusicNotesPlus, XCircle, CheckSquare, Square
+  WarningCircle, LockKey, DeviceMobile, MusicNotesPlus, XCircle, CheckSquare, Square, Quotes
 } from '@phosphor-icons/react'
 import { call, on, haptic } from './bridge'
 import { friendlyError, redact, reportUrl, reportMailto } from './errors.mjs'
@@ -237,6 +237,10 @@ export default function App () {
   const [bookRate, setBookRate] = useState(1)
   const [speedOpen, setSpeedOpen] = useState(false)
   const [chaptersOpen, setChaptersOpen] = useState(false)
+  // The words for the track playing now (proposal 2026-09-21). `supported:false` means
+  // the host cannot send any, and then there is no Lyrics button at all.
+  const [lyrics, setLyrics] = useState(null) // { trackId, supported, synced, lines }
+  const [lyricsOpen, setLyricsOpen] = useState(false)
   const [bookmarksOpen, setBookmarksOpen] = useState(false)
   // Home Assistant speakers (proposal 2026-08-01). `speakers` is null until we have asked;
   // an empty list, an old host, a non-owner grant and an unconfigured host all collapse to
@@ -2612,6 +2616,24 @@ export default function App () {
     } catch (e) { setError(e.message); loadQueue() }
   }
 
+  // Fetch the words once per track, and only once the player is EXPANDED - the panel
+  // lives there, and a library of 1358 tracks should not answer a lyrics request for
+  // every song somebody skims past. Failure is indistinguishable from "no words here",
+  // which is what the panel says either way.
+  useEffect(() => {
+    // `now` comes from play:started, whose id field is trackId - NOT id, which is what
+    // the queue rows and library rows use. Reading the wrong one here is silent: the
+    // effect simply never runs and no button ever appears.
+    const tid = now?.trackId
+    if (!expanded || !tid) return
+    if (lyrics?.trackId === tid) return
+    let live = true
+    call('lyrics', { trackId: tid, libraryId: now.libraryId, copies: now.copies })
+      .then((r) => { if (live) setLyrics({ trackId: tid, ...(r || {}) }) })
+      .catch(() => { if (live) setLyrics({ trackId: tid, supported: false, synced: false, lines: [] }) })
+    return () => { live = false }
+  }, [expanded, now?.trackId])
+
   // The long-press menu holds an ID, not tracks: a grid of 60 albums has not
   // fetched anybody's track list, and it should not, just in case someone might
   // long-press one. The tracks are fetched when an action is actually chosen.
@@ -2990,6 +3012,8 @@ export default function App () {
             bookRate={bookRate}
             onSpeed={() => { haptic('light'); setSpeedOpen(true) }}
             onChapters={() => { haptic('light'); setChaptersOpen(true) }}
+            lyrics={lyrics?.trackId === now.trackId ? lyrics : null}
+            onLyrics={() => { haptic('light'); setLyricsOpen(true) }}
             onBookmarks={() => { haptic('light'); setBookmarksOpen(true) }}
             onShuffle={toggleShuffle} onRepeat={cycleRepeat} onStop={stopPlayback}
             onExpand={() => { haptic('light'); setExpanded(true) }}
@@ -3093,6 +3117,14 @@ export default function App () {
           chapters={now.chapters} positionMs={status?.positionMs || 0}
           onClose={() => setChaptersOpen(false)}
           onPick={(c) => { call('seekTo', { ms: c.startMs }).catch(() => {}); setChaptersOpen(false) }}
+        />
+      )}
+      {lyricsOpen && (
+        <LyricsSheet
+          lyrics={lyrics?.trackId === now?.trackId ? lyrics : null}
+          title={now?.title} positionMs={status?.positionMs || 0}
+          onClose={() => setLyricsOpen(false)}
+          onSeek={(ms) => { call('seekTo', { ms }).catch(() => {}) }}
         />
       )}
       {sleepOpen && (
@@ -5872,7 +5904,7 @@ function Player ({
   now, status, expanded, skin, shuffle, repeat, onShuffle, onRepeat, onExpand, onCollapse,
   onViewArt, onQueue, onStop, queueItems, queueIndex, onJump, sleep, onSleep,
   canCast, castingTo, castPaused, onCastToggle, onSpeakers, fav, onFav,
-  bookRate = 1, onSpeed, onChapters, onBookmarks
+  bookRate = 1, onSpeed, onChapters, onBookmarks, lyrics, onLyrics
 }) {
   // While casting, play/pause drives the SPEAKER and the icon reflects the SPEAKER. The
   // phone is muted and held paused throughout, so `status.playing` is false the whole
@@ -6104,6 +6136,14 @@ function Player ({
             >
               <SpeakerHigh size={16} weight={castingTo ? 'fill' : 'regular'} />
             </button>}
+          {/* The words, when the library can send any (proposal 2026-09-21). No button on a
+              host too old for lyrics.get, or on a source that has none - the same rule the
+              speaker button follows two lines up. A book never gets one. */}
+          {!book && lyrics?.supported && lyrics.lines?.length > 0 && (
+            <button className='icon' onClick={onLyrics} aria-label='Lyrics'>
+              <Quotes size={16} weight='regular' />
+            </button>
+          )}
           {/* A book's bookmarks (proposal 2026-09-13 slice 4): save this spot, or jump to one. */}
           {book && onBookmarks && (
             <button className='icon' onClick={onBookmarks} aria-label='Bookmarks'>
@@ -6174,6 +6214,59 @@ function ChaptersSheet ({ chapters, positionMs, onClose, onPick }) {
       </div>
     </div>
   )
+}
+
+// The words. With timings the current line is highlighted and the list follows the
+// music; a tap on a line seeks to it, which is the fastest way back to the verse you
+// missed. Without timings it is plain scrolling text and nothing is tappable, because
+// a line that looks tappable and does nothing is worse than one that does not.
+function LyricsSheet ({ lyrics, title, positionMs, onClose, onSeek }) {
+  const lines = lyrics?.lines || []
+  const synced = !!lyrics?.synced
+  const at = synced ? lineAt(lines, positionMs) : -1
+  const ref = useRef(null)
+
+  // Keep the current line in view. `block:'center'` rather than 'nearest' so the eye
+  // has the lines either side of it, and only while the sheet is open.
+  useEffect(() => {
+    if (at < 0 || !ref.current) return
+    ref.current.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [at])
+
+  return (
+    <div className='sheetwrap' onClick={onClose}>
+      <div className='sheet lyricsheet' onClick={e => e.stopPropagation()}>
+        <h1>{title || 'Lyrics'}</h1>
+        <div className='lyriclines'>
+          {lines.length === 0 && <p className='muted sm'>No words for this one.</p>}
+          {lines.map((l, i) => (
+            <p
+              key={i}
+              ref={i === at ? ref : null}
+              className={'lyricline' + (i === at ? ' on' : '') + (synced && i < at ? ' past' : '')}
+              onClick={synced && l.t !== null ? () => onSeek(l.t) : undefined}
+            >
+              {l.text || '\u00a0'}
+            </p>
+          ))}
+        </div>
+        <div className='acts'>
+          <button className='wide' onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// The line the position is in: the last one starting at or before it. Same shape as
+// chapterAt, and -1 before the first line (a song whose words start after the intro).
+function lineAt (lines, positionMs) {
+  let at = -1
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].t !== null && lines[i].t <= positionMs) at = i
+    else if (lines[i].t !== null) break
+  }
+  return at
 }
 
 // The little countdown next to the moon. The AUTHORITATIVE timer runs in the shell (so it

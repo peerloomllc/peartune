@@ -27,6 +27,7 @@
 const crypto = require('crypto')
 const { Readable } = require('stream')
 const { hasFfmpeg, spawnTranscode } = require('../transcode')
+const { parsePlain, fromTimedLines } = require('../lyrics')
 const { trackId } = require('../../protocol/ids')
 
 // What Subsonic can actually sort, and it is uneven. getAlbumList2 offers a few
@@ -598,6 +599,37 @@ class SubsonicAdapter {
   // bytes do not exist until Navidrome makes them - so a range request while
   // transcoding is best-effort. Known v1 limitation; the client only asks for
   // transcoding on cellular, where it also tends not to scrub.
+  // Lyrics (proposal 2026-09-21). OpenSubsonic's getLyricsBySongId is the one that can
+  // carry TIMINGS; classic getLyrics is plain text and wants artist+title rather than an
+  // id, so it needs a getSong first. Both are _optional: a server without either is not
+  // broken, it simply has no words, and the cap already told the phone not to ask.
+  async lyrics ({ trackId: id } = {}) {
+    const songId = await this._songId(id)
+    if (!songId) return null
+
+    const sr = await this._optional('getLyricsBySongId', { id: songId })
+    const structured = sr?.lyricsList?.structuredLyrics
+    if (Array.isArray(structured) && structured.length) {
+      // Several languages can come back. Prefer one with timings; otherwise the first.
+      const pick = structured.find(x => x.synced) || structured[0]
+      const rows = Array.isArray(pick.line) ? pick.line : []
+      if (pick.synced) {
+        // structuredLyrics carries its own offset in ms, already signed the way the
+        // start values need shifting (unlike an .lrc [offset:] tag).
+        const off = Number(pick.offset) || 0
+        return fromTimedLines(rows.map(l => ({ t: Number(l.start) + off, text: l.value })))
+      }
+      return parsePlain(rows.map(l => l.value).join('\n'))
+    }
+
+    // Classic Subsonic: no id, so ask what the song is called first.
+    const song = (await this._optional('getSong', { id: songId }))?.song
+    if (!song?.title) return null
+    const plain = await this._optional('getLyrics', { artist: song.artist || '', title: song.title })
+    const text = plain?.lyrics?.value ?? (typeof plain?.lyrics === 'string' ? plain.lyrics : null)
+    return text ? parsePlain(text) : null
+  }
+
   async stream ({ trackId: id, offset = 0, length, format, bitrate, timeOffsetMs } = {}) {
     const songId = await this._songId(id)
     if (!songId) return null
