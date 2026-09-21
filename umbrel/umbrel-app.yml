@@ -66,8 +66,13 @@ gallery:
   - https://peerloomllc.com/assets/gallery-peartune-2.jpg
   - https://peerloomllc.com/assets/gallery-peartune-3.jpg
 releaseNotes: |-
-  Bug Fixes
-  - Audiobooks and podcasts made of many files now play in the right order. Before, some folders showed their episodes jumbled, for example episode 300 before episode 1.
+  New Features:
+  - Lyrics. Tap the quote button in the player to read along. When your music has timed lyrics, the line being sung lights up and follows the song, and tapping a line jumps straight to it.
+  - Play next. Long-press an album, artist or song and choose Play next to hear it right after the current song, instead of at the end of the queue.
+  - Even out the volume. Loud albums no longer blast after quiet ones. Turn it on in Settings > Sound and downloads, and choose Track (best for shuffle) or Album (keeps each album's own quiet and loud moments).
+  Bug Fixes:
+  - On Android 13 and newer, the play, pause and skip controls now show up in your notifications and on the lock screen while music is playing. PearTune asks for permission the first time you press play.
+  Lyrics and volume evening need the PearTune server on your library to be updated too. Until it is, those features simply won't appear.
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the
