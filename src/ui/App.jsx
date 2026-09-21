@@ -2413,6 +2413,15 @@ export default function App () {
     return call('play', { queue: toQueue(list), index })
   }
 
+  // "Play next": the same as Add to queue, except it lands right after the song
+  // playing now. The shell does the work (it owns the queue); this only names it.
+  const playNextTracks = (list) => {
+    if (!list?.length) return
+    haptic('success')
+    call('playNext', { queue: toQueue(list) })
+    toast(list.length === 1 ? 'Playing next' : `${list.length} tracks playing next`)
+  }
+
   const enqueue = (list) => {
     if (!list?.length) return
     haptic('success')
@@ -2675,6 +2684,7 @@ export default function App () {
         haptic('warn')
         return toast(`Nothing to play in ${item.name || 'that'}`, true)
       }
+      if (action === 'next') return playNextTracks(list)
       if (action === 'queue') return enqueue(list)
       // A book from the menu picks up where this person stopped, like its page's Play.
       if (item.kind === 'book' && action === 'play') return playBookFromPage(item, list)
@@ -3027,6 +3037,10 @@ export default function App () {
           onClose={() => setMenu(null)}
           onAction={(a) => menuAction(menu, a)}
           canPlaylist={plSupported}
+          // Play next needs something to be next TO, and it is meaningless under shuffle:
+          // ExoPlayer owns the shuffled order, so a track sitting next in the list is not
+          // the one that plays next. Offering it there would be a button that lies.
+          canPlayNext={!!now && !shuffle}
           // No Download in demo mode, for the same reason the album screen hides it: the
           // demo tracks are already on the phone with no server behind them.
           // An ALBUM knows whether it is already downloaded (we hold the pinned set); an
@@ -3391,8 +3405,8 @@ function QueueScreen ({ items, index, skin, onJump, onMove, onRemove, onClear })
   )
 }
 
-// Play / Shuffle / Add to queue / Add to playlist, without drilling into the thing first.
-function ActionSheet ({ item, onClose, onAction, canPlaylist, canDownload, downloaded }) {
+// Play / Shuffle / Play next / Add to queue / Add to playlist, without drilling into the thing first.
+function ActionSheet ({ item, onClose, onAction, canPlaylist, canPlayNext, canDownload, downloaded }) {
   // A pin is album-keyed, so a single track has nothing to download - offering it would mean
   // silently pulling the album it happens to sit on, which is not what the word says.
   const showDownload = canDownload && item.type !== 'track'
@@ -3409,6 +3423,11 @@ function ActionSheet ({ item, onClose, onAction, canPlaylist, canDownload, downl
           {item.type !== 'track' && item.kind !== 'book' && (
             <button className='wide' onClick={() => onAction('shuffle')}>
               <Shuffle size={17} weight='bold' /> Shuffle
+            </button>
+          )}
+          {canPlayNext && (
+            <button className='wide' onClick={() => onAction('next')}>
+              <QueueIcon size={17} weight='bold' /> Play next
             </button>
           )}
           <button className='wide' onClick={() => onAction('queue')}>
