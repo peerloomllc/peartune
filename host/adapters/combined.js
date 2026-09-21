@@ -14,7 +14,7 @@
 //     has any (a folder marked Audiobooks). Merged and sorted, then paged.
 //   - No kind (a phone from before Books) gets the music pages first, then the books, with a
 //     cursor of the form 'b:<n>' once it has moved on to the books.
-//   - get/art/stream go to whichever source owns the id.
+//   - get/art/stream/lyrics go to whichever source owns the id.
 //   - A books source that fails its scan must not take the music with it: scan() keeps the
 //     music serving and records booksError for the dashboard.
 //   - Narrowing (per-person folders) narrows the MUSIC only. Everyone sees every
@@ -147,6 +147,14 @@ class CombinedAdapter {
 
   art (params = {}) { return this._owner(params.coverId).art(params) }
   stream (params = {}) { return this._owner(params.trackId).stream(params) }
+
+  // Lyrics go to whichever source owns the id, like stream - and a source that has no
+  // lyrics() at all (Audiobookshelf) answers null rather than throwing, so a combined
+  // library still advertises the cap for its music half.
+  lyrics (params = {}) {
+    const owner = this._owner(params.trackId)
+    return typeof owner?.lyrics === 'function' ? owner.lyrics(params) : null
+  }
 
   // A narrowed person hears only their music folders, and every Audiobookshelf book.
   narrowedView (paths) {

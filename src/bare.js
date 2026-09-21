@@ -4289,6 +4289,34 @@ const methods = {
     return { url: shim.urlFor(trackId) + '?t=' + t, port: shimPort }
   },
 
+  // The words for one track (proposal 2026-09-21). Asked for when the panel opens,
+  // never on the playback path. Gated on the host's cap so an old host is never
+  // called at all - and ENOMETHOD is swallowed anyway, since "no lyrics" and "too
+  // old to have any" look the same to someone reading the screen.
+  async lyrics ({ trackId, libraryId, copies } = {}) {
+    // `supported:false` means DO NOT OFFER THIS - a host too old to have the method, or
+    // a source that cannot read words. It is what hides the button, the same way
+    // playlists({supported:false}) hides Add to playlist.
+    const none = { supported: false, synced: false, lines: [] }
+    if (!trackId || demoMode()) return none
+    try {
+      if (mergedMode()) {
+        const route = routeTrack({ trackId, libraryId, copies })
+        if (!route) return none
+        if (!(await capsFor(route.libraryId)).lyrics) return none
+        const c = await ensureHostById(route.libraryId)
+        const got = await c.lyrics({ trackId: route.id })
+        return { supported: true, synced: !!got?.synced, lines: got?.lines || [] }
+      }
+      if (!(await capsFor(null)).lyrics) return none
+      await ensureConnected()
+      const got = await mustClient().lyrics({ trackId })
+      return { supported: true, synced: !!got?.synced, lines: got?.lines || [] }
+    } catch {
+      return none
+    }
+  },
+
   // --- storage / offline cache (milestone 3, phase 5B) ------------------------
   cacheStats () {
     return { bytes: audioCache.totalBytes(), count: audioCache.count(), cap: audioCache.cap, ...artStats() }

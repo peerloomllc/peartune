@@ -37,6 +37,7 @@ const { visibleTo, locate, normalRel } = require('../visibility')
 // -ss path (proposal 2026-08-16 slice 4) - one transcoder, three adapters.
 const { hasFfmpeg, spawnTranscode } = require('../transcode')
 const { readChapters } = require('../chapters')
+const { parseLrc, parsePlain, fromTimedLines } = require('../lyrics')
 
 // .m4b is an audiobook: an MP4 like .m4a, usually one long file with chapters inside
 // (proposal 2026-09-13). Skipped until then, so a folder of books looked empty.
@@ -967,6 +968,35 @@ class FolderAdapter {
   // If ffmpeg is NOT present we fall back to raw bytes - the pre-spike behavior. The
   // client still warns about raw-over-cellular, so this degrades to exactly what it
   // was, never worse.
+  // Lyrics (proposal 2026-09-21). A .lrc beside the file WINS over the embedded tag:
+  // it is the one somebody curated, and it is the one that carries timings.
+  //
+  // The scan does not read lyrics - the whole point of skipCovers/duration:false there
+  // is not to hold the fat parts of 1358 tags in memory - so this parses the one file
+  // on demand, when the panel opens. Never on the playback path.
+  async lyrics ({ trackId: id } = {}) {
+    const t = this.tracks.get(id)
+    if (!t) return null
+
+    const stem = t.absPath.slice(0, t.absPath.length - path.extname(t.absPath).length)
+    for (const ext of ['.lrc', '.LRC']) {
+      try {
+        const text = await fsp.readFile(stem + ext, 'utf8')
+        const parsed = parseLrc(text)
+        if (parsed.lines.length) return parsed
+      } catch {} // ENOENT is the normal case: most files have no .lrc
+    }
+
+    try {
+      const { parseFile } = await metadata()
+      const md = await parseFile(t.absPath, { duration: false, skipCovers: true })
+      return fromTags(md?.common?.lyrics)
+    } catch (e) {
+      this.log('folder:lyrics-failed', { track: String(id).slice(0, 8), err: e.message })
+      return null
+    }
+  }
+
   async stream ({ trackId: id, offset = 0, length, format, bitrate, timeOffsetMs } = {}) {
     const t = this.tracks.get(id)
     if (!t) return null
@@ -1015,6 +1045,30 @@ async function visibleMounts () {
   } catch {
     return []
   }
+}
+
+// music-metadata's common.lyrics has had three shapes across versions: plain strings,
+// { text }, and { syncText: [{ text, timestamp }] } for an ID3 SYLT frame. Take the
+// first entry that has any words in it - a file with lyrics in six languages is rare
+// enough that picking is not worth a setting.
+function fromTags (lyrics) {
+  if (!Array.isArray(lyrics) || !lyrics.length) return null
+  for (const entry of lyrics) {
+    if (Array.isArray(entry?.syncText) && entry.syncText.length) {
+      const rows = entry.syncText.map(l => ({ t: Number(l.timestamp), text: String(l.text ?? '') }))
+      const parsed = fromTimedLines(rows)
+      if (parsed.lines.length) return parsed
+    }
+    const text = typeof entry === 'string' ? entry : entry?.text
+    if (typeof text === 'string' && text.trim()) {
+      // An embedded tag is sometimes a whole .lrc pasted into the field, timestamps
+      // and all, so try that reading first; parseLrc falls back to plain text itself.
+      const parsed = parseLrc(text)
+      if (parsed.lines.length) return parsed
+      return parsePlain(text)
+    }
+  }
+  return null
 }
 
 module.exports = { FolderAdapter, AUDIO_EXT, visibleMounts, normalizeRoots }

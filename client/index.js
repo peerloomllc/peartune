@@ -470,6 +470,9 @@ class PearTuneClient {
   list (params) { return this._request('library.list', params) }
   get (params) { return this._request('library.get', params) }
   search (params) { return this._request('library.search', params) }
+  // Gated on caps.lyrics by the caller; an old host answers ENOMETHOD, which the
+  // worklet swallows the same way it does for bookmarks.
+  lyrics (params) { return this._request('lyrics.get', params) }
 
   // Identity. The host takes the caller from the Noise-authenticated connection, so
   // there is deliberately no device key to pass: a device names ITSELF, and only
