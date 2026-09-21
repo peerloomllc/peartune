@@ -1076,6 +1076,17 @@ export default function App () {
     call('setSettings', { streamQuality: q }).catch(() => {})
   }
 
+  // Volume levelling (proposal 2026-09-21). The SHELL owns player.volume, so the mode
+  // goes to it directly - on mount and on every change - while the choice itself is
+  // persisted with the other playback settings. Optimistic, like the quality picker.
+  const gainMode = state.settings?.gainMode || 'track'
+  useEffect(() => { call('gainMode', { mode: gainMode }).catch(() => {}) }, [gainMode])
+  const changeGainMode = (m) => {
+    haptic('light')
+    setState(s => ({ ...s, settings: { ...(s.settings || {}), gainMode: m } }))
+    call('setSettings', { gainMode: m }).catch(() => {})
+  }
+
   // --- navigation ------------------------------------------------------------
   //
   // Android back, suite convention: tell the shell whether we have anything to
@@ -2372,7 +2383,10 @@ export default function App () {
     // Books resume and count differently (proposal 2026-09-13); play:started hands it back.
     kind: x.kind ?? null,
     // A book's chapters ride the queue so the player has them whatever opened it (slice 3).
-    chapters: x.chapters ?? null
+    chapters: x.chapters ?? null,
+    // Volume levelling (proposal 2026-09-21): the shell reads this at each track change.
+    // Absent on an untagged track and on anything from a host too old to send it.
+    gain: x.gain ?? null
   }))
 
   // Tapping a track queues the whole list behind it - which is what people mean
@@ -2953,6 +2967,7 @@ export default function App () {
       <Settings
         state={state} merged={merged} themePref={themePref} onTheme={changeTheme} onUnpair={unpair}
         ident={ident} onRefreshIdentity={loadIdentity} onSaveIdentity={saveIdentity} onSaveAvatar={saveAvatar} onQuality={changeQuality}
+        gainMode={gainMode} onGainMode={changeGainMode}
         onArtRefreshed={onArtRefreshed}
         skin={skin} onSkin={setSkinValue} showRecent={showRecent} onShowRecent={setShowRecentValue}
         onSwitchHost={switchLibrary} onRemoveHost={removeLibrary} onAddLibrary={openAddLibrary}
@@ -6715,6 +6730,15 @@ const QUALITIES = [
 ]
 const QUALITY_AUTO_DESC = 'Full quality on Wi-Fi, a smaller stream on cellular'
 
+// Off / Track / Album. TRACK is the default because shuffle is how most people listen
+// and it is the one that makes a shuffled queue sit still; ALBUM keeps a record's own
+// quiet-to-loud shape, which is what you want playing one right through.
+const GAIN_MODES = [
+  { value: 'off', label: 'Off', desc: 'Play every file at the level it was made' },
+  { value: 'track', label: 'Track', desc: 'Every song at the same level - best for shuffle' },
+  { value: 'album', label: 'Album', desc: "Keeps an album's own loud and quiet parts" }
+]
+
 const CACHE_CAPS = [
   { value: 512 * 1024 * 1024, label: '512 MB' },
   { value: 1024 * 1024 * 1024, label: '1 GB' },
@@ -7007,7 +7031,7 @@ function OwnerPairSheet ({ link, toast, onClose }) {
   )
 }
 
-function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onArtRefreshed, onQuality, skin, onSkin, showRecent, onShowRecent, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias, onSetRelayAudio, onDisableDemo }) {
+function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefreshIdentity, onSaveIdentity, onSaveAvatar, onArtRefreshed, onQuality, gainMode, onGainMode, skin, onSkin, showRecent, onShowRecent, onSwitchHost, onRemoveHost, onAddLibrary, onSetAlias, onSetRelayAudio, onDisableDemo }) {
   const quality = state.settings?.streamQuality || 'auto'
   const [dev, setDev] = useState(null)
   const [usr, setUsr] = useState(null)
@@ -7359,6 +7383,22 @@ function Settings ({ state, merged, themePref, onTheme, onUnpair, ident, onRefre
             onChange={onQuality}
             disabled={quality === 'auto'}
             ariaLabel='Streaming quality'
+          />
+          {/* VOLUME LEVELLING (proposal 2026-09-21). No host cap gates this: it is a
+              playback preference, and it simply does nothing for a track whose file was
+              never tagged - which the description says outright rather than leaving
+              someone to wonder why one album did not change. */}
+          <div className='label' style={{ marginTop: '.9rem' }}>Even out the volume</div>
+          <div className='desc'>
+            Loud albums come down to meet the quiet ones, using the loudness each file
+            was tagged with, so you stop reaching for the volume between songs. Songs
+            without that tag are left alone.
+          </div>
+          <StepSlider
+            options={GAIN_MODES}
+            value={gainMode}
+            onChange={onGainMode}
+            ariaLabel='Even out the volume'
           />
           <div className='label' style={{ marginTop: '.9rem' }}>Offline storage</div>
           <div className='desc'>

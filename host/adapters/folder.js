@@ -38,6 +38,7 @@ const { visibleTo, locate, normalRel } = require('../visibility')
 const { hasFfmpeg, spawnTranscode } = require('../transcode')
 const { readChapters } = require('../chapters')
 const { parseLrc, parsePlain, fromTimedLines } = require('../lyrics')
+const { makeGain, r128ToDb } = require('../../protocol/gain')
 
 // .m4b is an audiobook: an MP4 like .m4a, usually one long file with chapters inside
 // (proposal 2026-09-13). Skipped until then, so a folder of books looked empty.
@@ -368,7 +369,11 @@ class FolderAdapter {
       disc: c.disk?.no ?? null,
       year: c.year ?? null,
       genre: clean(c.genre?.[0]),
-      durationMs
+      durationMs,
+      // Volume levelling (proposal 2026-09-21). Free here: the scan has the tag open
+      // already, so reading four more fields costs no extra IO and saves opening every
+      // file again at play time. null when the file was never tagged.
+      gain: gainFromTags(md)
     }
   }
 
@@ -507,6 +512,9 @@ class FolderAdapter {
           // phone with dated albums and dateless songs, and the blend could not order Songs by
           // date at all. Carried since 2026-07-27.
           addedAt: r.addedAt ?? null,
+          // Volume levelling: omitted entirely when the file carries no loudness tag,
+          // so an untagged library sends exactly the bytes it sent before.
+          ...(r.gain ? { gain: r.gain } : {}),
           ...(isBook(r) ? { kind: 'book' } : {}),
           path: r.relPath,
           absPath: r.absPath
@@ -1069,6 +1077,29 @@ function fromTags (lyrics) {
     }
   }
   return null
+}
+
+// The loudness tags, from wherever this container keeps them. music-metadata maps
+// ReplayGain into common as { dB, ratio }, but NOT Opus's R128 - that stays in the
+// vorbis block as Q7.8 fixed point against a different reference, so it is read and
+// converted by hand (see host/gain.js).
+function gainFromTags (md) {
+  const c = md?.common || {}
+  const direct = makeGain({
+    trackDb: c.replaygain_track_gain?.dB,
+    albumDb: c.replaygain_album_gain?.dB,
+    trackPeak: c.replaygain_track_peak?.ratio,
+    albumPeak: c.replaygain_album_peak?.ratio
+  })
+  if (direct) return direct
+
+  const vorbis = md?.native?.vorbis
+  if (!Array.isArray(vorbis)) return null
+  const find = (id) => vorbis.find(t => t.id === id)?.value
+  return makeGain({
+    trackDb: r128ToDb(find('R128_TRACK_GAIN')),
+    albumDb: r128ToDb(find('R128_ALBUM_GAIN'))
+  })
 }
 
 module.exports = { FolderAdapter, AUDIO_EXT, visibleMounts, normalizeRoots }

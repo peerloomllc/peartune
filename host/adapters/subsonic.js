@@ -28,6 +28,7 @@ const crypto = require('crypto')
 const { Readable } = require('stream')
 const { hasFfmpeg, spawnTranscode } = require('../transcode')
 const { parsePlain, fromTimedLines } = require('../lyrics')
+const { makeGain } = require('../../protocol/gain')
 const { trackId } = require('../../protocol/ids')
 
 // What Subsonic can actually sort, and it is uneven. getAlbumList2 offers a few
@@ -208,7 +209,11 @@ class SubsonicAdapter {
       // and it can only sort by a field it is actually sent.
       addedAt: song.created ? (Date.parse(song.created) || null) : null,
       coverId: song.coverArt || song.albumId || null,
-      suffix: song.suffix || null
+      suffix: song.suffix || null,
+      // Volume levelling (proposal 2026-09-21). OpenSubsonic puts the loudness tags on
+      // the song as `replayGain`; a server without that extension simply sends nothing
+      // and the track goes out with no gain field at all.
+      ...(gainOf(song) ? { gain: gainOf(song) } : {})
     }
   }
 
@@ -671,6 +676,18 @@ class SubsonicAdapter {
     if (!res.ok && res.status !== 206) return null
     return res.body
   }
+}
+
+// OpenSubsonic's replayGain block. Navidrome fills it from the file's own tags.
+function gainOf (song) {
+  const rg = song?.replayGain
+  if (!rg) return null
+  return makeGain({
+    trackDb: rg.trackGain,
+    albumDb: rg.albumGain,
+    trackPeak: rg.trackPeak,
+    albumPeak: rg.albumPeak
+  })
 }
 
 module.exports = { SubsonicAdapter }
