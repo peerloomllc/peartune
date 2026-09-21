@@ -31,6 +31,7 @@ import * as FileSystem from 'expo-file-system/legacy'
 const bundle = require('../assets/bare-universal.bundle')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { reindexAfterMove, reindexAfterRemove, nextUpMoves } = require('./queue-index')
+const { factorFor } = require('../protocol/gain')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { decideStarve, decideRecover } = require('./starve')
 const { chapterEndAfter, crossedChapterEnd } = require('./chapter-sleep')
@@ -602,7 +603,12 @@ export default function App () {
           durationMs: baseOffsetMs.current ? null : (s.duration ? Math.round(s.duration * 1000) : null),
           buffering: !!s.isBuffering,
           index: indexRef.current,
-          queueLength: queueRef.current.length
+          queueLength: queueRef.current.length,
+          // The volume levelling actually in force (1 = untouched). Reported because
+          // "why is this album quieter than the last one" is otherwise unanswerable
+          // from outside the shell - the same reason the connection state is reported
+          // rather than inferred.
+          level: levelFor(queueRef.current[indexRef.current])
         })
 
         // Session handoff: whenever playback transitions INTO playing, make sure we hold the
@@ -653,6 +659,10 @@ export default function App () {
     const t = queueRef.current[i]
     if (!t) return
     applyRate(i)
+    // Volume levelling rides the track change: one player runs across the whole queue
+    // (that is what gapless means), so the level has to move at the boundary rather
+    // than being set once when the player is built.
+    applyVolume(i)
 
     const meta = {
       title: t.title,
@@ -965,7 +975,7 @@ export default function App () {
     if (on) {
       if (p) {
         try {
-          p.volume = 0
+          applyVolume() // castMode is set, so this is the deliberate 0
           p.pause()
           // AND POINT EVERY QUEUE SLOT AT SILENCE. The player has to stay loaded - it is
           // what owns the order, shuffle and repeat - but a loaded player buffers whatever
@@ -1016,6 +1026,57 @@ export default function App () {
     await loadQueueOnPlayer(snap, true)
   }
 
+  // --- volume: one owner, three claimants (proposal 2026-09-21-volume-levelling) --
+  //
+  // Levelling, the sleep fade and casting all want to set player.volume, and before
+  // this they each wrote it directly - which is why the fade "restored" a literal 1,
+  // and why a levelled track came back louder than it started every time a timer was
+  // cleared. Everything now sets its own FACTOR and calls applyVolume().
+  const gainMode = useRef<'off' | 'track' | 'album'>('track')
+  const fadeFactor = useRef(1) // the sleep fade, 1 -> 0 over ~5s
+
+  // `at` is the queue slot whose level applies - announce passes the track it is
+  // announcing rather than trusting indexRef to have been written first. Every caller
+  // today does write it first; this is so a future one that forgets fails loudly in a
+  // review rather than quietly playing the previous track's level.
+  function applyVolume (at: number = indexRef.current) {
+    const p = player.current
+    if (!p) return
+    // Casting: the phone is a deliberately silent placeholder queue. Nothing else may
+    // raise it, or a second copy of the song plays in the room.
+    const level = castMode.current
+      ? 0
+      : gainFactor(queueRef.current[at]) * fadeFactor.current
+    // A PLAYER VOLUME CANNOT EXCEED 1, so levelling can only ever turn things DOWN.
+    // A track tagged +5 dB (a quiet master) is left alone and the loud ones come down
+    // to meet it; the listener makes up the difference on the device's own volume,
+    // once, instead of reaching for it every third song. Boosting in software would
+    // mean gain we do not have the headroom for anyway.
+    try { p.volume = Math.max(0, Math.min(1, level)) } catch {}
+  }
+
+  // The levelling factor for one track. An untagged track, an old host that sends no
+  // gain field, and mode 'off' all come to 1 - the volume it has always had.
+  function gainFactor (t: any) {
+    return factorFor(t?.gain, gainMode.current)
+  }
+
+  // What the player is ACTUALLY at, rounded for the status push. Clamped the same way
+  // applyVolume clamps, or a +5 dB quiet master reports 1.778 while playing at 1 -
+  // which is exactly the kind of number that sends someone hunting for a bug that is
+  // not there (seen on the TCL 2026-09-21).
+  function levelFor (t: any) {
+    return Math.round(Math.max(0, Math.min(1, gainFactor(t))) * 1000) / 1000
+  }
+
+  // Off / track / album, from the UI's Settings. Sent on mount and on every change,
+  // so the shell never has to read (or duplicate) the phone's stored settings.
+  function setGainMode ({ mode }: any) {
+    gainMode.current = mode === 'off' || mode === 'album' ? mode : 'track'
+    applyVolume()
+    return { mode: gainMode.current }
+  }
+
   // --- sleep timer ---------------------------------------------------------
 
   // Cancel any armed timer / mid-flight fade and restore full volume (a fade may have
@@ -1027,10 +1088,10 @@ export default function App () {
     sleepMinutes.current = 0
     sleepEndOfTrack.current = false
     sleepEndOfChapter.current = false
-    // ...but NOT while casting, where 0 is the deliberate volume. Restoring it here would
-    // un-mute the phone behind the user's back and put a second copy of the song in the
-    // room the moment anything cleared a sleep timer.
-    try { if (player.current && !castMode.current) player.current.volume = 1 } catch {}
+    // The fade is over; the LEVEL is applyVolume's business (casting keeps its 0, and a
+    // levelled track keeps its level rather than jumping back to full).
+    fadeFactor.current = 1
+    applyVolume()
   }
 
   // Push the current sleep state so the UI can light the moon and count down. `fired`
@@ -1059,12 +1120,15 @@ export default function App () {
     if (sleepFade.current) clearInterval(sleepFade.current)
     sleepFade.current = setInterval(() => {
       v -= 0.1
-      try { p.volume = Math.max(0, v) } catch {}
+      // A FACTOR, not the volume: on a levelled track the fade now runs from its level
+      // down to silence rather than from full, so it does not jump up before fading.
+      fadeFactor.current = Math.max(0, v)
+      applyVolume()
       if (v <= 0) {
         clearInterval(sleepFade.current); sleepFade.current = null
         try { p.pause() } catch {}
-        // Same reason as clearSleep: while casting, 0 is deliberate.
-        try { if (!castMode.current) p.volume = 1 } catch {}
+        fadeFactor.current = 1
+        applyVolume()
         persistQueue(true)
         pushSleep(true)
       }
@@ -1770,6 +1834,7 @@ export default function App () {
       play: () => play(msg.args),
       enqueue: () => enqueue(msg.args),
       playNext: () => playNext(msg.args),
+      gainMode: () => setGainMode(msg.args),
 
       // The queue lives HERE (the shell hands it to ExoPlayer, and ExoPlayer owns
       // the shuffled order), so the UI has to ask for it rather than keep its own

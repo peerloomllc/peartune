@@ -27,6 +27,7 @@ const { trackId } = require('../../protocol/ids')
 const { hasFfmpeg, spawnTranscode } = require('../transcode')
 const { FULL_SORTS } = require('./sort')
 const { parsePlain, fromTimedLines } = require('../lyrics')
+const { makeGain } = require('../../protocol/gain')
 
 const CLIENT = 'PearTune'
 const VERSION = '0.1.0'
@@ -232,7 +233,11 @@ class JellyfinAdapter {
       // which that list has never contained. So a Jellyfin .wma was direct-played as raw ASF
       // and sat silent, while the same file through a Folder source (which reports `wma`)
       // played. Tim, 2026-08-29. Container stays as the fallback for an item with no path.
-      suffix: extOf(filePath) || media.Container || item.Container || null
+      suffix: extOf(filePath) || media.Container || item.Container || null,
+      // Volume levelling (proposal 2026-09-21). Jellyfin computes NormalizationGain
+      // itself - a dB figure per track, and per album on the LUFS field newer servers
+      // send. An older server has neither and the track goes out with no gain at all.
+      ...(gainOf(item) ? { gain: gainOf(item) } : {})
     }
   }
 
@@ -699,6 +704,17 @@ class JellyfinAdapter {
     if (!res.ok && res.status !== 206) return null
     return res.body
   }
+}
+
+// Jellyfin's own loudness figures. NormalizationGain is already the dB to apply;
+// AlbumNormalizationGain arrived alongside it for album mode. Neither carries a peak,
+// so the +6 dB clamp in host/gain.js is the only clipping protection here.
+function gainOf (item) {
+  if (!item) return null
+  return makeGain({
+    trackDb: item.NormalizationGain,
+    albumDb: item.AlbumNormalizationGain
+  })
 }
 
 module.exports = { JellyfinAdapter }

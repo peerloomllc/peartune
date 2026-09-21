@@ -40,10 +40,18 @@ gain ourselves would mean decoding every file, and that is a different proposal.
   sleep fade stops restoring a literal `1`. The gain is applied on each track change -
   the shell already announces those - so gapless playback is untouched: nothing is
   re-prepared, only the volume moves.
-- **Clipping** - a positive gain that would push the peak over 1.0 is reduced to fit
-  when the peak is known, and capped at +6 dB when it is not. Levelling that clips is
-  worse than no levelling.
-- **UI** - Settings > Playback: Off / Track / Album, default TRACK. Album mode keeps a
+- **It can only turn things DOWN.** A player's volume cannot exceed 1, so a track
+  tagged +5 dB (a quiet master) is left as it is and the loud ones come down to meet
+  it. The overall level therefore drops, and the listener makes that up once on the
+  device's own volume instead of song by song. This is inherent to levelling with a
+  volume multiplier, and the Settings copy says so in plain words.
+- **Clipping** - the computed factor still respects the peak: a positive gain that
+  would push it over 1.0 is reduced to fit when the peak is known, and capped at +6 dB
+  when it is not. With the ceiling above it can never bite in practice, but the factor
+  is the number the tests check and it should be right on its own terms.
+- **UI** - Settings > Sound and downloads: Off / Track / Album, default TRACK. No host
+  cap gates it: it is a listener's preference, and it simply does nothing for a track
+  whose file was never tagged. Album mode keeps a
   record's own quiet-to-loud shape, which is what people want for an album and not what
   they want on shuffle. Absent when the host does not advertise the cap.
 
