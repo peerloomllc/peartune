@@ -152,6 +152,54 @@ _publish_umbrel_store() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: carry the previous release's desktop installers forward.
+# The desktop twin of _carry_forward_apk (release-lib.sh). An Android-only release
+# (v1.0.11, 2026-09-22) uploaded only what it built, so releases/latest lost every
+# desktop download and desktop hosts were offered an update with no installer.
+# Carries each installer whose kind was NOT built this run, and only when its
+# .sha256 sidecar is present and matches. Prints the local paths it fetched, one
+# per line; prints nothing on any failure, and never fails the run.
+# Usage: _carry_forward_desktop <token> <slug> <dest> [built-artifact ...]
+# ---------------------------------------------------------------------------
+_carry_forward_desktop() {
+  local token="$1" slug="$2" dest="$3"; shift 3
+  local api="${GITHUB_API:-https://api.github.com}"
+  [ -z "$slug" ] && return 0
+  local built
+  built=$(for _b in "$@"; do basename "$_b"; done)
+  local pairs
+  pairs=$(curl -sL \
+    ${token:+-H "Authorization: Bearer $token"} \
+    -H "Accept: application/vnd.github+json" \
+    "${api}/repos/${slug}/releases/latest" 2>/dev/null \
+    | BUILT="$built" python3 -c "
+import os, re, sys, json
+KINDS = [('appimage', r'\.AppImage$'), ('deb', r'_amd64\.deb$'), ('exe', r'^PearTune-Setup-.*\.exe$'),
+         ('dmg-arm64', r'-arm64\.dmg$'), ('dmg-x64', r'^(?!.*-arm64\.dmg$).*\.dmg$')]
+def kind(n):
+    for k, rx in KINDS:
+        if re.search(rx, n or '', re.I): return k
+    return None
+built = {kind(n) for n in os.environ.get('BUILT', '').split('\n') if n}
+names = {a.get('name'): a.get('browser_download_url') for a in json.load(sys.stdin).get('assets', [])}
+for n, url in names.items():
+    k = kind(n)
+    if k and k not in built and names.get(n + '.sha256'):
+        print(url + ' ' + names[n + '.sha256'])
+" 2>/dev/null) || return 0
+  [ -z "$pairs" ] && return 0
+  mkdir -p "$dest"
+  local url sum name
+  while read -r url sum; do
+    name=$(basename "$url")
+    curl -sfL -o "$dest/$name" "$url" || continue
+    curl -sfL -o "$dest/$name.sha256" "$sum" || continue
+    ( cd "$dest" && sha256sum -c --status "$name.sha256" ) || continue
+    printf '%s\n%s\n' "$dest/$name" "$dest/$name.sha256"
+  done <<< "$pairs"
+}
+
+# ---------------------------------------------------------------------------
 # Helper: does the latest GitHub release carry an APK built for its own version?
 # False for a host-only release, whose APK is carried forward from an older one.
 # A failed query answers true, which keeps the pre-flight's old behavior.
@@ -1839,6 +1887,15 @@ for _d in "${DESKTOP_ARTIFACTS[@]}"; do
   RELEASE_ASSETS+=("$_d")
   [ -f "${_d}.sha256" ] && RELEASE_ASSETS+=("${_d}.sha256")
 done
+# Any desktop platform not built this run (--skip-desktop, a single --skip-<os>, or a
+# failed build) keeps the previous release's installer, so releases/latest always has
+# a download for every platform. Desktop hosts are not offered it as an update: the
+# update check sees an installer older than the tag and stays quiet (host/update-check.js).
+_CARRIED_DT=$(_carry_forward_desktop "$GH_TOKEN" "$REPO_SLUG" "$(mktemp -d)" "${DESKTOP_ARTIFACTS[@]}")
+if [ -n "$_CARRIED_DT" ]; then
+  while IFS= read -r _c; do RELEASE_ASSETS+=("$_c"); done <<< "$_CARRIED_DT"
+  echo "==> Carrying forward $(printf '%s\n' "$_CARRIED_DT" | grep -vc '\.sha256$') desktop installer(s) from the previous release."
+fi
 echo ""
 echo "    Repo   : ${REPO_SLUG:-unknown}"
 echo "    Tag    : $RELEASE_TAG"
