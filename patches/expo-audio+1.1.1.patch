@@ -141,7 +141,7 @@ index 49a53af..c71e170 100644
          runOnMain {
            ref.clearLockScreenControls()
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-index 320062e..496d104 100644
+index 320062e..42bd029 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 @@ -32,7 +32,9 @@ import java.util.UUID
@@ -192,7 +192,15 @@ index 320062e..496d104 100644
    var preservesPitch = true
    var isPaused = false
    var isMuted = false
-@@ -100,6 +126,39 @@ class AudioPlayer(
+@@ -59,6 +85,7 @@ class AudioPlayer(
+   // Lock screen controls
+   var isActiveForLockScreen = false
+   private var metadata: Metadata? = null
++  private var lockScreenOptions: AudioLockScreenOptions? = null
+ 
+   private var playerScope = CoroutineScope(Dispatchers.Default)
+   private var samplingEnabled = false
+@@ -100,12 +127,46 @@ class AudioPlayer(
      startUpdating()
    }
  
@@ -232,7 +240,56 @@ index 320062e..496d104 100644
    fun setActiveForLockScreen(active: Boolean, metadata: Metadata? = null, options: AudioLockScreenOptions? = null) {
      if (active) {
        this.metadata = metadata
-@@ -163,6 +222,8 @@ class AudioPlayer(
++      this.lockScreenOptions = options
+       AudioControlsService.setActivePlayer(context, this, metadata, options)
+-    } else if (isActiveForLockScreen) {
+-      AudioControlsService.setActivePlayer(context, null)
++    } else {
++      clearLockScreenControls()
+     }
+   }
+ 
+@@ -117,11 +178,30 @@ class AudioPlayer(
+   }
+ 
+   fun clearLockScreenControls() {
+-    if (isActiveForLockScreen) {
++    if (!isActiveForLockScreen) return
++    // PearTune: with the service already gone there is nothing to clear, and starting it just to
++    // clear it would never reach startForeground, which Android punishes with a crash.
++    if (AudioControlsService.getInstance() == null) {
++      isActiveForLockScreen = false
++    } else {
+       AudioControlsService.setActivePlayer(context, null)
+     }
+   }
+ 
++  // PearTune (issue #438): Media3 takes the service out of the foreground after 10 minutes paused,
++  // and Android then destroys it. Playback that resumes later would run with no foreground service,
++  // so Android mutes it and freezes the app as soon as it leaves the screen. Bring the service back
++  // whenever playback starts. A start from the background can be refused; the app is on screen in
++  // the normal case (the user pressed play), where it is allowed.
++  private fun restoreLockScreenService() {
++    if (!isActiveForLockScreen || AudioControlsService.getInstance() != null) return
++    try {
++      AudioControlsService.setActivePlayer(context, this, metadata, lockScreenOptions)
++    } catch (e: Exception) {
++      Log.w(TAG, "could not restart the media service: " + e.message)
++    }
++  }
++
+   private fun startUpdating() {
+     updateJob?.cancel()
+     updateJob = flow {
+@@ -144,6 +224,7 @@ class AudioPlayer(
+   private fun addPlayerListeners() = ref.addListener(object : Player.Listener {
+     override fun onIsPlayingChanged(isPlaying: Boolean) {
+       playing = isPlaying
++      if (isPlaying) restoreLockScreenService()
+       playerScope.launch {
+         sendPlayerUpdate(mapOf("playing" to isPlaying))
+       }
+@@ -163,6 +244,8 @@ class AudioPlayer(
      }
  
      override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -241,7 +298,7 @@ index 320062e..496d104 100644
        playerScope.launch {
          sendPlayerUpdate()
        }
-@@ -218,7 +279,10 @@ class AudioPlayer(
+@@ -218,7 +301,10 @@ class AudioPlayer(
        "isLoaded" to if (ref.playbackState == Player.STATE_ENDED) true else isLoaded,
        "playbackRate" to ref.playbackParameters.speed,
        "shouldCorrectPitch" to preservesPitch,
@@ -254,7 +311,7 @@ index 320062e..496d104 100644
    }
  
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
-index 04486e2..200e107 100644
+index 04486e2..d70f87f 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
 @@ -62,11 +62,11 @@ class AudioControlsService : MediaSessionService() {
@@ -301,7 +358,20 @@ index 04486e2..200e107 100644
            .setDisplayName("Seek Forward")
            .setEnabled(true)
            .setSessionCommand(SessionCommand(ACTION_SEEK_FORWARD, Bundle.EMPTY))
-@@ -340,7 +345,34 @@ class AudioControlsService : MediaSessionService() {
+@@ -322,6 +327,12 @@ class AudioControlsService : MediaSessionService() {
+   override fun onDestroy() {
+     super.onDestroy()
+     instance = null
++    // PearTune: detach from the player so a dead service stops posting notifications. The player
++    // keeps isActiveForLockScreen, which is how it knows to start the service again (issue #438).
++    playbackListener?.let { listener ->
++      currentPlayer?.ref?.removeListener(listener)
++    }
++    playbackListener = null
+     try {
+       scope.cancel()
+     } catch (e: Exception) {
+@@ -340,7 +351,34 @@ class AudioControlsService : MediaSessionService() {
      const val ACTION_SEEK_FORWARD = "expo.modules.audio.action.SEEK_FORWARD"
      const val ACTION_SEEK_BACKWARD = "expo.modules.audio.action.SEEK_REWIND"
  
