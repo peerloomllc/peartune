@@ -496,7 +496,7 @@ class UpdateApplier {
 }
 
 module.exports = {
-  VerifyError, NeedsManualError, UpdateApplier, defaultExec, selectAsset, planApply, downloadAndVerify,
+  VerifyError, NeedsManualError, UpdateApplier, defaultExec, selectAsset, versionInName, planApply, downloadAndVerify,
   download, sha256File, parseSha256Sidecar, detectSupervisor, applyUpdate, APPLIERS, UNIT, WIN_SERVICE, DEB_HELPER,
   MAC_DAEMON_PLIST, MAC_HOST_ARGV,
   parseCodesignTeam, macAppRoot, APPLE_TEAM_ID

@@ -23,6 +23,7 @@
 // like anything else. Every failure is recorded and returned as `error`; nothing here can
 // stop a host serving music, which is the only job that matters.
 
+const { selectAsset, versionInName } = require('./update-apply')
 const PUBLIC_REPO = 'peerloomllc/peartune'
 
 // Hourly. Unauthenticated GitHub allows 60 requests an hour per IP and a host may sit
@@ -105,11 +106,23 @@ function updatesDisabled ({ env = process.env, fs = require('fs') } = {}) {
 
 // Shape the GitHub release JSON into the two facts the dashboard needs, and nothing else.
 // `htmlUrl` rather than an asset: this notifies, it does not download.
-function evaluateRelease (release, currentVersion) {
+function evaluateRelease (release, currentVersion, platformOpts = {}) {
   if (!release || typeof release !== 'object') return { error: 'no release data' }
   if (release.draft || release.prerelease) return { available: false, current: currentVersion, reason: 'prerelease' }
   const latest = String(release.tag_name || release.name || '').trim()
   if (!latest) return { error: 'release has no tag' }
+  const assets = (Array.isArray(release.assets) ? release.assets : [])
+    .filter(a => a && typeof a.name === 'string')
+    .map(a => ({ name: a.name, browser_download_url: a.browser_download_url || null }))
+  // A release that did not rebuild this platform carries the previous installer forward
+  // (scripts/release.sh, _carry_forward_desktop). Offering it would announce a version
+  // that "Update now" then refuses to install, so an installer older than the tag means
+  // there is nothing new for this machine. No installer at all falls through unchanged.
+  const picked = selectAsset(assets, platformOpts)
+  const builtFor = picked && versionInName(picked.name)
+  if (builtFor && builtFor !== latest.replace(/^v/i, '')) {
+    return { available: false, current: currentVersion, latest: latest.replace(/^v/i, ''), reason: 'no-build-for-platform' }
+  }
   return {
     available: isNewer(latest, currentVersion),
     current: currentVersion,
@@ -120,9 +133,7 @@ function evaluateRelease (release, currentVersion) {
     // host/update-apply.js picks this machine's artifact and its .sha256 sidecar
     // out of this list. Trimmed to the two fields that are used: the full release
     // JSON is large, and this rides /api/update which the dashboard polls.
-    assets: (Array.isArray(release.assets) ? release.assets : [])
-      .filter(a => a && typeof a.name === 'string')
-      .map(a => ({ name: a.name, browser_download_url: a.browser_download_url || null }))
+    assets
   }
 }
 

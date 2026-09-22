@@ -58,6 +58,27 @@ test('the release assets are carried through, trimmed, for "Update now" to plan 
   assert.deepEqual(evaluateRelease({ tag_name: 'v1.1.0' }, '1.0.0').assets, [])
 })
 
+// v1.0.11 (2026-09-22) was an Android-only release. From then on a release that skips a
+// desktop platform carries the previous installer forward, so the download page keeps it.
+// That installer is OLDER than the tag, and "Update now" refuses it - so it must not be offered.
+test('an installer older than the tag is not offered as an update', () => {
+  const release = (v) => ({
+    tag_name: 'v1.0.12',
+    assets: [
+      { name: 'peartune-v1.0.12.apk' },
+      { name: `PearTune-Setup-${v}.exe` }, { name: `PearTune-Setup-${v}.exe.sha256` },
+      { name: `PearTune-${v}.AppImage` }, { name: `peartune-desktop_${v}_amd64.deb` },
+      { name: `PearTune-${v}.dmg` }, { name: `PearTune-${v}-arm64.dmg` }
+    ]
+  })
+  for (const opts of [{ platform: 'win32' }, { platform: 'linux', appImage: '/x.AppImage' }, { platform: 'linux', appImage: '' }, { platform: 'darwin', arch: 'arm64' }, { platform: 'darwin', arch: 'x64' }]) {
+    const stale = evaluateRelease(release('1.0.11'), '1.0.11', opts)
+    assert.equal(stale.available, false, `carried-forward installer offered on ${JSON.stringify(opts)}`)
+    assert.equal(stale.reason, 'no-build-for-platform')
+    assert.equal(evaluateRelease(release('1.0.12'), '1.0.11', opts).available, true, `real build not offered on ${JSON.stringify(opts)}`)
+  }
+})
+
 test('IN A CONTAINER THE CHECK IS OFF - Umbrel and the image own updates there', () => {
   // The whole point of the /.dockerenv branch. An Umbrel user is shown "update available"
   // by umbrelOS off the store listing's version; a second banner in the dashboard telling
