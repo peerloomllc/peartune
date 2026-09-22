@@ -141,7 +141,7 @@ index 49a53af..c71e170 100644
          runOnMain {
            ref.clearLockScreenControls()
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-index 320062e..6ec8245 100644
+index 320062e..496d104 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 @@ -32,7 +32,9 @@ import java.util.UUID
@@ -155,7 +155,7 @@ index 320062e..6ec8245 100644
  
  @UnstableApi
  class AudioPlayer(
-@@ -44,12 +46,30 @@ class AudioPlayer(
+@@ -44,12 +46,36 @@ class AudioPlayer(
    ExoPlayer.Builder(context)
      .setLooper(context.mainLooper)
      .setAudioAttributes(AudioAttributes.DEFAULT, false)
@@ -165,6 +165,12 @@ index 320062e..6ec8245 100644
 +    // car that cut the link without sending an AVRCP pause first kept the music playing
 +    // out loud (Tim, 2026-08-29: "about 30% of the time").
 +    .setHandleAudioBecomingNoisy(true)
++    // PearTune: hold a partial wake lock AND a Wi-Fi lock while playing. Our source is a
++    // localhost shim, but its bytes arrive over the network through the Bare worklet, so a
++    // screen-off Wi-Fi power save starves the buffer and the shell's watchdog ends playback
++    // (issue #438: a Pixel on Android 17 stopped ~30 s after backgrounding). ExoPlayer
++    // defaults to WAKE_MODE_NONE; NETWORK is what Media3 documents for streamed playback.
++    .setWakeMode(C.WAKE_MODE_NETWORK)
      .setSeekForwardIncrementMs(SEEK_JUMP_INTERVAL_MS)
      .setSeekBackIncrementMs(SEEK_JUMP_INTERVAL_MS)
      .build(),
@@ -186,7 +192,7 @@ index 320062e..6ec8245 100644
    var preservesPitch = true
    var isPaused = false
    var isMuted = false
-@@ -100,6 +120,39 @@ class AudioPlayer(
+@@ -100,6 +126,39 @@ class AudioPlayer(
      startUpdating()
    }
  
@@ -226,7 +232,7 @@ index 320062e..6ec8245 100644
    fun setActiveForLockScreen(active: Boolean, metadata: Metadata? = null, options: AudioLockScreenOptions? = null) {
      if (active) {
        this.metadata = metadata
-@@ -163,6 +216,8 @@ class AudioPlayer(
+@@ -163,6 +222,8 @@ class AudioPlayer(
      }
  
      override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -235,7 +241,7 @@ index 320062e..6ec8245 100644
        playerScope.launch {
          sendPlayerUpdate()
        }
-@@ -218,7 +273,10 @@ class AudioPlayer(
+@@ -218,7 +279,10 @@ class AudioPlayer(
        "isLoaded" to if (ref.playbackState == Player.STATE_ENDED) true else isLoaded,
        "playbackRate" to ref.playbackParameters.speed,
        "shouldCorrectPitch" to preservesPitch,

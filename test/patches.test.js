@@ -71,6 +71,18 @@ test('the expo-audio patch turns on pause-on-noisy and exposes playWhenReady', (
   assert.match(kt, /"playWhenReady" to ref\.playWhenReady/)
 })
 
+// Issue #438: a Pixel on Android 17 stopped playing ~30 s after the app was backgrounded. The
+// player reads a localhost shim, but the bytes behind it cross the network, so it must hold a
+// Wi-Fi lock and a wake lock while playing or a screen-off Wi-Fi power save starves the buffer.
+test('the expo-audio patch keeps Wi-Fi and the CPU awake while playing', () => {
+  const patch = fs.readFileSync(path.join(__dirname, '..', 'patches', 'expo-audio+1.1.1.patch'), 'utf8')
+  assert.match(patch, /^\+\s+\.setWakeMode\(C\.WAKE_MODE_NETWORK\)/m, 'the ExoPlayer builder must use WAKE_MODE_NETWORK')
+  const kt = fs.readFileSync(path.join(__dirname, '..', 'node_modules', 'expo-audio', 'android', 'src', 'main', 'java', 'expo', 'modules', 'audio', 'AudioPlayer.kt'), 'utf8')
+  assert.match(kt, /\.setWakeMode\(C\.WAKE_MODE_NETWORK\)/)
+  const manifest = fs.readFileSync(path.join(__dirname, '..', 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf8')
+  assert.match(manifest, /android\.permission\.WAKE_LOCK/, 'WAKE_MODE_NETWORK needs WAKE_LOCK or ExoPlayer skips the locks')
+})
+
 test('the stall watchdog does not run on a paused player', () => {
   const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'index.tsx'), 'utf8')
   assert.match(shell, /dropped: s\.playWhenReady !== false,/, 'decideStarve must be gated on playWhenReady')
