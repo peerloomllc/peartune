@@ -67,7 +67,8 @@ gallery:
   - https://peerloomllc.com/assets/gallery-peartune-3.jpg
 releaseNotes: |-
   Bug Fixes
-  - Android: music no longer stops about 30 seconds after you leave the app or lock your screen
+  - Music no longer stops in the background on Android after you pause for a while and then play again.
+  - On the desktop app, "Update Now" is only offered when there's an update it can actually install.
 path: ""
 defaultUsername: ""
 # umbrelOS replaces defaultPassword with the derived value when this is set - it is the
