@@ -83,6 +83,20 @@ test('the expo-audio patch keeps Wi-Fi and the CPU awake while playing', () => {
   assert.match(manifest, /android\.permission\.WAKE_LOCK/, 'WAKE_MODE_NETWORK needs WAKE_LOCK or ExoPlayer skips the locks')
 })
 
+// Issue #438, the actual cause: after 10 minutes paused, Media3 drops the service out of the
+// foreground and Android destroys it. The shell's announce() is metadata-only once the session is
+// built, so nothing started the service again and resumed playback ran with no foreground service:
+// muted 5 s after leaving the screen, frozen a minute later. Reproduced on a Pixel, Android 17.
+test('the expo-audio patch restarts the media service when playback resumes', () => {
+  const patch = fs.readFileSync(path.join(__dirname, '..', 'patches', 'expo-audio+1.1.1.patch'), 'utf8')
+  assert.match(patch, /^\+\s+if \(isPlaying\) restoreLockScreenService\(\)/m, 'starting playback must check the service')
+  assert.match(patch, /^\+\s+if \(!isActiveForLockScreen \|\| AudioControlsService\.getInstance\(\) != null\) return/m)
+  const kt = fs.readFileSync(path.join(__dirname, '..', 'node_modules', 'expo-audio', 'android', 'src', 'main', 'java', 'expo', 'modules', 'audio', 'AudioPlayer.kt'), 'utf8')
+  assert.match(kt, /if \(isPlaying\) restoreLockScreenService\(\)/)
+  // Clearing controls on a dead service must not start one that never calls startForeground.
+  assert.match(kt, /if \(AudioControlsService\.getInstance\(\) == null\) \{\s+isActiveForLockScreen = false/)
+})
+
 test('the stall watchdog does not run on a paused player', () => {
   const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'index.tsx'), 'utf8')
   assert.match(shell, /dropped: s\.playWhenReady !== false,/, 'decideStarve must be gated on playWhenReady')
