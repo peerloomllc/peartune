@@ -125,6 +125,9 @@ class PearTuneHost {
         onStream: (deviceKey, trackId) => this._noteStreaming(deviceKey, trackId),
         // The phone's own statement of what it is playing from us (proposal 2026-07-28).
         onNowPlaying: (deviceKey, np) => this._noteNowPlaying(deviceKey, np),
+        // identity.set can assign a person (a claim of a new name), so the live connection must
+        // take the new row at once, exactly as a dashboard assignment does.
+        onGrantChanged: (row) => this.refreshGrant(row),
         // Owner maintenance from the app (proposal 2026-07-24, P2). Bound host operations,
         // never the host itself - media.js gates them on grant.scope === 'owner'.
         owner: {

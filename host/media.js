@@ -42,7 +42,7 @@ const MUTATING = new Set([
 // answers both, through the `ping` and `openStream` hooks below.
 const METHODS = ['library.stats', 'library.list', 'library.get', 'library.search', 'identity.get', 'identity.set', 'identity.avatar', 'device.leave', 'fav.list', 'fav.set', 'count.bump', 'count.top', 'resume.get', 'resume.latest', 'bookmark.list', 'bookmark.add', 'bookmark.remove', 'resume.list', 'resume.set', 'playlist.list', 'playlist.get', 'playlist.create', 'playlist.rename', 'playlist.delete', 'playlist.add', 'playlist.setTracks', 'request.add', 'request.list', 'owner.claim', 'owner.devices', 'owner.pairStart', 'owner.pairStop', 'owner.pairState', 'owner.requests', 'owner.requestResolve', 'owner.revoke', 'request.delete', 'session.get', 'session.claim', 'session.set', 'speaker.list', 'speaker.play', 'speaker.stop', 'speaker.pause', 'speaker.resume', 'speaker.volume', 'speaker.state', 'art.get', 'nowplaying.set', 'lyrics.get']
 
-function createMedia ({ getAdapter, libraryName = null, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, speakers = null, onStream = null, onNowPlaying = null }) {
+function createMedia ({ getAdapter, libraryName = null, grants = null, state = null, presence = null, avatars = null, onLeave = null, owner = null, speakers = null, onStream = null, onNowPlaying = null, onGrantChanged = null }) {
   // CONFIRMED means the claim matches the person this device is actually assigned
   // to - not merely that SOME person is assigned.
   //
@@ -166,6 +166,11 @@ function createMedia ({ getAdapter, libraryName = null, grants = null, state = n
         if (!row) return ctx.fail(ERR.FORBIDDEN, 'no grant')
 
         log('identity:set', { label: row.label, claims: row.claimedUser || null })
+        // A claim of a name nobody holds mints that person and assigns this device to it
+        // (grants.setIdentity). Swap the new row into this device's live connections, or they
+        // keep the connect-time grant and file every save for the rest of the session under the
+        // DEVICE, where the person never sees it (issue #449 follow-up, TCL 2026-10-01).
+        if (onGrantChanged && (row.personId || null) !== (grant.personId || null)) onGrantChanged(row)
 
         return ctx.reply({ ok: true, ...(await identityOf(row)) })
       }
