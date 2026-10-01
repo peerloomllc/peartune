@@ -2847,17 +2847,15 @@ except Exception:
         fi
       fi
 
-      BUILD_ID=$(asc builds info --app "$ASC_APP_ID" --version "$APP_VERSION" --latest --output json 2>/dev/null \
-        | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    item = d.get('data', d) if isinstance(d, dict) else d
-    if isinstance(item, list):
-        item = item[0] if item else {}
-    print(item.get('id', ''))
-except Exception:
-    print('')" 2>/dev/null || echo "")
+      # Wait for Apple to finish processing the upload: attaching or submitting
+      # before then fails and leaves an empty review submission behind. Matches
+      # the build number too, since build numbers repeat across versions.
+      _BUILD_INFO=$(_asc_wait_for_build "$APP_VERSION" "${_ios_build_number:-}")
+      BUILD_ID="${_BUILD_INFO%% *}"
+      if [ -n "$BUILD_ID" ] && [ "${_BUILD_INFO##* }" != "VALID" ]; then
+        echo "    Build is ${_BUILD_INFO##* } on App Store Connect, not VALID."
+        BUILD_ID=""
+      fi
 
       if [ -z "$VERSION_ID" ] || [ -z "$BUILD_ID" ]; then
         echo "    NOTE: could not find version-id ($VERSION_ID) or build-id ($BUILD_ID)."
@@ -2875,16 +2873,16 @@ except Exception:
         echo "    Version : $VERSION_ID"
         echo "    Build   : $BUILD_ID"
 
-        # Step 4a: attach build to version (idempotent — re-attaching the
-        # same build is a no-op).
-        echo "    Attaching build to version..."
-        asc versions attach-build --version-id "$VERSION_ID" --build "$BUILD_ID" >/dev/null 2>&1 || \
-          echo "    (attach may have already been done — continuing)"
+        # Step 4a: attach build to version (already-attached counts as success).
+        _ATTACHED=true
+        _asc_attach_build "$VERSION_ID" "$BUILD_ID" || { _ATTACHED=false; PUBLISH_FAILED=true; }
 
-        # Step 4b: create a review submission
-        echo "    Creating review submission..."
-        SUBMISSION_ID=$(asc review submissions-create --app "$ASC_APP_ID" --platform IOS --output json 2>/dev/null \
-          | python3 -c "
+        # Step 4b: create a review submission, only with a build attached
+        SUBMISSION_ID=""
+        if $_ATTACHED; then
+          echo "    Creating review submission..."
+          SUBMISSION_ID=$(asc review submissions-create --app "$ASC_APP_ID" --platform IOS --output json 2>/dev/null \
+            | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -2892,8 +2890,11 @@ try:
     print(item.get('id', ''))
 except Exception:
     print('')" 2>/dev/null || echo "")
+        fi
 
-        if [ -z "$SUBMISSION_ID" ]; then
+        if ! $_ATTACHED; then
+          echo "    Skipping submission (see the attach error above)."
+        elif [ -z "$SUBMISSION_ID" ]; then
           echo "    WARNING: could not create review submission (maybe one already exists)."
           echo "    List in-progress submissions: asc review submissions-list --app $ASC_APP_ID"
           PUBLISH_FAILED=true
