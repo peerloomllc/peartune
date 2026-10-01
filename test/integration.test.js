@@ -1392,6 +1392,26 @@ test('IDENTITY: a claim is visible to identity.get on the SAME connection (no st
   assert.equal(after.belongsTo, 'Robin')
 })
 
+// The same staleness, for the OWNER of user state (issue #449 follow-up, seen on the TCL
+// 2026-10-01). A claim that auto-creates a person assigned it in the grant store, but the live
+// connection kept the connect-time grant, so every position saved for the rest of that session
+// was filed under the DEVICE, and the person - what the next connection reads as - never saw it.
+test('IDENTITY: a claim that creates a person files later saves under that person, same connection', async (t) => {
+  const { testnet, host } = await scaffold(t)
+  const { client } = await pairAndConnect(testnet, host)
+  t.after(() => client.close())
+  const deviceKey = z32.encode(client.keyPair.publicKey)
+
+  await client.setIdentity({ deviceName: 'Phone', userName: 'Robin' })
+  const row = await host.grants.get(deviceKey)
+  assert.ok(row.personId, 'the claim minted and assigned a person')
+
+  await client.resumeSet({ trackId: 'trackA', positionMs: 30_000, playedAt: Date.now() })
+  const asPerson = await host.userState.getResume('p:' + row.personId, 'trackA')
+  assert.equal(asPerson?.positionMs, 30_000, 'saved under the person')
+  assert.equal(await host.userState.getResume('d:' + deviceKey, 'trackA'), null, 'not under the device')
+})
+
 // The operator side of the same staleness: a change made on the DASHBOARD must reach a device
 // that is already connected, next time it asks - without it having to reconnect first.
 test('IDENTITY: an operator assignment reaches an ALREADY-connected device on its next read', async (t) => {
