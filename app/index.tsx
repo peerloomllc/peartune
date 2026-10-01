@@ -35,6 +35,7 @@ const { factorFor } = require('../protocol/gain')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { decideStarve, decideRecover } = require('./starve')
 const { chapterEndAfter, crossedChapterEnd } = require('./chapter-sleep')
+const { resumeArgs, leftTrackArgs, saveDue } = require('./resume-save')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { openableUrl } = require('./openable')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -196,6 +197,12 @@ export default function App () {
   const repeatRef = useRef(0)
   const posRef = useRef(0) // last known position (ms), from the status listener
   const lastPersist = useRef(0) // throttle disk writes from the frequent status listener
+  // Resume positions are saved from HERE, not the WebView, which Android freezes with the screen
+  // (issue #449, app/resume-save.js). resumeSeen is the last sample for the current track, so a
+  // track change can still save the place of the track it left.
+  const lastResumeSave = useRef(0)
+  const resumeSeen = useRef<any>(null)
+  const lastResumeArgs = useRef<any>(null)
   const wasPlaying = useRef(false) // playing-edge detection, to claim the session-handoff token
   // Sleep timer. It lives HERE, in the native shell, not in the WebView: the whole
   // point is the screen is off while you drift off, and a WebView JS timer gets
@@ -441,6 +448,13 @@ export default function App () {
           baseOffsetMs.current = 0
           recoverRef.current.tries = 0
           recoverStall.current = { pos: -1, at: 0 }
+          // The track we left: cleared if it played out, its last place kept if skipped.
+          if (!castMode.current) {
+            const left = leftTrackArgs(resumeSeen.current, natural)
+            if (left) { lastResumeArgs.current = left; call('resumeSave', left).catch(() => {}) }
+          }
+          resumeSeen.current = null
+          lastResumeSave.current = 0
           announce(i)
           persistQueue(true) // a track advanced - save the new index right away
 
@@ -610,6 +624,30 @@ export default function App () {
           // rather than inferred.
           level: levelFor(queueRef.current[indexRef.current])
         })
+
+        // The resume position (issue #449). Taken before wasPlaying is updated below, so a
+        // pause lands its exact spot at once. Not while casting: this player is silent then.
+        if (!castMode.current) {
+          const t = queueRef.current[indexRef.current]
+          const own = !baseOffsetMs.current && s.duration ? Math.round(s.duration * 1000) : 0
+          const dur = own || t?.durationMs || 0
+          resumeSeen.current = { track: t, positionMs: posMs, durationMs: dur }
+          const now = Date.now()
+          // Only while playing, or on the pause edge. A paused player still reports (the
+          // heartbeat, a relaunch restoring the queue), and saving then re-dates an old place as
+          // the newest listening, which puts it in front of another device's real listening.
+          const pauseEdge = !s.playing && wasPlaying.current
+          if ((s.playing || pauseEdge) && saveDue(lastResumeSave.current, now, pauseEdge)) {
+            const args = resumeArgs(t, posMs, dur)
+            // Skip a repeat of the last write (a pause edge right after a periodic save).
+            const prev = lastResumeArgs.current
+            if (args && !(prev && prev.trackId === args.trackId && prev.positionMs === args.positionMs)) {
+              lastResumeSave.current = now
+              lastResumeArgs.current = args
+              call('resumeSave', args).catch(() => {})
+            }
+          }
+        }
 
         // Session handoff: whenever playback transitions INTO playing, make sure we hold the
         // "active player" token. One place covers every path (play / resume / jump / next);
