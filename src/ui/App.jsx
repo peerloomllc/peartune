@@ -931,10 +931,10 @@ export default function App () {
   const sortRef = useRef({})
   sortRef.current = sort
 
-  // Resume positions (milestone 3, phase 2): every 8s while a track plays, save its
-  // position to the host, so it (and any of this person's other devices) can pick up
-  // where they left off. Clear near the end so a finished track starts fresh. Refs,
-  // because the interval registers once and must read the CURRENT track/status.
+  // Play counts (milestone 3, phase 2): every 8s while a track plays, check whether it has been
+  // heard long enough to count. Resume positions used to be saved from this timer too; the shell
+  // saves them now (issue #449). Refs, because the interval registers once and must read the
+  // CURRENT track/status.
   const nowRef = useRef(null); nowRef.current = now
   const statusRef = useRef(null); statusRef.current = status
 
@@ -961,14 +961,12 @@ export default function App () {
       if (!t?.trackId || !s) return
       const pos = s.positionMs || 0
       const dur = s.durationMs || t.durationMs || 0
-      if (pos < 5000) return // the first few seconds are not a resume point
-      const book = t.kind === 'book'
-      // A song is done at 95%. A book is not: 5% of a 10-hour book is 30 minutes of it, so a
-      // book's place is kept until its last 30 seconds (proposal 2026-09-13).
-      const clear = dur && (book ? pos > dur - 30000 : pos > dur * 0.95)
-      call('resumeSave', { trackId: t.trackId, positionMs: clear ? 0 : pos, durationMs: dur }).catch(() => {})
+      // The resume position is NOT saved here any more: the shell does it (app/resume-save.js),
+      // because Android freezes this WebView with the screen. Saving from here lost a book's
+      // place across a locked-screen part change and, on a mid-lock wake, re-saved a stale one
+      // with a fresh time (issue #449).
       // A book is not a play to count: it would fill Most played after four minutes of it.
-      if (book) return
+      if (t.kind === 'book') return
 
       // Count a PLAY once it has been listened to past the scrobble threshold (half the
       // track, or 4 minutes, whichever comes first) - and only once per play.
