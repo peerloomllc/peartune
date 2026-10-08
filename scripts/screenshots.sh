@@ -37,6 +37,8 @@ rsync -az --checksum \
   --exclude='ios/build' --exclude='ios/Pods' \
   --exclude='desktop/dist' --exclude='desktop/node_modules' \
   --exclude='host/node_modules' \
+  --exclude='/*.apk' --exclude='/*.aab' --exclude='/*.AppImage' --exclude='/*.deb' --exclude='/*.exe' \
+  --exclude='/*.dmg' --exclude='/*.ipa' --exclude='/*.sha256' --exclude='/*.blockmap' --exclude='/latest*.yml' \
   "$REPO_ROOT/" "$MAC_MINI:$MAC_REPO/"
 
 # The rsync just overwrote the Mac's bundles with the LINUX ones. `bare-pack
