@@ -28,6 +28,8 @@ if [ -z "${SKIP_BUILD:-}" ]; then
   rsync -az --exclude '.git' --exclude 'node_modules' --exclude 'android' \
     --exclude 'ios/build' --exclude 'ios/Pods' --exclude 'desktop/dist' \
     --exclude 'desktop/node_modules' --exclude 'host/node_modules' \
+    --exclude '/*.apk' --exclude '/*.aab' --exclude '/*.AppImage' --exclude '/*.deb' --exclude '/*.exe' \
+    --exclude '/*.dmg' --exclude '/*.ipa' --exclude '/*.sha256' --exclude '/*.blockmap' --exclude '/latest*.yml' \
     ./ "$MAC:$DEST/"
 
   # THE ONE THAT COSTS A BUILD. The rsync above just overwrote the Mac's bare bundle with the

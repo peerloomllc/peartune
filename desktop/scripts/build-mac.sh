@@ -77,6 +77,14 @@ rsync -az --checksum \
   --exclude='start9' \
   --exclude='*.apk' \
   --exclude='*.aab' \
+  --exclude='/*.AppImage' \
+  --exclude='/*.deb' \
+  --exclude='/*.exe' \
+  --exclude='/*.dmg' \
+  --exclude='/*.ipa' \
+  --exclude='/*.sha256' \
+  --exclude='/*.blockmap' \
+  --exclude='/latest*.yml' \
   ../ \
   "$MAC_HOST:$REMOTE_DIR/"
 # The host requires @peerloom/host (file:../../peerloom-host), a sibling repo. It must
