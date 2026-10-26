@@ -2284,7 +2284,9 @@ echo "    Notes   : $(head -3 "$ZSP_NOTES_FILE" | tr '\n' ' ')..."
 _ZSP_APK=""
 if [ -f "$REPO_ROOT/${APK_NAME:-}" ]; then
   _ZSP_APK="$REPO_ROOT/${APK_NAME}"
-elif [ -f "$REPO_ROOT/android/app/build/outputs/apk/release/app-release.apk" ]; then
+# A Zapstore-only run builds nothing, so the build folder may hold some other build.
+# Skip it there and zsp downloads the APK from the GitHub release.
+elif ! $ZAPSTORE_ONLY && [ -f "$REPO_ROOT/android/app/build/outputs/apk/release/app-release.apk" ]; then
   _ZSP_APK="$REPO_ROOT/android/app/build/outputs/apk/release/app-release.apk"
 fi
 if [ -n "$_ZSP_APK" ]; then
@@ -2318,7 +2320,9 @@ cp zapstore.yaml "$ZAPSTORE_YAML_BAK"
 LOCAL_APK=""
 if [ -f "$REPO_ROOT/${APK_NAME:-}" ]; then
   LOCAL_APK="$REPO_ROOT/${APK_NAME}"
-elif [ -f "$REPO_ROOT/android/app/build/outputs/apk/release/app-release.apk" ]; then
+# A Zapstore-only run builds nothing, so the build folder may hold some other build.
+# Skip it there and zsp downloads the APK from the GitHub release.
+elif ! $ZAPSTORE_ONLY && [ -f "$REPO_ROOT/android/app/build/outputs/apk/release/app-release.apk" ]; then
   LOCAL_APK="$REPO_ROOT/android/app/build/outputs/apk/release/app-release.apk"
 fi
 
