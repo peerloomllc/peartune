@@ -91,19 +91,6 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   set -a; source "$SCRIPT_DIR/.env"; set +a
 fi
 
-# Which editor opens the release notes and the Nostr draft.
-#
-# DELIBERATELY NOT $EDITOR. That is /usr/bin/nano here (a system-wide default nobody
-# set on purpose), and these two drafts are edited in vim - they are the only
-# interactive editing this script does, and being dropped into the wrong editor
-# mid-release is a bad moment to discover it. Override per-run with
-# RELEASE_EDITOR=..., or set it in scripts/.env to make it stick.
-RELEASE_EDITOR="${RELEASE_EDITOR:-vim}"
-if ! command -v "${RELEASE_EDITOR%% *}" >/dev/null 2>&1; then
-  echo "WARNING: RELEASE_EDITOR '$RELEASE_EDITOR' not found; falling back to vi." >&2
-  RELEASE_EDITOR=vi
-fi
-
 # Required app.conf keys, checked once, up front.
 #
 # Each of these used to carry a hard-coded default copied from whichever
@@ -1250,121 +1237,7 @@ fi # end NEEDS_BUILD
 # title from the GitHub API, but that is cosmetic and the script continues
 # without it. Format is fixed by RELEASE-PIPELINE.md §3.
 # ---------------------------------------------------------------------------
-echo "==> Generating release notes from git log..."
-
-PREV_TAG=$(git tag --sort=-version:refname \
-  | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-  | grep -v "^${RELEASE_TAG}$" \
-  | head -1 || echo "")
-
-if [ -n "$PREV_TAG" ]; then
-  LOG_RANGE="${PREV_TAG}..HEAD"
-  echo "    Commits since $PREV_TAG"
-else
-  LOG_RANGE="HEAD"
-  echo "    No previous tag — including all commits"
-fi
-
-# Resolve repo slug for optional GitHub API enrichment
-REPO_SLUG=$(_remote_slug)
-GH_TOKEN=$(_github_token)
-
-# Build an associative array: merge-commit sha -> PR number (best-effort)
-declare -A PR_NUM_FOR_SHA
-if [ -n "$REPO_SLUG" ] && [ -n "$GH_TOKEN" ]; then
-  # Pull PR numbers from merge commit subjects that look like
-  # "Merge pull request #123 from …" (GitHub's default merge message)
-  while IFS='|' read -r sha subject; do
-    if [[ "$subject" =~ Merge\ pull\ request\ #([0-9]+) ]]; then
-      PR_NUM_FOR_SHA["$sha"]="${BASH_REMATCH[1]}"
-    fi
-  done < <(git log "$LOG_RANGE" --merges --format="%H|%s")
-fi
-
-FEAT_LINES=""
-FIX_LINES=""
-OTHER_LINES=""
-
-# Process merge commits (treated as PRs) oldest-first
-while IFS= read -r sha; do
-  [[ -z "$sha" ]] && continue
-
-  SUBJECT=$(git log -1 --format="%s" "$sha")
-  BODY=$(git log -1 --format="%b" "$sha")
-
-  # Derive a clean title ---------------------------------------------------
-  TITLE="$SUBJECT"
-
-  # Strip GitHub's boilerplate "Merge pull request #N from branch" prefix
-  if [[ "$TITLE" =~ ^Merge\ pull\ request\ #[0-9]+\ from\ (.+)$ ]]; then
-    BRANCH_TITLE="${BASH_REMATCH[1]}"
-    # Try to get the real PR title from the API if we have a token
-    PR_NUM="${PR_NUM_FOR_SHA[$sha]:-}"
-    if [ -n "$PR_NUM" ] && [ -n "$REPO_SLUG" ] && [ -n "$GH_TOKEN" ]; then
-      API_TITLE=$(curl -sf \
-        -H "Authorization: Bearer $GH_TOKEN" \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${REPO_SLUG}/pulls/${PR_NUM}" \
-        2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('title',''))" \
-        2>/dev/null || echo "")
-      [ -n "$API_TITLE" ] && TITLE="$API_TITLE"
-    fi
-    # Fallback: humanise the branch name
-    if [[ "$TITLE" == "$SUBJECT" ]]; then
-      TITLE=$(printf '%s' "$BRANCH_TITLE" \
-        | sed -E 's|^[^/]+/||; s/[-_]/ /g')
-    fi
-  fi
-
-  # Extract summary from commit body (honours "## Summary" section) --------
-  SUMMARY=""
-  if [ -n "$BODY" ]; then
-    SUMMARY=$(printf '%s' "$BODY" \
-      | awk '/^## Summary/{f=1;next} /^## /{if(f)exit} f && /\S/{print}')
-    if [ -z "$SUMMARY" ]; then
-      SUMMARY=$(printf '%s' "$BODY" \
-        | awk 'NF{p=1} p && /^$/{exit} p{print}')
-    fi
-  fi
-
-  # Skip summary if it's a duplicate of the title (with or without prefix)
-  if [ -n "$SUMMARY" ]; then
-    CLEAN_TITLE=$(_strip_prefix "$TITLE")
-    CLEAN_SUMMARY=$(_strip_prefix "$SUMMARY")
-    if [ "$CLEAN_SUMMARY" = "$CLEAN_TITLE" ] || [ "$SUMMARY" = "$TITLE" ]; then
-      SUMMARY=""
-    fi
-  fi
-
-  _add_entry "$TITLE" "$SUMMARY"
-done < <(git log "$LOG_RANGE" --merges --format="%H" --reverse)
-
-# Collect non-merge commits made directly on the branch (--first-parent
-# excludes commits that arrived via merged PRs, avoiding near-duplicates)
-while IFS='|' read -r sha subject; do
-  [[ -z "$subject" ]] && continue
-  _add_entry "$subject" ""
-done < <(git log "$LOG_RANGE" --no-merges --first-parent --format="%H|%s")
-
-# Assemble final notes ------------------------------------------------------
-NOTES="## What's Changed\n\n"
-
-if [ -z "$FEAT_LINES" ] && [ -z "$FIX_LINES" ] && [ -z "$OTHER_LINES" ]; then
-  NOTES="${NOTES}No commits since last release.\n"
-else
-  [ -n "$FEAT_LINES" ] && NOTES="${NOTES}### ✨ Improvements\n\n${FEAT_LINES}\n"
-  [ -n "$FIX_LINES"  ] && NOTES="${NOTES}### 🐛 Bug Fixes\n\n${FIX_LINES}\n"
-  [ -n "$OTHER_LINES" ] && NOTES="${NOTES}### 🔧 Other\n\n${OTHER_LINES}\n"
-fi
-
-printf "%b" "$NOTES" > release_notes.md
-sed -i 's/\*\*//g' release_notes.md
-echo "    Opening release notes in $RELEASE_EDITOR for review/editing..."
-$RELEASE_EDITOR release_notes.md
-echo "--- Release notes ---"
-cat release_notes.md
-echo "---"
-_confirm "Release notes look good?"
+release_write_notes
 
 # NO iOS release-notes copy here, deliberately.
 #
