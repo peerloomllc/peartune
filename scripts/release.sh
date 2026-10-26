@@ -2251,7 +2251,7 @@ except Exception:
 
         # Step 4a: attach build to version (already-attached counts as success).
         _ATTACHED=true
-        _asc_attach_build "$VERSION_ID" "$BUILD_ID" || { _ATTACHED=false; PUBLISH_FAILED=true; }
+        _asc_attach_build "$VERSION_ID" "$BUILD_ID" || { _ATTACHED=false; PUBLISH_FAILED=true; APP_STORE_FAILED=true; }
 
         # Step 4b: create a review submission, only with a build attached
         SUBMISSION_ID=""
@@ -2273,7 +2273,7 @@ except Exception:
         elif [ -z "$SUBMISSION_ID" ]; then
           echo "    WARNING: could not create review submission (maybe one already exists)."
           echo "    List in-progress submissions: asc review submissions-list --app $ASC_APP_ID"
-          PUBLISH_FAILED=true
+          PUBLISH_FAILED=true; APP_STORE_FAILED=true
         else
           echo "    Submission ID : $SUBMISSION_ID"
 
@@ -2296,7 +2296,7 @@ except Exception:
                 echo "    Common fix:"
                 echo "      asc builds update --build-id $BUILD_ID --uses-non-exempt-encryption=false"
                 echo "      then re-run items-add + submissions-submit"
-                PUBLISH_FAILED=true
+                PUBLISH_FAILED=true; APP_STORE_FAILED=true
               fi
             }
 
@@ -2315,7 +2315,7 @@ except Exception:
           else
             echo "    WARNING: submissions-submit failed."
             echo "    Retry: asc review submissions-submit --id $SUBMISSION_ID --confirm"
-            PUBLISH_FAILED=true
+            PUBLISH_FAILED=true; APP_STORE_FAILED=true
           fi
         fi
       fi
