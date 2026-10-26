@@ -209,50 +209,6 @@ for a in json.load(sys.stdin).get('assets', []): print(a.get('name', ''))
 }
 
 # ---------------------------------------------------------------------------
-# Helper: fetch the current live version from the Apple App Store.
-# Prefers the asc CLI (sees TestFlight + in-review), falls back to the public
-# iTunes Search API. Returns bare X.Y.Z or "".
-# ---------------------------------------------------------------------------
-_appstore_latest_version() {
-  local bundle_id="${1:-${BUNDLE_ID:-com.peartune}}"
-
-  # Preferred: asc CLI (sees all versions including in-review and TestFlight)
-  if command -v asc &>/dev/null \
-     && [ -n "${ASC_KEY_ID:-}" ] \
-     && [ -n "${ASC_APP_ID:-}" ]; then
-    if _asc_auth_linux 2>/dev/null; then
-      local ver
-      ver=$(asc versions list --app "$ASC_APP_ID" --output json 2>/dev/null \
-        | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-items = data.get('data', data) if isinstance(data, dict) else data
-if isinstance(items, list) and items:
-    versions = [v.get('attributes', v).get('versionString', '') for v in items if v.get('attributes', v).get('versionString')]
-    if versions:
-        versions.sort(key=lambda v: tuple(int(x) for x in v.split('.') if x.isdigit()), reverse=True)
-        print(versions[0])
-" 2>/dev/null)
-      if [ -n "$ver" ]; then
-        echo "$ver"
-        return
-      fi
-    fi
-  fi
-
-  # Fallback: iTunes Search API (only sees live App Store version)
-  curl -sf --max-time 8 \
-    "https://itunes.apple.com/lookup?bundleId=${bundle_id}" \
-    2>/dev/null \
-    | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-results = d.get('results', [])
-print(results[0].get('version', '') if results else '')
-" 2>/dev/null || echo ""
-}
-
-# ---------------------------------------------------------------------------
 # Helper: fetch the highest version tag published for the PearTune HOST image
 # on ghcr. The package is public, so an anonymous pull token suffices (no
 # GITHUB_TOKEN needed). host/build-image.sh pushes ${IMAGE}:${VERSION} with no
@@ -303,28 +259,6 @@ if best:
 # proposals/2026-07-29-start9-bindportrange.md. Do not reopen without new
 # information.
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Helper: authenticate asc CLI on the local (Linux) machine.
-# Returns 1 if asc is not installed or the .p8 key file is missing.
-# ---------------------------------------------------------------------------
-_asc_auth_linux() {
-  if ! command -v asc &>/dev/null; then
-    echo "WARNING: asc CLI not installed on this machine. Skipping ASC operations."
-    return 1
-  fi
-  local key_file="${ASC_PRIVATE_KEY_PATH:-$HOME/.appstoreconnect/AuthKey_${ASC_KEY_ID}.p8}"
-  if [ ! -f "$key_file" ]; then
-    echo "WARNING: API key file not found at $key_file"
-    return 1
-  fi
-  asc auth login \
-    --bypass-keychain \
-    --name "${APP_NAME}-CI" \
-    --key-id "$ASC_KEY_ID" \
-    --issuer-id "$ASC_ISSUER_ID" \
-    --private-key "$key_file" >/dev/null 2>&1
-}
 
 # ---------------------------------------------------------------------------
 # Helper: patch-bump an X.Y.Z string. Prints "" for anything unparseable, so
@@ -1796,21 +1730,6 @@ for _a in "${RELEASE_ASSETS[@]}"; do
   echo "             - $_a ($(du -sh "$_a" | cut -f1))"
 done
 _confirm "Create public GitHub release $RELEASE_TAG and upload ${#RELEASE_ASSETS[@]} assets?"
-
-# Map extension -> content type for the REST upload. The REST API requires
-# an explicit content type; gh CLI infers it.
-_asset_content_type() {
-  case "$1" in
-    *.apk)      echo "application/vnd.android.package-archive" ;;
-    *.aab)      echo "application/octet-stream" ;;
-    *.AppImage) echo "application/octet-stream" ;;
-    *.deb)      echo "application/vnd.debian.binary-package" ;;
-    *.exe)      echo "application/vnd.microsoft.portable-executable" ;;
-    *.dmg)      echo "application/octet-stream" ;;
-    *.sha256)   echo "text/plain" ;;
-    *)          echo "application/octet-stream" ;;
-  esac
-}
 
 if [ -n "$GH_TOKEN" ] && [ -n "$REPO_SLUG" ]; then
   # --- Create the release via REST API ---
