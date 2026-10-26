@@ -1202,21 +1202,7 @@ fi
 # ---------------------------------------------------------------------------
 # 4e. Generate .sha256 sidecars for the mobile artifacts
 # ---------------------------------------------------------------------------
-for _artifact in "$APK_NAME" "$AAB_NAME"; do
-  [ -z "$_artifact" ] && continue
-  [ -f "$_artifact" ] || continue
-  ( cd "$REPO_ROOT" && sha256sum "$_artifact" > "${_artifact}.sha256" )
-  echo "    sha256  $(cut -d' ' -f1 < "${_artifact}.sha256")  $_artifact"
-done
-
-echo ""
-_BUILD_SUMMARY=""
-if [ -n "$APK_NAME" ]; then _BUILD_SUMMARY="APK ($APK_SIZE)"; fi
-if $PUBLISH_PLAY    && [ -n "$AAB_NAME" ]; then
-  _BUILD_SUMMARY="${_BUILD_SUMMARY:+$_BUILD_SUMMARY, }AAB ($AAB_SIZE)"
-fi
-[ -z "$_BUILD_SUMMARY" ] && _BUILD_SUMMARY="desktop installers only (no mobile artifacts)"
-_confirm "$_BUILD_SUMMARY look correct — proceed with release notes?"
+release_write_checksums
 
 fi # end NEEDS_BUILD
 
@@ -1756,29 +1742,7 @@ fi
 # ---------------------------------------------------------------------------
 # 6b. Push branch and tag
 # ---------------------------------------------------------------------------
-echo ""
-echo "    Remote : $GIT_REMOTE"
-echo "    Tag    : $RELEASE_TAG"
-echo "    Branch : $(git rev-parse --abbrev-ref HEAD)"
-echo "    Commit : $(git rev-parse --short HEAD)  $(git log -1 --format='%s')"
-_confirm "Push branch $(git rev-parse --abbrev-ref HEAD) + tag $RELEASE_TAG to $GIT_REMOTE? (This cannot be undone without a force-delete)"
-
-# The bump commit has to reach the remote too, or the pushed tag points at a
-# commit nobody else has.
-_branch="$(git rev-parse --abbrev-ref HEAD)"
-git push "$GIT_REMOTE" "$_branch" \
-  && echo "    Pushed $_branch to $GIT_REMOTE" \
-  || echo "    WARNING: branch push failed - push $_branch manually so the tag resolves." >&2
-
-# Create the local tag here — as late as possible, only after all confirmations
-echo "==> Tagging and pushing $RELEASE_TAG..."
-git tag "$RELEASE_TAG" 2>/dev/null \
-  && echo "    Created local tag" \
-  || echo "    Tag already exists locally"
-
-git push "$GIT_REMOTE" "$RELEASE_TAG" \
-  && echo "    Pushed tag to $GIT_REMOTE" \
-  || echo "    Tag already on remote"
+release_push_and_tag
 
 # ---------------------------------------------------------------------------
 # 7. Create GitHub release and upload assets
@@ -2461,24 +2425,13 @@ release_post_nostr
 # never stranded. That makes a final ledger worth printing, because a partial
 # release otherwise scrolls past unnoticed. See RELEASE-PIPELINE.md §2.
 # ---------------------------------------------------------------------------
-echo ""
-echo "==> $APP_NAME $RELEASE_TAG"
-$PUBLISH_GITHUB    && _report "GitHub"    "published" || _report "GitHub"    "skipped"
-$PUBLISH_ZAPSTORE  && _report "Zapstore"  "published" || _report "Zapstore"  "skipped"
-$PUBLISH_PLAY      && _report "Google Play" "published" || _report "Google Play" "skipped"
-$PUBLISH_APP_STORE && _report "App Store" "uploaded"  || _report "App Store" "skipped"
-$PUBLISH_NOSTR     && _report "Nostr"     "announced" || _report "Nostr"     "skipped"
+release_summary
 if [ -n "${HOST_IMAGE_BUILT:-}" ]; then
   _report "Host image" "pushed $HOST_IMAGE_BUILT"
 else
   _report "Host image" "skipped"
 fi
-
-if $PUBLISH_FAILED; then
-  echo ""
-  echo "    WARNING: at least one publish step failed. Scroll up for which."
-  echo "    Re-run with --retag to redo the release in place once fixed."
-fi
+release_summary_end
 
 # ---------------------------------------------------------------------------
 # 13b. Deferred-action reminders
