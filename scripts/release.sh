@@ -3001,21 +3001,7 @@ fi
 # processing the uploaded binary (5-15 min). Re-run the manual asc commands
 # once processing finishes.
 # ---------------------------------------------------------------------------
-if $APP_STORE_DEFERRED; then
-  echo ""
-  echo "==> Reminder: App Store review submission deferred"
-  echo "    The IPA uploaded successfully but Apple was still processing"
-  echo "    the build when the script checked. Once processing completes"
-  echo "    (5-15 min after upload, watch the email or App Store Connect),"
-  echo "    submit for review with:"
-  echo ""
-  echo "      asc versions list --app $ASC_APP_ID --version $APP_VERSION"
-  echo "      asc builds info --app $ASC_APP_ID --version $APP_VERSION --latest"
-  echo "      asc versions attach-build --version-id <VID> --build <BID>"
-  echo "      asc review submissions-create --app $ASC_APP_ID --platform IOS"
-  echo "      asc review items-add --submission <SID> --item-type appStoreVersions --item-id <VID>"
-  echo "      asc review submissions-submit --id <SID> --confirm"
-fi
+release_deferred_reminders
 
 # ---------------------------------------------------------------------------
 # 13c. Community app store: publish it, then gate on it being published
