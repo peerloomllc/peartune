@@ -2253,70 +2253,10 @@ except Exception:
         _ATTACHED=true
         _asc_attach_build "$VERSION_ID" "$BUILD_ID" || { _ATTACHED=false; PUBLISH_FAILED=true; APP_STORE_FAILED=true; }
 
-        # Step 4b: create a review submission, only with a build attached
-        SUBMISSION_ID=""
         if $_ATTACHED; then
-          echo "    Creating review submission..."
-          SUBMISSION_ID=$(asc review submissions-create --app "$ASC_APP_ID" --platform IOS --output json 2>/dev/null \
-            | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    item = d.get('data', d) if isinstance(d, dict) else d
-    print(item.get('id', ''))
-except Exception:
-    print('')" 2>/dev/null || echo "")
-        fi
-
-        if ! $_ATTACHED; then
-          echo "    Skipping submission (see the attach error above)."
-        elif [ -z "$SUBMISSION_ID" ]; then
-          echo "    WARNING: could not create review submission (maybe one already exists)."
-          echo "    List in-progress submissions: asc review submissions-list --app $ASC_APP_ID"
-          PUBLISH_FAILED=true; APP_STORE_FAILED=true
+          release_submit_for_review "$VERSION_ID" || true
         else
-          echo "    Submission ID : $SUBMISSION_ID"
-
-          # Step 4c: add the version to the submission.
-          # Surface the actual error if items-add fails -- the most common
-          # cause is the build missing usesNonExemptEncryption; when
-          # Info.plist declares ITSAppUsesNonExemptEncryption=false new
-          # builds come with the flag, but an old build needs a one-time
-          # asc builds update --build-id <id> --uses-non-exempt-encryption=false.
-          echo "    Adding version to submission..."
-          ITEMS_ERR=$(asc review items-add \
-            --submission "$SUBMISSION_ID" \
-            --item-type appStoreVersions \
-            --item-id "$VERSION_ID" 2>&1) || {
-              if echo "$ITEMS_ERR" | grep -q "already"; then
-                echo "    (item already in the submission, continuing)"
-              else
-                echo "    WARNING: items-add failed:"
-                printf '      %s\n' "$ITEMS_ERR"
-                echo "    Common fix:"
-                echo "      asc builds update --build-id $BUILD_ID --uses-non-exempt-encryption=false"
-                echo "      then re-run items-add + submissions-submit"
-                PUBLISH_FAILED=true; APP_STORE_FAILED=true
-              fi
-            }
-
-          # Step 4d: submit
-          echo "    Submitting $SUBMISSION_ID for review..."
-          if asc review submissions-submit --id "$SUBMISSION_ID" --confirm; then
-            echo "    Submitted for review."
-
-            # ── Step 5: Check review status ──
-            echo ""
-            echo "==> Checking review status..."
-            asc review status --app "$ASC_APP_ID" || true
-            echo ""
-            echo "    Monitor status:    asc review status --app $ASC_APP_ID"
-            echo "    Diagnose issues:   asc review doctor --app $ASC_APP_ID"
-          else
-            echo "    WARNING: submissions-submit failed."
-            echo "    Retry: asc review submissions-submit --id $SUBMISSION_ID --confirm"
-            PUBLISH_FAILED=true; APP_STORE_FAILED=true
-          fi
+          echo "    Skipping submission (see the attach error above)."
         fi
       fi
     else
