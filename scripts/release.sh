@@ -1796,126 +1796,13 @@ for e in d.get('errors', []) or []:
   UPLOAD_URL=$(printf '%s' "$RELEASE_RESP" \
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['upload_url'].split('{')[0])")
 
-  # Build a name -> existing-asset-id map so we can replace assets in
-  # place if the release already had them (re-runs and the ZAPSTORE_ONLY
-  # path). Upload-by-name will 422 otherwise.
-  EXISTING_ASSETS_JSON=$(printf '%s' "$RELEASE_RESP" \
-    | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-print(json.dumps({a['name']: a['id'] for a in d.get('assets', []) or []}))
-" 2>/dev/null || echo "{}")
-
-  # --- Upload the assets, FOUR AT A TIME ---
-  #
-  # Serial uploads were the single slowest step of a release, and the cause is NOT the
-  # upstream link. Measured 2026-08-18 against a throwaway draft release, 6 x 20MB,
-  # arms run back to back so they share conditions:
-  #
-  #   1 stream  (what this loop used to do)    5.2 Mbps
-  #   4 streams                               10.1 and 13.9 Mbps on two runs
-  #   6 streams                               20.7 Mbps
-  #   this link, one stream to Cloudflare     29.9 Mbps    <- same link, same hour
-  #   this link's ceiling                     ~34 Mbps
-  #
-  # THE SHAPE IS THE FINDING: per-stream throughput sat at 4-5 Mbps in EVERY arm, so
-  # the aggregate is just stream-count x that. uploads.github.com caps a single
-  # connection at a small fraction of what the link can do, and does not cap the
-  # account. So more streams keep paying until the link itself saturates, which at
-  # ~4.5 Mbps a stream is somewhere around 7-8. Hence the default.
-  #
-  # Absolute numbers move a lot between runs (the 4-stream arm varied 38% across two
-  # runs minutes apart), which is exactly why the arms above were measured back to
-  # back rather than compared against an earlier session. Treat the RATIO as the
-  # result and the Mbps as indicative.
-  _UPLOAD_JOBS="${RELEASE_UPLOAD_JOBS:-8}"
-
-  # Deleting a same-named asset first is a small, fast API call and it stays SERIAL,
-  # before any upload starts. Interleaving deletes with uploads would risk deleting
-  # an asset a concurrent job had just written.
-  for _asset in "${RELEASE_ASSETS[@]}"; do
-    _basename=$(basename "$_asset")
-    # Asset name goes in via the environment, not interpolated into the python
-    # source: these names carry version strings and hyphens, and one day one
-    # will carry a quote.
-    _existing_id=$(printf '%s' "$EXISTING_ASSETS_JSON" \
-      | ASSET_NAME="$_basename" python3 -c "
-import os, sys, json
-m = json.load(sys.stdin)
-print(m.get(os.environ['ASSET_NAME'], ''))" 2>/dev/null || echo "")
-    if [ -n "$_existing_id" ]; then
-      echo "==> Replacing existing $_basename (asset id $_existing_id)..."
-      curl -s -X DELETE \
-        -H "Authorization: Bearer $GH_TOKEN" \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${REPO_SLUG}/releases/assets/${_existing_id}" \
-        > /dev/null
-    fi
-  done
-
-  # NO --progress-bar here, unlike the serial version: four of them interleaved on one
-  # terminal is unreadable. Each job reports its own size and measured speed when it
-  # lands instead, which is also the number to look at if a future release feels slow.
-  _UPLOAD_DIR=$(mktemp -d)
-  _upload_one () {
-    local _a="$1" _ct="$2" _n="$3" _slot="$4"
-    local _http _speed _res
-    _res=$(curl -s -X POST \
-      -H "Authorization: Bearer $GH_TOKEN" \
-      -H "Accept: application/vnd.github+json" \
-      -H "Content-Type: $_ct" \
-      "${UPLOAD_URL}?name=${_n}" \
-      --data-binary "@${_a}" \
-      -o "${_UPLOAD_DIR}/${_slot}.body" \
-      -w '%{http_code} %{speed_upload}' 2>/dev/null) || _res="000 0"
-    # WITH a trailing newline. `read` returns 1 at end-of-file without one (it still fills
-    # the variables), and under set -e that killed the whole run right after the uploads
-    # - silently, with the release complete on GitHub and every step after it (Zapstore,
-    # Play, App Store, the store gate, the announcement) simply not happening (1.0.6,
-    # 2026-08-29).
-    printf '%s %s\n' "$_res" "$_n" > "${_UPLOAD_DIR}/${_slot}.meta"
-    set -- $_res
-    if [ "$1" = "201" ]; then
-      echo "    done: $_n  ($(python3 -c "print(f'{$2*8/1e6:.1f}')" 2>/dev/null || echo '?') Mbps)"
-    else
-      echo "    FAILED: $_n  (HTTP $1)"
-    fi
-  }
-
-  echo "==> Uploading ${#RELEASE_ASSETS[@]} assets, ${_UPLOAD_JOBS} at a time..."
-  _slot=0
-  for _asset in "${RELEASE_ASSETS[@]}"; do
-    # Gate on the job count rather than batching: batches idle on their slowest
-    # member, and these assets differ by 10x in size.
-    while [ "$(jobs -rp | wc -l)" -ge "$_UPLOAD_JOBS" ]; do wait -n 2>/dev/null || true; done
-    _upload_one "$_asset" "$(_asset_content_type "$_asset")" "$(basename "$_asset")" "$_slot" &
-    _slot=$((_slot + 1))
-  done
-  wait
-
-  # EVERY result is checked, and only after all of them have landed. A failure inside
-  # a background job cannot abort the script the way `set -e` would in the serial
-  # version, so this is what makes a failed upload still stop the release.
-  _UPLOAD_FAILED=""
-  for _m in "${_UPLOAD_DIR}"/*.meta; do
-    [ -f "$_m" ] || continue
-    read -r _code _spd _name < "$_m" || true # a missing newline must not end the run
-    if [ "$_code" != "201" ]; then
-      _UPLOAD_FAILED="yes"
-      echo ""
-      echo "ERROR: Upload of $_name failed (HTTP $_code):"
-      python3 -m json.tool < "${_m%.meta}.body" 2>/dev/null || cat "${_m%.meta}.body" 2>/dev/null
-    fi
-  done
-  if [ -n "$_UPLOAD_FAILED" ]; then
-    rm -rf "$_UPLOAD_DIR"
+  # Several at a time with one progress line (shared library).
+  if ! release_upload_assets "$UPLOAD_URL" "${RELEASE_ASSETS[@]}"; then
     echo ""
-    echo "The GitHub release was created but at least one asset was not attached."
-    echo "You can upload it manually at: https://github.com/${REPO_SLUG}/releases/tag/${RELEASE_TAG}"
+    echo "ERROR: The GitHub release was created but ${#RELEASE_UPLOAD_FAILED[@]} file(s) were not attached."
+    echo "You can upload them manually at: https://github.com/${REPO_SLUG}/releases/tag/${RELEASE_TAG}"
     exit 1
   fi
-  rm -rf "$_UPLOAD_DIR"
-  echo "    All ${#RELEASE_ASSETS[@]} assets uploaded."
 
 else
   # Fallback: gh CLI (requires working auth). gh accepts multiple positional
