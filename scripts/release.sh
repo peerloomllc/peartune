@@ -1874,6 +1874,7 @@ else
   # ── Step 1: Sync repo to Mac Mini ──
   # NO --delete: ios/Pods, node_modules and the running host's data live there
   # too, and blowing them away turns every release into a full CocoaPods install.
+  release_check_mac_space "$MAC_MINI"
   echo "    Syncing repo to $MAC_MINI:$MAC_MINI_REPO_PATH ..."
   rsync -az --rsync-path=/opt/homebrew/bin/rsync \
     --exclude='.git' --exclude='node_modules' --exclude='android' \
